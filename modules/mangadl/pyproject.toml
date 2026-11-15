@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mangadl"
-version = "3.2.0"
+version = "3.3.0"
 description = "Concurrent, resumable manga and gallery download manager."
 readme = "README.md"
 requires-python = ">=3.10"

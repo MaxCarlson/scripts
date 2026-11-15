@@ -53,6 +53,8 @@ from .optimizer import (
 )
 from .partial_safety import apply_cleanup, cleanup_preview, plan_cleanup
 from .repair import resolve_nhentai_metadata
+from .urls import configure_parser as configure_urls_parser
+from .urls import run_cli as run_urls_cli
 from .partial_reconcile import reconstruct_archive_keys, reconstruct_archive_page_keys, resolve_owner_urls
 from .repair_pages import (
     apply_page_repair, apply_page_repairs, clear_page_repair_archive,
@@ -513,6 +515,16 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     favorites.add_argument("-f", "--apply", action="store_true", help="Write/replace the output URL file.")
     favorites.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
     favorites.add_argument("-q", "--quiet", action="store_true", help="Suppress fetch progress on stderr.")
+
+    urls = subparsers.add_parser(
+        "urls",
+        help="Merge matching URL files into one deduplicated file.",
+        description=(
+            "Match URL files by glob pattern and preview a stable, first-seen merge. "
+            "Dry-run is the default; use --apply to write the output file."
+        ),
+    )
+    configure_urls_parser(urls, path_type=_path)
 
     compress = subparsers.add_parser(
         "compress",
@@ -2766,6 +2778,7 @@ def main(argv: list[str] | None = None) -> int:
             "covers": run_covers_cli,
             "auth": _auth,
             "favorites": _favorites,
+            "urls": run_urls_cli,
             "compress": _compress,
             "lock": _lock,
         }[args.command](args)

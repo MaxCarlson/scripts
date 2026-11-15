@@ -109,6 +109,7 @@ def test_top_level_commands_are_compacted_and_include_covers() -> None:
         "favorites",
         "compress",
         "lock",
+        "urls",
         "tui",
     }
     assert choices == expected
