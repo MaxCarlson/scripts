@@ -455,6 +455,51 @@ class ProcessTableCache:
             ]
             return result
 
+    def refresh_recent_processes(self, *, window_ms: float = 2000.0) -> int:
+        """Discover recently started live processes via psutil when WMI trace is unavailable."""
+        now_wall = time.time()
+        now_ns = time.monotonic_ns()
+        cutoff_wall = now_wall - (window_ms / 1000.0)
+        added = 0
+        for proc in psutil.process_iter(["pid", "ppid", "name", "exe", "cmdline", "create_time"]):
+            try:
+                info = proc.info
+                pid = int(info["pid"])
+                if pid <= 0:
+                    continue
+                ctime = info.get("create_time")
+                if ctime is None or float(ctime) < cutoff_wall:
+                    continue
+                with self._lock:
+                    if pid in self._active_by_pid:
+                        continue
+                age_ns = max(0, int((now_wall - float(ctime)) * 1_000_000_000))
+                est_start_ns = max(0, now_ns - age_ns)
+                ident = ProcessIdentity.canonical_kernel(self.boot_id, pid, int(float(ctime) * 10_000_000))
+                raw_cmd = " ".join(info["cmdline"]) if info.get("cmdline") else None
+                red_cmd = redact_text(raw_cmd, escape_controls=True) if raw_cmd else None
+                decoded = decode_command_payload(raw_cmd) if raw_cmd else None
+                obs = ProcessObservation(
+                    identity=ident,
+                    ppid=int(info["ppid"]) if info.get("ppid") is not None else None,
+                    image_name=str(info.get("name") or ""),
+                    image_path=str(info["exe"]) if info.get("exe") else None,
+                    command_line_redacted=red_cmd,
+                    decoded_payload_redacted=decoded.redacted_text if decoded else None,
+                    start_ts_utc=utc_now_iso(),
+                    start_monotonic_ns=est_start_ns,
+                    source="psutil_recent_refresh",
+                    capabilities=CapabilityFlags(
+                        process_created=True,
+                        command_line_captured=bool(red_cmd),
+                    ),
+                )
+                self.record_observation(obs)
+                added += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        return added
+
     def _prune_if_needed(self) -> None:
         cutoff_ns = time.monotonic_ns() - int(self.ttl_seconds * 1_000_000_000)
         while len(self._processes) > self.max_entries:

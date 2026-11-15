@@ -95,6 +95,7 @@ class WindowInstance:
     suppress_until_ns: int = 0
     became_visible: bool = False
     stole_foreground: bool = False
+    restore_attempts: list[ApiAttempt] = field(default_factory=list)
 
 
 class WindowBackend(Protocol):
@@ -510,20 +511,35 @@ class NeutralizeEngine:
             if instance is None or not instance.modified_by_guard:
                 return attempts
             if not self.backend.is_window(hwnd):
+                attempt = ApiAttempt(api="IsWindow", success=False, detail="hwnd_already_destroyed")
+                attempts.append(attempt)
+                instance.restore_attempts.extend(attempts)
+                instance.modified_by_guard = False
+                instance.state = WindowState.DESTROYED
+                instance.suppress_until_ns = 0
+                self.active_instances.pop(hwnd, None)
                 return attempts
 
+            all_ok = True
             if instance.original_ex_style is not None and not instance.ex_style_restored:
                 res = self.backend.set_ex_style(hwnd, instance.original_ex_style)
                 attempts.append(res)
                 if res.success:
                     instance.ex_style_restored = True
+                else:
+                    all_ok = False
 
             if instance.original_placement is not None:
-                attempts.append(self.backend.set_window_placement(hwnd, instance.original_placement))
+                res_place = self.backend.set_window_placement(hwnd, instance.original_placement)
+                attempts.append(res_place)
+                if not res_place.success:
+                    all_ok = False
 
-            instance.modified_by_guard = False
-            instance.state = WindowState.RESTORED
+            instance.restore_attempts.extend(attempts)
             instance.suppress_until_ns = 0
+            if all_ok:
+                instance.modified_by_guard = False
+                instance.state = WindowState.RESTORED
         return attempts
 
     def restore_all_modified(self) -> int:
@@ -612,8 +628,40 @@ class NeutralizeEngine:
             return None
 
         if inst is not None and inst.state in (WindowState.ALLOWED, WindowState.RESTORED):
-            if event == EVENT_SYSTEM_FOREGROUND and self.backend.is_window_visible(hwnd_int):
+            visible = self.backend.is_window_visible(hwnd_int)
+            title = self.backend.get_window_title(hwnd_int)
+            fg_hwnd = self.backend.get_foreground_window()
+            is_fg = fg_hwnd == hwnd_int
+            if event == EVENT_SYSTEM_FOREGROUND and visible:
                 self.last_valid_fg = hwnd_int
+            title_changed = bool(title and title != inst.current_title)
+            became_vis_now = event == EVENT_OBJECT_SHOW and visible and not inst.became_visible
+            if title_changed or became_vis_now:
+                if title_changed:
+                    inst.current_title = title
+                    inst.title_history.append(title)
+                if visible:
+                    inst.became_visible = True
+                if is_fg:
+                    inst.stole_foreground = True
+                raw = RawWindowEvent(
+                    window_instance_id=inst.window_instance_id,
+                    hwnd=hwnd_int,
+                    owner_pid=inst.owner_pid,
+                    owner_tid=inst.owner_tid,
+                    window_class=inst.window_class,
+                    title=inst.current_title,
+                    win_event=event,
+                    visible=visible,
+                    is_foreground=is_fg,
+                    foreground_hwnd=fg_hwnd,
+                    state=inst.state,
+                    timestamp_utc=now_utc,
+                    monotonic_ns=arrival_ns,
+                    callback_arrival_ns=arrival_ns,
+                )
+                self._emit_event(raw)
+                return raw
             return None
 
         tid, pid = self.backend.get_window_thread_process_id(hwnd_int)

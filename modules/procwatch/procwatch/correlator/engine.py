@@ -119,6 +119,12 @@ class LiveCorrelator:
         if self.wmi_missing_reason is not None and self.wmi_missing_reason not in missing:
             missing.append(self.wmi_missing_reason)
 
+        if (
+            win_obs.window_class in CONSOLE_WINDOW_CLASSES
+            and self.wmi_missing_reason in (MissingMetadataReason.ACCESS_DENIED, MissingMetadataReason.SOURCE_UNAVAILABLE)
+        ):
+            self.process_cache.refresh_recent_processes(window_ms=self.watch_config.correlation_window_ms)
+
         candidates = self._find_candidate_initiators(win_obs, owner_proc)
 
         return LiveIncidentEvent(

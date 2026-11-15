@@ -117,20 +117,23 @@ def test_win32_synthetic_console_popup_observed_and_correlated() -> None:
             ],
             creationflags=CREATE_NEW_CONSOLE,
         )
+        def _matches_target(e: LiveIncidentEvent) -> bool:
+            if e.window is None:
+                return False
+            if e.window.owner_pid == proc.pid or title_marker in e.window.current_title:
+                return True
+            return any(c.pid == proc.pid for c in e.candidate_initiators)
+
         _pump_until(
             correlator,
-            lambda: any(
-                e.window is not None and (e.window.owner_pid == proc.pid or title_marker in e.window.current_title)
-                for e in events
-            ),
+            lambda: any(_matches_target(e) for e in events),
             timeout=5.0,
         )
-        matched = [
-            e
-            for e in events
-            if e.window is not None and (e.window.owner_pid == proc.pid or title_marker in e.window.current_title)
-        ]
-        assert len(matched) >= 1
+        matched = [e for e in events if _matches_target(e)]
+        assert len(matched) >= 1, (
+            f"Expected to observe synthetic console window (pid={proc.pid}, title={title_marker}); "
+            f"stats={stats}, window_events={[ (e.window.window_class, e.window.owner_pid, e.window.current_title) for e in events if e.window ]}"
+        )
         assert stats.guard_suppressed_count == 0
     finally:
         if proc is not None and proc.poll() is None:
@@ -203,6 +206,7 @@ def test_win32_all_consoles_suppresses_and_restores_cleanly() -> None:
     events: list[LiveIncidentEvent] = []
 
     cache = ProcessTableCache()
+    cache.seed_from_snapshot()
     win = WinEventCollector(GuardConfig(mode=GuardMode.ALL_CONSOLES, restore_focus=False), event_queue=win_q, stats=stats)
     correlator = LiveCorrelator(
         process_cache=cache,
@@ -211,23 +215,36 @@ def test_win32_all_consoles_suppresses_and_restores_cleanly() -> None:
         watch_config=WatchConfig(),
         stats=stats,
         on_incident=events.append,
+        wmi_missing_reason=MissingMetadataReason.SOURCE_UNAVAILABLE,
     )
 
     win.start(timeout=2.0)
+    title_marker = "PROCWATCH_SUPPRESS_TARGET"
     proc: subprocess.Popen[bytes] | None = None
     try:
         CREATE_NEW_CONSOLE = 0x00000010
         proc = subprocess.Popen(
-            ["cmd.exe", "/c", "title PROCWATCH_SUPPRESS_TARGET & ping -n 2 127.0.0.1 >nul"],
+            ["cmd.exe", "/c", f"title {title_marker} & ping -n 2 127.0.0.1 >nul"],
             creationflags=CREATE_NEW_CONSOLE,
         )
+
+        def _is_target_suppressed(e: LiveIncidentEvent) -> bool:
+            if e.window is None or e.window.state != WindowState.SUPPRESSED:
+                return False
+            if e.window.owner_pid == proc.pid or title_marker in e.window.current_title:
+                return True
+            return any(c.pid == proc.pid for c in e.candidate_initiators)
+
         _pump_until(
             correlator,
-            lambda: any(e.guard_decision is not None and e.window is not None and e.window.state == WindowState.SUPPRESSED for e in events),
+            lambda: any(_is_target_suppressed(e) for e in events),
             timeout=5.0,
         )
-        suppressed = [e for e in events if e.window is not None and e.window.state == WindowState.SUPPRESSED]
-        assert len(suppressed) >= 1
+        suppressed = [e for e in events if _is_target_suppressed(e)]
+        assert len(suppressed) >= 1, (
+            f"Expected synthetic target (pid={proc.pid}, title={title_marker}) to be suppressed; "
+            f"suppressed_others={[ (e.window.hwnd, e.window.owner_pid, e.window.current_title) for e in events if e.window and e.window.state == WindowState.SUPPRESSED ]}"
+        )
     finally:
         if proc is not None and proc.poll() is None:
             proc.terminate()

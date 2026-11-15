@@ -221,3 +221,38 @@ def test_hwnd_destroy_and_reuse_creates_fresh_instance() -> None:
 def test_all_windows_requires_experimental_opt_in() -> None:
     with pytest.raises(ConfigValidationError):
         GuardConfig(mode=GuardMode.ALL_WINDOWS, allow_all_windows_experimental=False)
+
+
+def test_restore_window_when_hwnd_already_destroyed_clears_state_with_diagnostic() -> None:
+    backend = FakeWindowBackend()
+    engine = NeutralizeEngine(GuardConfig(mode=GuardMode.ALL_CONSOLES), backend=backend, boot_id="b1")
+
+    backend.windows[700] = FakeWindow(hwnd=700, pid=7000, tid=7001, cls_name="ConsoleWindowClass", title="cmd.exe")
+    ev = engine.handle_win_event(EVENT_OBJECT_CREATE, 700)
+    assert ev is not None
+    assert engine.active_instances[700].modified_by_guard is True
+
+    # Simulate OS destroying the window before DESTROY event was pumped
+    del backend.windows[700]
+    attempts = engine.restore_window(700)
+    assert len(attempts) == 1
+    assert attempts[0].api == "IsWindow"
+    assert attempts[0].detail == "hwnd_already_destroyed"
+    assert 700 not in engine.active_instances
+
+
+def test_allowed_window_emits_updated_title_on_show() -> None:
+    backend = FakeWindowBackend()
+    engine = NeutralizeEngine(GuardConfig(mode=GuardMode.OBSERVE), backend=backend, boot_id="b1")
+
+    backend.windows[800] = FakeWindow(hwnd=800, pid=8000, tid=8001, cls_name="CASCADIA_HOSTING_WINDOW_CLASS", title="")
+    ev1 = engine.handle_win_event(EVENT_OBJECT_CREATE, 800)
+    assert ev1 is not None
+    assert ev1.state == WindowState.ALLOWED
+
+    backend.windows[800].title = "PROCWATCH_SYNTH_POPUP_TEST"
+    backend.windows[800].visible = True
+    ev2 = engine.handle_win_event(EVENT_OBJECT_SHOW, 800)
+    assert ev2 is not None
+    assert ev2.title == "PROCWATCH_SYNTH_POPUP_TEST"
+    assert ev2.visible is True
