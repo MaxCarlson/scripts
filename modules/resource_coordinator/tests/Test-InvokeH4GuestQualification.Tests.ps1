@@ -553,4 +553,59 @@ try {
         $savedSummary = Get-Content -LiteralPath (Join-Path $rCpFail.EvidenceDir 'final-summary.json') -Raw | ConvertFrom-Json
         $savedSummary.stage_results.Checkpoint | Should Be 'FAIL'
     }
+
+    It 'prevents Python bytecode generation in guest workflow and detects/recovers from __pycache__ contamination' {
+        $rawScript = Get-Content -LiteralPath $scriptPath -Raw
+        $rawScript | Should Match '\$env:PYTHONDONTWRITEBYTECODE\s*=\s*''1'''
+        $rawScript | Should Match '&\s*\$py\s+-B\s+\$runner'
+        $rawScript | Should Match '&\s*\$py\s+-B\s+@argList'
+        $rawScript | Should Match '&\s*\$venvPy\s+-B\s+-c'
+
+        $extractRoot = Join-Path $testTemp 'real_extract'
+        if (Test-Path -LiteralPath $extractRoot) {
+            # Confirm Verify-H4GuestBundle.ps1 rejects the two unmanifested .pyc files and succeeds after targeted removal
+            $cacheDir = Join-Path $extractRoot 'sources\rc-1.0.0\modules\resource_coordinator\tools\h4_qualification\__pycache__'
+            New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+            $pyc1 = Join-Path $cacheDir 'python_compat.cpython-312.pyc'
+            $pyc2 = Join-Path $cacheDir 'source_integrity.cpython-312.pyc'
+            Set-Content -LiteralPath $pyc1 -Value 'pyc1' -NoNewline
+            Set-Content -LiteralPath $pyc2 -Value 'pyc2' -NoNewline
+
+            $verifyPs1 = Join-Path $extractRoot 'scripts\Verify-H4GuestBundle.ps1'
+            $badOut = @(& pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $verifyPs1 -BundleRoot $extractRoot *>&1)
+            $LASTEXITCODE | Should Not Be 0
+            ($badOut -join "`n") | Should Match 'bundle_component_mismatch'
+
+            Remove-Item -LiteralPath $pyc1, $pyc2 -Force
+            if ((Get-ChildItem -LiteralPath $cacheDir -Force | Measure-Object).Count -eq 0) {
+                Remove-Item -LiteralPath $cacheDir -Force
+            }
+
+            $cleanOut = @(& pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $verifyPs1 -BundleRoot $extractRoot *>&1)
+            # Exits 3 on non-guest host for preflight only; source/bundle integrity passes
+            $LASTEXITCODE | Should Be 3
+            ($cleanOut -join "`n") | Should Match '"verified": true'
+            ($cleanOut -join "`n") | Should Match 'guest_identity_not_independently_verified'
+        }
+    }
+
+    It 'preserves existing host evidence directory and supports resuming Acceptance into a distinct EvidenceRoot' {
+        Initialize-QualMocks
+        $existingEvRoot = Join-Path $testTemp 'existing_ev_root'
+        $existingOpDir = Join-Path $existingEvRoot 'optest01'
+        New-Item -ItemType Directory -Path $existingOpDir -Force | Out-Null
+        $sentinelPath = Join-Path $existingOpDir 'final-summary.json'
+        Set-Content -LiteralPath $sentinelPath -Value '{"preserved":true}' -NoNewline -Encoding UTF8
+
+        $rCollide = Invoke-Qual -Extra @{ Stage = 'Acceptance'; Apply = $true; AuthorizeGuestMutation = $true; EvidenceRoot = $existingEvRoot; OperationId = 'optest01' }
+        $rCollide.ExitCode | Should Not Be 0
+        (Get-Content -LiteralPath $sentinelPath -Raw) | Should Be '{"preserved":true}'
+
+        $distinctEvRoot = Join-Path $testTemp 'distinct_resume_ev_root'
+        $rResume = Invoke-Qual -Extra @{ Stage = 'Acceptance'; Apply = $true; AuthorizeGuestMutation = $true; EvidenceRoot = $distinctEvRoot; OperationId = 'optest01' }
+        $rResume.ExitCode | Should Be 0
+        (Get-Content -LiteralPath $sentinelPath -Raw) | Should Be '{"preserved":true}'
+        $resumedJson = Get-Content -LiteralPath (Join-Path $distinctEvRoot 'optest01\final-summary.json') -Raw | ConvertFrom-Json
+        $resumedJson.stage_results.Acceptance | Should Be 'PASS'
+    }
 }

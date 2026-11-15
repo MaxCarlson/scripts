@@ -330,6 +330,9 @@ try {
             if ($Json) { $summary | ConvertTo-Json -Depth 8 } else { Write-Host 'Operation declined by ShouldProcess; no changes made.' }
             exit 0
         }
+        if ((Test-Path -LiteralPath $hostEvidenceDir) -and @(Get-ChildItem -LiteralPath $hostEvidenceDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
+            throw "Host evidence directory already exists and is non-empty: '$hostEvidenceDir'. Supply a distinct -EvidenceRoot (or -OperationId) to preserve existing evidence."
+        }
         New-Item -ItemType Directory -Path $hostEvidenceDir -Force -ErrorAction Stop | Out-Null
         $summary['evidence_dir'] = $hostEvidenceDir
     } else {
@@ -416,6 +419,7 @@ try {
             }
 
             $rebootRequired = $false
+            $env:PYTHONDONTWRITEBYTECODE = '1'
             $pwshExe = 'C:\Program Files\PowerShell\7\pwsh.exe'
             if (-not (Test-Path -LiteralPath $pwshExe)) {
                 $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i', 'C:\H4-Guest-Work\installers\PowerShell-7.6.10-win-x64.msi', '/quiet', '/norestart' -Wait -PassThru
@@ -433,6 +437,7 @@ try {
                 return [pscustomobject]@{ status = 'reboot_required'; pwsh_version = $null; python_version = $null }
             }
 
+            $env:PYTHONDONTWRITEBYTECODE = '1'
             $venvPy = 'C:\H4-Guest-Work\venv\Scripts\python.exe'
             if (-not (Test-Path -LiteralPath $venvPy)) {
                 & $pyExe -m venv 'C:\H4-Guest-Work\venv'
@@ -457,7 +462,7 @@ try {
             & $venvPy -m pip install --no-index --find-links 'C:\H4-Guest-Work\wheels' -r $reqMain -r $reqDev resource-metrics
             if ($LASTEXITCODE -ne 0) { throw "Offline pinned wheel install failed" }
 
-            & $venvPy -c "import anyio, httpx, starlette, uvicorn, psutil, yaml, rich, pytest, pytest_asyncio, resource_metrics; print('DEPS_OK')"
+            & $venvPy -B -c "import anyio, httpx, starlette, uvicorn, psutil, yaml, rich, pytest, pytest_asyncio, resource_metrics; print('DEPS_OK')"
             if ($LASTEXITCODE -ne 0) { throw "Guest dependency import verification failed" }
 
             $receiptDir = 'C:\H4-Guest-Work\receipts'
@@ -501,8 +506,9 @@ try {
             New-Item -ItemType Directory -Path $runDir -Force | Out-Null
             $mod = Join-Path $srcNew 'modules\resource_coordinator'
             $env:PYTHONPATH = $mod
+            $env:PYTHONDONTWRITEBYTECODE = '1'
             Set-Location $mod
-            $stdout = & $py $runner --test-root $runDir --source-root $srcNew --old-source-root $srcOld --source-manifest $manifest --json 2>&1
+            $stdout = & $py -B $runner --test-root $runDir --source-root $srcNew --old-source-root $srcOld --source-manifest $manifest --json 2>&1
             [pscustomobject]@{ exit_code = $LASTEXITCODE; output = ($stdout -join "`n") }
         }
         Save-H4JsonArtifact -Dir $hostEvidenceDir -FileName 'guest-preflight-raw.json' -Data $preflightOut
@@ -615,6 +621,7 @@ try {
             if (-not (Test-Path -LiteralPath $verifyScript -PathType Leaf)) {
                 throw "Bundle verification script missing at '$verifyScript'."
             }
+            $env:PYTHONDONTWRITEBYTECODE = '1'
             $pwshExe = 'C:\Program Files\PowerShell\7\pwsh.exe'
             $verifyOutput = @(& $pwshExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $verifyScript -BundleRoot $bundleDir -Python $pyExe *>&1)
             if ($LASTEXITCODE -ne 0) {
@@ -652,10 +659,11 @@ try {
                 New-Item -ItemType Directory -Path $rDir -Force | Out-Null
                 $mod = Join-Path $srcNew 'modules\resource_coordinator'
                 $env:PYTHONPATH = $mod
+                $env:PYTHONDONTWRITEBYTECODE = '1'
                 $env:RC_H4_DISPOSABLE_GUEST_AUTHORIZED = $authPhrase
                 Set-Location $mod
                 $argList = @($runner, '--test-root', $rDir) + @($argsJson | ConvertFrom-Json)
-                $stdout = & $py @argList 2>&1
+                $stdout = & $py -B @argList 2>&1
                 [pscustomobject]@{ exit_code = $LASTEXITCODE; output = ($stdout -join "`n") }
             }
 
@@ -702,9 +710,10 @@ try {
                         $ErrorActionPreference = 'Continue'
                         $mod = Join-Path $srcNew 'modules\resource_coordinator'
                         $env:PYTHONPATH = $mod
+                        $env:PYTHONDONTWRITEBYTECODE = '1'
                         $env:RC_H4_DISPOSABLE_GUEST_AUTHORIZED = $authPhrase
                         Set-Location $mod
-                        $out = & $py $runner --test-root $rDir --apply --profile cleanup --authorization $authPhrase --authorize-guest-mutation --source-root $srcNew --source-manifest $manifest --json 2>&1
+                        $out = & $py -B $runner --test-root $rDir --apply --profile cleanup --authorization $authPhrase --authorize-guest-mutation --source-root $srcNew --source-manifest $manifest --json 2>&1
                         [pscustomobject]@{ exit_code = $LASTEXITCODE; output = ($out -join "`n") }
                     }
                     Save-H4JsonArtifact -Dir $hostPhaseDir -FileName 'scoped-cleanup.json' -Data $cleanupRes
