@@ -10,6 +10,7 @@ import yaml
 from typing import List, Optional, Any
 
 from .manager import SystemManager
+from .process_watch.cli import add_watch_arguments, run_from_args
 from .ui import show_list
 
 mgr = SystemManager()
@@ -209,6 +210,9 @@ def main(argv: Optional[List[str]] = None):
     hndl.add_argument("pid", type=int, help="PID")
 
     proc_sub.add_parser("full-list", parents=[common], help="Detailed process list")
+
+    watch_p = proc_sub.add_parser("watch", help="Interactive process explorer (proc-stats)")
+    add_watch_arguments(watch_p)
 
     help_search_p = subparsers.add_parser("help-search", help="Search sm command metadata")
     help_search_p.add_argument("-q", "--query", required=True, help="Search query")
@@ -583,6 +587,8 @@ def main(argv: Optional[List[str]] = None):
             elif args.cmd == "full-list": data = mgr.proc_full_list()
             elif args.cmd == "stats": data = mgr.proc_stats(args.pid, args.interval, args.samples, include_tree=False)
             elif args.cmd == "stats-tree": data = mgr.proc_stats(args.pid, args.interval, args.samples, include_tree=True)
+            elif args.cmd == "watch":
+                raise SystemExit(run_from_args(args))
 
         elif args.category == "help-search":
             data = mgr.help_search(args.query, args.regex, args.fuzzy)

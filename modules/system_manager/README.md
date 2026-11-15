@@ -61,3 +61,34 @@ Search command descriptions:
 sm help-search -q pause
 sm help-search -q process -z --fuzzy
 ```
+
+## Interactive Process Explorer (`proc-stats` / `sm proc watch`)
+
+`proc-stats` (and `sm proc watch`) provides a read-only interactive Textual TUI and one-shot Rich/JSON/CSV reporter.
+
+```bash
+proc-stats
+proc-stats -g '*python*' -g 'node*' -n 20 -i 1 -s cpu
+proc-stats -p 12345 -R -a
+proc-stats -1 -f json
+sm proc watch -g '*codex*'
+```
+
+### Controls
+
+- `Up`/`Down` or `j`/`k`: select process
+- `Enter`: open Process Inspector (details, ancestry, history, sanitized copy)
+- `Space`: pin/unpin process
+- `/`: live filter (`Esc` clears)
+- `s` / `S`: sort chooser / reverse sort
+- `a`: toggle individual vs subtree aggregation
+- `c`: column presets (`default`, `compact`, `cpu`, `memory`, `io`, `gpu`, `comprehensive`)
+- `g`: grouping (`none`, `name`, `exe`, `parent`, `root`)
+- `h`: History tab | `d`: descendants | `p`: parent | `f`: freeze | `+`/`-`/`r`: visible rows | `?`: help | `q`: quit
+
+### Limitations
+
+- Read-only: no key terminates, suspends, or restarts processes.
+- Windows WDDM drivers may omit per-process GPU framebuffer memory; unavailable metrics display `-` rather than `0`.
+- `nvidia-smi` fallback reports compute-apps only; per-process GPU utilization % is not fabricated from device-wide utilization.
+- Process I/O counters reflect OS process I/O accounting, not confirmed physical disk throughput.

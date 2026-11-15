@@ -512,9 +512,16 @@ REGISTRY: dict = {
             {
                 "name": "proc_stats.py",
                 "path": "pyscripts/proc_stats.py",
-                "desc": "Interactive process stats viewer with Rich UI; sort by CPU/memory/disk",
+                "desc": "Legacy-compatible process stats viewer (delegates to proc-stats)",
                 "help_cmd": ["python", "pyscripts/proc_stats.py", "--help"],
-                "version": "0.1.0",
+                "version": "0.2.0",
+            },
+            {
+                "name": "proc-stats (system_manager)",
+                "path": "modules/system_manager",
+                "desc": "Interactive read-only process explorer with tree, history, GPU telemetry, and JSON/CSV export",
+                "help_cmd": ["proc-stats", "--help"],
+                "version": "1.0.0",
             },
             {
                 "name": "procwatch (module)",
@@ -528,7 +535,7 @@ REGISTRY: dict = {
                 "path": "modules/system_manager",
                 "desc": "Manage system services, processes, and scheduled tasks cross-platform",
                 "help_cmd": ["python", "-m", "system_manager", "--help"],
-                "version": "0.3.0",
+                "version": "1.0.0",
             },
             {
                 "name": "system_tools (module)",

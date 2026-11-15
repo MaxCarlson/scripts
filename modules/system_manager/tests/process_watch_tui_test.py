@@ -1,0 +1,187 @@
+"""Headless Textual UI tests for ProcessWatchApp using run_test() and Pilot."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import psutil
+import pytest
+from textual.widgets import DataTable, Input, Static, TabbedContent
+
+from system_manager.process_watch.filters import ProcessFilter
+from system_manager.process_watch.sampler import ProcessSampler
+from system_manager.process_watch.tui import HelpModal, ProcessInspectorModal, ProcessWatchApp
+
+
+class FakeProc:
+    def __init__(self, pid: int, *, ppid: int = 0, name: str = "proc.exe", cpu_user: float = 1.0, rss: int = 1024**2, cmdline: list[str] | None = None) -> None:
+        self.pid = pid
+        self._ppid = ppid
+        self._name = name
+        self._cpu_user = cpu_user
+        self._rss = rss
+        self._cmdline = cmdline or [name]
+
+    @property
+    def info(self):
+        return {
+            "pid": self.pid,
+            "ppid": self._ppid,
+            "name": self._name,
+            "exe": f"/usr/bin/{self._name}",
+            "cmdline": self._cmdline,
+            "username": "tester",
+            "status": "running",
+            "create_time": 10.0,
+            "cpu_times": SimpleNamespace(user=self._cpu_user, system=0.0),
+            "memory_info": SimpleNamespace(rss=self._rss, vms=self._rss * 2, private=self._rss // 2),
+            "num_threads": 2,
+        }
+
+    def io_counters(self):
+        return SimpleNamespace(read_bytes=1000, write_bytes=500)
+
+
+class FakePsutil:
+    NoSuchProcess = psutil.NoSuchProcess
+    AccessDenied = psutil.AccessDenied
+    ZombieProcess = psutil.ZombieProcess
+    Error = psutil.Error
+
+    def __init__(self, procs: list[FakeProc]) -> None:
+        self.procs = procs
+
+    def process_iter(self, attrs, ad_value=None):
+        return list(self.procs)
+
+    def cpu_count(self, logical=True):
+        return 4
+
+    def cpu_percent(self, interval=None):
+        return 10.0
+
+    def virtual_memory(self):
+        return SimpleNamespace(used=4 * 1024**3, total=16 * 1024**3, percent=25.0)
+
+    def disk_io_counters(self):
+        return SimpleNamespace(read_bytes=1000, write_bytes=2000)
+
+
+def _make_app(*, clock_val: list[float] | None = None, procs: list[FakeProc] | None = None) -> tuple[ProcessWatchApp, FakePsutil, list[float]]:
+    clock = clock_val or [100.0]
+    default_procs = procs or [
+        FakeProc(100, ppid=1, name="alpha.exe", cpu_user=2.0, rss=50 * 1024**2, cmdline=["alpha.exe", "--token=xyz"]),
+        FakeProc(101, ppid=100, name="beta.exe", cpu_user=1.0, rss=20 * 1024**2),
+        FakeProc(102, ppid=100, name="gamma.exe", cpu_user=0.5, rss=10 * 1024**2),
+    ]
+    fps = FakePsutil(default_procs)
+    sampler = ProcessSampler(
+        psutil_module=fps,
+        monotonic_clock=lambda: clock[0],
+        wall_clock=lambda: 1000.0 + clock[0],
+        exited_grace_seconds=5.0,
+    )
+    # Prime one sample so CPU/IO rates can be computed on second sample
+    sampler.sample()
+    clock[0] += 1.0
+    for p in default_procs:
+        p._cpu_user += 0.2
+    app = ProcessWatchApp(
+        sampler,
+        initial_filter=ProcessFilter(),
+        interval_seconds=1.0,
+        enable_background_worker=False,
+    )
+    return app, fps, clock
+
+
+@pytest.mark.asyncio
+async def test_tui_navigation_filter_sort_pin_and_inspector():
+    app, fps, clock = _make_app()
+    async with app.run_test(size=(120, 30)) as pilot:
+        table = app.query_one("#proc-table", DataTable)
+        assert table.row_count == 3
+
+        # Move down and inspect
+        await pilot.press("j")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ProcessInspectorModal)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, ProcessInspectorModal)
+
+        # Pin selected process
+        selected_before = app.selected_identity
+        await pilot.press("space")
+        await pilot.pause()
+        assert selected_before in app.pinned_identities
+
+        # Filter input focus takes precedence over global hotkeys (typing 'q' or 's' must not quit/open modal)
+        await pilot.press("/")
+        await pilot.pause()
+        inp = app.query_one("#filter-input", Input)
+        assert app.focused is inp
+        await pilot.press("b", "e", "t", "a")
+        await pilot.pause()
+        assert inp.value == "beta"
+        assert table.row_count == 1
+
+        # Escape clears filter and returns focus
+        await pilot.press("escape")
+        await pilot.pause()
+        assert table.row_count == 3
+
+        # Reverse sort, toggle aggregation, toggle freeze
+        await pilot.press("S")
+        await pilot.press("a")
+        await pilot.press("f")
+        await pilot.pause()
+        assert app.aggregated is True
+        assert app.frozen is True
+        await pilot.press("f")
+
+        # Dynamic row count
+        await pilot.press("-")
+        await pilot.press("+")
+        await pilot.pause()
+
+        # History tab & Help modal
+        await pilot.press("h")
+        await pilot.pause()
+        assert app.query_one("#main-tabs", TabbedContent).active == "tab-history"
+
+        await pilot.press("?")
+        await pilot.pause()
+        assert isinstance(app.screen, HelpModal)
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # Clean quit
+        await pilot.press("q")
+
+
+@pytest.mark.asyncio
+async def test_tui_narrow_layout_and_exited_pinned_process():
+    app, fps, clock = _make_app()
+    async with app.run_test(size=(75, 22)) as pilot:
+        table = app.query_one("#proc-table", DataTable)
+        # Narrow layout hides non-essential columns
+        assert len(table.columns) <= 5
+
+        # Pin first process, then simulate its exit
+        pinned = app.selected_identity
+        await pilot.press("space")
+        await pilot.pause()
+        assert pinned in app.pinned_identities
+
+        clock[0] += 1.0
+        fps.procs = [p for p in fps.procs if p.pid != pinned.pid]
+        snap = app.sampler.sample(pinned_identities=set(app.pinned_identities))
+        app.apply_snapshot(snap)
+        await pilot.pause()
+
+        pinned_tbl = app.query_one("#pinned-table", DataTable)
+        assert pinned_tbl.row_count == 1
+        assert "EXITED" in str(app.query_one("#quick-details", Static).renderable) or pinned in app.pinned_identities

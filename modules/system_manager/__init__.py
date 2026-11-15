@@ -1,7 +1,9 @@
+__version__ = "1.0.0"
+
 def main(*args, **kwargs):
     """Run the system_manager CLI."""
     from .cli import main as cli_main
 
     return cli_main(*args, **kwargs)
 
-__all__ = ["main"]
+__all__ = ["__version__", "main"]
