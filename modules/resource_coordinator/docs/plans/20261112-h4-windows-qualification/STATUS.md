@@ -8,6 +8,8 @@ Observation context: Windows PowerShell, effective account `XERES\mcarls`; times
 
 ## Source baseline
 
+H4 follow-up branch: `agent/rc-h4-disposable-windows-wddm-20261114`. Before publication, `origin/main` advanced from the RC source baseline to `04835a8c93c90881614d55651688800d5f646cad`, one `mangadl` commit touching only seven `modules/mangadl/` paths. The H4 branch merged that commit without conflict; the RC source delta remains confined to H4 qualification paths. H4 implementation commit: `1f5269043cc99776d66e0f5d3cf82b65c617c20e`; mainline reconciliation merge commit: `1e5bdf7a23e86bc56f845437ac651d19a1649d5d`.
+
 - Parts 2–3 fast-forward merged and pushed to `main`: `0f983428c2a5e0ae02517f94dec6a38b1a4cec4b`.
 - The merge was a fast-forward from `b45f3950595bec5c9af4b076ea8b2db93711eba0`; the review candidate was its ancestor and 16 commits ahead, 0 behind before merge.
 - Local `HEAD`, local `main`, and fetched `origin/main` were verified at the merged SHA. No Part 2/3 source changes were made during this H4 check.
