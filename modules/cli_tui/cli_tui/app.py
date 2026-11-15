@@ -694,8 +694,13 @@ class CliTuiApp:
         self.form_cursor = pane.extra_data.get("form_cursor", 0)
         self.menu_cursor = pane.extra_data.get("menu_cursor", 0)
         if pane.current_form and not self.form_widgets:
+            cwd = os.getcwd()
             self.form_widgets = [
-                create_widget_for_arg(arg, pane.current_form.get_value(arg.dest))
+                create_widget_for_arg(
+                    arg,
+                    pane.current_form.get_value(arg.dest),
+                    working_dir=cwd,
+                )
                 for arg in pane.current_form.command.arguments
             ]
         self._sync_target_pid()
@@ -778,8 +783,13 @@ class CliTuiApp:
         parent_form = self.workspace.active_pane.extra_data.get("parent_form")
         if parent_form:
             copy_matching_form_values(parent_form, self.current_form)
+        cwd = os.getcwd()
         self.form_widgets = [
-            create_widget_for_arg(arg, self.current_form.get_value(arg.dest))
+            create_widget_for_arg(
+                arg,
+                self.current_form.get_value(arg.dest),
+                working_dir=cwd,
+            )
             for arg in cmd.arguments
         ]
         self.form_cursor = 0
@@ -1529,7 +1539,18 @@ class CliTuiApp:
 
         elif self.screen_mode == TuiScreenMode.FORM:
             if self._is_widget_editing():
-                return ["[Enter] Done", "[Esc] Cancel", "[Typing] Input"]
+                active_widget = (
+                    self.form_widgets[self.form_cursor]
+                    if self.form_cursor < len(self.form_widgets)
+                    else None
+                )
+                comp_status = getattr(active_widget, "completion_status", "")
+                tab_badge = (
+                    f"[Tab] Complete ({comp_status})"
+                    if comp_status
+                    else "[Tab] Complete"
+                )
+                return ["[Enter] Done", "[Esc] Cancel", "[Typing] Input", tab_badge]
 
             run_focused = self.form_cursor == len(self.form_widgets)
             prev_focused = self.form_cursor == len(self.form_widgets) + 1
