@@ -608,6 +608,105 @@ Describe 'vm_lab module' {
             $wizRes.plan.vm_name | Should Be 'Wizard-VM-01'
             $Global:vmLabLog.Count | Should Be 0
         }
+
+        It 'distinguishes guest readiness states and PowerShell Direct authentication failures' {
+            # Missing VM
+            $gsMissing = Get-VmLabGuestStatus -Name 'NoSuch-VM' -ManifestRoot $Global:vmLabManifestRoot
+            $gsMissing.guest_state | Should Be 'vm_missing'
+
+            # Powered off VM
+            $gsOff = Get-VmLabGuestStatus -Name 'Managed-VM' -ManifestRoot $Global:vmLabManifestRoot
+            $gsOff.guest_state | Should Be 'vm_powered_off'
+
+            # Running VM, Heartbeat OK, no credentials
+            $Global:vmLabVms[1].State = 'Running'
+            Mock -ModuleName vm_lab Get-VMIntegrationService {
+                return @([pscustomobject]@{ Name = 'Heartbeat'; PrimaryStatusDescription = 'OK' })
+            }
+            $gsNoCred = Get-VmLabGuestStatus -Name 'Managed-VM' -ManifestRoot $Global:vmLabManifestRoot
+            $gsNoCred.guest_state | Should Be 'ps_direct_auth_unavailable'
+
+            # Running VM with credentials -> PowerShell Direct auth & operational checks
+            $secPass = ConvertTo-SecureString 'DummyPass!123' -AsPlainText -Force
+            $cred = [pscredential]::new('AdminUser', $secPass)
+            Mock -ModuleName vm_lab New-VmLabPSSession { throw 'The user name or password is incorrect. Logon failure.' }
+            $gsAuthFail = Get-VmLabGuestStatus -Name 'Managed-VM' -Credential $cred -ManifestRoot $Global:vmLabManifestRoot
+            $gsAuthFail.guest_state | Should Be 'ps_direct_auth_failed'
+
+            Mock -ModuleName vm_lab New-VmLabPSSession { throw 'Cannot connect to PowerShell Direct endpoint.' }
+            $gsOobe = Get-VmLabGuestStatus -Name 'Managed-VM' -Credential $cred -ManifestRoot $Global:vmLabManifestRoot
+            $gsOobe.guest_state | Should Be 'windows_booted_account_unavailable'
+
+            Mock -ModuleName vm_lab New-VmLabPSSession { return [pscustomobject]@{ Id = 1; Name = 'MockSess' } }
+            Mock -ModuleName vm_lab Remove-VmLabPSSession { $Global:vmLabLog.Add('Remove-PSSession') }
+            Mock -ModuleName vm_lab Invoke-VmLabPSSessionCommand {
+                return [pscustomobject]@{
+                    os_caption      = 'Microsoft Windows 11 Pro'
+                    computer_name   = 'DEV-WIN11'
+                    ps_version      = '5.1.26100.1'
+                    bootstrap_state = 'complete'
+                }
+            }
+            $gsOk = Get-VmLabGuestStatus -Name 'Managed-VM' -Credential $cred -ManifestRoot $Global:vmLabManifestRoot
+            $gsOk.guest_state | Should Be 'guest_bootstrap_complete'
+            $gsOk.ps_direct_available | Should Be $true
+            ($Global:vmLabLog -contains 'Remove-PSSession') | Should Be $true
+        }
+
+        It 'performs dry-run, verified ToGuest guest-copy, and guest-bootstrap/guest-verify' {
+            $Global:vmLabVms[1].State = 'Running'
+            $srcFile = Join-Path $testTemp 'payload.txt'
+            [System.IO.File]::WriteAllText($srcFile, 'vm-lab-payload')
+            $expectedHash = (Get-FileHash -LiteralPath $srcFile -Algorithm SHA256).Hash
+            $secPass = ConvertTo-SecureString 'DummyPass!123' -AsPlainText -Force
+            $cred = [pscredential]::new('AdminUser', $secPass)
+
+            # Dry-run guest-copy
+            $cpPlan = Copy-VmLabGuestItem -Name 'Managed-VM' -SourcePath $srcFile -DestinationPath 'C:\Temp\payload.txt' -ManifestRoot $Global:vmLabManifestRoot
+            $cpPlan.status | Should Be 'planned'
+            $cpPlan.source_sha256 | Should Be $expectedHash
+
+            # Mock PowerShell Direct session for guest-copy & guest-bootstrap
+            Mock -ModuleName vm_lab New-VmLabPSSession { return [pscustomobject]@{ Id = 2; Name = 'MockSess2' } }
+            Mock -ModuleName vm_lab Remove-VmLabPSSession { $Global:vmLabLog.Add('Remove-PSSession') }
+            $Global:vmLabRemoteExists = $false
+            $Global:vmLabRemoteHash = $expectedHash
+            Mock -ModuleName vm_lab Copy-VmLabPSSessionItem { $Global:vmLabLog.Add('Copy-Item') }
+            Mock -ModuleName vm_lab Invoke-VmLabPSSessionCommand {
+                param($Session, $ScriptBlock, $ArgumentList)
+                $text = $ScriptBlock.ToString()
+                if ($text -match 'Test-Path -LiteralPath \$p') { return $Global:vmLabRemoteExists }
+                if ($text -match 'Get-FileHash') { return $Global:vmLabRemoteHash }
+                if ($text -match 'bootstrap-state\.json' -and $text -match 'ConvertTo-Json') {
+                    return [pscustomobject]@{ schema_version = 1; completed = $true; profile = 'windows-minimal' }
+                }
+                if ($text -match 'state_dir_present') {
+                    return [pscustomobject]@{ state_dir_present = $true; bootstrap_marker = $true }
+                }
+                return $null
+            }
+
+            $cpRes = Copy-VmLabGuestItem -Name 'Managed-VM' -SourcePath $srcFile -DestinationPath 'C:\Temp\payload.txt' -Credential $cred -Apply -ManifestRoot $Global:vmLabManifestRoot
+            $cpRes.status | Should Be 'copied'
+            $cpRes.sha256_verified | Should Be $true
+
+            # Overwrite protection when remote file already exists
+            $Global:vmLabRemoteExists = $true
+            $errOvr = $null
+            try { $null = Copy-VmLabGuestItem -Name 'Managed-VM' -SourcePath $srcFile -DestinationPath 'C:\Temp\payload.txt' -Credential $cred -Apply -ManifestRoot $Global:vmLabManifestRoot } catch { $errOvr = $_.Exception.Message }
+            $errOvr | Should Match '-Overwrite'
+
+            # guest-bootstrap dry-run and apply
+            $bsPlan = Invoke-VmLabGuestBootstrap -Name 'Managed-VM' -Profile 'windows-minimal' -ManifestRoot $Global:vmLabManifestRoot
+            $bsPlan.status | Should Be 'planned'
+
+            $bsRes = Invoke-VmLabGuestBootstrap -Name 'Managed-VM' -Profile 'windows-minimal' -Credential $cred -Apply -ManifestRoot $Global:vmLabManifestRoot
+            $bsRes.status | Should Be 'bootstrapped'
+
+            $gvRes = Test-VmLabGuestVerify -Name 'Managed-VM' -Profile 'windows-minimal' -Credential $cred -ManifestRoot $Global:vmLabManifestRoot
+            $gvRes.status | Should Be 'verified'
+            $gvRes.checks.bootstrap_marker | Should Be $true
+        }
     }
 
     It 'imports and invokes cleanly from an isolated PowerShell session with accurate exit codes' {

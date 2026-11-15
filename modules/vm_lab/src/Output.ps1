@@ -19,7 +19,7 @@ function Invoke-VmLab {
     param(
         [Parameter(Mandatory, Position = 0)]
         [Alias('o')]
-        [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'checkpoint', 'checkpoints')]
+        [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'checkpoint', 'checkpoints')]
         [string]$Operation,
 
         [Alias('n')][string]$Name,
@@ -36,7 +36,17 @@ function Invoke-VmLab {
         [Alias('st')][int]$ShutdownTimeoutSeconds = 30,
         [Alias('mr')][string]$ManifestRoot = (Get-VmLabDefaultManifestRoot),
         [switch]$Start,
-        [switch]$Connect
+        [switch]$Connect,
+        [pscredential]$Credential,
+        [switch]$PromptCredential,
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [ValidateSet('ToGuest', 'FromGuest')][string]$Direction = 'ToGuest',
+        [switch]$Overwrite,
+        [ValidateSet('windows-minimal', 'python-dev', 'powershell-dev')][string]$GuestProfile = 'windows-minimal',
+        [string]$InstallerPath,
+        [string]$WheelhousePath,
+        [string]$VenvPath = 'C:\venvs\dev'
     )
 
     $result = switch ($Operation) {
@@ -102,6 +112,24 @@ function Invoke-VmLab {
         'boot-diagnostics' {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for boot-diagnostics.' }
             Get-VmLabBootDiagnostics -Name $Name -ManifestRoot $ManifestRoot
+        }
+        'guest-status' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for guest-status.' }
+            Get-VmLabGuestStatus -Name $Name -Credential $Credential -PromptCredential:$PromptCredential -ManifestRoot $ManifestRoot
+        }
+        'guest-copy' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for guest-copy.' }
+            if ([string]::IsNullOrWhiteSpace($SourcePath)) { throw '-SourcePath is required for guest-copy.' }
+            if ([string]::IsNullOrWhiteSpace($DestinationPath)) { throw '-DestinationPath is required for guest-copy.' }
+            Copy-VmLabGuestItem -Name $Name -SourcePath $SourcePath -DestinationPath $DestinationPath -Direction $Direction -Credential $Credential -PromptCredential:$PromptCredential -Overwrite:$Overwrite -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+        }
+        'guest-bootstrap' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for guest-bootstrap.' }
+            Invoke-VmLabGuestBootstrap -Name $Name -Profile $GuestProfile -InstallerPath $InstallerPath -WheelhousePath $WheelhousePath -VenvPath $VenvPath -Credential $Credential -PromptCredential:$PromptCredential -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+        }
+        'guest-verify' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for guest-verify.' }
+            Test-VmLabGuestVerify -Name $Name -Profile $GuestProfile -VenvPath $VenvPath -Credential $Credential -PromptCredential:$PromptCredential -ManifestRoot $ManifestRoot
         }
         'checkpoint' {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for checkpoint.' }

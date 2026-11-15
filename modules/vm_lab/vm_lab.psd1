@@ -23,6 +23,10 @@
         'Connect-VmLabMachine',
         'Start-AndConnectVmLabMachine',
         'Get-VmLabBootDiagnostics',
+        'Get-VmLabGuestStatus',
+        'Copy-VmLabGuestItem',
+        'Invoke-VmLabGuestBootstrap',
+        'Test-VmLabGuestVerify',
         'New-VmLabCheckpoint',
         'Get-VmLabCheckpoint',
         'Invoke-VmLab'

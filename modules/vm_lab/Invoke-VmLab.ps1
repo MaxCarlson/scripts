@@ -44,7 +44,7 @@
 param(
     [Parameter(Mandatory, Position = 0)]
     [Alias('o')]
-    [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'checkpoint', 'checkpoints')]
+    [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'checkpoint', 'checkpoints')]
     [string]$Operation,
 
     [Alias('n')][string]$Name,
@@ -61,7 +61,17 @@ param(
     [Alias('st')][int]$ShutdownTimeoutSeconds = 30,
     [Alias('mr')][string]$ManifestRoot,
     [switch]$Start,
-    [switch]$Connect
+    [switch]$Connect,
+    [pscredential]$Credential,
+    [switch]$PromptCredential,
+    [string]$SourcePath,
+    [string]$DestinationPath,
+    [ValidateSet('ToGuest', 'FromGuest')][string]$Direction = 'ToGuest',
+    [switch]$Overwrite,
+    [ValidateSet('windows-minimal', 'python-dev', 'powershell-dev')][string]$GuestProfile = 'windows-minimal',
+    [string]$InstallerPath,
+    [string]$WheelhousePath,
+    [string]$VenvPath = 'C:\venvs\dev'
 )
 
 $ErrorActionPreference = 'Stop'

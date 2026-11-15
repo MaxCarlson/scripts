@@ -8,6 +8,8 @@ $srcFiles = @(
     'Provisioning.ps1',
     'Lifecycle.ps1',
     'Checkpoints.ps1',
+    'Guest.ps1',
+    'Bootstrap.ps1',
     'Wizard.ps1',
     'Output.ps1'
 )
@@ -38,6 +40,10 @@ Export-ModuleMember -Function @(
     'Connect-VmLabMachine',
     'Start-AndConnectVmLabMachine',
     'Get-VmLabBootDiagnostics',
+    'Get-VmLabGuestStatus',
+    'Copy-VmLabGuestItem',
+    'Invoke-VmLabGuestBootstrap',
+    'Test-VmLabGuestVerify',
     'New-VmLabCheckpoint',
     'Get-VmLabCheckpoint',
     'Invoke-VmLab'
