@@ -267,6 +267,10 @@ def test_filtering_sorting_and_grouping():
 
 def test_redaction_and_exports(tmp_path):
     assert redact_sensitive_text("app --token=abc123 https://user:pw@host/api") == "app --token=*** https://user:***@host/api"
+    assert redact_sensitive_text('app --password="my secret" --api-key=\'k 1\'') == "app --password=*** --api-key=***"
+    assert redact_sensitive_text("app --access-token tok999 postgres://u:p@db:5432/app") == "app --access-token *** postgres://u:***@db:5432/app"
+    assert redact_sensitive_text("curl -H 'Authorization: Bearer secret.jwt.tok'") == "curl -H 'Authorization: Bearer ***'"
+    assert redact_sensitive_text("DB_PASSWORD=topsecret MY_API_KEY=\"val 2\" app") == "DB_PASSWORD=*** MY_API_KEY=*** app"
 
     clock = [10.0]
     p1 = FakeProc(10, name="app.exe", cmdline=["app.exe", "--api-key=supersecret"])
@@ -304,3 +308,30 @@ def test_large_process_list_performance():
     assert len(snap2.processes) == 500
     assert snap1.host.sample_duration_ms < 2000.0
     assert snap2.host.sample_duration_ms < 2000.0
+
+
+def test_deep_and_shallow_tree_aggregation_complexity():
+    clock = [10.0]
+    # Deep chain of 1000 processes: 1000 -> 1001 -> ... -> 1999
+    deep_procs = [FakeProc(1000 + i, ppid=(999 + i if i > 0 else 0), rss=100) for i in range(1000)]
+    fps_deep = FakePsutil(deep_procs)
+    sampler_deep = ProcessSampler(psutil_module=fps_deep, monotonic_clock=lambda: clock[0])
+    snap_deep = sampler_deep.sample()
+    by_pid_deep = {p.pid: p for p in snap_deep.processes}
+    assert by_pid_deep[1000].descendant_count == 999
+    assert by_pid_deep[1000].subtree_rss_bytes == 100_000
+    assert by_pid_deep[1999].descendant_count == 0
+    assert by_pid_deep[1999].depth == 999
+    assert snap_deep.host.sample_duration_ms < 2000.0
+
+    # Shallow wide tree: 1 root + 999 direct children
+    shallow_procs = [FakeProc(2000, ppid=0, rss=100)] + [
+        FakeProc(2001 + i, ppid=2000, rss=100) for i in range(999)
+    ]
+    fps_shallow = FakePsutil(shallow_procs)
+    sampler_shallow = ProcessSampler(psutil_module=fps_shallow, monotonic_clock=lambda: clock[0])
+    snap_shallow = sampler_shallow.sample()
+    by_pid_shallow = {p.pid: p for p in snap_shallow.processes}
+    assert by_pid_shallow[2000].child_count == 999
+    assert by_pid_shallow[2000].descendant_count == 999
+    assert by_pid_shallow[2000].subtree_rss_bytes == 100_000

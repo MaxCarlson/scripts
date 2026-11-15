@@ -431,67 +431,92 @@ class ProcessSampler:
 
 
 def _build_topology_and_aggregates(samples: List[ProcessSample]) -> Dict[int, List[int]]:
-    """Build parent->children map once and compute non-double-counted subtree aggregates."""
+    """Build parent->children map once and compute O(N) non-double-counted subtree aggregates."""
     by_pid: Dict[int, ProcessSample] = {s.pid: s for s in samples}
     children_map: Dict[int, List[int]] = {}
     for s in samples:
         if s.ppid and s.ppid != s.pid and s.ppid in by_pid:
             children_map.setdefault(s.ppid, []).append(s.pid)
+        s.child_count = 0
 
-    # Compute depth safely with cycle guard
+    for ppid, kids in children_map.items():
+        by_pid[ppid].child_count = len(kids)
+
+    # Compute depth in O(N) using memoization + cycle guard
+    depth_memo: Dict[int, int] = {}
     for s in samples:
-        depth = 0
-        seen = {s.pid}
-        cur_ppid = s.ppid
-        while cur_ppid and cur_ppid in by_pid and cur_ppid not in seen:
-            seen.add(cur_ppid)
-            depth += 1
-            cur_ppid = by_pid[cur_ppid].ppid
-        s.depth = depth
-        s.child_count = len(children_map.get(s.pid, ()))
+        if s.pid in depth_memo:
+            s.depth = depth_memo[s.pid]
+            continue
+        path: List[int] = []
+        seen: Set[int] = set()
+        cur_pid: Optional[int] = s.pid
+        base_depth = 0
+        while cur_pid is not None and cur_pid in by_pid and cur_pid not in seen:
+            if cur_pid in depth_memo:
+                base_depth = depth_memo[cur_pid]
+                break
+            seen.add(cur_pid)
+            path.append(cur_pid)
+            ppid = by_pid[cur_pid].ppid
+            cur_pid = ppid if (ppid and ppid != cur_pid and ppid in by_pid) else None
+        for offset, pid in enumerate(reversed(path)):
+            d = base_depth + offset + (1 if cur_pid is not None and cur_pid in depth_memo else 0)
+            depth_memo[pid] = d
+            by_pid[pid].depth = d
 
-    # Post-order aggregation with explicit visited set per root to avoid double-counting or cycles
-    for root in samples:
-        visited: Set[int] = set()
-        stack: List[int] = [root.pid]
-        cpu_sum = 0.0
-        has_cpu = False
-        rss_sum = 0
-        has_rss = False
-        r_sum = 0.0
-        has_r = False
-        w_sum = 0.0
-        has_w = False
-
+    # Bottom-up iterative post-order DP: O(N) across both shallow and deep trees.
+    # state: 0=unvisited, 1=visiting (cycle guard), 2=done
+    state: Dict[int, int] = {}
+    for s in samples:
+        if state.get(s.pid, 0) != 0:
+            continue
+        stack: List[Tuple[int, bool]] = [(s.pid, False)]
         while stack:
-            pid = stack.pop()
-            if pid in visited:
-                continue
-            visited.add(pid)
-            node = by_pid.get(pid)
-            if node is None:
-                continue
-            if node.cpu_percent is not None:
-                cpu_sum += node.cpu_percent
-                has_cpu = True
-            if node.rss_bytes is not None:
-                rss_sum += node.rss_bytes
-                has_rss = True
-            if node.io_read_rate is not None:
-                r_sum += node.io_read_rate
-                has_r = True
-            if node.io_write_rate is not None:
-                w_sum += node.io_write_rate
-                has_w = True
-            for child_pid in children_map.get(pid, ()):
-                if child_pid not in visited:
-                    stack.append(child_pid)
+            pid, expanded = stack.pop()
+            if not expanded:
+                if state.get(pid, 0) != 0:
+                    continue
+                state[pid] = 1
+                stack.append((pid, True))
+                for child_pid in children_map.get(pid, ()):
+                    if state.get(child_pid, 0) == 0:
+                        stack.append((child_pid, False))
+            else:
+                node = by_pid[pid]
+                desc = 0
+                cpu_sum = node.cpu_percent if node.cpu_percent is not None else 0.0
+                has_cpu = node.cpu_percent is not None
+                rss_sum = node.rss_bytes if node.rss_bytes is not None else 0
+                has_rss = node.rss_bytes is not None
+                r_sum = node.io_read_rate if node.io_read_rate is not None else 0.0
+                has_r = node.io_read_rate is not None
+                w_sum = node.io_write_rate if node.io_write_rate is not None else 0.0
+                has_w = node.io_write_rate is not None
 
-        root.descendant_count = max(0, len(visited) - 1)
-        root.subtree_cpu_percent = cpu_sum if has_cpu else None
-        root.subtree_rss_bytes = rss_sum if has_rss else None
-        root.subtree_io_read_rate = r_sum if has_r else None
-        root.subtree_io_write_rate = w_sum if has_w else None
+                for child_pid in children_map.get(pid, ()):
+                    if state.get(child_pid) == 2:
+                        cnode = by_pid[child_pid]
+                        desc += 1 + cnode.descendant_count
+                        if cnode.subtree_cpu_percent is not None:
+                            cpu_sum += cnode.subtree_cpu_percent
+                            has_cpu = True
+                        if cnode.subtree_rss_bytes is not None:
+                            rss_sum += cnode.subtree_rss_bytes
+                            has_rss = True
+                        if cnode.subtree_io_read_rate is not None:
+                            r_sum += cnode.subtree_io_read_rate
+                            has_r = True
+                        if cnode.subtree_io_write_rate is not None:
+                            w_sum += cnode.subtree_io_write_rate
+                            has_w = True
+
+                node.descendant_count = desc
+                node.subtree_cpu_percent = cpu_sum if has_cpu else None
+                node.subtree_rss_bytes = rss_sum if has_rss else None
+                node.subtree_io_read_rate = r_sum if has_r else None
+                node.subtree_io_write_rate = w_sum if has_w else None
+                state[pid] = 2
 
     return children_map
 

@@ -185,3 +185,72 @@ async def test_tui_narrow_layout_and_exited_pinned_process():
         pinned_tbl = app.query_one("#pinned-table", DataTable)
         assert pinned_tbl.row_count == 1
         assert "EXITED" in str(app.query_one("#quick-details", Static).renderable) or pinned in app.pinned_identities
+
+
+@pytest.mark.asyncio
+async def test_tui_scrolls_all_matches_and_grouped_totals_ignore_visible_limit():
+    clock = [100.0]
+    procs = [FakeProc(200 + i, ppid=1, name="worker.exe", cpu_user=1.0 + i * 0.1, rss=1024**2) for i in range(12)]
+    app, fps, clock = _make_app(clock_val=clock, procs=procs)
+    app.visible_rows = 4
+    async with app.run_test(size=(120, 30)) as pilot:
+        table = app.query_one("#proc-table", DataTable)
+        # All 12 matching processes are loaded into the scrollable table despite visible_rows=4
+        assert table.row_count == 12
+        assert table.styles.height.value == 5  # 4 rows + 1 header
+
+        # Grouped mode aggregates all 12 matching processes, not just the 4 visible rows
+        app.group_mode = "name"
+        app._refresh_views()
+        await pilot.pause()
+        assert table.row_count == 1
+        row_cells = table.get_row("grp:worker.exe")
+        assert row_cells[1] == "12"
+
+
+@pytest.mark.asyncio
+async def test_tui_tree_preserves_expansion_and_selection_across_updates():
+    from textual.widgets import Tree
+
+    clock = [100.0]
+    procs = [
+        FakeProc(100, ppid=1, name="alpha.exe", cpu_user=3.0, rss=50 * 1024**2),
+        FakeProc(101, ppid=100, name="beta.exe", cpu_user=1.0, rss=20 * 1024**2),
+        FakeProc(102, ppid=100, name="gamma.exe", cpu_user=0.5, rss=10 * 1024**2),
+        FakeProc(200, ppid=1, name="zeta.exe", cpu_user=2.0, rss=40 * 1024**2),
+        FakeProc(201, ppid=200, name="zeta_child.exe", cpu_user=0.5, rss=10 * 1024**2),
+    ]
+    app, fps, clock = _make_app(clock_val=clock, procs=procs)
+    async with app.run_test(size=(120, 30)) as pilot:
+        app.query_one("#main-tabs", TabbedContent).active = "tab-tree"
+        await pilot.pause()
+        tree = app.query_one("#proc-tree", Tree)
+        # Keep alpha.exe expanded and select its child beta.exe; collapse zeta.exe
+        alpha_node = next(n for n in tree.root.children if n.data.pid == 100)
+        zeta_node = next(n for n in tree.root.children if n.data.pid == 200)
+        alpha_ident = alpha_node.data
+        zeta_ident = zeta_node.data
+        zeta_node.collapse()
+        app._tree_expanded[zeta_ident] = False
+        beta_ident = alpha_node.children[0].data
+        app._tree_selected_identity = beta_ident
+        app.selected_identity = beta_ident
+
+        # Trigger update with a birth (103), exit (gamma 102), and CPU reorder
+        clock[0] += 1.0
+        fps.procs = [p for p in fps.procs if p.pid != 102] + [
+            FakeProc(103, ppid=100, name="delta.exe", cpu_user=5.0, rss=30 * 1024**2)
+        ]
+        for p in fps.procs:
+            p._cpu_user += 0.5
+        snap = app.sampler.sample()
+        app.apply_snapshot(snap)
+        await pilot.pause()
+
+        # Expansion state (alpha expanded, zeta collapsed) and selection (beta) are preserved
+        new_alpha = next(n for n in tree.root.children if n.data == alpha_ident)
+        new_zeta = next(n for n in tree.root.children if n.data == zeta_ident)
+        assert new_alpha.is_expanded is True
+        assert new_zeta.is_expanded is False
+        assert tree.cursor_node is not None
+        assert tree.cursor_node.data == beta_ident

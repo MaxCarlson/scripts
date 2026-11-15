@@ -27,6 +27,10 @@ def test_legacy_arg_translation_preserves_ms_and_bare_glob():
     assert ns_wild.sort == "io_total"
     assert ns_wild.interval == pytest.approx(1.5)
 
+    ns_once = translate_legacy_args(["-a", "200", "-u", "5000", "-1"])
+    assert ns_once.once is True
+    assert ns_once.interval == pytest.approx(0.2)
+
 
 def test_proc_stats_help_and_sm_proc_watch_help(capsys):
     with pytest.raises(SystemExit) as exc1:
@@ -73,3 +77,22 @@ def test_legacy_pyscript_help():
     assert res.returncode == 0
     assert "--analysis-time" in res.stdout
     assert "--update-frequency" in res.stdout
+
+
+def test_root_setup_detects_importable_vs_broken_package(tmp_path):
+    import importlib.util
+
+    repo_root = Path(__file__).resolve().parents[3]
+    spec = importlib.util.spec_from_file_location("root_setup_mod", repo_root / "setup.py")
+    assert spec is not None and spec.loader is not None
+    setup_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(setup_mod)
+
+    assert setup_mod._is_package_importable(repo_root / "modules" / "system_manager", False) is True
+    assert setup_mod._is_package_importable(repo_root / "modules" / "cross_platform", False) is True
+
+    broken_pkg = tmp_path / "nonexistent_broken_pkg_xyz"
+    broken_pkg.mkdir()
+    (broken_pkg / "__init__.py").write_text("", encoding="utf-8")
+    (broken_pkg / "pyproject.toml").write_text('[project]\nname = "nonexistent_broken_pkg_xyz"\nversion = "0.1.0"\n', encoding="utf-8")
+    assert setup_mod._is_package_importable(broken_pkg, False) is False

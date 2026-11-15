@@ -853,6 +853,45 @@ def _check_version_action(module_dir: Path, verbose: bool) -> str:
     return "skip"
 
 
+def _expected_import_modules(module_dir: Path, pkg_name: str) -> list[str]:
+    """Infer top-level Python module name(s) expected to be importable for module_dir."""
+    if (module_dir / "__init__.py").is_file():
+        return [pkg_name.replace("-", "_")]
+    candidates: list[str] = []
+    src_dir = module_dir / "src"
+    search_root = src_dir if src_dir.is_dir() else module_dir
+    excluded = {"tests", "test", "docs", "build", "dist", "__pycache__"}
+    for child in sorted(search_root.iterdir()):
+        if not child.is_dir() or child.name in excluded or child.name.endswith(".egg-info") or child.name.startswith("."):
+            continue
+        if (child / "__init__.py").is_file():
+            candidates.append(child.name)
+    return candidates or [pkg_name.replace("-", "_")]
+
+
+def _is_package_importable(module_dir: Path, verbose: bool) -> bool:
+    """Verify the installed distribution is actually importable in an isolated interpreter."""
+    pkg = _get_pkg_name_from_source(module_dir, verbose)
+    modules = _expected_import_modules(module_dir, pkg)
+    code = (
+        "import importlib.util, sys; "
+        "missing = [m for m in sys.argv[1:] if importlib.util.find_spec(m) is None]; "
+        "sys.exit(1 if missing else 0)"
+    )
+    try:
+        res = subprocess.run(
+            [sys.executable, "-I", "-c", code, *modules],
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            errors="ignore",
+        )
+        return res.returncode == 0
+    except Exception:
+        return True
+
+
 def _get_current_install_mode(module_dir: Path, verbose: bool) -> str | None:
     pkg = _get_pkg_name_from_source(module_dir, verbose)
     try:
@@ -888,13 +927,15 @@ def ensure_module_installed(module_display_name: str, install_path: Path,
     if skip_reinstall:
         version_action = _check_version_action(install_path, verbose)
         if version_action == "skip":
-            # Patch-only: editable install already has the latest source
+            # Patch-only: editable install already has the latest source, unless import is broken
             current_mode = _get_current_install_mode(install_path, verbose)
             if current_mode == desired_mode:
-                status_line(f"{module_display_name}: already installed ({current_mode})", "unchanged", "skip")
-                if module_display_name == "standard_ui":
-                    _try_reload_standard_ui_globally()
-                return
+                if _is_package_importable(install_path, verbose):
+                    status_line(f"{module_display_name}: already installed ({current_mode})", "unchanged", "skip")
+                    if module_display_name == "standard_ui":
+                        _try_reload_standard_ui_globally()
+                    return
+                status_line(f"{module_display_name}: broken installation detected — reinstalling", "warn")
         elif version_action == "reinstall_full":
             # MAJOR version bump: entry points changed → uninstall first to recreate .cmd files
             pkg = _get_pkg_name_from_source(install_path, verbose)

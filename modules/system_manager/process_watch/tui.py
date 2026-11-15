@@ -405,6 +405,8 @@ class ProcessWatchApp(App[None]):
         self.frozen = False
         self.theme_index = 0
         self.selected_identity: Optional[ProcessIdentity] = None
+        self._tree_selected_identity: Optional[ProcessIdentity] = None
+        self._tree_expanded: Dict[ProcessIdentity, bool] = {}
         self.pinned_identities: List[ProcessIdentity] = []
         self._pinned_last_known: Dict[ProcessIdentity, ProcessSample] = {}
         self.latest_snapshot: Optional[MonitoringSnapshot] = None
@@ -517,12 +519,10 @@ class ProcessWatchApp(App[None]):
             descending=self.sort_descending,
             aggregated=self.aggregated,
         )
-        limit = self._effective_row_limit()
-        visible = sorted_rows[:limit]
-        self._displayed_rows = visible
+        self._displayed_rows = sorted_rows
 
-        self._update_header(snap, matched_count=len(filtered), visible_count=len(visible))
-        self._update_process_table(visible, snap)
+        self._update_header(snap, matched_count=len(filtered), visible_count=len(sorted_rows))
+        self._update_process_table(sorted_rows, snap)
         self._update_tree_view(filtered, snap)
         self._update_pinned_view(snap)
         self._update_history_view(snap)
@@ -566,13 +566,20 @@ class ProcessWatchApp(App[None]):
         )
         self.query_one("#host-header", Static).update(f"{line1}\n{line2}")
 
-    def _update_process_table(self, visible: List[ProcessSample], snap: MonitoringSnapshot) -> None:
+    def _update_process_table(self, all_rows: List[ProcessSample], snap: MonitoringSnapshot) -> None:
         table = self.query_one("#proc-table", DataTable)
+        if self.visible_rows is not None and self.visible_rows > 0:
+            table.styles.height = self.visible_rows + 1
+            table.styles.max_height = self.visible_rows + 1
+        else:
+            table.styles.height = "1fr"
+            table.styles.max_height = None
+
         cols = self._responsive_columns()
         columns_changed = cols != self._current_columns or len(table.columns) == 0
 
         if self.group_mode != "none":
-            self._render_grouped_table(table, visible, snap)
+            self._render_grouped_table(table, all_rows, snap)
             return
 
         if columns_changed:
@@ -596,17 +603,17 @@ class ProcessWatchApp(App[None]):
                         base = f"Tree {base}"
                     table.columns[key].label = f"{base} {arrow}" if key == self.sort_key else base
 
-        desired_keys = [s.identity.key for s in visible]
+        desired_keys = [s.identity.key for s in all_rows]
         existing_keys = list(table.rows.keys())
-        self._row_identities = [s.identity for s in visible]
+        self._row_identities = [s.identity for s in all_rows]
 
         if existing_keys != desired_keys:
             table.clear(columns=False)
-            for sample in visible:
+            for sample in all_rows:
                 row_vals = [format_cell_value(sample, key, aggregated=self.aggregated) for key in cols]
                 table.add_row(*row_vals, key=sample.identity.key)
         else:
-            for sample in visible:
+            for sample in all_rows:
                 for key in cols:
                     table.update_cell(
                         sample.identity.key,
@@ -617,11 +624,12 @@ class ProcessWatchApp(App[None]):
         # Restore selection by stable identity
         if self.selected_identity is not None and self.selected_identity.key in desired_keys:
             idx = desired_keys.index(self.selected_identity.key)
-            table.move_cursor(row=idx)
-        elif visible and (self.selected_identity is None or self.selected_identity.key not in desired_keys):
+            if table.cursor_row != idx:
+                table.move_cursor(row=idx)
+        elif all_rows and (self.selected_identity is None or self.selected_identity.key not in desired_keys):
             # Keep previous selection if it's exited and still in snapshot, else select first visible
             if self.selected_identity is None or self.selected_identity not in snap.by_identity:
-                self.selected_identity = visible[0].identity
+                self.selected_identity = all_rows[0].identity
                 table.move_cursor(row=0)
 
     def _render_grouped_table(self, table: DataTable, visible: List[ProcessSample], snap: MonitoringSnapshot) -> None:
@@ -643,8 +651,18 @@ class ProcessWatchApp(App[None]):
                 key=f"grp:{grp.group_key}",
             )
 
+    def _snapshot_tree_expansion(self, node: Any) -> None:
+        if isinstance(node.data, ProcessIdentity) and node.allow_expand:
+            self._tree_expanded[node.data] = bool(node.is_expanded)
+        for child in getattr(node, "children", ()):
+            self._snapshot_tree_expansion(child)
+
     def _update_tree_view(self, filtered: List[ProcessSample], snap: MonitoringSnapshot) -> None:
         tree = self.query_one("#proc-tree", Tree)
+        self._snapshot_tree_expansion(tree.root)
+        if tree.cursor_node is not None and isinstance(tree.cursor_node.data, ProcessIdentity):
+            self._tree_selected_identity = tree.cursor_node.data
+
         tree.clear()
         by_pid: Dict[int, ProcessSample] = {s.pid: s for s in filtered if not s.is_exited}
         children: Dict[int, List[ProcessSample]] = {}
@@ -658,6 +676,8 @@ class ProcessWatchApp(App[None]):
                 roots.append(s)
 
         roots = sort_processes(roots, sort_key=self.sort_key, descending=self.sort_descending, aggregated=self.aggregated)
+        node_by_identity: Dict[ProcessIdentity, Any] = {}
+        default_expand = len(roots) <= 10
 
         def add_node(parent_node: Any, sample: ProcessSample, seen: Set[int]) -> None:
             if sample.pid in seen:
@@ -669,16 +689,25 @@ class ProcessWatchApp(App[None]):
             label = f"{sample.name} ({sample.pid})  {scope}CPU {format_percent(cpu_v)} | RSS {format_bytes_iec(rss_v)}"
             kids = children.get(sample.pid, [])
             if kids:
-                node = parent_node.add(label, data=sample.identity, expand=len(roots) <= 10)
+                expand = self._tree_expanded.get(sample.identity, default_expand)
+                node = parent_node.add(label, data=sample.identity, expand=expand)
+                node_by_identity[sample.identity] = node
                 for kid in sort_processes(kids, sort_key=self.sort_key, descending=self.sort_descending):
                     add_node(node, kid, seen)
             else:
-                parent_node.add_leaf(label, data=sample.identity)
+                leaf = parent_node.add_leaf(label, data=sample.identity)
+                node_by_identity[sample.identity] = leaf
 
         visited: Set[int] = set()
-        for root in roots[: self._effective_row_limit()]:
+        for root in roots:
             add_node(tree.root, root, visited)
         tree.root.expand()
+
+        target = self._tree_selected_identity or self.selected_identity
+        if target is not None and target in node_by_identity:
+            target_node = node_by_identity[target]
+            tree.select_node(target_node)
+            tree.call_after_refresh(tree.select_node, target_node)
 
     def _update_pinned_view(self, snap: MonitoringSnapshot) -> None:
         summary = self.query_one("#pinned-summary", Static)
@@ -829,8 +858,17 @@ class ProcessWatchApp(App[None]):
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
         if isinstance(event.node.data, ProcessIdentity):
             self.selected_identity = event.node.data
+            self._tree_selected_identity = event.node.data
             if self.latest_snapshot is not None:
                 self._update_quick_details(self.latest_snapshot)
+
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
+        if isinstance(event.node.data, ProcessIdentity):
+            self._tree_expanded[event.node.data] = True
+
+    def on_tree_node_collapsed(self, event: Tree.NodeCollapsed) -> None:
+        if isinstance(event.node.data, ProcessIdentity):
+            self._tree_expanded[event.node.data] = False
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "filter-input":

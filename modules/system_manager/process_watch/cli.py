@@ -209,7 +209,13 @@ def translate_legacy_args(argv: Optional[Sequence[str]] = None) -> argparse.Name
         else:
             globs = [legacy.glob]
 
-    interval_sec = max(legacy.analysis_time, legacy.update_frequency) / 1000.0
+    # Legacy proc_stats.py slept for analysis_time during sampling and update_frequency between frames.
+    # In one-shot mode, analysis_time is the exact sampling window; in live mode, use the larger period.
+    interval_sec = (
+        legacy.analysis_time / 1000.0
+        if legacy.once
+        else max(legacy.analysis_time, legacy.update_frequency) / 1000.0
+    )
     sort_key = LEGACY_SORT_MAP[legacy.sort_ordering]
 
     return argparse.Namespace(

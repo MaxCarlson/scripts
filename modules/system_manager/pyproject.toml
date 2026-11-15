@@ -15,10 +15,12 @@ requires-python = ">=3.8"
 
 dependencies = [
     "cross_platform",
-    "resource-metrics>=0.2.0",
+    "resource-metrics>=0.3.0",
     "psutil",
+    "PyYAML",
     "requests",
     "rich>=13.0.0",
+    "termdash",
 ]
 
 [project.optional-dependencies]

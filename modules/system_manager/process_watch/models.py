@@ -8,12 +8,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 SENSITIVE_FLAG_RE = re.compile(
-    r"(?i)(--?(?:token|password|passwd|pwd|secret|api[-_]?key|auth|bearer|credential|private[-_]?key|access[-_]?key)[=:\s]+)([^\s\"']+)"
+    r"(?i)(--?(?:auth[-_]?token|access[-_]?token|refresh[-_]?token|client[-_]?secret|private[-_]?key|access[-_]?key|api[-_]?key|db[-_]?pass(?:word)?|token|password|passwd|pwd|secret|auth|bearer|credential)(?:=|\s+))(?:\"[^\"]*\"|'[^']*'|[^\s\"']+)"
 )
 SENSITIVE_ENV_RE = re.compile(
-    r"(?i)\b([A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET|API_KEY|AUTH|CREDENTIAL|PRIVATE_KEY)[A-Z0-9_]*)=([^\s]+)"
+    r"(?i)\b([A-Z0-9_]*(?:TOKEN|PASSWORD|PASSWD|SECRET|API_KEY|AUTH|CREDENTIAL|PRIVATE_KEY)[A-Z0-9_]*)=(?:\"[^\"]*\"|'[^']*'|[^\s]+)"
 )
-URL_CRED_RE = re.compile(r"(https?://[^:/\s]+:)([^@/\s]+)(@)")
+URL_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s]+:)([^@/\s]+)(@)")
 BEARER_RE = re.compile(r"(?i)(bearer\s+)([A-Za-z0-9._\-+/=]+)")
 
 SPARK_CHARS = "▁▂▃▄▅▆▇█"
