@@ -25,10 +25,8 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows 11 Win3
 
 
 def _has_interactive_desktop() -> bool:
-    """Return True only when running on an interactive desktop with visible windows (e.g., WinSta0\\Default)."""
+    """Return True only when running on the interactive WinSta0\\Default desktop."""
     user32 = ctypes.WinDLL("user32", use_last_error=True)
-    if not user32.GetForegroundWindow():
-        return False
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     desk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
     buf = ctypes.create_unicode_buffer(256)

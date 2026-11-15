@@ -29,6 +29,7 @@ EVENT_SYSTEM_FOREGROUND = 0x0003
 EVENT_OBJECT_CREATE = 0x8000
 EVENT_OBJECT_DESTROY = 0x8001
 EVENT_OBJECT_SHOW = 0x8002
+EVENT_OBJECT_NAMECHANGE = 0x800C
 OBJID_WINDOW = 0
 CHILDID_SELF = 0
 
@@ -608,6 +609,10 @@ class NeutralizeEngine:
         with self._lock:
             inst = self.active_instances.get(hwnd_int)
 
+        # Fast-path ignore NAMECHANGE for windows we are not actively tracking
+        if event == EVENT_OBJECT_NAMECHANGE and inst is None:
+            return None
+
         # Existing window already in suppress window
         if inst is not None and inst.state == WindowState.SUPPRESSED:
             if arrival_ns < inst.suppress_until_ns:
@@ -635,34 +640,61 @@ class NeutralizeEngine:
             if event == EVENT_SYSTEM_FOREGROUND and visible:
                 self.last_valid_fg = hwnd_int
             title_changed = bool(title and title != inst.current_title)
-            became_vis_now = event == EVENT_OBJECT_SHOW and visible and not inst.became_visible
-            if title_changed or became_vis_now:
-                if title_changed:
-                    inst.current_title = title
-                    inst.title_history.append(title)
-                if visible:
-                    inst.became_visible = True
-                if is_fg:
-                    inst.stole_foreground = True
-                raw = RawWindowEvent(
-                    window_instance_id=inst.window_instance_id,
-                    hwnd=hwnd_int,
-                    owner_pid=inst.owner_pid,
-                    owner_tid=inst.owner_tid,
-                    window_class=inst.window_class,
-                    title=inst.current_title,
-                    win_event=event,
-                    visible=visible,
-                    is_foreground=is_fg,
-                    foreground_hwnd=fg_hwnd,
-                    state=inst.state,
-                    timestamp_utc=now_utc,
-                    monotonic_ns=arrival_ns,
-                    callback_arrival_ns=arrival_ns,
-                )
-                self._emit_event(raw)
-                return raw
-            return None
+            # In smart mode, re-evaluate if an allowed console window's title updates to match automation
+            if title_changed and inst.state == WindowState.ALLOWED and self.config.mode == GuardMode.SMART:
+                inst.current_title = title
+                inst.title_history.append(title)
+                dec_kind, _rule, _reason = self._classify_window(hwnd_int, inst.window_class, title, event)
+                if dec_kind == "suppress":
+                    pass  # Fall through to classification & suppression below
+                else:
+                    raw = RawWindowEvent(
+                        window_instance_id=inst.window_instance_id,
+                        hwnd=hwnd_int,
+                        owner_pid=inst.owner_pid,
+                        owner_tid=inst.owner_tid,
+                        window_class=inst.window_class,
+                        title=inst.current_title,
+                        win_event=event,
+                        visible=visible,
+                        is_foreground=is_fg,
+                        foreground_hwnd=fg_hwnd,
+                        state=inst.state,
+                        timestamp_utc=now_utc,
+                        monotonic_ns=arrival_ns,
+                        callback_arrival_ns=arrival_ns,
+                    )
+                    self._emit_event(raw)
+                    return raw
+            else:
+                became_vis_now = event == EVENT_OBJECT_SHOW and visible and not inst.became_visible
+                if title_changed or became_vis_now:
+                    if title_changed:
+                        inst.current_title = title
+                        inst.title_history.append(title)
+                    if visible:
+                        inst.became_visible = True
+                    if is_fg:
+                        inst.stole_foreground = True
+                    raw = RawWindowEvent(
+                        window_instance_id=inst.window_instance_id,
+                        hwnd=hwnd_int,
+                        owner_pid=inst.owner_pid,
+                        owner_tid=inst.owner_tid,
+                        window_class=inst.window_class,
+                        title=inst.current_title,
+                        win_event=event,
+                        visible=visible,
+                        is_foreground=is_fg,
+                        foreground_hwnd=fg_hwnd,
+                        state=inst.state,
+                        timestamp_utc=now_utc,
+                        monotonic_ns=arrival_ns,
+                        callback_arrival_ns=arrival_ns,
+                    )
+                    self._emit_event(raw)
+                    return raw
+                return None
 
         tid, pid = self.backend.get_window_thread_process_id(hwnd_int)
         if pid == self.own_pid:
@@ -863,11 +895,22 @@ class NeutralizeEngine:
             0,
             flags,
         )
-        if not hook_fg or not hook_obj:
+        hook_name = _user32.SetWinEventHook(
+            EVENT_OBJECT_NAMECHANGE,
+            EVENT_OBJECT_NAMECHANGE,
+            None,
+            self._callback_ref,
+            0,
+            0,
+            flags,
+        )
+        if not hook_fg or not hook_obj or not hook_name:
             if hook_fg:
                 _user32.UnhookWinEvent(hook_fg)
             if hook_obj:
                 _user32.UnhookWinEvent(hook_obj)
+            if hook_name:
+                _user32.UnhookWinEvent(hook_name)
             err = RuntimeError("Failed to register focused SetWinEventHook(s).")
             self._startup_error = err
             self._ready_event.set()
@@ -886,6 +929,7 @@ class NeutralizeEngine:
         finally:
             _user32.UnhookWinEvent(hook_fg)
             _user32.UnhookWinEvent(hook_obj)
+            _user32.UnhookWinEvent(hook_name)
             self.restore_all_modified()
             self._callback_ref = None
 
