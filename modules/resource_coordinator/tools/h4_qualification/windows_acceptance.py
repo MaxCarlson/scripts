@@ -905,6 +905,31 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
                 "error": str(exc),
             }
             reasons.append(f"source_integrity:{exc.code}")
+    elif args.profile in lifecycle_profiles or (args.profile == "task" and args.apply):
+        source_integrity = {
+            "verified": False,
+            "reason_code": "source_manifest_required",
+            "error": "Guest task and lifecycle profiles require a pinned --source-manifest",
+        }
+        reasons.append("source_manifest_required")
+    elif args.profile == "task":
+        try:
+            new_root, _, new_digest, _ = _repository_roots(args.source_root, None)
+            source_integrity = {
+                "verified": True,
+                "mode": "task_source_tree_only",
+                "hash_algorithm": HASH_ALGORITHM,
+                "source_root": str(new_root),
+                "source_tree_sha256": new_digest,
+            }
+        except SourceIntegrityError as exc:
+            source_integrity = {"verified": False, "reason_code": exc.code, "error": str(exc)}
+            reasons.append(f"source_integrity:{exc.code}")
+    else:
+        source_integrity = {
+            "verified": False,
+            "mode": "diagnostic_unpinned",
+        }
     preflight = {
         "schema_version": 1, "observed_at": _now(), "guest_verified": bool(
             is_windows and guest_identity(evidence)

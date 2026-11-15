@@ -87,10 +87,10 @@ $out = Join-Path $module '.pytest_tmp_root\h4-release-bundle'
 python tools\h4_qualification\bundle_builder.py -o $out -a -j
 ```
 
-Inside the authorized disposable guest (after taking a standard Hyper-V checkpoint), extract `h4-windows-acceptance.zip` and run the read-only preflight entry point:
+Inside the authorized disposable guest (after taking a standard Hyper-V checkpoint), verify the external SHA-256 digest BEFORE extracting or executing any bundled script using the standalone `Bootstrap-H4GuestBundle.ps1` (which uses PowerShell `Get-FileHash`):
 
 ```powershell
-pwsh -File .\scripts\Verify-H4GuestBundle.ps1 -BundleRoot .
+pwsh -File .\Bootstrap-H4GuestBundle.ps1 -ArchivePath .\h4-windows-acceptance.zip -ExpectedSha256 <PUBLISHED_SHA256>
 ```
 
-The bundle `manifest.json` sits outside `sources/rc-1.0.0/` and `sources/rc-0.14.0/` (non-self-referential) and is enforced via `--source-manifest` before any test or guest mutation. `resource-metrics==0.2.0` is staged in-bundle under `sources/rc-1.0.0/modules/resource_metrics`.
+The bundle `manifest.json` (`bundle_manifest_version=2`, deterministic `source_date_epoch`) sits outside `sources/rc-1.0.0/` and `sources/rc-0.14.0/`, covers every payload file in `harness/`, `scripts/`, `config/`, `dependencies/`, and `sources/`, and is **required** via `--source-manifest` for all guest `task`, `install`, `upgrade`, `rollback`, and `full` runs (`cleanup` remains usable from `cleanup-manifest.json` even if the bundle is missing). `resource-metrics==0.2.0` is staged in-bundle under `sources/rc-1.0.0/modules/resource_metrics`; third-party packages are `resolved_not_hashed` (`wheelhouse_status: unavailable`).

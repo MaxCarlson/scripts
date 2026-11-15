@@ -1,5 +1,12 @@
 # H4 Windows Qualification — Read-Only Status
 
+## H4.8 release hardening & end-to-end verification (2026-11-15)
+
+- Branch: `agent/rc-h4-release-hardening-20261115` (descended from H4.7 `c1e66897167ae7575eb2fea9f2d3a9089d9fb653` and `origin/main` `0d29b59c722b998dc84ed80caa1c383f04b2cae9`).
+- Hardened `bundle_builder.py` with: `bundle_manifest_version=2` covering every payload file (`harness/`, `scripts/`, `config/`, `dependencies/`, `sources/`, `README.md`), deterministic `source_date_epoch` (byte-identical two-build ZIPs), external `.sha256` + `build-receipt.json`, mandatory external `expected_archive_sha256` verification, strict pre-extraction ZIP bounds/path/mode/collision validation, and `resolved_not_hashed` / `wheelhouse_status=unavailable` transitive dependency lock.
+- Added standalone `Bootstrap-H4GuestBundle.ps1` (`Get-FileHash` verification before extraction) and enforced `--source-manifest` for `task`, `install`, `upgrade`, `rollback`, and `full` in `windows_acceptance.py` (keeping `cleanup` independent via `cleanup-manifest.json`).
+- Disposable Windows guest execution remains `NOT_TESTED` pending an authorized disposable Windows VM.
+
 ## H4.7 release integrity & portable guest bundle (2026-11-15)
 
 - Branch: `agent/rc-h4-release-integrity-20261115` (descended from H4.6 `555cf4804ee4f62d8691b61a663da162a829e808` and `origin/main` `0d29b59c722b998dc84ed80caa1c383f04b2cae9`).

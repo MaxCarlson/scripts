@@ -174,7 +174,8 @@ def test_bundle_builder_dry_run_build_verify_and_corrupt_archive(tmp_path):
     assert bundle_builder.main(["-o", str(out_dir), "-n", "83849e3e5b55d1bb7851dd9daaa6ef53bc02a47b", "-a", "-j"]) == 0
     zip_path = out_dir / bundle_builder.ARCHIVE_FILENAME
     assert zip_path.is_file()
-    verified = bundle_builder.verify_bundle_archive(zip_path)
+    expected_sha = (out_dir / f"{bundle_builder.ARCHIVE_FILENAME}.sha256").read_text(encoding="utf-8").split()[0]
+    verified = bundle_builder.verify_bundle_archive(zip_path, expected_archive_sha256=expected_sha)
     assert verified["verified"] is True
 
     # Non-empty destination refused
@@ -184,7 +185,7 @@ def test_bundle_builder_dry_run_build_verify_and_corrupt_archive(tmp_path):
     corrupt_zip = tmp_path / "corrupt.zip"
     corrupt_zip.write_bytes(b"not-a-zip")
     with pytest.raises(source_integrity.SourceIntegrityError) as exc:
-        bundle_builder.verify_bundle_archive(corrupt_zip)
+        bundle_builder.verify_bundle_archive(corrupt_zip, allow_untrusted_archive=True)
     assert exc.value.code == "bundle_archive_corrupt"
 
     # Tampered source inside archive refused
@@ -196,5 +197,5 @@ def test_bundle_builder_dry_run_build_verify_and_corrupt_archive(tmp_path):
                 data += b"\n# tampered\n"
             dst_zf.writestr(item, data)
     with pytest.raises(source_integrity.SourceIntegrityError) as exc:
-        bundle_builder.verify_bundle_archive(tampered_zip)
-    assert exc.value.code == "source_digest_mismatch"
+        bundle_builder.verify_bundle_archive(tampered_zip, allow_untrusted_archive=True)
+    assert exc.value.code in {"bundle_component_mismatch", "source_digest_mismatch"}
