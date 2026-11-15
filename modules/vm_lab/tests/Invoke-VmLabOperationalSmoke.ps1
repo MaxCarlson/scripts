@@ -47,12 +47,25 @@ if (-not [string]::IsNullOrWhiteSpace($ManifestRoot)) {
     $manifestArgs.ManifestRoot = $ManifestRoot
 }
 
-if ([string]::IsNullOrWhiteSpace($AcceptanceStatePath)) {
-    $AcceptanceStatePath = Join-Path $VmRoot 'acceptance-state.json'
+function Assert-SmokeNoReparsePoint {
+    param([Parameter(Mandatory)][string]$TargetPath)
+    $cur = $TargetPath
+    while (-not [string]::IsNullOrWhiteSpace($cur)) {
+        if (Test-Path -LiteralPath $cur) {
+            $item = Get-Item -LiteralPath $cur -Force -ErrorAction Stop
+            if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                throw "Refusing reparse-point path in operational smoke harness: '$cur'."
+            }
+        }
+        $parent = Split-Path -Parent $cur
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $cur) { break }
+        $cur = $parent
+    }
 }
 
 function Read-SmokeAcceptanceState {
     param([string]$Path)
+    Assert-SmokeNoReparsePoint -TargetPath $Path
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return $null
     }
@@ -65,10 +78,12 @@ function Read-SmokeAcceptanceState {
 
 function Write-SmokeAcceptanceStateAtomic {
     param([string]$Path, [hashtable]$State)
+    Assert-SmokeNoReparsePoint -TargetPath $Path
     $dir = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
+    Assert-SmokeNoReparsePoint -TargetPath $dir
     $tmp = "$Path.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
     try {
         $json = $State | ConvertTo-Json -Depth 10
@@ -178,20 +193,7 @@ function Emit-SmokeResult {
 }
 
 $phases = [ordered]@{}
-$existingState = Read-SmokeAcceptanceState -Path $AcceptanceStatePath
-if ($existingState -and $existingState.phases) {
-    foreach ($p in $existingState.phases.PSObject.Properties) {
-        $phases[$p.Name] = $p.Value
-    }
-}
-
-$pinnedId = if (-not [string]::IsNullOrWhiteSpace($ExpectedVmId)) {
-    $ExpectedVmId
-} elseif ($existingState -and $existingState.vm_id) {
-    [string]$existingState.vm_id
-} else {
-    $null
-}
+$pinnedId = if (-not [string]::IsNullOrWhiteSpace($ExpectedVmId)) { $ExpectedVmId } else { $null }
 
 $saveState = {
     param([string]$VmIdVal, [bool]$WinPending, [string]$LastStatus, [string]$LastReason)
@@ -211,6 +213,44 @@ $saveState = {
 }
 
 try {
+    $vmRootFull = [System.IO.Path]::GetFullPath($VmRoot).TrimEnd('\', '/')
+    if ($vmRootFull -match '^\\\\') {
+        throw "UNC paths are not allowed for -VmRoot: '$VmRoot'."
+    }
+    if ([string]::IsNullOrWhiteSpace($AcceptanceStatePath)) {
+        $AcceptanceStatePath = Join-Path $vmRootFull 'acceptance-state.json'
+    } else {
+        $AcceptanceStatePath = [System.IO.Path]::GetFullPath($AcceptanceStatePath)
+        $prefix = $vmRootFull + [System.IO.Path]::DirectorySeparatorChar
+        if (-not $AcceptanceStatePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "AcceptanceStatePath '$AcceptanceStatePath' must reside within VmRoot '$vmRootFull'."
+        }
+    }
+
+    $existingState = Read-SmokeAcceptanceState -Path $AcceptanceStatePath
+    if ($null -ne $existingState) {
+        if ($existingState.vm_name -and [string]$existingState.vm_name -ne $VmName) {
+            throw "Acceptance state '$AcceptanceStatePath' belongs to VM '$($existingState.vm_name)', not '$VmName'."
+        }
+        if ($existingState.vm_root) {
+            $stateRootNorm = [System.IO.Path]::GetFullPath([string]$existingState.vm_root).TrimEnd('\', '/')
+            if (-not $stateRootNorm.Equals($vmRootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "Acceptance state '$AcceptanceStatePath' belongs to VmRoot '$stateRootNorm', not '$vmRootFull'."
+            }
+        }
+        if ($existingState.vm_id -and -not [string]::IsNullOrWhiteSpace($ExpectedVmId) -and ([string]$existingState.vm_id).ToLowerInvariant() -ne $ExpectedVmId.ToLowerInvariant()) {
+            throw "Acceptance state '$AcceptanceStatePath' VM ID '$($existingState.vm_id)' conflicts with -ExpectedVmId '$ExpectedVmId'."
+        }
+        if ($existingState.phases) {
+            foreach ($p in $existingState.phases.PSObject.Properties) {
+                $phases[$p.Name] = $p.Value
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($pinnedId) -and $existingState.vm_id) {
+            $pinnedId = [string]$existingState.vm_id
+        }
+    }
+
     $preCheck = Assert-VmLabSmokeTargetSafe -TargetName $VmName -Mode 'any' -PinnedVmId $pinnedId
     $cfg = Get-VmLabTemplate -TemplateName $TemplateName
     $cfg.vm_name = $VmName
@@ -251,8 +291,8 @@ try {
 
     $runProvision = ($Phase -eq 'provision') -or ($Phase -eq 'full' -and -not $preCheck.exists)
     if ($runProvision) {
-        if ($PSBoundParameters.ContainsKey('AuthorizeProvision') -and -not $AuthorizeProvision) {
-            Emit-SmokeResult -Status 'blocked' -ReasonCode 'phase_authorization_required' -ExitCode 1 -TargetName $VmName -TargetId $pinnedId -Phases $phases -Detail 'Provision phase blocked because -AuthorizeProvision was false.'
+        if (-not $AuthorizeProvision) {
+            Emit-SmokeResult -Status 'blocked' -ReasonCode 'phase_authorization_required' -ExitCode 1 -TargetName $VmName -TargetId $pinnedId -Phases $phases -Detail 'Provision phase requires explicit -AuthorizeProvision.'
         }
         $null = Assert-VmLabSmokeTargetSafe -TargetName $VmName -Mode 'create'
         $createRes = New-VmLabMachine -Config $cfg -Apply @manifestArgs
@@ -281,8 +321,8 @@ try {
 
     $runGuest = ($Phase -eq 'guest') -or ($Phase -eq 'full' -and $preCheck.exists)
     if ($runGuest) {
-        if ($PSBoundParameters.ContainsKey('AuthorizeGuest') -and -not $AuthorizeGuest) {
-            Emit-SmokeResult -Status 'blocked' -ReasonCode 'phase_authorization_required' -ExitCode 1 -TargetName $VmName -TargetId $pinnedId -Phases $phases -Detail 'Guest phase blocked because -AuthorizeGuest was false.'
+        if (-not $AuthorizeGuest) {
+            Emit-SmokeResult -Status 'blocked' -ReasonCode 'phase_authorization_required' -ExitCode 1 -TargetName $VmName -TargetId $pinnedId -Phases $phases -Detail 'Guest phase requires explicit -AuthorizeGuest.'
         }
         $target = Assert-VmLabSmokeTargetSafe -TargetName $VmName -Mode 'resume' -PinnedVmId $pinnedId
         $pinnedId = $target.vm_id
@@ -341,6 +381,11 @@ try {
 
         $null = Assert-VmLabSmokeTargetSafe -TargetName $VmName -Mode 'resume' -PinnedVmId $pinnedId
         $cpRes = New-VmLabBaselineCheckpoint -Name $VmName -CheckpointName 'acceptance-baseline' -RequireGuestVerified -GuestProfile $GuestProfile -Credential $Credential -Apply @manifestArgs
+        if ($cpRes.status -ne 'baseline_created' -or -not $cpRes.baseline_qualified) {
+            $phases.guest = [ordered]@{ status = 'failed'; reason_code = 'baseline_checkpoint_failed'; checkpoint = $cpRes }
+            & $saveState $pinnedId $false 'acceptance_failed' 'baseline_checkpoint_failed'
+            Emit-SmokeResult -Status 'acceptance_failed' -ReasonCode 'baseline_checkpoint_failed' -ExitCode 1 -TargetName $VmName -TargetId $pinnedId -Phases $phases -Detail "Qualified baseline checkpoint was not created (status=$($cpRes.status), baseline_qualified=$($cpRes.baseline_qualified))."
+        }
 
         $phases.guest = [ordered]@{
             status       = 'guest_ready'
@@ -359,8 +404,8 @@ try {
     }
 
     if ($Phase -eq 'finalize' -or $Phase -eq 'full') {
-        if ($PSBoundParameters.ContainsKey('AuthorizeFinalize') -and -not $AuthorizeFinalize) {
-            Emit-SmokeResult -Status 'blocked' -ReasonCode 'phase_authorization_required' -ExitCode 1 -TargetName $VmName -TargetId $pinnedId -Phases $phases -Detail 'Finalize phase blocked because -AuthorizeFinalize was false.'
+        if (-not $AuthorizeFinalize) {
+            Emit-SmokeResult -Status 'blocked' -ReasonCode 'phase_authorization_required' -ExitCode 1 -TargetName $VmName -TargetId $pinnedId -Phases $phases -Detail 'Finalize phase requires explicit -AuthorizeFinalize.'
         }
         $target = Assert-VmLabSmokeTargetSafe -TargetName $VmName -Mode 'resume' -PinnedVmId $pinnedId
         $pinnedId = $target.vm_id

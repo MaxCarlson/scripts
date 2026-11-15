@@ -3,7 +3,7 @@
 - **Date**: 2026-11-15
 - **Feature Branch (preserved)**: `agent/vm-lab-hardening-20261115` (`6ea4058192fa7ff1a1f51f7b541225147fe19c90`)
 - **Integration Review Branch**: `integration/vm-lab-review-20261115`
-- **Mainline Baseline**: `origin/main` (`df57dd69`, 0 commits behind `origin/main`)
+- **Mainline Baseline**: `origin/main` (`42f6f549`, 0 commits behind `origin/main`)
 - **Protected Concurrent VM**: `RC-H4-Windows-Acceptance` (`d8483f98-8884-4758-abd1-cd6107c83c03`) — untouched.
 
 ## 1. Defects Fixed in This Pass
@@ -18,6 +18,9 @@
    - Added `Test-VmLabPythonDependencies` (preserves `expected_specs`, evaluates version constraints and environment markers via `packaging.requirements.Requirement` / `pip._vendor.packaging.requirements.Requirement`, runs `python -m pip check` for dependency graph compatibility, and fails on missing `pip` or malformed JSON).
 4. **Whitespace & Provenance Hygiene (`modules/script_logging/tests/test_launcher.py`)**:
    - Removed trailing blank line flagged by `git diff --check`.
+5. **Strict Per-Phase Authorization & State/Path Safety (`modules/vm_lab/tests/Invoke-VmLabOperationalSmoke.ps1`)**:
+   - Removed `$PSBoundParameters.ContainsKey(...)` bypass so `-AuthorizeProvision`, `-AuthorizeGuest`, and `-AuthorizeFinalize` are strictly required (`if (-not $Authorize...)`) for each mutating phase; `-AuthorizeDisposableTest` alone no longer authorizes any mutating phase.
+   - Added `Assert-SmokeNoReparsePoint` on `acceptance-state.json` reads/writes, rejected UNC `-VmRoot`, required `-AcceptanceStatePath` inside normalized `-VmRoot`, bound `Read-SmokeAcceptanceState` to `vm_name`/`vm_root`/`-ExpectedVmId`, moved state/path validation inside `try/catch` for structured JSON exit codes, and explicitly asserted `baseline_qualified` after `New-VmLabBaselineCheckpoint`.
 
 ## 2. Source & Integration Review Against `origin/main`
 
@@ -33,8 +36,8 @@
 | Check | Command / Scope | Result | Exit Code | Coverage Type |
 | --- | --- | --- | --- | --- |
 | PowerShell AST & Import | `Parser::ParseFile` on all `modules/vm_lab/**/*.ps*1` + `Import-Module vm_lab.psd1` | `AST_AND_IMPORT_OK` | `0` | Real |
-| Full `vm_lab` Pester Suite | `Invoke-Pester -Script @('vm_lab.Tests.ps1', 'Invoke-VmLabOperationalSmoke.Tests.ps1') -PassThru` | **34 Passed, 0 Failed, 0 Skipped** (42.63s) | `0` | Real Bootstrap/Config/Manifest/Smoke logic + Mocked Hyper-V/PS-Direct boundaries |
-| Python Toolkit Suite | `modules/script_logging/tests` + `modules/scripts_help/tests` via `run_pytest.py` | **147 Passed, 0 Failed** (60.92s) | `0` | Real |
+| Full `vm_lab` Pester Suite | `Invoke-Pester -Script @('vm_lab.Tests.ps1', 'Invoke-VmLabOperationalSmoke.Tests.ps1') -PassThru` | **36 Passed, 0 Failed, 0 Skipped** (68.86s) | `0` | Real Bootstrap/Config/Manifest/Smoke logic + Mocked Hyper-V/PS-Direct boundaries |
+| Python Toolkit Suite | `modules/script_logging/tests` + `modules/scripts_help/tests` via `run_pytest.py` | **147 Passed, 0 Failed** (51.23s) | `0` | Real |
 | Isolated CLI Templates | `pwsh -NoProfile -File Invoke-VmLab.ps1 -o templates -j` | Valid JSON for 4 templates | `0` | Real |
 | Launcher & Help Discovery | `REGISTRY` lookup + `scan_repository_programs` + `write_wrapper` | `vm-lab` discovered & `.cmd` wrapper written | `0` | Real (isolated temp dir) |
 | Real Hyper-V Lifecycle | Live VM creation/boot/PS-Direct on host | **NOT_TESTED** (unprivileged session; no Hyper-V Admin rights) | N/A | Blocked by host privileges |
@@ -49,16 +52,16 @@ Run from an **elevated Administrator / Hyper-V Administrators** PowerShell 7 ses
    ```
 2. **Provision disposable VM** (creates VM + starts + opens VMConnect; stops at `awaiting_windows_installation`):
    ```powershell
-   .\modules\vm_lab\tests\Invoke-VmLabOperationalSmoke.ps1 -VmName "VM-Lab-Accept-01" -VmRoot "C:\VMs\VM-Lab-Accept-01" -TemplateName windows11-light -IsoPath "C:\ISOs\Win11.iso" -Phase provision -AuthorizeDisposableTest -Start -Connect
+   .\modules\vm_lab\tests\Invoke-VmLabOperationalSmoke.ps1 -VmName "VM-Lab-Accept-01" -VmRoot "C:\VMs\VM-Lab-Accept-01" -TemplateName windows11-light -IsoPath "C:\ISOs\Win11.iso" -Phase provision -AuthorizeDisposableTest -AuthorizeProvision -Start -Connect
    ```
 3. **Complete Windows installation & OOBE** in VMConnect and create the local guest account.
-4. **Resume guest acceptance** (PowerShell Direct, bootstrap, verify, round-trip file transfer, qualified baseline checkpoint):
+4. **Resume guest acceptance** (PowerShell Direct, bootstrap, verify, round-trip file transfer, qualified baseline checkpoint; use `-GuestProfile windows-minimal` for initial smoke unless explicit Python dependency inputs are provided):
    ```powershell
    $cred = Get-Credential
-   .\modules\vm_lab\tests\Invoke-VmLabOperationalSmoke.ps1 -VmName "VM-Lab-Accept-01" -VmRoot "C:\VMs\VM-Lab-Accept-01" -Phase guest -GuestProfile python-dev -Credential $cred -AuthorizeDisposableTest
+   .\modules\vm_lab\tests\Invoke-VmLabOperationalSmoke.ps1 -VmName "VM-Lab-Accept-01" -VmRoot "C:\VMs\VM-Lab-Accept-01" -Phase guest -GuestProfile windows-minimal -Credential $cred -AuthorizeDisposableTest -AuthorizeGuest
    ```
-5. **Finalize & optional graceful shutdown**:
+5. **Finalize & optional graceful shutdown** (omit `-AuthorizeShutdown` to skip shutdown):
    ```powershell
-   .\modules\vm_lab\tests\Invoke-VmLabOperationalSmoke.ps1 -VmName "VM-Lab-Accept-01" -VmRoot "C:\VMs\VM-Lab-Accept-01" -Phase finalize -AuthorizeDisposableTest -AuthorizeShutdown
+   .\modules\vm_lab\tests\Invoke-VmLabOperationalSmoke.ps1 -VmName "VM-Lab-Accept-01" -VmRoot "C:\VMs\VM-Lab-Accept-01" -Phase finalize -AuthorizeDisposableTest -AuthorizeFinalize -AuthorizeShutdown
    ```
    Inspect `C:\VMs\VM-Lab-Accept-01\acceptance-state.json` for durable per-phase evidence.
