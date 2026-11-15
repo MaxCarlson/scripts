@@ -1,5 +1,14 @@
 # H4 Windows Qualification — Read-Only Status
 
+## H4.9 final compatibility & mainline reconciliation (2026-11-15)
+
+- Source implementation branch: `agent/rc-h4-final-compatibility-20261115` (`591d41b4921f2809a5bd3e4dc47567986c3107a4`), descended from H4.8 `5faaf5bcc737fc6cc7b1a195a088d55d590e21c4`.
+- Integration review branch: `integration/rc-h4-9-windows-review-20261115`, reconciling H4.9 cleanly with `origin/main` (`160c632659e8ee912a60d3cf33feec63cae7038d`, 11 `modules/agent_benchmark/` commits since `0d29b59c722b998dc84ed80caa1c383f04b2cae9`, zero RC path overlap).
+- **Stage A (Python contract)**: Preserved `requires-python = ">=3.10"` on production `resource-coordinator` (`pyproject.toml`) while explicitly enforcing **Python `>=3.12`** (validated `3.12.10`) for H4 release-building & guest-acceptance tooling (`python_compat.py`, `source_integrity.py`, `bundle_builder.py`, `windows_acceptance.py`, `Bootstrap-H4GuestBundle.ps1`, `Verify-H4GuestBundle.ps1`) before `tomllib` / `tarfile(filter="data")` or archive extraction/mutation. Native Python 3.10 execution was not performed (not installed on primary host); subprocess shim + `sys.version_info` rejection tests passed.
+- **Stage B (Trusted bootstrap)**: Hardened `Bootstrap-H4GuestBundle.ps1` (external SHA-256 + Python 3.12+ + reparse/destination checks before `New-Item`/`Expand-Archive`, cleanup on extraction failure, `[Console]::Error.WriteLine` + clean exit code propagation, explicit `Expand-Archive` external-hash trust assumption) and `Verify-H4GuestBundle.ps1` (runs `source_integrity.py -b` component check + asserts `verified: true` JSON before read-only `preflight`).
+- **Stage D (Dependency provenance)**: Preserved honest `dependency_status: resolved_not_hashed` and `wheelhouse_status: unavailable` classifications alongside `resource-metrics==0.2.0` in-repo staging and documented guest prerequisite check in `WINDOWS_ACCEPTANCE.md`.
+- Disposable Windows guest execution (`task`, `install`, `upgrade`, `rollback`, `full`, `cleanup`) remains `NOT_TESTED` pending an authorized disposable Windows VM. Keep `gpu_process_attribution_confirmed=false`, H5 `NOT READY`, and unattended recovery `BLOCKED`.
+
 ## H4.8 release hardening & end-to-end verification (2026-11-15)
 
 - Branch: `agent/rc-h4-release-hardening-20261115` (descended from H4.7 `c1e66897167ae7575eb2fea9f2d3a9089d9fb653` and `origin/main` `0d29b59c722b998dc84ed80caa1c383f04b2cae9`).
