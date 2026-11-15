@@ -16,7 +16,7 @@ requires-python = ">=3.10"
 dependencies = [
     "psutil",         # For process and system information
     "pyperclip",      # For clipboard support where applicable
-    "rich>=13.0.0",   # For console output in debug_utils
+    "rich>=13.0.0,<15",   # Keep compatibility with Resource Coordinator's current rich API
 ]
 
 # Optional dependency for Git integration in debug utilities (if needed)
