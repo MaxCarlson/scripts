@@ -248,3 +248,16 @@ def test_build_bundle_allows_cross_drive_output_and_rejects_live_package_contain
             apply=False,
         )
     assert exc_info.value.code == "bundle_output_unsafe"
+
+
+def test_cleanup_allowlist_accepts_lifecycle_runs_and_junit_xml(tmp_path):
+    run_root = tmp_path / "h4-rc-cleanup-allowlist"
+    run_root.mkdir()
+    (run_root / ".h4-test-root.json").write_text("{}", encoding="utf-8")
+    (run_root / "runs").mkdir()
+    (run_root / "junit.xml").write_text("<testsuite/>", encoding="utf-8")
+
+    reasons = windows_acceptance.task_path_reasons(run_root)
+    assert not any("unrecognized" in r or "not_empty" in r for r in reasons), reasons
+    rc = windows_acceptance.main(["--test-root", str(run_root), "--profile", "cleanup", "--json"])
+    assert rc == 3

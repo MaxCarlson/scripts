@@ -267,16 +267,16 @@ def task_path_reasons(test_root: Path) -> list:
     protected_roots = [Path.home() / ".resource_coordinator", Path(os.environ.get("ProgramData", "C:/ProgramData"))]
     if any(test_root == candidate.resolve() or candidate.resolve() in test_root.parents for candidate in protected_roots):
         reasons.append("test_root_overlaps_protected_installation_path")
-    allowed_names = {
+    ALLOWED_TOP_LEVEL_ARTIFACTS = frozenset({
         ".h4-test-root.json", "environment.json", "preflight.json", "test-results.json",
         "process-identity.json", "rollback-result.json", "cleanup-result.json", "cleanup-manifest.json",
         "pytest-output.log", "upgrade-receipts", "task-snapshots",
-        "runs",
-    }
+        "runs", "junit.xml",
+    })
     children = list(test_root.iterdir())
     if not (test_root / ".h4-test-root.json").exists() and children:
         reasons.append("unmarked_test_root_not_empty")
-    if any(child.name not in allowed_names and not child.name.startswith(("pytest-temp-", "junit-"))
+    if any(child.name not in ALLOWED_TOP_LEVEL_ARTIFACTS and not child.name.startswith(("pytest-temp-", "junit-"))
            for child in children):
         reasons.append("test_root_contains_unrecognized_artifacts")
     if any(_is_reparse_point(child) for child in children):
@@ -889,8 +889,8 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
     if any(item.name not in {
         ".h4-test-root.json", "environment.json", "preflight.json", "test-results.json",
         "process-identity.json", "rollback-result.json", "cleanup-result.json", "cleanup-manifest.json",
-        "pytest-output.log", "upgrade-receipts",
-        "task-snapshots",
+        "pytest-output.log", "upgrade-receipts", "task-snapshots",
+        "runs", "junit.xml",
     } and not item.name.startswith(("pytest-temp-", "junit-")) for item in test_root.iterdir()):
         print("test root contains unrecognized artifacts; refusing to write or run", file=sys.stderr)
         return 2
