@@ -342,4 +342,3 @@ def test_launcher_generator_discovers_vm_lab() -> None:
     assert entry.program_id == "module:vm_lab"
     assert entry.target == "modules/vm_lab/Invoke-VmLab.ps1"
 
-

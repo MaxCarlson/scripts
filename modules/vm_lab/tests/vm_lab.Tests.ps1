@@ -922,6 +922,10 @@ Describe 'vm_lab module' {
                 try { $null = Resolve-VmLabGuestPythonInterpreter -PythonPath $winAppsPy } catch { $errAlias = $_.Exception.Message }
                 $errAlias | Should Match 'WindowsApps'
 
+                $Global:vmLabPipCheckExit = 0
+                $Global:vmLabPipCheckOut = 'No broken requirements found.'
+                $Global:vmLabPipListExit = 0
+                $Global:vmLabPipInstallExit = 0
                 $runner = {
                     param([string]$Exe, [string[]]$ExeArgs)
                     if ($Exe -eq $py311Exe) {
@@ -929,7 +933,14 @@ Describe 'vm_lab module' {
                     }
                     if ($Exe -eq $py312Exe -or $Exe -like '*\Scripts\python.exe') {
                         if ($ExeArgs -contains '-c') {
-                            return [pscustomobject]@{ exit_code = 0; output = '3.12.4|64' }
+                            if ($ExeArgs.Count -ge 2 -and $ExeArgs[1] -match 'sys\.version_info') {
+                                return [pscustomobject]@{ exit_code = 0; output = '3.12.4|64' }
+                            }
+                            $realOut = & python @ExeArgs 2>&1
+                            return [pscustomobject]@{
+                                exit_code = $LASTEXITCODE
+                                output    = (($realOut | ForEach-Object { [string]$_ }) -join "`n").Trim()
+                            }
                         }
                         if ($ExeArgs -contains 'venv') {
                             $targetVenv = $ExeArgs[-1]
@@ -940,10 +951,13 @@ Describe 'vm_lab module' {
                         }
                         if ($ExeArgs -contains 'install') {
                             $Global:vmLabPipCalls.Add(($ExeArgs -join ' '))
-                            return [pscustomobject]@{ exit_code = 0; output = 'Successfully installed' }
+                            return [pscustomobject]@{ exit_code = $Global:vmLabPipInstallExit; output = if ($Global:vmLabPipInstallExit -eq 0) { 'Successfully installed' } else { 'pip install error' } }
                         }
                         if ($ExeArgs -contains 'list') {
-                            return [pscustomobject]@{ exit_code = 0; output = $Global:vmLabPipListJson }
+                            return [pscustomobject]@{ exit_code = $Global:vmLabPipListExit; output = $Global:vmLabPipListJson }
+                        }
+                        if ($ExeArgs -contains 'check') {
+                            return [pscustomobject]@{ exit_code = $Global:vmLabPipCheckExit; output = $Global:vmLabPipCheckOut }
                         }
                     }
                     if ($Exe -like '*pwsh.exe') {
@@ -1104,6 +1118,117 @@ Describe 'gv' {
             $jsonStart = $out.IndexOf('{')
             ($jsonStart -ge 0) | Should Be $true
             ($out.Substring($jsonStart) | ConvertFrom-Json).status | Should Be 'incomplete'
+        }
+
+        It 'verifies Python version constraints, pip check, requirements syntax, and markers' {
+            InModuleScope vm_lab {
+                $root = $Global:vmLabStageTemp
+                $stateRoot = Join-Path $root 'state'
+                $pyDir = Join-Path $root 'Python312'
+                $venvDir = Join-Path $root 'venv'
+                $scriptsDir = Join-Path $venvDir 'Scripts'
+                $wheelDir = Join-Path $root 'wheels'
+                foreach ($d in @($pyDir, $scriptsDir, $wheelDir)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+                $pyExe = Join-Path $pyDir 'python.exe'
+                $venvPy = Join-Path $scriptsDir 'python.exe'
+                [System.IO.File]::WriteAllText($pyExe, 'stub')
+                [System.IO.File]::WriteAllText($venvPy, 'stub')
+
+                $Global:vmLabPipListExit = 0
+                $Global:vmLabPipCheckExit = 0
+                $Global:vmLabPipCheckOut = 'No broken requirements found.'
+                $Global:vmLabPipInstallExit = 0
+                $Global:vmLabPipListJson = '[]'
+
+                $runner = {
+                    param([string]$Exe, [string[]]$ExeArgs)
+                    if ($ExeArgs -contains '-c') {
+                        if ($ExeArgs.Count -ge 2 -and $ExeArgs[1] -match 'sys\.version_info') {
+                            return [pscustomobject]@{ exit_code = 0; output = '3.12.4|64' }
+                        }
+                        $realOut = & python @ExeArgs 2>&1
+                        return [pscustomobject]@{ exit_code = $LASTEXITCODE; output = (($realOut | ForEach-Object { [string]$_ }) -join "`n").Trim() }
+                    }
+                    if ($ExeArgs -contains 'install') {
+                        return [pscustomobject]@{ exit_code = $Global:vmLabPipInstallExit; output = 'install-out' }
+                    }
+                    if ($ExeArgs -contains 'list') {
+                        return [pscustomobject]@{ exit_code = $Global:vmLabPipListExit; output = $Global:vmLabPipListJson }
+                    }
+                    if ($ExeArgs -contains 'check') {
+                        return [pscustomobject]@{ exit_code = $Global:vmLabPipCheckExit; output = $Global:vmLabPipCheckOut }
+                    }
+                    return [pscustomobject]@{ exit_code = 1; output = 'unexpected' }
+                }
+
+                # 1. Requested examplepkg==2.0, installed 1.0 -> failure
+                $Global:vmLabPipListJson = '[{"name":"examplepkg","version":"1.0.0"}]'
+                $errMismatch = $null
+                try {
+                    $null = Invoke-VmLabGuestBootstrapLocal -Profile 'python-dev' -PythonPath $pyExe -VenvPath $venvDir -WheelhousePath $wheelDir -Packages @('examplepkg==2.0') -StateRoot $stateRoot -CommandRunner $runner
+                } catch { $errMismatch = $_.Exception.Message }
+                $errMismatch | Should Match 'Version constraint failed'
+
+                # 2. Requested examplepkg>=2.0, installed 2.1 -> success
+                $Global:vmLabPipListJson = '[{"name":"examplepkg","version":"2.1.0"}]'
+                $rOk = Invoke-VmLabGuestBootstrapLocal -Profile 'python-dev' -PythonPath $pyExe -VenvPath $venvDir -WheelhousePath $wheelDir -Packages @('examplepkg>=2.0') -StateRoot $stateRoot -CommandRunner $runner
+                $rOk.completed | Should Be $true
+                (Test-VmLabGuestVerifyLocal -Profile 'python-dev' -VenvPath $venvDir -StateRoot $stateRoot -CommandRunner $runner).status | Should Be 'verified'
+
+                # 3. Rerun completed profile remains safe
+                $rRerun = Invoke-VmLabGuestBootstrapLocal -Profile 'python-dev' -PythonPath $pyExe -VenvPath $venvDir -WheelhousePath $wheelDir -Packages @('examplepkg>=2.0') -StateRoot $stateRoot -CommandRunner $runner
+                $rRerun.completed | Should Be $true
+
+                # 4. Requested dependency absent -> failure
+                $Global:vmLabPipListJson = '[]'
+                (Test-VmLabGuestVerifyLocal -Profile 'python-dev' -VenvPath $venvDir -StateRoot $stateRoot -CommandRunner $runner).status | Should Be 'failed'
+
+                # 5. pip check incompatible -> failure
+                $Global:vmLabPipListJson = '[{"name":"examplepkg","version":"2.1.0"}]'
+                $Global:vmLabPipCheckExit = 1
+                $Global:vmLabPipCheckOut = 'examplepkg 2.1.0 requires dep>=3.0, which is not installed.'
+                $vBadGraph = Test-VmLabGuestVerifyLocal -Profile 'python-dev' -VenvPath $venvDir -StateRoot $stateRoot -CommandRunner $runner
+                $vBadGraph.status | Should Be 'failed'
+                ($vBadGraph.failures -join ' ') | Should Match 'pip check'
+                $Global:vmLabPipCheckExit = 0
+
+                # 6. Nested requirements (-r) + environment markers
+                $baseReq = Join-Path $root 'base.txt'
+                $mainReq = Join-Path $root 'main.txt'
+                [System.IO.File]::WriteAllText($baseReq, "examplepkg>=2.0`n")
+                [System.IO.File]::WriteAllText($mainReq, "-r base.txt`nwinonly>=1.0; sys_platform == 'win32'`nmaconly>=1.0; sys_platform == 'darwin'`n")
+                $Global:vmLabPipListJson = '[{"name":"examplepkg","version":"2.1.0"},{"name":"winonly","version":"1.5.0"}]'
+                $rNested = Invoke-VmLabGuestBootstrapLocal -Profile 'python-dev' -PythonPath $pyExe -VenvPath $venvDir -WheelhousePath $wheelDir -RequirementsPath $mainReq -StateRoot $stateRoot -CommandRunner $runner
+                $rNested.completed | Should Be $true
+                ($rNested.details.skipped_by_marker -join ' ') | Should Match 'maconly'
+
+                # 7. Constraints (-c), editable (-e), direct URL rejected explicitly
+                foreach ($badLine in @('-c constraints.txt', '-e .', 'pkg @ https://example.com/pkg.whl')) {
+                    $badReq = Join-Path $root 'bad.txt'
+                    [System.IO.File]::WriteAllText($badReq, "$badLine`n")
+                    $errSyn = $null
+                    try { $null = Get-VmLabRequirementSpecs -RequirementsPath $badReq } catch { $errSyn = $_.Exception.Message }
+                    $errSyn | Should Match 'Unsupported requirements'
+                }
+
+                # 8. Malformed pip list JSON or missing pip -> failure
+                $Global:vmLabPipListJson = '{broken-json'
+                (Test-VmLabGuestVerifyLocal -Profile 'python-dev' -VenvPath $venvDir -StateRoot $stateRoot -CommandRunner $runner).status | Should Be 'failed'
+                $Global:vmLabPipListExit = 1
+                (Test-VmLabGuestVerifyLocal -Profile 'python-dev' -VenvPath $venvDir -StateRoot $stateRoot -CommandRunner $runner).status | Should Be 'failed'
+                $Global:vmLabPipListExit = 0
+
+                # 9. Failed pip install -> no successful completion marker
+                $Global:vmLabPipInstallExit = 1
+                $errFailInst = $null
+                try {
+                    $null = Invoke-VmLabGuestBootstrapLocal -Profile 'python-dev' -PythonPath $pyExe -VenvPath $venvDir -WheelhousePath $wheelDir -Packages @('examplepkg>=2.0') -StateRoot $stateRoot -CommandRunner $runner
+                } catch { $errFailInst = $_.Exception.Message }
+                $errFailInst | Should Match 'pip install failed'
+                $storeAfter = Read-VmLabGuestBootstrapStore -StateRoot $stateRoot
+                $storeAfter.profiles['python-dev'].completed | Should Be $false
+                $storeAfter.profiles['python-dev'].status | Should Be 'failed'
+            }
         }
     }
 }

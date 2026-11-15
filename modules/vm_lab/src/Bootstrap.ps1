@@ -5,23 +5,223 @@ function ConvertTo-VmLabNormalizedPackageName {
     return ([regex]::Replace($Name.Trim().ToLowerInvariant(), '[-_.]+', '-'))
 }
 
-function Get-VmLabRequirementsPackageNames {
-    param([Parameter(Mandatory)][string]$RequirementsPath)
-    if (-not (Test-Path -LiteralPath $RequirementsPath -PathType Leaf)) {
+function Get-VmLabRequirementSpecs {
+    <#
+    .SYNOPSIS
+        Parses a pip requirements file according to the documented vm_lab support contract.
+    .DESCRIPTION
+        Supports PEP 508 requirement lines (name, extras, version specifiers, environment markers),
+        comments, line continuations, and recursive -r/--requirement includes (with cycle detection).
+        Explicitly rejects unsupported directives (-c/--constraint, -e/--editable, --hash,
+        direct URL/VCS references, and other pip option flags).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$RequirementsPath,
+        [System.Collections.Generic.HashSet[string]]$VisitedPaths
+    )
+    $resolved = [System.IO.Path]::GetFullPath($RequirementsPath)
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
         throw "Requirements file not found: '$RequirementsPath'."
     }
-    $names = [System.Collections.Generic.List[string]]::new()
-    foreach ($rawLine in (Get-Content -LiteralPath $RequirementsPath -Encoding utf8)) {
-        $line = ($rawLine -replace '\s+#.*$', '').Trim()
-        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#') -or $line.StartsWith('-')) {
+    if ($null -eq $VisitedPaths) {
+        $VisitedPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    }
+    if (-not $VisitedPaths.Add($resolved)) {
+        throw "Circular requirements include detected: '$resolved'."
+    }
+
+    $rawLines = Get-Content -LiteralPath $resolved -Encoding utf8
+    $logicalLines = [System.Collections.Generic.List[string]]::new()
+    $buffer = ''
+    foreach ($rawLine in $rawLines) {
+        $trimmedEnd = $rawLine.TrimEnd()
+        if ($trimmedEnd.EndsWith('\')) {
+            $buffer += $trimmedEnd.Substring(0, $trimmedEnd.Length - 1) + ' '
+        } else {
+            $logicalLines.Add(($buffer + $rawLine))
+            $buffer = ''
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($buffer)) {
+        $logicalLines.Add($buffer)
+    }
+
+    $parentDir = Split-Path -Parent $resolved
+    $specs = [System.Collections.Generic.List[string]]::new()
+    foreach ($raw in $logicalLines) {
+        $line = ($raw -replace '(^|\s+)#.*$', '').Trim()
+        if ([string]::IsNullOrWhiteSpace($line)) {
             continue
         }
-        $pkgToken = ($line -split '[\s;\[=<>!~]', 2)[0].Trim()
+        if ($line -match '^(?:-r|--requirement)(?:=|\s+)(.+)$') {
+            $nestedRel = $Matches[1].Trim().Trim('"', "'")
+            $nestedPath = if ([System.IO.Path]::IsPathRooted($nestedRel)) { $nestedRel } else { Join-Path $parentDir $nestedRel }
+            foreach ($nestedSpec in (Get-VmLabRequirementSpecs -RequirementsPath $nestedPath -VisitedPaths $VisitedPaths)) {
+                $specs.Add($nestedSpec)
+            }
+            continue
+        }
+        if ($line -match '^(?:-c|--constraint)(?:=|\s+|$)') {
+            throw "Unsupported requirements syntax in '$resolved': constraints (-c/--constraint) are not supported ('$line')."
+        }
+        if ($line -match '^(?:-e|--editable)(?:=|\s+|$)') {
+            throw "Unsupported requirements syntax in '$resolved': editable installs (-e/--editable) are not supported ('$line')."
+        }
+        if ($line -match '(?:^|\s)--hash=') {
+            throw "Unsupported requirements syntax in '$resolved': --hash options are not supported ('$line')."
+        }
+        if ($line.StartsWith('-')) {
+            throw "Unsupported requirements option in '$resolved': '$line'."
+        }
+        if ($line -match '(?i)(?:\s+@\s+|^(?:git|hg|svn|bzr)\+|^(?:https?|file)://|\.(?:whl|tar\.gz|zip)(?:$|\s|#))') {
+            throw "Unsupported requirements syntax in '$resolved': direct URL/VCS/archive references are not supported ('$line')."
+        }
+        $specs.Add($line)
+    }
+    return @($specs)
+}
+
+function Get-VmLabRequirementsPackageNames {
+    param([Parameter(Mandatory)][string]$RequirementsPath)
+    $specs = Get-VmLabRequirementSpecs -RequirementsPath $RequirementsPath
+    $names = [System.Collections.Generic.List[string]]::new()
+    foreach ($spec in $specs) {
+        $pkgToken = ($spec -split '[\s;\[=<>!~]', 2)[0].Trim()
         if (-not [string]::IsNullOrWhiteSpace($pkgToken)) {
             $names.Add((ConvertTo-VmLabNormalizedPackageName -Name $pkgToken))
         }
     }
     return @($names | Select-Object -Unique)
+}
+
+function Test-VmLabPythonDependencies {
+    param(
+        [Parameter(Mandatory)][string]$VenvPython,
+        [string[]]$ExpectedSpecs,
+        [Parameter(Mandatory)][scriptblock]$CommandRunner
+    )
+    $failures = [System.Collections.Generic.List[string]]::new()
+    $listRes = & $CommandRunner $VenvPython @('-m', 'pip', 'list', '--format=json')
+    if ($listRes.exit_code -ne 0) {
+        $failures.Add("pip list failed with exit code $($listRes.exit_code): $($listRes.output)")
+        return [pscustomobject]@{
+            ok                 = $false
+            failures           = @($failures)
+            installed_packages = @()
+            verified_specs     = @()
+            skipped_by_marker  = @()
+        }
+    }
+
+    $installedMap = @{}
+    $installedNames = [System.Collections.Generic.List[string]]::new()
+    try {
+        $parsedList = @($listRes.output | ConvertFrom-Json -ErrorAction Stop)
+        foreach ($item in $parsedList) {
+            if (-not $item.PSObject.Properties['name'] -or -not $item.PSObject.Properties['version']) {
+                throw 'pip list JSON entry missing name or version.'
+            }
+            $norm = ConvertTo-VmLabNormalizedPackageName -Name ([string]$item.name)
+            $installedMap[$norm] = [string]$item.version
+            $installedNames.Add($norm)
+        }
+    } catch {
+        $failures.Add("Failed to parse pip list JSON output: $($_.Exception.Message)")
+        return [pscustomobject]@{
+            ok                 = $false
+            failures           = @($failures)
+            installed_packages = @()
+            verified_specs     = @()
+            skipped_by_marker  = @()
+        }
+    }
+
+    $checkRes = & $CommandRunner $VenvPython @('-m', 'pip', 'check')
+    if ($checkRes.exit_code -ne 0) {
+        $failures.Add("Dependency compatibility check (pip check) failed: $($checkRes.output)")
+    }
+
+    $verifiedSpecs = [System.Collections.Generic.List[string]]::new()
+    $skippedByMarker = [System.Collections.Generic.List[string]]::new()
+    if ($ExpectedSpecs -and $ExpectedSpecs.Count -gt 0) {
+        $payloadJson = (@{
+            specs     = @($ExpectedSpecs)
+            installed = $installedMap
+        } | ConvertTo-Json -Compress -Depth 5)
+
+        $pyScript = @'
+import json, re, sys
+try:
+    from packaging.requirements import Requirement
+except ImportError:
+    from pip._vendor.packaging.requirements import Requirement
+
+data = json.loads(sys.argv[1])
+installed = data.get("installed", {})
+failures = []
+verified = []
+skipped = []
+
+def norm(name):
+    return re.sub(r"[-_.]+", "-", name.strip().lower())
+
+for raw in data.get("specs", []):
+    try:
+        req = Requirement(raw)
+    except Exception as exc:
+        failures.append(f"Invalid requirement specification '{raw}': {exc}")
+        continue
+    if req.url:
+        failures.append(f"Unsupported direct URL requirement '{raw}'.")
+        continue
+    if req.marker is not None:
+        try:
+            if not req.marker.evaluate():
+                skipped.append(raw)
+                continue
+        except Exception as exc:
+            failures.append(f"Failed to evaluate environment marker for '{raw}': {exc}")
+            continue
+    pkg_key = norm(req.name)
+    if pkg_key not in installed:
+        failures.append(f"Missing expected package '{raw}' (normalized='{pkg_key}').")
+        continue
+    inst_ver = installed[pkg_key]
+    if req.specifier and not req.specifier.contains(inst_ver, prereleases=True):
+        failures.append(f"Version constraint failed for '{raw}': installed '{inst_ver}'.")
+        continue
+    verified.append({"spec": raw, "installed_version": inst_ver})
+
+print(json.dumps({"failures": failures, "verified": verified, "skipped_by_marker": skipped}))
+'@
+        $evalRes = & $CommandRunner $VenvPython @('-c', $pyScript, $payloadJson)
+        if ($evalRes.exit_code -ne 0) {
+            $failures.Add("Requirement specifier evaluation failed with exit code $($evalRes.exit_code): $($evalRes.output)")
+        } else {
+            try {
+                $evalObj = $evalRes.output | ConvertFrom-Json -ErrorAction Stop
+                foreach ($f in @($evalObj.failures)) {
+                    if ($f) { $failures.Add([string]$f) }
+                }
+                foreach ($v in @($evalObj.verified)) {
+                    if ($v) { $verifiedSpecs.Add([string]$v.spec) }
+                }
+                foreach ($s in @($evalObj.skipped_by_marker)) {
+                    if ($s) { $skippedByMarker.Add([string]$s) }
+                }
+            } catch {
+                $failures.Add("Failed to parse requirement evaluation output: $($_.Exception.Message)")
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        ok                 = ($failures.Count -eq 0)
+        failures           = @($failures)
+        installed_packages = @($installedNames | Select-Object -Unique)
+        verified_specs     = @($verifiedSpecs)
+        skipped_by_marker  = @($skippedByMarker)
+    }
 }
 
 function Test-VmLabIsWindowsAppsAlias {
@@ -427,25 +627,35 @@ function Invoke-VmLabGuestBootstrapLocal {
             $details.venv_path = $VenvPath
             $details.venv_python_version = $venvPyInfo.version
 
+            $requestedSpecs = [System.Collections.Generic.List[string]]::new()
             $requestedPackages = [System.Collections.Generic.List[string]]::new()
             if ($Packages) {
                 foreach ($pkg in $Packages) {
                     if (-not [string]::IsNullOrWhiteSpace($pkg)) {
-                        $pkgToken = ($pkg.Trim() -split '[\s;\[=<>!~]', 2)[0].Trim()
+                        $trimmed = $pkg.Trim()
+                        if ($trimmed -match '(?i)(?:\s+@\s+|^(?:git|hg|svn|bzr)\+|^(?:https?|file)://)') {
+                            throw "Unsupported package specification '$trimmed': direct URL/VCS references are not supported."
+                        }
+                        $requestedSpecs.Add($trimmed)
+                        $pkgToken = ($trimmed -split '[\s;\[=<>!~]', 2)[0].Trim()
                         if ($pkgToken) { $requestedPackages.Add((ConvertTo-VmLabNormalizedPackageName -Name $pkgToken)) }
                     }
                 }
             }
             if (-not [string]::IsNullOrWhiteSpace($RequirementsPath)) {
-                foreach ($rPkg in (Get-VmLabRequirementsPackageNames -RequirementsPath $RequirementsPath)) {
-                    $requestedPackages.Add($rPkg)
+                foreach ($rSpec in (Get-VmLabRequirementSpecs -RequirementsPath $RequirementsPath)) {
+                    $requestedSpecs.Add($rSpec)
+                    $pkgToken = ($rSpec -split '[\s;\[=<>!~]', 2)[0].Trim()
+                    if ($pkgToken) { $requestedPackages.Add((ConvertTo-VmLabNormalizedPackageName -Name $pkgToken)) }
                 }
             }
+            $expectedSpecs = @($requestedSpecs | Select-Object -Unique)
             $expectedPkgs = @($requestedPackages | Select-Object -Unique)
+            $details.expected_specs = $expectedSpecs
             $details.expected_packages = $expectedPkgs
 
             $hasWheelhouse = -not [string]::IsNullOrWhiteSpace($WheelhousePath)
-            $hasPackageRequest = ($expectedPkgs.Count -gt 0) -or (-not [string]::IsNullOrWhiteSpace($RequirementsPath))
+            $hasPackageRequest = ($expectedSpecs.Count -gt 0) -or (-not [string]::IsNullOrWhiteSpace($RequirementsPath))
 
             if ($hasWheelhouse -and -not $hasPackageRequest) {
                 throw '-WheelhousePath requires -RequirementsPath or -Packages; refusing to upgrade only pip without explicit package inputs.'
@@ -487,17 +697,13 @@ function Invoke-VmLabGuestBootstrapLocal {
                     throw "pip install failed with exit code $($pipRes.exit_code): $($pipRes.output)"
                 }
 
-                $listRes = & $CommandRunner $venvPy @('-m', 'pip', 'list', '--format=json')
-                if ($listRes.exit_code -ne 0) {
-                    throw "Failed to verify installed packages via pip list: $($listRes.output)"
+                $depCheck = Test-VmLabPythonDependencies -VenvPython $venvPy -ExpectedSpecs $expectedSpecs -CommandRunner $CommandRunner
+                if (-not $depCheck.ok) {
+                    throw "Package verification failed: $($depCheck.failures -join '; ')"
                 }
-                $installedList = @($listRes.output | ConvertFrom-Json -ErrorAction Stop)
-                $installedNames = @($installedList | ForEach-Object { ConvertTo-VmLabNormalizedPackageName -Name ([string]$_.name) })
-                $missing = @($expectedPkgs | Where-Object { $installedNames -notcontains $_ })
-                if ($missing.Count -gt 0) {
-                    throw "Package verification failed; missing expected packages: $($missing -join ', ')."
-                }
-                $details.installed_packages = $installedNames
+                $details.installed_packages = $depCheck.installed_packages
+                $details.verified_specs = $depCheck.verified_specs
+                $details.skipped_by_marker = $depCheck.skipped_by_marker
             }
         } elseif ($Profile -eq 'powershell-dev') {
             $skipPwshPath = $PSBoundParameters.ContainsKey('PwshStandardPaths')
@@ -616,42 +822,42 @@ function Test-VmLabGuestVerifyLocal {
                 $status = 'failed'
             }
 
-            $expectedPkgs = [System.Collections.Generic.List[string]]::new()
-            if ($store.valid -and $store.profiles[$Profile] -and $store.profiles[$Profile].details -and $store.profiles[$Profile].details.expected_packages) {
-                foreach ($ep in $store.profiles[$Profile].details.expected_packages) {
-                    $expectedPkgs.Add((ConvertTo-VmLabNormalizedPackageName -Name ([string]$ep)))
+            $expectedSpecsList = [System.Collections.Generic.List[string]]::new()
+            if ($store.valid -and $store.profiles[$Profile] -and $store.profiles[$Profile].details) {
+                $profDetails = $store.profiles[$Profile].details
+                if ($profDetails.PSObject.Properties['expected_specs'] -and $profDetails.expected_specs) {
+                    foreach ($es in $profDetails.expected_specs) {
+                        if (-not [string]::IsNullOrWhiteSpace([string]$es)) { $expectedSpecsList.Add([string]$es) }
+                    }
+                } elseif ($profDetails.PSObject.Properties['expected_packages'] -and $profDetails.expected_packages) {
+                    foreach ($ep in $profDetails.expected_packages) {
+                        if (-not [string]::IsNullOrWhiteSpace([string]$ep)) { $expectedSpecsList.Add([string]$ep) }
+                    }
                 }
             }
             if ($Packages) {
                 foreach ($p in $Packages) {
-                    $tok = ($p.Trim() -split '[\s;\[=<>!~]', 2)[0].Trim()
-                    if ($tok) { $expectedPkgs.Add((ConvertTo-VmLabNormalizedPackageName -Name $tok)) }
+                    if (-not [string]::IsNullOrWhiteSpace($p)) { $expectedSpecsList.Add($p.Trim()) }
                 }
             }
             if (-not [string]::IsNullOrWhiteSpace($RequirementsPath)) {
-                foreach ($rp in (Get-VmLabRequirementsPackageNames -RequirementsPath $RequirementsPath)) {
-                    $expectedPkgs.Add($rp)
+                try {
+                    foreach ($rs in (Get-VmLabRequirementSpecs -RequirementsPath $RequirementsPath)) {
+                        $expectedSpecsList.Add($rs)
+                    }
+                } catch {
+                    $failures.Add($_.Exception.Message)
+                    $status = 'failed'
                 }
             }
-            $uniqueExpected = @($expectedPkgs | Select-Object -Unique)
-            if ($uniqueExpected.Count -gt 0) {
-                $listRes = & $CommandRunner $venvPy @('-m', 'pip', 'list', '--format=json')
-                if ($listRes.exit_code -ne 0) {
-                    $failures.Add("pip list failed with exit code $($listRes.exit_code).")
+            $uniqueExpectedSpecs = @($expectedSpecsList | Select-Object -Unique)
+            if ($uniqueExpectedSpecs.Count -gt 0) {
+                $depCheck = Test-VmLabPythonDependencies -VenvPython $venvPy -ExpectedSpecs $uniqueExpectedSpecs -CommandRunner $CommandRunner
+                $checks.verified_specs = $depCheck.verified_specs
+                $checks.skipped_by_marker = $depCheck.skipped_by_marker
+                if (-not $depCheck.ok) {
+                    foreach ($df in $depCheck.failures) { $failures.Add($df) }
                     $status = 'failed'
-                } else {
-                    try {
-                        $installedNames = @(($listRes.output | ConvertFrom-Json -ErrorAction Stop) | ForEach-Object { ConvertTo-VmLabNormalizedPackageName -Name ([string]$_.name) })
-                        $missing = @($uniqueExpected | Where-Object { $installedNames -notcontains $_ })
-                        $checks.missing_packages = $missing
-                        if ($missing.Count -gt 0) {
-                            $failures.Add("Missing expected Python packages: $($missing -join ', ').")
-                            $status = 'failed'
-                        }
-                    } catch {
-                        $failures.Add("Failed to parse pip list JSON output: $($_.Exception.Message)")
-                        $status = 'failed'
-                    }
                 }
             }
         }
@@ -678,7 +884,9 @@ function Test-VmLabGuestVerifyLocal {
 function Get-VmLabRemoteBootstrapPrelude {
     $fnNames = @(
         'ConvertTo-VmLabNormalizedPackageName',
+        'Get-VmLabRequirementSpecs',
         'Get-VmLabRequirementsPackageNames',
+        'Test-VmLabPythonDependencies',
         'Test-VmLabIsWindowsAppsAlias',
         'ConvertFrom-VmLabPythonVersionText',
         'Read-VmLabGuestBootstrapStore',
