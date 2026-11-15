@@ -225,3 +225,36 @@ def test_cleanup_manifest_keeps_every_lifecycle_phase_and_rejects_duplicates(tmp
     duplicate = dict(manifests[0])
     with pytest.raises(RuntimeError, match="duplicate cleanup task identity"):
         harness._append_cleanup_manifest(root, duplicate)
+
+
+def test_cleanup_manifest_rejects_foreign_root_or_production_task(tmp_path):
+    root = tmp_path / "h4-rc-run"
+    root.mkdir()
+    foreign_root = tmp_path / "foreign"
+    foreign_root.mkdir()
+    with pytest.raises(RuntimeError):
+        harness._validate_cleanup_manifest(root, {
+            "schema_version": 1,
+            "phase": "install",
+            "root": str(foreign_root),
+            "task_names": [f"ResourceCoordinator-H4-run-install-{m}" for m in ("boot", "logon", "viewer")],
+            "port": 24001,
+        })
+    phase_root = root / "runs" / "install"
+    phase_root.mkdir(parents=True)
+    with pytest.raises(RuntimeError):
+        harness._validate_cleanup_manifest(root, {
+            "schema_version": 1,
+            "phase": "install",
+            "root": str(phase_root),
+            "task_names": ["ResourceCoordinator-KRig-UserLogon", "ResourceCoordinator-H4-x-b", "ResourceCoordinator-H4-x-v"],
+            "port": 24001,
+        })
+    with pytest.raises(RuntimeError):
+        harness._validate_cleanup_manifest(root, {
+            "schema_version": 1,
+            "phase": "install",
+            "root": str(phase_root),
+            "task_names": [f"ResourceCoordinator-H4-run-install-{m}" for m in ("boot", "logon", "viewer")],
+            "port": 1235,
+        })

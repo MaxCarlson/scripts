@@ -1,5 +1,12 @@
 # H4 Windows Qualification — Read-Only Status
 
+## H4.6 operational acceptance readiness (2026-11-15)
+
+- Reviewed H4.5 integration candidate: `integration/rc-h4-5-windows-review-20261115` at `83849e3e5b55d1bb7851dd9daaa6ef53bc02a47b` (reconciled with `origin/main` `0d29b59c722b998dc84ed80caa1c383f04b2cae9`); `main` merge remains gated on explicit protected-branch authorization.
+- Operational acceptance branch: `agent/rc-h4-operational-acceptance-20261115`.
+- Pinned guest execution manifest: `tools/h4_qualification/source-manifest.json` (`1.0.0` at `83849e3e5b55d1bb7851dd9daaa6ef53bc02a47b`, tree SHA-256 `4a7b5a0c307b22b867edb9c6a2451ac213ce3dc67ac444ecdd8f2592f88277e8`; `0.14.0` at `873a49382a5e03da47f793608d3519f7e69da646`, tree SHA-256 `847ca50aa85f58e1804f920d986ba80d15cc70e4754f9ea103c90320dc109529`).
+- Read-only `Get-VM` check confirmed no disposable Windows VM is available or authorized on this host; no VM was provisioned and no production state was touched. Actual Windows guest execution (`task`, `install`, `upgrade`, `rollback`, `full`, `cleanup`) remains `NOT_TESTED` pending an authorized disposable Windows VM with a clean checkpoint.
+
 ## H4.5 implementation status (2026-11-15)
 
 - Starting candidate: `agent/rc-h4-disposable-windows-wddm-20261114` at `a618d6b0edcdb9e15f019a9e5109914643c20e99`; current `origin/main` at start: `04835a8c93c90881614d55651688800d5f646cad`.

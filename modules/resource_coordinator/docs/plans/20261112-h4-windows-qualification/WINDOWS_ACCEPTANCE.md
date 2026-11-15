@@ -73,3 +73,30 @@ The latest H4.5 focused combined regression passed 134 tests with 3 opt-in Windo
 ## WinError 206 status
 
 Prior harmless native Windows probes reproduced error 206 with oversized command arguments and an overlong executable path. This demonstrates that both boundaries can produce the code; it does not identify the historical failing upgrade operation. The existing file-backed helper transport has offline tests proving large task XML stays out of the process command line. The actual RC upgrade orchestration has not been executed in an isolated Windows guest, so the historical issue is not declared fixed.
+
+## Reproducible guest bundle and staging (H4.6)
+
+The pinned source manifest is recorded in `tools/h4_qualification/source-manifest.json`:
+
+- **New RC `1.0.0`**: `integration/rc-h4-5-windows-review-20261115` (`83849e3e5b55d1bb7851dd9daaa6ef53bc02a47b`), `source_tree_sha256` `4a7b5a0c307b22b867edb9c6a2451ac213ce3dc67ac444ecdd8f2592f88277e8`.
+- **Legacy RC `0.14.0`**: commit `873a49382a5e03da47f793608d3519f7e69da646`, `source_tree_sha256` `847ca50aa85f58e1804f920d986ba80d15cc70e4754f9ea103c90320dc109529`.
+
+Guest staging & verification sequence (run only inside the authorized disposable Windows VM after taking a standard Hyper-V checkpoint):
+
+```powershell
+# 1. Stage immutable source copies (no production config, tokens, miners, or writable host shares)
+New-Item -ItemType Directory -Force -Path C:\h4-source\current, C:\h4-source\rc-0.14.0 | Out-Null
+git -C C:\path\to\scripts archive 83849e3e5b55d1bb7851dd9daaa6ef53bc02a47b -- modules/resource_coordinator | tar -x -C C:\h4-source\current
+git -C C:\path\to\scripts archive 873a49382a5e03da47f793608d3519f7e69da646 -- modules/resource_coordinator | tar -x -C C:\h4-source\rc-0.14.0
+
+# 2. Verify Python >= 3.10, PowerShell 7, Task Scheduler service, and pinned tree hashes (read-only)
+$module = 'C:\h4-source\current\modules\resource_coordinator'
+$env:PYTHONPATH = $module
+python -c "from pathlib import Path; from tools.h4_qualification.windows_acceptance import _repository_roots; print(_repository_roots(Path(r'C:\h4-source\current'), Path(r'C:\h4-source\rc-0.14.0')))"
+
+# 3. Create guest-local test root and run read-only preflight (no mutation)
+$run = Join-Path $env:TEMP ('h4-rc-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $run | Out-Null
+Set-Location $module
+python tools\h4_qualification\windows_acceptance.py --test-root $run --source-root C:\h4-source\current --old-source-root C:\h4-source\rc-0.14.0 --json
+```

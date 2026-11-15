@@ -153,3 +153,16 @@ def test_managed_installation_rejects_helper_root_outside_guest_test_root():
         )
         with pytest.raises(installation.InstallationError, match="helper directory escapes"):
             installation.ManagedInstallation(paths, backend, runtime=runtime)
+
+
+def test_production_cli_exposes_no_guest_runtime_overrides():
+    from resource_coordinator import cli_parser
+
+    for argv in (["system", "setup"], ["system", "upgrade"], ["system", "teardown"], ["system", "repair"], ["doctor"]):
+        parsed = cli_parser.parse_args(argv)
+        assert not hasattr(parsed, "task_names")
+        assert not hasattr(parsed, "listen_port")
+        assert not hasattr(parsed, "guest_mutation_guard")
+        assert not hasattr(parsed, "isolated")
+    with pytest.raises(SystemExit):
+        cli_parser.parse_args(["system", "setup", "--listen-port", "45431"])
