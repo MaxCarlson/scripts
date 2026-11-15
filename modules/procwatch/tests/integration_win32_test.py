@@ -1,10 +1,11 @@
-"""Controlled Windows 11 integration tests using disposable synthetic processes."""
+"""Controlled Windows 11 integration tests separating detection, attribution, and targeted suppression."""
 
 from __future__ import annotations
 
 import ctypes
 from pathlib import Path
 import queue
+import re
 import subprocess
 import sys
 import time
@@ -24,8 +25,15 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows 11 Win3
 
 
 def _has_interactive_desktop() -> bool:
+    """Return True only when running on an interactive desktop with visible windows (e.g., WinSta0\\Default)."""
     user32 = ctypes.WinDLL("user32", use_last_error=True)
-    return bool(user32.GetForegroundWindow())
+    if not user32.GetForegroundWindow():
+        return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    desk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetUserObjectInformationW(desk, 2, buf, 512, None)
+    return buf.value.lower() == "default"
 
 
 def _pump_until(correlator: LiveCorrelator, predicate: object, timeout: float = 4.0) -> None:
@@ -77,10 +85,59 @@ def test_win32_wmi_trace_degrades_gracefully_when_unprivileged() -> None:
         wmi.stop(timeout=2.0)
 
 
-def test_win32_synthetic_console_popup_observed_and_correlated() -> None:
-    """Launch a disposable console window and verify WinEvent observation + latency."""
+def test_win32_observe_detects_new_console_window() -> None:
+    """Independent ground-truth test for WinEvent window detection (read-only observe mode)."""
     if not _has_interactive_desktop():
-        pytest.skip("Interactive Windows desktop unavailable (GetForegroundWindow() == 0).")
+        pytest.skip("Requires interactive WinSta0\\Default desktop.")
+
+    stats = CollectorStats()
+    win_q: queue.Queue[RawWindowEvent] = queue.Queue(maxsize=1024)
+    wmi_q: queue.Queue[WmiProcessEvent] = queue.Queue(maxsize=1024)
+    events: list[LiveIncidentEvent] = []
+
+    cache = ProcessTableCache()
+    cache.seed_from_snapshot()
+    win = WinEventCollector(GuardConfig(mode=GuardMode.OBSERVE), event_queue=win_q, stats=stats)
+    correlator = LiveCorrelator(
+        process_cache=cache,
+        win_queue=win_q,
+        wmi_queue=wmi_q,
+        watch_config=WatchConfig(),
+        stats=stats,
+        on_incident=events.append,
+    )
+
+    win.start(timeout=2.0)
+    title_marker = "PROCWATCH_DETECT_TEST"
+    proc: subprocess.Popen[bytes] | None = None
+    try:
+        CREATE_NEW_CONSOLE = 0x00000010
+        proc = subprocess.Popen(
+            ["conhost.exe", "cmd.exe", "/c", f"title {title_marker} & ping -n 2 127.0.0.1 >nul"],
+            creationflags=CREATE_NEW_CONSOLE,
+        )
+        _pump_until(
+            correlator,
+            lambda: any(
+                e.window is not None and title_marker in e.window.current_title
+                for e in events
+            ),
+            timeout=5.0,
+        )
+        detected = [e for e in events if e.window is not None and title_marker in e.window.current_title]
+        assert len(detected) >= 1, f"Expected window detection for {title_marker}; stats={stats}"
+        assert stats.guard_suppressed_count == 0
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3.0)
+        win.stop(timeout=2.0)
+
+
+def test_win32_attributes_client_process_to_console_window() -> None:
+    """Verify client-process attribution even when top-level terminal title does not mirror client title."""
+    if not _has_interactive_desktop():
+        pytest.skip("Requires interactive WinSta0\\Default desktop.")
 
     stats = CollectorStats()
     win_q: queue.Queue[RawWindowEvent] = queue.Queue(maxsize=1024)
@@ -101,40 +158,36 @@ def test_win32_synthetic_console_popup_observed_and_correlated() -> None:
         watch_config=WatchConfig(),
         stats=stats,
         on_incident=events.append,
-        wmi_missing_reason=wmi.missing_reason,
+        wmi_missing_reason=wmi.missing_reason or MissingMetadataReason.ACCESS_DENIED,
     )
 
     win.start(timeout=2.0)
-    title_marker = "PROCWATCH_SYNTH_POPUP_TEST"
     proc: subprocess.Popen[bytes] | None = None
     try:
         CREATE_NEW_CONSOLE = 0x00000010
         proc = subprocess.Popen(
-            [
-                "cmd.exe",
-                "/c",
-                f"title {title_marker} & ping -n 2 127.0.0.1 >nul",
-            ],
+            ["cmd.exe", "/c", "ping -n 3 127.0.0.1 >nul"],
             creationflags=CREATE_NEW_CONSOLE,
         )
-        def _matches_target(e: LiveIncidentEvent) -> bool:
-            if e.window is None:
-                return False
-            if e.window.owner_pid == proc.pid or title_marker in e.window.current_title:
-                return True
-            return any(c.pid == proc.pid for c in e.candidate_initiators)
-
         _pump_until(
             correlator,
-            lambda: any(_matches_target(e) for e in events),
+            lambda: any(
+                e.window is not None
+                and (e.window.owner_pid == proc.pid or any(c.pid == proc.pid for c in e.candidate_initiators))
+                for e in events
+            ),
             timeout=5.0,
         )
-        matched = [e for e in events if _matches_target(e)]
-        assert len(matched) >= 1, (
-            f"Expected to observe synthetic console window (pid={proc.pid}, title={title_marker}); "
-            f"stats={stats}, window_events={[ (e.window.window_class, e.window.owner_pid, e.window.current_title) for e in events if e.window ]}"
+        attributed = [
+            e
+            for e in events
+            if e.window is not None
+            and (e.window.owner_pid == proc.pid or any(c.pid == proc.pid for c in e.candidate_initiators))
+        ]
+        assert len(attributed) >= 1, (
+            f"Expected attribution of client pid={proc.pid}; stats={stats}, "
+            f"windows={[(e.window.window_class, e.window.owner_pid, [c.pid for c in e.candidate_initiators]) for e in events if e.window]}"
         )
-        assert stats.guard_suppressed_count == 0
     finally:
         if proc is not None and proc.poll() is None:
             proc.terminate()
@@ -146,7 +199,7 @@ def test_win32_synthetic_console_popup_observed_and_correlated() -> None:
 def test_win32_smart_mode_does_not_suppress_interactive_powershell() -> None:
     """Deliberately opened interactive PowerShell window must NOT be suppressed in smart mode."""
     if not _has_interactive_desktop():
-        pytest.skip("Interactive Windows desktop unavailable (GetForegroundWindow() == 0).")
+        pytest.skip("Requires interactive WinSta0\\Default desktop.")
 
     stats = CollectorStats()
     win_q: queue.Queue[RawWindowEvent] = queue.Queue(maxsize=1024)
@@ -185,7 +238,7 @@ def test_win32_smart_mode_does_not_suppress_interactive_powershell() -> None:
             e
             for e in events
             if e.window is not None
-            and e.window.owner_pid == proc.pid
+            and (e.window.owner_pid == proc.pid or any(c.pid == proc.pid for c in e.candidate_initiators))
             and e.window.state == WindowState.SUPPRESSED
         ]
         assert len(suppressed_for_ps) == 0
@@ -195,19 +248,25 @@ def test_win32_smart_mode_does_not_suppress_interactive_powershell() -> None:
         win.stop(timeout=2.0)
 
 
-def test_win32_all_consoles_suppresses_and_restores_cleanly() -> None:
-    """Verify all-consoles suppression executes and clean shutdown leaves no active modifications."""
+def test_win32_smart_suppresses_targeted_console_and_restores() -> None:
+    """Verify narrowly targeted smart-mode suppression and full cleanup without affecting other windows."""
     if not _has_interactive_desktop():
-        pytest.skip("Interactive Windows desktop unavailable (GetForegroundWindow() == 0).")
+        pytest.skip("Requires interactive WinSta0\\Default desktop.")
 
     stats = CollectorStats()
     win_q: queue.Queue[RawWindowEvent] = queue.Queue(maxsize=1024)
     wmi_q: queue.Queue[WmiProcessEvent] = queue.Queue(maxsize=1024)
     events: list[LiveIncidentEvent] = []
 
+    target_marker = "PROCWATCH_SUPPRESS_TARGET"
+    guard_cfg = GuardConfig(
+        mode=GuardMode.SMART,
+        restore_focus=False,
+        title_pattern=re.compile(target_marker),
+    )
     cache = ProcessTableCache()
     cache.seed_from_snapshot()
-    win = WinEventCollector(GuardConfig(mode=GuardMode.ALL_CONSOLES, restore_focus=False), event_queue=win_q, stats=stats)
+    win = WinEventCollector(guard_cfg, event_queue=win_q, stats=stats)
     correlator = LiveCorrelator(
         process_cache=cache,
         win_queue=win_q,
@@ -215,41 +274,37 @@ def test_win32_all_consoles_suppresses_and_restores_cleanly() -> None:
         watch_config=WatchConfig(),
         stats=stats,
         on_incident=events.append,
-        wmi_missing_reason=MissingMetadataReason.SOURCE_UNAVAILABLE,
     )
 
     win.start(timeout=2.0)
-    title_marker = "PROCWATCH_SUPPRESS_TARGET"
     proc: subprocess.Popen[bytes] | None = None
     try:
         CREATE_NEW_CONSOLE = 0x00000010
         proc = subprocess.Popen(
-            ["cmd.exe", "/c", f"title {title_marker} & ping -n 2 127.0.0.1 >nul"],
+            ["conhost.exe", "cmd.exe", "/c", f"title {target_marker} & ping -n 2 127.0.0.1 >nul"],
             creationflags=CREATE_NEW_CONSOLE,
         )
-
-        def _is_target_suppressed(e: LiveIncidentEvent) -> bool:
-            if e.window is None or e.window.state != WindowState.SUPPRESSED:
-                return False
-            if e.window.owner_pid == proc.pid or title_marker in e.window.current_title:
-                return True
-            return any(c.pid == proc.pid for c in e.candidate_initiators)
-
         _pump_until(
             correlator,
-            lambda: any(_is_target_suppressed(e) for e in events),
+            lambda: any(
+                e.window is not None
+                and e.window.state == WindowState.SUPPRESSED
+                and target_marker in e.window.current_title
+                for e in events
+            ),
             timeout=5.0,
         )
-        suppressed = [e for e in events if _is_target_suppressed(e)]
-        assert len(suppressed) >= 1, (
-            f"Expected synthetic target (pid={proc.pid}, title={title_marker}) to be suppressed; "
-            f"suppressed_others={[ (e.window.hwnd, e.window.owner_pid, e.window.current_title) for e in events if e.window and e.window.state == WindowState.SUPPRESSED ]}"
-        )
+        suppressed = [
+            e
+            for e in events
+            if e.window is not None
+            and e.window.state == WindowState.SUPPRESSED
+            and target_marker in e.window.current_title
+        ]
+        assert len(suppressed) >= 1, f"Expected targeted suppression of {target_marker}; stats={stats}"
     finally:
         if proc is not None and proc.poll() is None:
             proc.terminate()
             proc.wait(timeout=3.0)
         win.stop(timeout=2.0)
-        assert len(win.engine.active_instances) == 0 or all(
-            not inst.modified_by_guard for inst in win.engine.active_instances.values()
-        )
+        assert all(not inst.modified_by_guard for inst in win.engine.active_instances.values())

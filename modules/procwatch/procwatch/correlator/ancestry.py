@@ -456,12 +456,46 @@ class ProcessTableCache:
             return result
 
     def refresh_recent_processes(self, *, window_ms: float = 2000.0) -> int:
-        """Discover recently started live processes via psutil when WMI trace is unavailable."""
+        """Discover recently started live processes quickly without scanning all cmdlines."""
         now_wall = time.time()
         now_ns = time.monotonic_ns()
         cutoff_wall = now_wall - (window_ms / 1000.0)
         added = 0
-        for proc in psutil.process_iter(["pid", "ppid", "name", "exe", "cmdline", "create_time"]):
+
+        if sys.platform == "win32":
+            entries = _snapshot_toolhelp32_windows()
+            candidate_pids: list[tuple[int, int, str]] = []
+            with self._lock:
+                for pid, ppid, exe_name in entries:
+                    if pid > 0 and pid not in self._active_by_pid:
+                        candidate_pids.append((pid, ppid, exe_name))
+            for pid, ppid, exe_name in candidate_pids:
+                try:
+                    proc = psutil.Process(pid)
+                    ctime = float(proc.create_time())
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+                if ctime < cutoff_wall:
+                    continue
+                age_ns = max(0, int((now_wall - ctime) * 1_000_000_000))
+                est_start_ns = max(0, now_ns - age_ns)
+                create_100ns = _read_windows_process_create_100ns(pid) or int(ctime * 10_000_000)
+                ident = ProcessIdentity.canonical_kernel(self.boot_id, pid, create_100ns)
+                obs = ProcessObservation(
+                    identity=ident,
+                    ppid=ppid,
+                    image_name=exe_name,
+                    start_ts_utc=utc_now_iso(),
+                    start_monotonic_ns=est_start_ns,
+                    source="toolhelp32_recent_refresh",
+                    capabilities=CapabilityFlags(process_created=True),
+                )
+                self._enrich_from_psutil(obs, pid)
+                self.record_observation(obs)
+                added += 1
+            return added
+
+        for proc in psutil.process_iter(["pid", "create_time"]):
             try:
                 info = proc.info
                 pid = int(info["pid"])
@@ -476,24 +510,16 @@ class ProcessTableCache:
                 age_ns = max(0, int((now_wall - float(ctime)) * 1_000_000_000))
                 est_start_ns = max(0, now_ns - age_ns)
                 ident = ProcessIdentity.canonical_kernel(self.boot_id, pid, int(float(ctime) * 10_000_000))
-                raw_cmd = " ".join(info["cmdline"]) if info.get("cmdline") else None
-                red_cmd = redact_text(raw_cmd, escape_controls=True) if raw_cmd else None
-                decoded = decode_command_payload(raw_cmd) if raw_cmd else None
                 obs = ProcessObservation(
                     identity=ident,
-                    ppid=int(info["ppid"]) if info.get("ppid") is not None else None,
-                    image_name=str(info.get("name") or ""),
-                    image_path=str(info["exe"]) if info.get("exe") else None,
-                    command_line_redacted=red_cmd,
-                    decoded_payload_redacted=decoded.redacted_text if decoded else None,
+                    ppid=proc.ppid(),
+                    image_name=proc.name(),
                     start_ts_utc=utc_now_iso(),
                     start_monotonic_ns=est_start_ns,
                     source="psutil_recent_refresh",
-                    capabilities=CapabilityFlags(
-                        process_created=True,
-                        command_line_captured=bool(red_cmd),
-                    ),
+                    capabilities=CapabilityFlags(process_created=True),
                 )
+                self._enrich_from_psutil(obs, pid)
                 self.record_observation(obs)
                 added += 1
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
