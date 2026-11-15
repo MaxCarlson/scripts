@@ -46,7 +46,7 @@ param(
     [string]$BundleZip = 'C:\H4-VM-Staging\bundle-rc1-v3\h4-windows-acceptance.zip',
     [string]$ExpectedBundleSha256 = 'daaf9a7b7bd5534a17541f49660360c060a2ba3df946dbddca46e6b63797e7fe',
     [string]$BootstrapScript = (Join-Path $PSScriptRoot 'Bootstrap-H4GuestBundle.ps1'),
-    [string]$ExpectedBootstrapSha256 = '',
+    [string]$ExpectedBootstrapSha256 = '5EFACFAFCECC45DF5459D53B75A999B21574C83D0A2F5339F0A4AB1AB5D01DE9',
     [string]$WheelsDir = 'C:\H4-VM-Staging\guest-deps\wheels',
     [string]$WheelsManifest = 'C:\H4-VM-Staging\guest-deps\wheels-sha256.txt',
     [string]$PythonInstaller = 'C:\H4-VM-Staging\guest-deps\installers\python-3.12.10-amd64.exe',
@@ -160,8 +160,11 @@ function Assert-H4FileDigest {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "$Label not found: $Path"
     }
+    if ([string]::IsNullOrWhiteSpace($ExpectedSha256) -or $ExpectedSha256 -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw "$Label expected SHA-256 must be a 64-character hex digest, got '$ExpectedSha256'"
+    }
     $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path -ErrorAction Stop).Hash
-    if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256) -and $actual.ToLowerInvariant() -ne $ExpectedSha256.ToLowerInvariant()) {
+    if ($actual.ToLowerInvariant() -ne $ExpectedSha256.ToLowerInvariant()) {
         throw "$Label SHA-256 mismatch: expected $ExpectedSha256, got $actual"
     }
     return $actual
@@ -352,7 +355,7 @@ try {
     }
 
     $guestBundleDest = "C:\H4-Guest-Work\bundles\$OperationId"
-    $guestBundleRoot = "$guestBundleDest\h4-windows-acceptance"
+    $guestBundleRoot = $guestBundleDest
     $guestManifest = "$guestBundleRoot\manifest.json"
     $guestSrcNew = "$guestBundleRoot\sources\rc-1.0.0"
     $guestSrcOld = "$guestBundleRoot\sources\rc-0.14.0"
@@ -378,8 +381,8 @@ try {
         Copy-H4ToGuest -Session $session -SourcePath $BundleZip -Destination 'C:\H4-Guest-Work\bundle-src\h4-windows-acceptance.zip'
         Copy-H4ToGuest -Session $session -SourcePath $BootstrapScript -Destination 'C:\H4-Guest-Work\bundle-src\Bootstrap-H4GuestBundle.ps1'
 
-        $setupRes = Invoke-H4GuestScript -Session $session -ArgumentList @($pySha, $pwshSha, $bundleSha, $bootstrapSha, $guestBundleDest, ($wheelEntries | ConvertTo-Json -Compress)) -ScriptBlock {
-            param($expPy, $expPwsh, $expBundle, $expBoot, $destBundle, $wheelsJson)
+        $setupRes = Invoke-H4GuestScript -Session $session -ArgumentList @($pySha, $pwshSha, $bundleSha, $bootstrapSha, $guestBundleDest, ($wheelEntries | ConvertTo-Json -Compress), $OperationId) -ScriptBlock {
+            param($expPy, $expPwsh, $expBundle, $expBoot, $destBundle, $wheelsJson, $opId)
             $ErrorActionPreference = 'Stop'
 
             $actPy = (Get-FileHash -Algorithm SHA256 -LiteralPath 'C:\H4-Guest-Work\installers\python-3.12.10-amd64.exe').Hash
@@ -434,8 +437,8 @@ try {
                 -Python $pyExe
             if ($LASTEXITCODE -ne 0) { throw "Bootstrap-H4GuestBundle.ps1 failed with exit $LASTEXITCODE" }
 
-            $reqMain = "$destBundle\h4-windows-acceptance\dependencies\requirements.txt"
-            $reqDev = "$destBundle\h4-windows-acceptance\dependencies\requirements-dev.txt"
+            $reqMain = "$destBundle\dependencies\requirements.txt"
+            $reqDev = "$destBundle\dependencies\requirements-dev.txt"
             & $venvPy -m pip install --no-index --find-links 'C:\H4-Guest-Work\wheels' --upgrade setuptools wheel
             if ($LASTEXITCODE -ne 0) { throw "Offline setuptools/wheel install failed" }
             & $venvPy -m pip install --no-index --find-links 'C:\H4-Guest-Work\wheels' -r $reqMain -r $reqDev resource-metrics
@@ -444,11 +447,28 @@ try {
             & $venvPy -c "import anyio, httpx, starlette, uvicorn, psutil, yaml, rich, pytest, pytest_asyncio, resource_metrics; print('DEPS_OK')"
             if ($LASTEXITCODE -ne 0) { throw "Guest dependency import verification failed" }
 
+            $receiptDir = 'C:\H4-Guest-Work\receipts'
+            New-Item -ItemType Directory -Path $receiptDir -Force | Out-Null
+            $receiptPath = Join-Path $receiptDir "setup-$opId.json"
+            $receipt = [pscustomobject]@{
+                schema_version   = 1
+                operation_id     = $opId
+                bundle_dest      = $destBundle
+                bundle_sha256    = $expBundle.ToLowerInvariant()
+                bootstrap_sha256 = $expBoot.ToLowerInvariant()
+                manifest_path    = "$destBundle\manifest.json"
+                pwsh_exe         = $pwshExe
+                venv_python      = $venvPy
+                verified_at      = (Get-Date).ToString('o')
+            }
+            $receipt | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $receiptPath -Encoding UTF8
+
             return [pscustomobject]@{
                 status         = 'ready'
                 pwsh_version   = [string](& $pwshExe --version)
                 python_version = [string](& $venvPy --version)
                 bundle_dest    = $destBundle
+                receipt_path   = $receiptPath
             }
         }
         Save-H4JsonArtifact -Dir $hostEvidenceDir -FileName 'guest-setup.json' -Data $setupRes
@@ -551,17 +571,36 @@ try {
             $session = Open-H4GuestSession -Id $VmId -Cred $Credential
         }
 
-        # Discover verified extracted bundle when Acceptance is run as a resumed standalone stage
-        $resolvedBundle = Invoke-H4GuestScript -Session $session -ArgumentList @($guestBundleRoot) -ScriptBlock {
-            param($preferred)
+        # Resolve and re-verify the exact setup-receipted bundle for this OperationId
+        $resolvedBundle = Invoke-H4GuestScript -Session $session -ArgumentList @($OperationId, $ExpectedBundleSha256) -ScriptBlock {
+            param($opId, $expBundle)
             $ErrorActionPreference = 'Stop'
-            if (Test-Path -LiteralPath (Join-Path $preferred 'manifest.json')) { return $preferred }
-            $latest = Get-ChildItem -LiteralPath 'C:\H4-Guest-Work\bundles' -Directory -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending |
-                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'h4-windows-acceptance\manifest.json') } |
-                Select-Object -First 1
-            if (-not $latest) { throw 'No verified extracted bundle found under C:\H4-Guest-Work\bundles. Run -Stage Setup first.' }
-            return (Join-Path $latest.FullName 'h4-windows-acceptance')
+            $receiptPath = "C:\H4-Guest-Work\receipts\setup-$opId.json"
+            if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+                throw "Setup receipt not found for OperationId '$opId': $receiptPath. Run -Stage Setup with -OperationId '$opId' first."
+            }
+            $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json -ErrorAction Stop
+            if ($receipt.operation_id -ne $opId) {
+                throw "Setup receipt operation_id mismatch: expected '$opId', got '$($receipt.operation_id)'."
+            }
+            if ([string]$receipt.bundle_sha256 -ne $expBundle.ToLowerInvariant()) {
+                throw "Setup receipt bundle_sha256 mismatch: expected '$($expBundle.ToLowerInvariant())', got '$($receipt.bundle_sha256)'."
+            }
+            $bundleDir = [string]$receipt.bundle_dest
+            $manifestFile = Join-Path $bundleDir 'manifest.json'
+            $verifyScript = Join-Path $bundleDir 'scripts\Verify-H4GuestBundle.ps1'
+            if (-not (Test-Path -LiteralPath $manifestFile -PathType Leaf)) {
+                throw "Verified bundle manifest missing at '$manifestFile'."
+            }
+            if (-not (Test-Path -LiteralPath $verifyScript -PathType Leaf)) {
+                throw "Bundle verification script missing at '$verifyScript'."
+            }
+            $pwshExe = 'C:\Program Files\PowerShell\7\pwsh.exe'
+            & $pwshExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $verifyScript -BundleRoot $bundleDir
+            if ($LASTEXITCODE -ne 0) {
+                throw "Verify-H4GuestBundle.ps1 failed for '$bundleDir' with exit $LASTEXITCODE"
+            }
+            return $bundleDir
         }
         $guestBundleRoot = [string]$resolvedBundle
         $guestManifest = "$guestBundleRoot\manifest.json"
@@ -579,6 +618,7 @@ try {
 
         $profileOutcomes = [System.Collections.Generic.List[object]]::new()
         $matrixFailed = $false
+        $evidenceIncomplete = $false
         foreach ($spec in $phaseSpecs) {
             $null = Assert-H4GuestIdentity -Session $session -ExpectedHost $ExpectedGuestHost -RequireCleanRc
             $runDir = "C:\H4-Guest-Work\runs\$($spec.run_name)"
@@ -597,10 +637,14 @@ try {
 
             $hostPhaseDir = Join-Path $hostEvidenceDir $spec.name
             New-Item -ItemType Directory -Path $hostPhaseDir -Force | Out-Null
+            $copyStatus = 'COMPLETE'
+            $copyError = $null
             try {
                 Copy-H4FromGuest -Session $session -SourcePath "$runDir\*" -Destination $hostPhaseDir
             } catch {
-                Write-Warning "Failed to copy partial artifacts for phase '$($spec.name)': $($_.Exception.Message)"
+                $copyStatus = 'INCOMPLETE'
+                $copyError = $_.Exception.Message
+                $evidenceIncomplete = $true
             }
 
             $parsed = $null
@@ -612,11 +656,15 @@ try {
             }
 
             $entry = [pscustomobject]@{
-                phase     = $spec.name
-                test_root = $runDir
-                exit_code = $res.exit_code
-                status    = if ($passed) { 'PASS' } else { 'FAIL' }
-                parsed    = $parsed
+                phase                    = $spec.name
+                test_root                = $runDir
+                exit_code                = $res.exit_code
+                status                   = if ($passed) { 'PASS' } else { 'FAIL' }
+                evidence_transfer_status = $copyStatus
+                evidence_transfer_error  = $copyError
+                guest_evidence_path      = $runDir
+                retry_hint               = if ($copyStatus -eq 'INCOMPLETE') { "Re-copy guest evidence from '$runDir' on VM '$VmName' to '$hostPhaseDir'." } else { $null }
+                parsed                   = $parsed
             }
             $profileOutcomes.Add($entry)
             Save-H4JsonArtifact -Dir $hostEvidenceDir -FileName 'matrix-summary.json' -Data $profileOutcomes
@@ -639,6 +687,9 @@ try {
                 }
                 break
             }
+            if ($copyStatus -eq 'INCOMPLETE') {
+                break
+            }
         }
 
         $summary['profiles'] = $profileOutcomes
@@ -648,6 +699,14 @@ try {
             $failedPhase = ($profileOutcomes | Where-Object { $_.status -eq 'FAIL' } | Select-Object -First 1)
             $summary['error'] = "Acceptance matrix stopped at failed phase '$($failedPhase.phase)' (exit=$($failedPhase.exit_code))."
             $overallExit = 1
+            throw $summary['error']
+        }
+        if ($evidenceIncomplete) {
+            $stageResults['Acceptance'] = 'INCOMPLETE'
+            $summary['error_category'] = 'evidence_transfer_incomplete'
+            $incPhase = ($profileOutcomes | Where-Object { $_.evidence_transfer_status -eq 'INCOMPLETE' } | Select-Object -First 1)
+            $summary['error'] = "Evidence transfer incomplete for phase '$($incPhase.phase)': $($incPhase.evidence_transfer_error). Guest evidence remains at '$($incPhase.guest_evidence_path)'."
+            $overallExit = 5
             throw $summary['error']
         }
         $stageResults['Acceptance'] = 'PASS'

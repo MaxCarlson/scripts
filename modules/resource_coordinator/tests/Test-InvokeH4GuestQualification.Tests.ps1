@@ -63,6 +63,7 @@ Describe 'Invoke-H4GuestQualification.ps1' {
             [string]$FailAtPhase = '',
             [switch]$DuplicateCheckpoint,
             [switch]$ExistingExtractedBundle,
+            [switch]$MissingSetupReceipt,
             [switch]$ThrowCopyFromGuest,
             [switch]$InstallerRebootRequired
         )
@@ -78,6 +79,7 @@ Describe 'Invoke-H4GuestQualification.ps1' {
         $Global:qTaskSkipped = [bool]$TaskSkipped
         $Global:qFailPhase = $FailAtPhase
         $Global:qExistingBundle = [bool]$ExistingExtractedBundle
+        $Global:qMissingReceipt = [bool]$MissingSetupReceipt
         $Global:qRebootReq = [bool]$InstallerRebootRequired
         $Global:qSecCred = [pscredential]::new('DESKTOP-1ITSJV0\mcarls', (ConvertTo-SecureString 'DummyPass!123' -AsPlainText -Force))
 
@@ -171,8 +173,11 @@ Describe 'Invoke-H4GuestQualification.ps1' {
                     bundle_dest    = $ArgumentList[4]
                 }
             }
-            if ($text -match 'LastWriteTime -Descending') {
-                return 'C:\H4-Guest-Work\bundles\op1\h4-windows-acceptance'
+            if ($text -match 'Verify-H4GuestBundle\.ps1') {
+                if ($Global:qMissingReceipt) {
+                    throw "Setup receipt not found for OperationId '$($ArgumentList[0])'."
+                }
+                return "C:\H4-Guest-Work\bundles\$($ArgumentList[0])"
             }
             if ($text -match 'RC_H4_DISPOSABLE_GUEST_AUTHORIZED' -and $text -match '--profile cleanup') {
                 $Global:qEvents.Add('ScopedCleanup')
@@ -270,9 +275,11 @@ Describe 'Invoke-H4GuestQualification.ps1' {
         (Invoke-Qual).ExitCode | Should Not Be 0
     }
 
-    It '7-9: rejects invalid bundle checksum, missing bootstrap script, and missing wheel manifest' {
+    It '7-9: rejects invalid or blank checksums, missing bootstrap script, and missing wheel manifest' {
         Initialize-QualMocks
         (Invoke-Qual -Extra @{ ExpectedBundleSha256 = ('0' * 64) }).ExitCode | Should Not Be 0
+        (Invoke-Qual -Extra @{ ExpectedBootstrapSha256 = '' }).ExitCode | Should Not Be 0
+        (Invoke-Qual -Extra @{ ExpectedBootstrapSha256 = 'not-a-hex-digest' }).ExitCode | Should Not Be 0
         (Invoke-Qual -Extra @{ BootstrapScript = (Join-Path $testTemp 'missing-bootstrap.ps1') }).ExitCode | Should Not Be 0
         (Invoke-Qual -Extra @{ WheelsManifest = (Join-Path $testTemp 'missing-wheels.txt') }).ExitCode | Should Not Be 0
     }
@@ -287,6 +294,8 @@ Describe 'Invoke-H4GuestQualification.ps1' {
         $parsed.stage_results.Checkpoint | Should Be 'PASS'
         $parsed.stage_results.Acceptance | Should Be 'PASS'
         $parsed.profiles.Count | Should Be 8
+        $parsed.profiles[0].evidence_transfer_status | Should Be 'COMPLETE'
+        ($Global:qRunnerCalls -join "`n") | Should Not Match 'h4-windows-acceptance'
 
         # Test roots begin with h4-rc-
         foreach ($p in $parsed.profiles) {
@@ -354,7 +363,44 @@ Describe 'Invoke-H4GuestQualification.ps1' {
 
         Initialize-QualMocks -ThrowCopyFromGuest
         $rCopy = Invoke-Qual -Extra @{ Stage = 'Acceptance'; Apply = $true; AuthorizeGuestMutation = $true }
-        $rCopy.ExitCode | Should Be 0
+        $rCopy.ExitCode | Should Be 5
+        $copyJson = $rCopy.Output | ConvertFrom-Json
+        $copyJson.stage_results.Acceptance | Should Be 'INCOMPLETE'
+        $copyJson.error_category | Should Be 'evidence_transfer_incomplete'
+        $copyJson.profiles[0].status | Should Be 'PASS'
+        $copyJson.profiles[0].evidence_transfer_status | Should Be 'INCOMPLETE'
         (Test-Path -LiteralPath (Join-Path $rCopy.EvidenceDir 'final-summary.json')) | Should Be $true
+
+        Initialize-QualMocks -MissingSetupReceipt
+        $rMissingRec = Invoke-Qual -Extra @{ Stage = 'Acceptance'; Apply = $true; AuthorizeGuestMutation = $true }
+        $rMissingRec.ExitCode | Should Not Be 0
+        $Global:qRunnerCalls.Count | Should Be 0
+    }
+
+    It 'real archive integration: Bootstrap-H4GuestBundle.ps1 extracts bundle directly into destination root and Verify-H4GuestBundle.ps1 passes' {
+        $realBundle = 'C:\H4-VM-Staging\bundle-rc1-v3\h4-windows-acceptance.zip'
+        $realBootstrap = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\tools\h4_qualification\Bootstrap-H4GuestBundle.ps1'))
+        $realBundleSha = 'daaf9a7b7bd5534a17541f49660360c060a2ba3df946dbddca46e6b63797e7fe'
+        (Test-Path -LiteralPath $realBundle -PathType Leaf) | Should Be $true
+        (Test-Path -LiteralPath $realBootstrap -PathType Leaf) | Should Be $true
+
+        $extractRoot = Join-Path $testTemp 'real_extract'
+        $bootOut = & pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $realBootstrap `
+            -ArchivePath $realBundle `
+            -ExpectedSha256 $realBundleSha `
+            -DestinationRoot $extractRoot *>&1
+        # Verify-H4GuestBundle.ps1 runs read-only preflight which exits 3 on non-guest host after manifest/source verification
+        $LASTEXITCODE | Should Be 3
+        ($bootOut -join "`n") | Should Match '"verified": true'
+        ($bootOut -join "`n") | Should Match 'guest_identity_not_independently_verified'
+
+        (Test-Path -LiteralPath (Join-Path $extractRoot 'h4-windows-acceptance')) | Should Be $false
+        (Test-Path -LiteralPath (Join-Path $extractRoot 'manifest.json') -PathType Leaf) | Should Be $true
+        (Test-Path -LiteralPath (Join-Path $extractRoot 'scripts\Verify-H4GuestBundle.ps1') -PathType Leaf) | Should Be $true
+        (Test-Path -LiteralPath (Join-Path $extractRoot 'dependencies\requirements.txt') -PathType Leaf) | Should Be $true
+        (Test-Path -LiteralPath (Join-Path $extractRoot 'dependencies\requirements-dev.txt') -PathType Leaf) | Should Be $true
+        (Test-Path -LiteralPath (Join-Path $extractRoot 'harness\windows_acceptance.py') -PathType Leaf) | Should Be $true
+        (Test-Path -LiteralPath (Join-Path $extractRoot 'sources\rc-1.0.0') -PathType Container) | Should Be $true
+        (Test-Path -LiteralPath (Join-Path $extractRoot 'sources\rc-0.14.0') -PathType Container) | Should Be $true
     }
 }
