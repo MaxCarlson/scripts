@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+﻿#Requires -Version 7.0
 
 function Get-VmLabRecoveryPlan {
     [CmdletBinding()]
@@ -30,18 +30,26 @@ function Get-VmLabRecoveryPlan {
         if (Test-Path -LiteralPath $manifestRootFull -PathType Container) {
             $locks = @(Get-ChildItem -LiteralPath $manifestRootFull -Filter '*.lock' -File -ErrorAction SilentlyContinue)
         }
+        $lockInfos = [System.Collections.Generic.List[object]]::new()
         foreach ($lk in $locks) {
-            $findings.Add("Stale provisioning lock file found: '$($lk.FullName)' (last write: $($lk.LastWriteTimeUtc.ToString('o'))).")
-            $actions.Add("Verify no provisioning operation is running for '$($lk.BaseName)', then inspect and remove '$($lk.FullName)' if stale.")
+            $ageSec = [math]::Round(([DateTimeOffset]::UtcNow - [DateTimeOffset]$lk.LastWriteTimeUtc).TotalSeconds, 1)
+            $lockInfos.Add([pscustomobject]@{
+                path           = $lk.FullName
+                last_write_utc = $lk.LastWriteTimeUtc.ToString('o')
+                age_seconds    = $ageSec
+            })
+            $findings.Add("Provisioning lock file present: '$($lk.FullName)' (last write UTC: $($lk.LastWriteTimeUtc.ToString('o')); status unknown — may be active or stale).")
+            $actions.Add("Verify no active provisioning process is running for '$($lk.BaseName)' before removing '$($lk.FullName)'.")
         }
         if ($findings.Count -eq 0) {
-            $findings.Add('No stale provisioning locks or host-level errors detected.')
+            $findings.Add('No provisioning locks or host-level errors detected.')
         }
         return [pscustomobject]@{
             status              = if ($actions.Count -gt 0) { 'attention_required' } else { 'healthy' }
             operation           = 'recovery-plan'
             manifest_root       = $manifestRootFull
             stale_locks         = @($locks | ForEach-Object { $_.FullName })
+            lock_files          = @($lockInfos)
             findings            = @($findings)
             recommended_actions = @($actions)
         }
@@ -50,7 +58,9 @@ function Get-VmLabRecoveryPlan {
     $lockPath = Join-Path $manifestRootFull "$Name.lock"
     $hasLock = Test-Path -LiteralPath $lockPath
     if ($hasLock) {
-        $findings.Add("Provisioning lock exists for '$Name' at '$lockPath'.")
+        $lkItem = Get-Item -LiteralPath $lockPath -ErrorAction SilentlyContinue
+        $lkTime = if ($lkItem) { $lkItem.LastWriteTimeUtc.ToString('o') } else { 'unknown' }
+        $findings.Add("Provisioning lock exists for '$Name' at '$lockPath' (last write UTC: $lkTime; may be active or stale).")
         $actions.Add("Verify no active New-VmLabMachine process is running for '$Name' before removing '$lockPath'.")
     }
 

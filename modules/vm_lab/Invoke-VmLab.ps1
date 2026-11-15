@@ -70,8 +70,16 @@ param(
     [switch]$Overwrite,
     [ValidateSet('windows-minimal', 'python-dev', 'powershell-dev')][string]$GuestProfile = 'windows-minimal',
     [string]$InstallerPath,
+    [string]$ExpectedInstallerSha256,
+    [string]$PythonPath,
     [string]$WheelhousePath,
+    [string]$RequirementsPath,
+    [string[]]$Packages,
     [string]$VenvPath = 'C:\venvs\dev',
+    [switch]$Offline,
+    [switch]$AllowOnlineInstall,
+    [switch]$RequireGuestVerified,
+    [int]$MaxConnectAttempts = 1,
     [string]$OutputPath,
     [string]$Locale = 'en-US',
     [string]$KeyboardLayout = 'en-US',
@@ -81,14 +89,26 @@ param(
 $ErrorActionPreference = 'Stop'
 
 try {
-    if ($Json) {
-        Import-Module (Join-Path $PSScriptRoot 'vm_lab.psd1') -Force -WarningAction SilentlyContinue -Verbose:$false -InformationAction SilentlyContinue
-    } else {
-        Import-Module (Join-Path $PSScriptRoot 'vm_lab.psd1') -Force
+    if (-not (Get-Module -Name vm_lab)) {
+        if ($Json) {
+            Import-Module (Join-Path $PSScriptRoot 'vm_lab.psd1') -Force -WarningAction SilentlyContinue -Verbose:$false -InformationAction SilentlyContinue
+        } else {
+            Import-Module (Join-Path $PSScriptRoot 'vm_lab.psd1') -Force
+        }
     }
     $output = Invoke-VmLab @PSBoundParameters
     if ($null -ne $output) {
         $output
+    }
+    if ($Operation -eq 'guest-verify' -and $null -ne $output) {
+        $verifyStatus = if ($Json) {
+            ($output | ConvertFrom-Json).status
+        } else {
+            $output.status
+        }
+        if ($verifyStatus -ne 'verified') {
+            exit 1
+        }
     }
     exit 0
 } catch {

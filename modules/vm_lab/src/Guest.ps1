@@ -17,9 +17,34 @@ function Resolve-VmLabGuestCredential {
     return $null
 }
 
+function Resolve-VmLabGuestPath {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Label
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw "$Label guest path cannot be empty."
+    }
+    if ($Path.StartsWith('\\')) {
+        throw "$Label guest path must be a local drive path, not UNC: '$Path'."
+    }
+    if ($Path -notmatch '^[A-Za-z]:[\\/]') {
+        throw "$Label guest path must be fully qualified with a drive letter: '$Path'."
+    }
+    if ($Path -match '(^|[\\/])\.\.([\\/]|$)') {
+        throw "$Label guest path must not contain '..' traversal: '$Path'."
+    }
+    return $Path
+}
+
 function New-VmLabPSSession {
-    param([guid]$VmId, [pscredential]$Credential)
-    return (New-PSSession -VMId $VmId -Credential $Credential -ErrorAction Stop)
+    param(
+        [guid]$VmId,
+        [pscredential]$Credential,
+        [int]$OpenTimeoutSeconds = 30
+    )
+    $opt = New-PSSessionOption -OpenTimeout ($OpenTimeoutSeconds * 1000) -OperationTimeout ($OpenTimeoutSeconds * 1000)
+    return (New-PSSession -VMId $VmId -Credential $Credential -SessionOption $opt -ErrorAction Stop)
 }
 
 function Invoke-VmLabPSSessionCommand {
@@ -49,18 +74,28 @@ function Invoke-VmLabGuestSession {
         [Parameter(Mandatory)][guid]$VmId,
         [Parameter(Mandatory)][string]$VmName,
         [Parameter(Mandatory)][pscredential]$Credential,
-        [Parameter(Mandatory)][scriptblock]$ScriptBlock
+        [Parameter(Mandatory)][scriptblock]$ScriptBlock,
+        [int]$MaxConnectAttempts = 1,
+        [int]$RetryDelayMs = 500,
+        [int]$OpenTimeoutSeconds = 30
     )
     $session = $null
+    $attempts = [Math]::Max(1, $MaxConnectAttempts)
     try {
-        try {
-            $session = New-VmLabPSSession -VmId $VmId -Credential $Credential
-        } catch {
-            $msg = $_.Exception.Message
-            if ($msg -match 'logon failure|access is denied|password|user name|authentication|credential') {
-                throw "PowerShell Direct authentication failed for VM '$VmName': $msg"
+        for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+            try {
+                $session = New-VmLabPSSession -VmId $VmId -Credential $Credential -OpenTimeoutSeconds $OpenTimeoutSeconds
+                break
+            } catch {
+                $msg = $_.Exception.Message
+                if ($msg -match 'logon failure|access is denied|password|user name|authentication|credential') {
+                    throw "PowerShell Direct authentication failed for VM '$VmName': $msg"
+                }
+                if ($attempt -ge $attempts) {
+                    throw "PowerShell Direct connection failed for VM '$VmName' after $attempts attempt(s) (guest may still be booting or in OOBE): $msg"
+                }
+                Start-Sleep -Milliseconds ([Math]::Max(50, $RetryDelayMs))
             }
-            throw "PowerShell Direct connection failed for VM '$VmName' (guest may still be booting or in OOBE): $msg"
         }
         return (& $ScriptBlock $session)
     } finally {
@@ -152,10 +187,18 @@ function Get-VmLabGuestStatus {
             Invoke-VmLabPSSessionCommand -Session $sess -ScriptBlock {
                 $markerPath = 'C:\ProgramData\vm_lab\bootstrap-state.json'
                 $bootState = 'incomplete'
+                $profilesSummary = $null
                 if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
                     try {
                         $m = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
-                        if ($m.completed -eq $true) { $bootState = 'complete' }
+                        if ($m.schema_version -ge 2 -and $null -ne $m.profiles) {
+                            $profProps = @($m.profiles.PSObject.Properties)
+                            $completedCount = @($profProps | Where-Object { $_.Value.completed -eq $true }).Count
+                            if ($completedCount -gt 0) { $bootState = 'complete' }
+                            $profilesSummary = $m.profiles
+                        } elseif ($m.completed -eq $true) {
+                            $bootState = 'complete'
+                        }
                     } catch {
                         $bootState = 'incomplete'
                     }
@@ -165,6 +208,7 @@ function Get-VmLabGuestStatus {
                     computer_name   = $env:COMPUTERNAME
                     ps_version      = $PSVersionTable.PSVersion.ToString()
                     bootstrap_state = $bootState
+                    profiles        = $profilesSummary
                 }
             }
         }
@@ -182,6 +226,7 @@ function Get-VmLabGuestStatus {
             guest_os            = $probe.os_caption
             guest_hostname      = $probe.computer_name
             guest_ps_version    = $probe.ps_version
+            profiles            = $probe.profiles
             detail              = 'PowerShell Direct session succeeded.'
         }
     } catch {
@@ -221,24 +266,28 @@ function Copy-VmLabGuestItem {
     }
 
     $localHash = $null
+    $resolvedSource = $SourcePath
+    $resolvedDest = $DestinationPath
     if ($Direction -eq 'ToGuest') {
-        $srcFull = Resolve-VmLabFullPath -Path $SourcePath -Label 'SourcePath' -RejectDriveRoot
-        Assert-VmLabNoReparsePoint -FullPath $srcFull -Label 'SourcePath'
-        if (-not (Test-Path -LiteralPath $srcFull -PathType Leaf)) {
-            throw "Source file not found: '$srcFull'."
+        $resolvedSource = Resolve-VmLabFullPath -Path $SourcePath -Label 'SourcePath' -RejectDriveRoot
+        Assert-VmLabNoReparsePoint -FullPath $resolvedSource -Label 'SourcePath'
+        if (-not (Test-Path -LiteralPath $resolvedSource -PathType Leaf)) {
+            throw "Source file not found: '$resolvedSource'."
         }
-        $localHash = (Get-FileHash -LiteralPath $srcFull -Algorithm SHA256 -ErrorAction Stop).Hash
+        $resolvedDest = Resolve-VmLabGuestPath -Path $DestinationPath -Label 'DestinationPath'
+        $localHash = (Get-FileHash -LiteralPath $resolvedSource -Algorithm SHA256 -ErrorAction Stop).Hash
     } else {
-        $dstFull = Resolve-VmLabFullPath -Path $DestinationPath -Label 'DestinationPath' -RejectDriveRoot
-        Assert-VmLabNoReparsePoint -FullPath $dstFull -Label 'DestinationPath'
-        if ((Test-Path -LiteralPath $dstFull) -and -not $Overwrite) {
-            throw "Local destination file already exists and -Overwrite was not specified: '$dstFull'."
+        $resolvedSource = Resolve-VmLabGuestPath -Path $SourcePath -Label 'SourcePath'
+        $resolvedDest = Resolve-VmLabFullPath -Path $DestinationPath -Label 'DestinationPath' -RejectDriveRoot
+        Assert-VmLabNoReparsePoint -FullPath $resolvedDest -Label 'DestinationPath'
+        if ((Test-Path -LiteralPath $resolvedDest) -and -not $Overwrite) {
+            throw "Local destination file already exists and -Overwrite was not specified: '$resolvedDest'."
         }
     }
 
     if (-not $Apply -or $WhatIfPreference) {
         if ($WhatIfPreference) {
-            $null = $PSCmdlet.ShouldProcess($Name, "Copy '$SourcePath' -> '$DestinationPath' ($Direction)")
+            $null = $PSCmdlet.ShouldProcess($Name, "Copy '$resolvedSource' -> '$resolvedDest' ($Direction)")
         }
         return [pscustomobject]@{
             status           = 'planned'
@@ -246,8 +295,8 @@ function Copy-VmLabGuestItem {
             vm_name          = $Name
             vm_id            = [string]$vm.Id
             direction        = $Direction
-            source_path      = $SourcePath
-            destination_path = $DestinationPath
+            source_path      = $resolvedSource
+            destination_path = $resolvedDest
             overwrite        = [bool]$Overwrite
             source_sha256    = $localHash
         }
@@ -257,70 +306,116 @@ function Copy-VmLabGuestItem {
     if ($null -eq $cred) {
         throw 'Guest credentials are required for guest-copy (-Credential or -PromptCredential).'
     }
-    if (-not $PSCmdlet.ShouldProcess($Name, "Copy '$SourcePath' -> '$DestinationPath' ($Direction)")) {
+    if (-not $PSCmdlet.ShouldProcess($Name, "Copy '$resolvedSource' -> '$resolvedDest' ($Direction)")) {
         return [pscustomobject]@{ status = 'declined'; operation = 'guest-copy'; vm_name = $Name }
     }
 
-    return (Invoke-VmLabGuestSession -VmId ([guid]$vm.Id) -VmName $vm.Name -Credential $cred -ScriptBlock {
+    $vmNow = Assert-VmLabReverifiedTarget -Name $Name -ExpectedId ([guid]$vm.Id) -ManifestRoot $ManifestRoot
+    if ([string]$vmNow.State -ne 'Running') {
+        throw "VM '$Name' is no longer Running (state: '$($vmNow.State)')."
+    }
+
+    return (Invoke-VmLabGuestSession -VmId ([guid]$vmNow.Id) -VmName $vmNow.Name -Credential $cred -ScriptBlock {
         param($sess)
         if ($Direction -eq 'ToGuest') {
-            $existsOnGuest = Invoke-VmLabPSSessionCommand -Session $sess -ArgumentList @($DestinationPath) -ScriptBlock {
+            $hashBeforeTransfer = (Get-FileHash -LiteralPath $resolvedSource -Algorithm SHA256 -ErrorAction Stop).Hash
+            if ($hashBeforeTransfer -ne $localHash) {
+                throw "Local source file changed between inspection and transfer: '$resolvedSource'."
+            }
+
+            $existsOnGuest = Invoke-VmLabPSSessionCommand -Session $sess -ArgumentList @($resolvedDest) -ScriptBlock {
                 param($p)
-                Test-Path -LiteralPath $p
+                if (Test-Path -LiteralPath $p) {
+                    $item = Get-Item -LiteralPath $p -Force -ErrorAction Stop
+                    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                        throw "Guest destination is a reparse point/symlink: '$p'."
+                    }
+                    return $true
+                }
+                return $false
             }
             if ($existsOnGuest -and -not $Overwrite) {
-                throw "Guest destination already exists and -Overwrite was not specified: '$DestinationPath'."
+                throw "Guest destination already exists and -Overwrite was not specified: '$resolvedDest'."
             }
-            $dstParent = Split-Path -Parent $DestinationPath
+
+            $dstParent = Split-Path -Parent $resolvedDest
             if (-not [string]::IsNullOrWhiteSpace($dstParent)) {
                 $null = Invoke-VmLabPSSessionCommand -Session $sess -ArgumentList @($dstParent) -ScriptBlock {
                     param($d)
                     if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
                 }
             }
-            Copy-VmLabPSSessionItem -Session $sess -SourcePath $SourcePath -DestinationPath $DestinationPath -Direction 'ToGuest' -Overwrite:$Overwrite
-            $remoteHash = Invoke-VmLabPSSessionCommand -Session $sess -ArgumentList @($DestinationPath) -ScriptBlock {
-                param($p)
-                (Get-FileHash -LiteralPath $p -Algorithm SHA256 -ErrorAction Stop).Hash
+
+            $stagedRemote = "$resolvedDest.$([guid]::NewGuid().ToString('N')).vm_lab_tmp"
+            try {
+                Copy-VmLabPSSessionItem -Session $sess -SourcePath $resolvedSource -DestinationPath $stagedRemote -Direction 'ToGuest' -Overwrite
+                $remoteHash = Invoke-VmLabPSSessionCommand -Session $sess -ArgumentList @($stagedRemote) -ScriptBlock {
+                    param($p)
+                    (Get-FileHash -LiteralPath $p -Algorithm SHA256 -ErrorAction Stop).Hash
+                }
+                if ($remoteHash -ne $hashBeforeTransfer) {
+                    throw "SHA-256 verification failed after ToGuest copy: local=$hashBeforeTransfer, remote=$remoteHash."
+                }
+                $null = Invoke-VmLabPSSessionCommand -Session $sess -ArgumentList @($stagedRemote, $resolvedDest, [bool]$Overwrite) -ScriptBlock {
+                    param($tmp, $dst, $ovr)
+                    [System.IO.File]::Move($tmp, $dst, [bool]$ovr)
+                }
+            } catch {
+                try {
+                    $null = Invoke-VmLabPSSessionCommand -Session $sess -ArgumentList @($stagedRemote) -ScriptBlock {
+                        param($tmp)
+                        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+                    }
+                } catch { }
+                throw
             }
-            if ($remoteHash -ne $localHash) {
-                throw "SHA-256 verification failed after ToGuest copy: local=$localHash, remote=$remoteHash."
-            }
+
             return [pscustomobject]@{
                 status             = 'copied'
                 operation          = 'guest-copy'
                 vm_name            = $Name
                 direction          = $Direction
-                source_path        = $SourcePath
-                destination_path   = $DestinationPath
-                source_sha256      = $localHash
+                source_path        = $resolvedSource
+                destination_path   = $resolvedDest
+                source_sha256      = $hashBeforeTransfer
                 destination_sha256 = $remoteHash
                 sha256_verified    = $true
             }
         } else {
-            $remoteHash = Invoke-VmLabPSSessionCommand -Session $sess -ArgumentList @($SourcePath) -ScriptBlock {
+            $remoteHash = Invoke-VmLabPSSessionCommand -Session $sess -ArgumentList @($resolvedSource) -ScriptBlock {
                 param($p)
                 if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
                     throw "Guest source file not found: '$p'."
                 }
                 (Get-FileHash -LiteralPath $p -Algorithm SHA256 -ErrorAction Stop).Hash
             }
-            $dstParent = Split-Path -Parent $DestinationPath
+            $dstParent = Split-Path -Parent $resolvedDest
             if (-not [string]::IsNullOrWhiteSpace($dstParent) -and -not (Test-Path -LiteralPath $dstParent)) {
                 New-Item -ItemType Directory -Path $dstParent -Force | Out-Null
             }
-            Copy-VmLabPSSessionItem -Session $sess -SourcePath $SourcePath -DestinationPath $DestinationPath -Direction 'FromGuest' -Overwrite:$Overwrite
-            $actualLocalHash = (Get-FileHash -LiteralPath $DestinationPath -Algorithm SHA256 -ErrorAction Stop).Hash
-            if ($actualLocalHash -ne $remoteHash) {
-                throw "SHA-256 verification failed after FromGuest copy: remote=$remoteHash, local=$actualLocalHash."
+            $stagedLocal = "$resolvedDest.$([guid]::NewGuid().ToString('N')).vm_lab_tmp"
+            try {
+                Copy-VmLabPSSessionItem -Session $sess -SourcePath $resolvedSource -DestinationPath $stagedLocal -Direction 'FromGuest' -Overwrite
+                $actualLocalHash = (Get-FileHash -LiteralPath $stagedLocal -Algorithm SHA256 -ErrorAction Stop).Hash
+                if ($actualLocalHash -ne $remoteHash) {
+                    throw "SHA-256 verification failed after FromGuest copy: remote=$remoteHash, local=$actualLocalHash."
+                }
+                if ((Test-Path -LiteralPath $resolvedDest) -and -not $Overwrite) {
+                    throw "Local destination file appeared before finalization and -Overwrite was not specified: '$resolvedDest'."
+                }
+                [System.IO.File]::Move($stagedLocal, $resolvedDest, [bool]$Overwrite)
+            } finally {
+                if (Test-Path -LiteralPath $stagedLocal) {
+                    Remove-Item -LiteralPath $stagedLocal -Force -ErrorAction SilentlyContinue
+                }
             }
             return [pscustomobject]@{
                 status             = 'copied'
                 operation          = 'guest-copy'
                 vm_name            = $Name
                 direction          = $Direction
-                source_path        = $SourcePath
-                destination_path   = $DestinationPath
+                source_path        = $resolvedSource
+                destination_path   = $resolvedDest
                 source_sha256      = $remoteHash
                 destination_sha256 = $actualLocalHash
                 sha256_verified    = $true

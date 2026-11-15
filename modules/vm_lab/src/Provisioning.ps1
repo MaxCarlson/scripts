@@ -299,6 +299,39 @@ function Invoke-VmLabQuickstart {
                 $connectRes = [pscustomobject]@{ status = 'skipped_noninteractive'; reason = 'Interactive desktop session required for VMConnect.' }
             }
         }
+        $driftDetails = [System.Collections.Generic.List[string]]::new()
+        if ([int]$existingVm.ProcessorCount -ne [int]$Config.cpu_count) {
+            $driftDetails.Add("cpu_count: actual=$($existingVm.ProcessorCount), requested=$($Config.cpu_count)")
+        }
+        if ([int64]$existingVm.MemoryStartup -ne [int64]$Config.memory_startup_bytes) {
+            $driftDetails.Add("memory_startup_bytes: actual=$($existingVm.MemoryStartup), requested=$($Config.memory_startup_bytes)")
+        }
+        $actualSwitch = $null
+        try {
+            $nic = Get-VMNetworkAdapter -VMName $existingVm.Name -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($nic) { $actualSwitch = [string]$nic.SwitchName }
+        } catch {
+            $actualSwitch = $null
+        }
+        $reqSwitch = if ([string]::IsNullOrWhiteSpace($Config.switch_name)) { '' } else { [string]$Config.switch_name }
+        if ([string]$actualSwitch -ne $reqSwitch) {
+            $driftDetails.Add("switch_name: actual='$actualSwitch', requested='$reqSwitch'")
+        }
+        $actualObj = [pscustomobject]@{
+            vm_config_path       = $own.manifest.vm_config_path
+            vhdx_path            = $own.manifest.vhdx_path
+            cpu_count            = [int]$existingVm.ProcessorCount
+            memory_startup_bytes = [int64]$existingVm.MemoryStartup
+            switch_name          = $actualSwitch
+        }
+        $requestedObj = [pscustomobject]@{
+            template_name        = $Config.template_name
+            vhdx_size_bytes      = [int64]$Config.vhdx_size_bytes
+            iso_path             = $Config.iso_path
+            cpu_count            = [int]$Config.cpu_count
+            memory_startup_bytes = [int64]$Config.memory_startup_bytes
+            switch_name          = $reqSwitch
+        }
         $nextAction = if ($vmState -ne 'Running') {
             "Start the existing owned VM with: vm-lab -o start -n '$($existingVm.Name)' -Apply"
         } elseif (-not [string]::IsNullOrWhiteSpace($Config.iso_path)) {
@@ -319,6 +352,10 @@ function Invoke-VmLabQuickstart {
             network_state        = $netState
             cpu_count            = [int]$existingVm.ProcessorCount
             memory_startup_bytes = [int64]$existingVm.MemoryStartup
+            actual               = $actualObj
+            requested            = $requestedObj
+            configuration_drift  = ($driftDetails.Count -gt 0)
+            drift_details        = @($driftDetails)
             ownership_status     = 'owned'
             vm_state             = $vmState
             connect              = $connectRes
@@ -491,7 +528,7 @@ $imageInstallXml
             output_path = $OutputPath
             locale      = $Locale
             edition     = $ImageEdition
-            note        = 'No passwords are embedded; Windows Setup stops at the OOBE account-creation boundary.'
+            note        = 'No passwords are embedded; Windows Setup stops at the OOBE account-creation boundary. Generating this XML does not attach it to installation media or execute Windows Setup.'
             xml         = $xml
         }
     }
@@ -515,6 +552,6 @@ $imageInstallXml
         output_path = $outFull
         locale      = $Locale
         edition     = $ImageEdition
-        note        = 'No passwords are embedded; Windows Setup stops at the OOBE account-creation boundary.'
+        note        = 'No passwords are embedded; Windows Setup stops at the OOBE account-creation boundary. Generating this XML does not attach it to installation media or execute Windows Setup.'
     }
 }

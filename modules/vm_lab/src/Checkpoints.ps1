@@ -99,14 +99,30 @@ function New-VmLabBaselineCheckpoint {
     param(
         [Parameter(Mandatory)][string]$Name,
         [string]$CheckpointName = 'clean-baseline',
+        [switch]$RequireGuestVerified,
+        [ValidateSet('windows-minimal', 'python-dev', 'powershell-dev')][string]$GuestProfile = 'windows-minimal',
+        [string]$VenvPath = 'C:\venvs\dev',
+        [pscredential]$Credential,
+        [switch]$PromptCredential,
         [Alias('a')][switch]$Apply,
         [string]$ManifestRoot = (Get-VmLabDefaultManifestRoot)
     )
+    $guestVerified = $false
+    if ($RequireGuestVerified -and $Apply -and -not $WhatIfPreference) {
+        $verifyRes = Test-VmLabGuestVerify -Name $Name -Profile $GuestProfile -VenvPath $VenvPath -Credential $Credential -PromptCredential:$PromptCredential -ManifestRoot $ManifestRoot
+        if ($verifyRes.status -ne 'verified') {
+            $reasons = if ($verifyRes.failures) { ($verifyRes.failures -join '; ') } else { 'unknown failure' }
+            throw "Refusing qualified baseline checkpoint for '$Name': guest verification failed ($($verifyRes.status): $reasons)."
+        }
+        $guestVerified = $true
+    }
     $res = New-VmLabCheckpoint -Name $Name -CheckpointName $CheckpointName -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
     if ($res.status -eq 'checkpoint_created') {
         $res | Add-Member -NotePropertyName 'baseline' -NotePropertyValue $true -Force
         $res.status = 'baseline_created'
     }
+    $res | Add-Member -NotePropertyName 'guest_verified' -NotePropertyValue $guestVerified -Force
+    $res | Add-Member -NotePropertyName 'baseline_qualified' -NotePropertyValue ($guestVerified -and ($res.status -eq 'baseline_created')) -Force
     $res.operation = 'baseline'
     return $res
 }

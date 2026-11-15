@@ -677,11 +677,15 @@ Describe 'vm_lab module' {
                 $text = $ScriptBlock.ToString()
                 if ($text -match 'Test-Path -LiteralPath \$p') { return $Global:vmLabRemoteExists }
                 if ($text -match 'Get-FileHash') { return $Global:vmLabRemoteHash }
-                if ($text -match 'bootstrap-state\.json' -and $text -match 'ConvertTo-Json') {
-                    return [pscustomobject]@{ schema_version = 1; completed = $true; profile = 'windows-minimal' }
+                if ($text -match 'Invoke-VmLabGuestBootstrapLocal') {
+                    return [pscustomobject]@{ schema_version = 2; completed = $true; reboot_required = $false; profile = 'windows-minimal' }
                 }
-                if ($text -match 'state_dir_present') {
-                    return [pscustomobject]@{ state_dir_present = $true; bootstrap_marker = $true }
+                if ($text -match 'Test-VmLabGuestVerifyLocal') {
+                    return [pscustomobject]@{
+                        status   = 'verified'
+                        checks   = [pscustomobject]@{ state_dir_present = $true; bootstrap_marker = $true }
+                        failures = @()
+                    }
                 }
                 return $null
             }
@@ -749,6 +753,95 @@ Describe 'vm_lab module' {
             try { $null = Invoke-VmLab -Operation unattend-xml -OutputPath $outXml -Apply } catch { $errOvr = $_.Exception.Message }
             $errOvr | Should Match '-Overwrite'
         }
+
+        It 'hardens Copy-VmLabGuestItem for ToGuest, FromGuest, hash mismatches, and cleanup' {
+            $Global:vmLabVms[1].State = 'Running'
+            $secPass = ConvertTo-SecureString 'DummyPass!123' -AsPlainText -Force
+            $cred = [pscredential]::new('AdminUser', $secPass)
+
+            $stageDir = Join-Path $testTemp ("copy_stage_" + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
+            $srcLocal = Join-Path $stageDir 'unicode файл.txt'
+            [System.IO.File]::WriteAllText($srcLocal, 'hello-guest')
+
+            Mock -ModuleName vm_lab New-VmLabPSSession { return [pscustomobject]@{ Id = 10; Name = 'CopySess' } }
+            Mock -ModuleName vm_lab Remove-VmLabPSSession { $Global:vmLabLog.Add('Remove-CopySess') }
+            Mock -ModuleName vm_lab Copy-VmLabPSSessionItem {
+                param($Session, $SourcePath, $DestinationPath, $Direction, $Overwrite)
+                if ($Direction -eq 'FromGuest') {
+                    [System.IO.File]::WriteAllText($DestinationPath, $Global:vmLabFromGuestContent)
+                }
+            }
+
+            $Global:vmLabRemoteHash = ('F' * 64)
+            $Global:vmLabCleanupCalled = $false
+            Mock -ModuleName vm_lab Invoke-VmLabPSSessionCommand {
+                param($Session, $ScriptBlock, $ArgumentList)
+                $text = $ScriptBlock.ToString()
+                if ($text -match 'Test-Path -LiteralPath \$p') { return $false }
+                if ($text -match 'Get-FileHash') { return $Global:vmLabRemoteHash }
+                if ($text -match 'Remove-Item') { $Global:vmLabCleanupCalled = $true; return $null }
+                return $null
+            }
+            $errHash = $null
+            try { $null = Copy-VmLabGuestItem -Name 'Managed-VM' -SourcePath $srcLocal -DestinationPath 'C:\Temp\unicode файл.txt' -Credential $cred -Apply -ManifestRoot $Global:vmLabManifestRoot } catch { $errHash = $_.Exception.Message }
+            $errHash | Should Match 'SHA-256 verification failed'
+            $Global:vmLabCleanupCalled | Should Be $true
+
+            $destFrom = Join-Path $stageDir 'from_guest\out.txt'
+            $Global:vmLabFromGuestContent = 'from-guest-data'
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($Global:vmLabFromGuestContent)
+            $expectedFromHash = ([System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData($bytes))).Replace('-', '')
+            $Global:vmLabRemoteHash = $expectedFromHash
+            Mock -ModuleName vm_lab Invoke-VmLabPSSessionCommand {
+                param($Session, $ScriptBlock, $ArgumentList)
+                $text = $ScriptBlock.ToString()
+                if ($text -match 'Get-FileHash') { return $Global:vmLabRemoteHash }
+                if ($text -match 'Test-Path -LiteralPath \$p') { return $true }
+                return $null
+            }
+            $fgRes = Copy-VmLabGuestItem -Name 'Managed-VM' -SourcePath 'C:\Guest\in.txt' -DestinationPath $destFrom -Direction FromGuest -Credential $cred -Apply -ManifestRoot $Global:vmLabManifestRoot
+            $fgRes.status | Should Be 'copied'
+            $fgRes.sha256_verified | Should Be $true
+            [System.IO.File]::ReadAllText($destFrom) | Should Be 'from-guest-data'
+
+            $errFgOvr = $null
+            try { $null = Copy-VmLabGuestItem -Name 'Managed-VM' -SourcePath 'C:\Guest\in.txt' -DestinationPath $destFrom -Direction FromGuest -Credential $cred -Apply -ManifestRoot $Global:vmLabManifestRoot } catch { $errFgOvr = $_.Exception.Message }
+            $errFgOvr | Should Match '-Overwrite'
+        }
+
+        It 'reports quickstart template drift, baseline qualification, and lock uncertainty' {
+            Mock -ModuleName vm_lab Get-VMNetworkAdapter { return @() }
+            $qsDrift = Invoke-VmLab -Operation quickstart -TemplateName 'windows11-light' -Name 'Managed-VM' -ManifestRoot $Global:vmLabManifestRoot -Json | ConvertFrom-Json
+            $qsDrift.status | Should Be 'existing_owned'
+            $qsDrift.configuration_drift | Should Be $true
+            $qsDrift.actual.cpu_count | Should Be 4
+            $qsDrift.requested.cpu_count | Should Be 2
+
+            $blUnq = New-VmLabBaselineCheckpoint -Name 'Managed-VM' -Apply -ManifestRoot $Global:vmLabManifestRoot
+            $blUnq.guest_verified | Should Be $false
+            $blUnq.baseline_qualified | Should Be $false
+
+            $Global:vmLabVms[1].State = 'Running'
+            $secPass = ConvertTo-SecureString 'DummyPass!123' -AsPlainText -Force
+            $cred = [pscredential]::new('AdminUser', $secPass)
+            Mock -ModuleName vm_lab New-VmLabPSSession { return [pscustomobject]@{ Id = 11; Name = 'BaseSess' } }
+            Mock -ModuleName vm_lab Remove-VmLabPSSession {}
+            Mock -ModuleName vm_lab Invoke-VmLabPSSessionCommand {
+                return [pscustomobject]@{ status = 'incomplete'; checks = [pscustomobject]@{}; failures = @('missing marker') }
+            }
+            $errQual = $null
+            try {
+                $null = New-VmLabBaselineCheckpoint -Name 'Managed-VM' -CheckpointName 'qual-base' -RequireGuestVerified -Credential $cred -Apply -ManifestRoot $Global:vmLabManifestRoot
+            } catch { $errQual = $_.Exception.Message }
+            $errQual | Should Match 'guest verification failed'
+
+            $lkFile = Join-Path $Global:vmLabManifestRoot 'Some-VM.lock'
+            [System.IO.File]::WriteAllText($lkFile, 'lock')
+            $recAll = Get-VmLabRecoveryPlan -ManifestRoot $Global:vmLabManifestRoot
+            ($recAll.findings -join ' ') | Should Match 'may be active or stale'
+            Remove-Item -LiteralPath $lkFile -Force -ErrorAction SilentlyContinue
+        }
     }
 
     It 'imports and invokes cleanly from an isolated PowerShell session with accurate exit codes' {
@@ -789,5 +882,228 @@ Describe 'vm_lab module' {
         $proc2.WaitForExit()
         $proc2.ExitCode | Should Be 0
         $stdout2 | Should Be 'windows11-h4'
+    }
+
+    Context 'Stage A-D reliability, real bootstrap logic, file transfer, and CLI exit codes' {
+        BeforeEach {
+            $Global:vmLabStageTemp = Join-Path $testTemp ("stage_tests_" + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $Global:vmLabStageTemp -Force | Out-Null
+        }
+
+        It 'executes real guest-bootstrap and guest-verify logic across windows-minimal, python-dev, and powershell-dev' {
+            InModuleScope vm_lab {
+                $root = $Global:vmLabStageTemp
+                $stateRoot = Join-Path $root 'ProgramData\vm_lab'
+
+                # 1. windows-minimal writes v2 marker and verifies
+                $rMin = Invoke-VmLabGuestBootstrapLocal -Profile 'windows-minimal' -StateRoot $stateRoot
+                $rMin.completed | Should Be $true
+                $vMin = Test-VmLabGuestVerifyLocal -Profile 'windows-minimal' -StateRoot $stateRoot
+                $vMin.status | Should Be 'verified'
+
+                # 2. python-dev fails without Python or installer
+                $errNoPy = $null
+                try {
+                    $null = Invoke-VmLabGuestBootstrapLocal -Profile 'python-dev' -StateRoot $stateRoot -PythonSearchRoots @(Join-Path $root 'NoPython*')
+                } catch { $errNoPy = $_.Exception.Message }
+                $errNoPy | Should Match 'Python 3\.12\+'
+
+                # 3. WindowsApps alias rejected, Python 3.11 rejected, Python 3.12 accepted
+                $winAppsDir = Join-Path $root 'WindowsApps'
+                $py311Dir = Join-Path $root 'Python311'
+                $py312Dir = Join-Path $root 'Python312'
+                foreach ($d in @($winAppsDir, $py311Dir, $py312Dir)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+                $winAppsPy = Join-Path $winAppsDir 'python.exe'
+                $py311Exe = Join-Path $py311Dir 'python.exe'
+                $py312Exe = Join-Path $py312Dir 'python.exe'
+                foreach ($f in @($winAppsPy, $py311Exe, $py312Exe)) { [System.IO.File]::WriteAllText($f, 'stub') }
+
+                $errAlias = $null
+                try { $null = Resolve-VmLabGuestPythonInterpreter -PythonPath $winAppsPy } catch { $errAlias = $_.Exception.Message }
+                $errAlias | Should Match 'WindowsApps'
+
+                $runner = {
+                    param([string]$Exe, [string[]]$ExeArgs)
+                    if ($Exe -eq $py311Exe) {
+                        return [pscustomobject]@{ exit_code = 0; output = '3.11.9|64' }
+                    }
+                    if ($Exe -eq $py312Exe -or $Exe -like '*\Scripts\python.exe') {
+                        if ($ExeArgs -contains '-c') {
+                            return [pscustomobject]@{ exit_code = 0; output = '3.12.4|64' }
+                        }
+                        if ($ExeArgs -contains 'venv') {
+                            $targetVenv = $ExeArgs[-1]
+                            $scriptsDir = Join-Path $targetVenv 'Scripts'
+                            New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null
+                            [System.IO.File]::WriteAllText((Join-Path $scriptsDir 'python.exe'), 'venv-stub')
+                            return [pscustomobject]@{ exit_code = 0; output = '' }
+                        }
+                        if ($ExeArgs -contains 'install') {
+                            $Global:vmLabPipCalls.Add(($ExeArgs -join ' '))
+                            return [pscustomobject]@{ exit_code = 0; output = 'Successfully installed' }
+                        }
+                        if ($ExeArgs -contains 'list') {
+                            return [pscustomobject]@{ exit_code = 0; output = $Global:vmLabPipListJson }
+                        }
+                    }
+                    if ($Exe -like '*pwsh.exe') {
+                        return [pscustomobject]@{ exit_code = 0; output = '7.4.6' }
+                    }
+                    return [pscustomobject]@{ exit_code = 1; output = 'unexpected command' }
+                }
+
+                $err311 = $null
+                try { $null = Resolve-VmLabGuestPythonInterpreter -PythonPath $py311Exe -CommandRunner $runner } catch { $err311 = $_.Exception.Message }
+                $err311 | Should Match '3\.12'
+
+                # 4. Installer refreshes and finds Python 3.12+, creates venv with no packages
+                $venv1 = Join-Path $root 'venv_clean'
+                $pyInst = Join-Path $root 'python-3.12.4-amd64.exe'
+                [System.IO.File]::WriteAllText($pyInst, 'installer')
+                $Global:vmLabInstallCount = 0
+                $procRunnerOk = {
+                    param($FilePath, $ArgumentList)
+                    $Global:vmLabInstallCount++
+                    return 0
+                }
+                $rPyClean = Invoke-VmLabGuestBootstrapLocal -Profile 'python-dev' -InstallerPath $pyInst -VenvPath $venv1 -StateRoot $stateRoot -PythonSearchRoots @($py312Dir) -CommandRunner $runner -ProcessRunner $procRunnerOk
+                $rPyClean.completed | Should Be $true
+                $rPyClean.details.python_version | Should Be '3.12.4'
+                (Test-Path -LiteralPath (Join-Path $venv1 'Scripts\python.exe')) | Should Be $true
+
+                # 5. Wheelhouse without requirements or packages must fail (no --upgrade pip fallback)
+                $wheelDir = Join-Path $root 'wheelhouse'
+                New-Item -ItemType Directory -Path $wheelDir -Force | Out-Null
+                $errWheelOnly = $null
+                try {
+                    $null = Invoke-VmLabGuestBootstrapLocal -Profile 'python-dev' -PythonPath $py312Exe -WheelhousePath $wheelDir -VenvPath $venv1 -StateRoot $stateRoot -CommandRunner $runner
+                } catch { $errWheelOnly = $_.Exception.Message }
+                $errWheelOnly | Should Match 'requires -RequirementsPath or -Packages'
+
+                # 6. Missing requirements file or missing wheelhouse fails
+                $errMissReq = $null
+                try {
+                    $null = Invoke-VmLabGuestBootstrapLocal -Profile 'python-dev' -PythonPath $py312Exe -RequirementsPath (Join-Path $root 'missing-req.txt') -AllowOnlineInstall -VenvPath $venv1 -StateRoot $stateRoot -CommandRunner $runner
+                } catch { $errMissReq = $_.Exception.Message }
+                $errMissReq | Should Match 'Requirements file not found'
+
+                $reqFile = Join-Path $root 'requirements.txt'
+                [System.IO.File]::WriteAllText($reqFile, "# comment`npytest>=8.0`nmy_pkg[extra]==1.2.3`n")
+
+                $errMissWheel = $null
+                try {
+                    $null = Invoke-VmLabGuestBootstrapLocal -Profile 'python-dev' -PythonPath $py312Exe -WheelhousePath (Join-Path $root 'no_wheels') -RequirementsPath $reqFile -VenvPath $venv1 -StateRoot $stateRoot -CommandRunner $runner
+                } catch { $errMissWheel = $_.Exception.Message }
+                $errMissWheel | Should Match 'Wheelhouse directory not found'
+
+                # 7. Offline without wheelhouse fails; implicit online without -AllowOnlineInstall fails
+                $errOffNoWheel = $null
+                try {
+                    $null = Invoke-VmLabGuestBootstrapLocal -Profile 'python-dev' -PythonPath $py312Exe -RequirementsPath $reqFile -Offline -VenvPath $venv1 -StateRoot $stateRoot -CommandRunner $runner
+                } catch { $errOffNoWheel = $_.Exception.Message }
+                $errOffNoWheel | Should Match 'without -WheelhousePath'
+
+                $errImplicitOnline = $null
+                try {
+                    $null = Invoke-VmLabGuestBootstrapLocal -Profile 'python-dev' -PythonPath $py312Exe -RequirementsPath $reqFile -VenvPath $venv1 -StateRoot $stateRoot -CommandRunner $runner
+                } catch { $errImplicitOnline = $_.Exception.Message }
+                $errImplicitOnline | Should Match 'AllowOnlineInstall'
+
+                # 8. Offline wheelhouse + requirements installs and verifies normalized names
+                $Global:vmLabPipCalls = [System.Collections.Generic.List[string]]::new()
+                $Global:vmLabPipListJson = '[{"name":"pytest","version":"8.3.0"},{"name":"my-pkg","version":"1.2.3"}]'
+                $rPyWheel = Invoke-VmLabGuestBootstrapLocal -Profile 'python-dev' -PythonPath $py312Exe -WheelhousePath $wheelDir -RequirementsPath $reqFile -VenvPath $venv1 -StateRoot $stateRoot -CommandRunner $runner
+                $rPyWheel.completed | Should Be $true
+                ($Global:vmLabPipCalls[0] -match '--no-index --find-links') | Should Be $true
+                $vPyOk = Test-VmLabGuestVerifyLocal -Profile 'python-dev' -VenvPath $venv1 -StateRoot $stateRoot -CommandRunner $runner
+                $vPyOk.status | Should Be 'verified'
+
+                # 9. Missing expected package fails verification
+                $Global:vmLabPipListJson = '[{"name":"pytest","version":"8.3.0"}]'
+                $vPyMiss = Test-VmLabGuestVerifyLocal -Profile 'python-dev' -VenvPath $venv1 -StateRoot $stateRoot -CommandRunner $runner
+                $vPyMiss.status | Should Be 'failed'
+                ($vPyMiss.failures -join ' ') | Should Match 'my-pkg'
+
+                # 10. powershell-dev: non-MSI rejected, SHA256 mismatch rejected, exit 3010 persists reboot_required, 0 verifies
+                $badInst = Join-Path $root 'pwsh.zip'
+                [System.IO.File]::WriteAllText($badInst, 'zip')
+                $errBadExt = $null
+                try {
+                    $null = Invoke-VmLabGuestBootstrapLocal -Profile 'powershell-dev' -InstallerPath $badInst -StateRoot $stateRoot -PwshStandardPaths @((Join-Path $root 'no_pwsh.exe')) -CommandRunner $runner
+                } catch { $errBadExt = $_.Exception.Message }
+                $errBadExt | Should Match '\.msi'
+
+                $msiInst = Join-Path $root 'PowerShell-7.4.6-win-x64.msi'
+                [System.IO.File]::WriteAllText($msiInst, 'msi-bytes')
+                $msiSha = (Get-FileHash -LiteralPath $msiInst -Algorithm SHA256).Hash
+
+                $errBadSha = $null
+                try {
+                    $null = Invoke-VmLabGuestBootstrapLocal -Profile 'powershell-dev' -InstallerPath $msiInst -ExpectedInstallerSha256 ('0' * 64) -StateRoot $stateRoot -PwshStandardPaths @((Join-Path $root 'no_pwsh.exe')) -CommandRunner $runner
+                } catch { $errBadSha = $_.Exception.Message }
+                $errBadSha | Should Match 'SHA-256 mismatch'
+
+                $r3010 = Invoke-VmLabGuestBootstrapLocal -Profile 'powershell-dev' -InstallerPath $msiInst -ExpectedInstallerSha256 $msiSha -StateRoot $stateRoot -PwshStandardPaths @((Join-Path $root 'no_pwsh.exe')) -CommandRunner $runner -ProcessRunner { param($f, $a) return 3010 }
+                $r3010.status | Should Be 'reboot_required'
+                $r3010.reboot_required | Should Be $true
+                $v3010 = Test-VmLabGuestVerifyLocal -Profile 'powershell-dev' -StateRoot $stateRoot -PwshStandardPaths @((Join-Path $root 'no_pwsh.exe')) -CommandRunner $runner
+                $v3010.status | Should Be 'incomplete'
+
+                # Complete powershell-dev and confirm all 3 profiles coexist in v2 store
+                $pwshDir = Join-Path $root 'PowerShell\7'
+                New-Item -ItemType Directory -Path $pwshDir -Force | Out-Null
+                $pwshExe = Join-Path $pwshDir 'pwsh.exe'
+                [System.IO.File]::WriteAllText($pwshExe, 'pwsh-stub')
+                $rPwshOk = Invoke-VmLabGuestBootstrapLocal -Profile 'powershell-dev' -InstallerPath $msiInst -ExpectedInstallerSha256 $msiSha -StateRoot $stateRoot -PwshStandardPaths @($pwshExe) -CommandRunner $runner -ProcessRunner { param($f, $a) return 0 }
+                $rPwshOk.completed | Should Be $true
+                $store = Read-VmLabGuestBootstrapStore -StateRoot $stateRoot
+                $store.schema_version | Should Be 2
+                $store.profiles.ContainsKey('windows-minimal') | Should Be $true
+                $store.profiles.ContainsKey('python-dev') | Should Be $true
+                $store.profiles.ContainsKey('powershell-dev') | Should Be $true
+
+                # 11. Corrupt JSON marker fails verification
+                $corruptState = Join-Path $root 'corrupt_state'
+                New-Item -ItemType Directory -Path $corruptState -Force | Out-Null
+                [System.IO.File]::WriteAllText((Join-Path $corruptState 'bootstrap-state.json'), '{not-json')
+                $vCorrupt = Test-VmLabGuestVerifyLocal -Profile 'windows-minimal' -StateRoot $corruptState
+                $vCorrupt.status | Should Be 'failed'
+            }
+        }
+
+        It 'returns exit code 1 from Invoke-VmLab.ps1 when guest-verify is not verified' {
+            $script = @"
+Import-Module Pester -Force
+Import-Module '$moduleManifest' -Force
+Describe 'gv' {
+    It 'exits 1' {
+        Mock -ModuleName vm_lab Assert-VmLabOwnedVm { return [pscustomobject]@{ owned = `$true; vm = [pscustomobject]@{ Name='V1'; Id=[guid]'11111111-1111-1111-1111-111111111111'; State='Running' } } }
+        Mock -ModuleName vm_lab New-VmLabPSSession { return [pscustomobject]@{ Id = 1; Name = 'S1' } }
+        Mock -ModuleName vm_lab Remove-VmLabPSSession {}
+        Mock -ModuleName vm_lab Invoke-VmLabPSSessionCommand { return [pscustomobject]@{ status = 'incomplete'; checks = [pscustomobject]@{}; failures = @('missing') } }
+        `$sec = ConvertTo-SecureString 'Dummy!123' -AsPlainText -Force
+        `$cred = [pscredential]::new('u', `$sec)
+        & '$cliScript' -Operation guest-verify -Name 'V1' -Credential `$cred -Json
+        exit `$LASTEXITCODE
+    }
+}
+"@
+            $runnerFile = Join-Path $Global:vmLabStageTemp 'run_gv_exit.ps1'
+            [System.IO.File]::WriteAllText($runnerFile, $script)
+            $psi = [System.Diagnostics.ProcessStartInfo]::new('pwsh')
+            $psi.ArgumentList.Add('-NoProfile')
+            $psi.ArgumentList.Add('-File')
+            $psi.ArgumentList.Add($runnerFile)
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $out = $proc.StandardOutput.ReadToEnd()
+            $proc.WaitForExit()
+            $proc.ExitCode | Should Be 1
+            $jsonStart = $out.IndexOf('{')
+            ($jsonStart -ge 0) | Should Be $true
+            ($out.Substring($jsonStart) | ConvertFrom-Json).status | Should Be 'incomplete'
+        }
     }
 }

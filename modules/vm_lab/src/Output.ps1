@@ -45,8 +45,16 @@ function Invoke-VmLab {
         [switch]$Overwrite,
         [ValidateSet('windows-minimal', 'python-dev', 'powershell-dev')][string]$GuestProfile = 'windows-minimal',
         [string]$InstallerPath,
+        [string]$ExpectedInstallerSha256,
+        [string]$PythonPath,
         [string]$WheelhousePath,
+        [string]$RequirementsPath,
+        [string[]]$Packages,
         [string]$VenvPath = 'C:\venvs\dev',
+        [switch]$Offline,
+        [switch]$AllowOnlineInstall,
+        [switch]$RequireGuestVerified,
+        [int]$MaxConnectAttempts = 1,
         [string]$OutputPath,
         [string]$Locale = 'en-US',
         [string]$KeyboardLayout = 'en-US',
@@ -129,11 +137,11 @@ function Invoke-VmLab {
         }
         'guest-bootstrap' {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for guest-bootstrap.' }
-            Invoke-VmLabGuestBootstrap -Name $Name -Profile $GuestProfile -InstallerPath $InstallerPath -WheelhousePath $WheelhousePath -VenvPath $VenvPath -Credential $Credential -PromptCredential:$PromptCredential -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+            Invoke-VmLabGuestBootstrap -Name $Name -Profile $GuestProfile -InstallerPath $InstallerPath -ExpectedInstallerSha256 $ExpectedInstallerSha256 -PythonPath $PythonPath -WheelhousePath $WheelhousePath -RequirementsPath $RequirementsPath -Packages $Packages -VenvPath $VenvPath -Offline:$Offline -AllowOnlineInstall:$AllowOnlineInstall -MaxConnectAttempts $MaxConnectAttempts -Credential $Credential -PromptCredential:$PromptCredential -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
         }
         'guest-verify' {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for guest-verify.' }
-            Test-VmLabGuestVerify -Name $Name -Profile $GuestProfile -VenvPath $VenvPath -Credential $Credential -PromptCredential:$PromptCredential -ManifestRoot $ManifestRoot
+            Test-VmLabGuestVerify -Name $Name -Profile $GuestProfile -VenvPath $VenvPath -Packages $Packages -RequirementsPath $RequirementsPath -MaxConnectAttempts $MaxConnectAttempts -Credential $Credential -PromptCredential:$PromptCredential -ManifestRoot $ManifestRoot
         }
         'checkpoint' {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for checkpoint.' }
@@ -143,7 +151,7 @@ function Invoke-VmLab {
         'baseline' {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for baseline.' }
             $cpName = if ([string]::IsNullOrWhiteSpace($CheckpointName)) { 'clean-baseline' } else { $CheckpointName }
-            New-VmLabBaselineCheckpoint -Name $Name -CheckpointName $cpName -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+            New-VmLabBaselineCheckpoint -Name $Name -CheckpointName $cpName -RequireGuestVerified:$RequireGuestVerified -GuestProfile $GuestProfile -VenvPath $VenvPath -Credential $Credential -PromptCredential:$PromptCredential -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
         }
         'checkpoints' {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for checkpoints.' }
