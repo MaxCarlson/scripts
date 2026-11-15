@@ -420,7 +420,7 @@ def build_bundle(
     if (out.exists() and is_reparse_point(out)) or any(is_reparse_point(p) for p in out.parents if p.exists()):
         raise SourceIntegrityError("bundle_output_unsafe", f"Output path crosses a reparse point: {out}")
     protected_module = (repo / "modules" / "resource_coordinator" / "resource_coordinator").resolve()
-    if os.path.commonpath((str(protected_module), str(out.resolve(strict=False)))) == str(protected_module):
+    if out.resolve(strict=False).is_relative_to(protected_module):
         raise SourceIntegrityError("bundle_output_unsafe", "Output path cannot reside inside live package source")
     if out.exists() and any(out.iterdir()):
         raise SourceIntegrityError("bundle_output_not_empty", f"Destination directory is not empty: {out}")
