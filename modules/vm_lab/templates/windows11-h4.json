@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "template_id": "windows11-h4",
+  "guest_os": "Windows 11",
+  "vm_name": "RC-H4-Windows-Acceptance",
+  "vm_root": "C:\\H4-VM-Staging\\RC-H4-Windows-Acceptance",
+  "generation": 2,
+  "cpu_count": 4,
+  "memory_startup_bytes": 6442450944,
+  "memory_minimum_bytes": 4294967296,
+  "memory_maximum_bytes": 8589934592,
+  "vhdx_size_bytes": 85899345920,
+  "vhdx_format": "Dynamic",
+  "iso_path": "",
+  "secure_boot": {
+    "enabled": true,
+    "template": "MicrosoftWindows"
+  },
+  "vtpm_enabled": true,
+  "switch_name": "",
+  "checkpoint_type": "Standard",
+  "automatic_checkpoints_enabled": false,
+  "automatic_start_action": "Nothing",
+  "owner_namespace": "resource_coordinator.h4"
+}

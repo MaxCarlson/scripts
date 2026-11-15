@@ -3169,7 +3169,7 @@ switch ($payload.operation) {
     # Probe first without suppressing access errors. An inaccessible task store
     # must not be reported as an empty, healthy installation.
     $allTasks = @(Get-ScheduledTask -ErrorAction Stop)
-    foreach ($name in $taskNames) {
+    foreach ($name in $allTaskNames) {
       $task = $allTasks | Where-Object TaskName -EQ $name | Select-Object -First 1
       if (-not $task) { continue }
       $mode = if ($name -eq $bootTaskName) {'boot'} elseif ($name -eq $logonTaskName) {'logon'} else {'viewer'}

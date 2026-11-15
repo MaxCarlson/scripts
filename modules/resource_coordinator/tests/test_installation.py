@@ -2289,3 +2289,123 @@ def test_manual_miner_mutations_are_available_outside_gaming():
     from resource_coordinator.core.service import _manual_miner_mutations_allowed
 
     assert _manual_miner_mutations_allowed({"state": "inactive"})
+
+
+def _run_tasks_powershell_status(tmp_path: Path, mock_get_scheduled_task: str, *, managed_root: Path):
+    import base64
+    import getpass
+    import json
+    import os
+    import shutil
+    import subprocess
+    import resource_coordinator.installation as mod
+
+    powershell = shutil.which("pwsh.exe") or shutil.which("powershell.exe")
+    if os.name != "nt" or not powershell:
+        pytest.skip("Windows PowerShell is required for _TASKS_POWERSHELL execution tests")
+
+    domain = os.environ.get("USERDOMAIN", "")
+    user = os.environ.get("USERNAME") or getpass.getuser()
+    interactive_user = f"{domain}\\{user}" if domain else user
+    payload = {
+        "operation": "status",
+        "managed_root": str(managed_root),
+        "interactive_user": interactive_user,
+        "task_names": dict(TASK_NAMES),
+    }
+    encoded = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+    script = mock_get_scheduled_task + "\n" + mod._TASKS_POWERSHELL.replace("__PAYLOAD__", encoded)
+    script_path = tmp_path / "run_status.ps1"
+    script_path.write_text(script, encoding="utf-8")
+    return subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_powershell_task_status_discovers_owned_foreign_and_missing_tasks(tmp_path):
+    import json
+
+    managed_root = tmp_path / "managed_root"
+    managed_root.mkdir()
+    boot_launcher = str(managed_root / "start-coordinator-managed.ps1").replace("'", "''")
+    logon_launcher = str(managed_root / "start-coordinator.ps1").replace("'", "''")
+    foreign_viewer = str(tmp_path / "other" / "view-krig.ps1").replace("'", "''")
+
+    mock_tasks = f"""
+function Get-ScheduledTask {{
+  param($TaskName, $ErrorAction)
+  @(
+    [pscustomobject]@{{
+      TaskName = '{TASK_NAMES["boot"]}'
+      State = 'Disabled'
+      Settings = [pscustomobject]@{{ Enabled = $false }}
+      Principal = [pscustomobject]@{{ UserId = 'SYSTEM'; RunLevel = 'Highest' }}
+      Actions = @([pscustomobject]@{{ Execute = 'pwsh.exe'; Arguments = '-NoLogo -File "{boot_launcher}"' }})
+    }},
+    [pscustomobject]@{{
+      TaskName = '{TASK_NAMES["logon"]}'
+      State = 'Ready'
+      Settings = [pscustomobject]@{{ Enabled = $true }}
+      Principal = [pscustomobject]@{{ UserId = ($env:USERDOMAIN + '\\' + $env:USERNAME).Trim('\\'); RunLevel = 'Highest' }}
+      Actions = @([pscustomobject]@{{ Execute = 'pwsh.exe'; Arguments = '-NoLogo -File "{logon_launcher}"' }})
+    }},
+    [pscustomobject]@{{
+      TaskName = '{TASK_NAMES["viewer"]}'
+      State = 'Ready'
+      Settings = [pscustomobject]@{{ Enabled = $true }}
+      Principal = [pscustomobject]@{{ UserId = 'SYSTEM'; RunLevel = 'Limited' }}
+      Actions = @([pscustomobject]@{{ Execute = 'pwsh.exe'; Arguments = '-NoLogo -File "{foreign_viewer}"' }})
+    }},
+    [pscustomobject]@{{
+      TaskName = 'Unrelated-Other-Task'
+      State = 'Ready'
+      Settings = [pscustomobject]@{{ Enabled = $true }}
+      Principal = [pscustomobject]@{{ UserId = 'SYSTEM'; RunLevel = 'Highest' }}
+      Actions = @([pscustomobject]@{{ Execute = 'cmd.exe'; Arguments = '/c echo hi' }})
+    }}
+  )
+}}
+"""
+    proc = _run_tasks_powershell_status(tmp_path, mock_tasks, managed_root=managed_root)
+    assert proc.returncode == 0, proc.stderr
+    parsed = [StartupTask(**item) for item in json.loads(proc.stdout or "[]")]
+    assert [t.name for t in parsed] == [
+        TASK_NAMES["boot"],
+        TASK_NAMES["logon"],
+        TASK_NAMES["viewer"],
+    ]
+    by_name = {t.name: t for t in parsed}
+    assert by_name[TASK_NAMES["boot"]].mode == "boot"
+    assert by_name[TASK_NAMES["boot"]].enabled is False
+    assert by_name[TASK_NAMES["boot"]].owned is True
+    assert by_name[TASK_NAMES["boot"]].run_level == "Highest"
+    assert by_name[TASK_NAMES["logon"]].mode == "logon"
+    assert by_name[TASK_NAMES["logon"]].enabled is True
+    assert by_name[TASK_NAMES["logon"]].owned is True
+    assert by_name[TASK_NAMES["viewer"]].mode == "viewer"
+    assert by_name[TASK_NAMES["viewer"]].owned is False
+
+
+def test_powershell_task_status_handles_missing_tasks_and_permission_denied(tmp_path):
+    import json
+
+    managed_root = tmp_path / "managed_root"
+    managed_root.mkdir()
+
+    empty_proc = _run_tasks_powershell_status(
+        tmp_path,
+        "function Get-ScheduledTask { param($TaskName, $ErrorAction) @() }",
+        managed_root=managed_root,
+    )
+    assert empty_proc.returncode == 0, empty_proc.stderr
+    assert json.loads(empty_proc.stdout or "[]") == []
+
+    denied_proc = _run_tasks_powershell_status(
+        tmp_path,
+        "function Get-ScheduledTask { param($TaskName, $ErrorAction) throw 'Access is denied.' }",
+        managed_root=managed_root,
+    )
+    assert denied_proc.returncode != 0
+    assert "Access is denied" in (denied_proc.stderr + denied_proc.stdout)

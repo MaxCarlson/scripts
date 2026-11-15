@@ -222,3 +222,29 @@ def test_trusted_bootstrap_rejects_bad_digest_bad_python_and_cleans_partial_extr
     )
     assert proc_inc.returncode != 0
     assert not inc_dest.exists()
+
+
+def test_build_bundle_allows_cross_drive_output_and_rejects_live_package_containment():
+    import os
+
+    repo_root = MODULE_ROOT.parents[1]
+    if os.name == "nt":
+        other_drive = "Z:" if repo_root.drive.upper() != "Z:" else "Y:"
+        cross_drive_out = Path(f"{other_drive}\\h4_cross_drive_plan_only")
+        plan = bundle_builder.build_bundle(
+            repo_root=repo_root,
+            output_dir=cross_drive_out,
+            new_ref="HEAD",
+            apply=False,
+        )
+        assert plan["status"] == "planned"
+        assert plan["output_dir"] == str(cross_drive_out)
+
+    with pytest.raises(bundle_builder.SourceIntegrityError) as exc_info:
+        bundle_builder.build_bundle(
+            repo_root=repo_root,
+            output_dir=MODULE_ROOT / "resource_coordinator" / "sub_out",
+            new_ref="HEAD",
+            apply=False,
+        )
+    assert exc_info.value.code == "bundle_output_unsafe"
