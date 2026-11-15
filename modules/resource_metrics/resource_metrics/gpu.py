@@ -5,7 +5,8 @@ from __future__ import annotations
 import csv
 import shutil
 import subprocess
-from typing import Any, Optional
+import time
+from typing import Any, Callable, Optional
 
 MIB = 1024**2
 
@@ -172,3 +173,180 @@ def gpu_devices(*, timeout: float = 1.5) -> list[dict[str, Any]]:
         ]
     except Exception:
         return []
+
+
+def _sample_nvml() -> Optional[dict[str, Any]]:
+    """Attempt in-process GPU discovery and process attribution via pynvml."""
+    try:
+        import pynvml  # type: ignore
+    except ImportError:
+        return None
+
+    try:
+        pynvml.nvmlInit()
+    except Exception:
+        return None
+
+    try:
+        count = int(pynvml.nvmlDeviceGetCount())
+        devices: list[dict[str, Any]] = []
+        process_memory: dict[int, dict[str, Any]] = {}
+        wddm_omitted = False
+
+        for index in range(count):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+            raw_name = pynvml.nvmlDeviceGetName(handle)
+            name = raw_name.decode("utf-8", errors="replace") if isinstance(raw_name, bytes) else str(raw_name)
+            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            try:
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                load = float(util.gpu)
+                mem_util = float(util.memory)
+            except Exception:
+                load = None
+                mem_util = None
+            try:
+                temp = float(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU))
+            except Exception:
+                temp = None
+            try:
+                power_w = float(pynvml.nvmlDeviceGetPowerUsage(handle)) / 1000.0
+            except Exception:
+                power_w = None
+
+            devices.append(
+                {
+                    "name": name or None,
+                    "id": index,
+                    "load": load,
+                    "memory_utilization": mem_util,
+                    "mem_used": int(mem.used),
+                    "mem_free": int(mem.free),
+                    "mem_total": int(mem.total),
+                    "temp": temp,
+                    "power_w": power_w,
+                }
+            )
+
+            proc_queries = []
+            for fn_name in ("nvmlDeviceGetComputeRunningProcesses", "nvmlDeviceGetGraphicsRunningProcesses"):
+                fn = getattr(pynvml, fn_name, None)
+                if fn is None:
+                    continue
+                try:
+                    proc_queries.extend(fn(handle))
+                except Exception:
+                    continue
+
+            not_avail = getattr(pynvml, "NVML_VALUE_NOT_AVAILABLE", 0xFFFFFFFFFFFFFFFF)
+            for proc_info in proc_queries:
+                pid = int(getattr(proc_info, "pid", 0) or 0)
+                if pid <= 0:
+                    continue
+                used_mem = getattr(proc_info, "usedGpuMemory", None)
+                if used_mem is None or used_mem == not_avail:
+                    mem_bytes = None
+                    wddm_omitted = True
+                else:
+                    mem_bytes = int(used_mem)
+                existing = process_memory.get(pid)
+                if existing is None or (mem_bytes is not None and (existing["memory_bytes"] or 0) < mem_bytes):
+                    process_memory[pid] = {
+                        "memory_bytes": mem_bytes,
+                        "gpu_id": index,
+                        "provenance": "nvml",
+                    }
+
+        limitations = (
+            "Windows WDDM may omit per-process GPU memory for some processes."
+            if wddm_omitted
+            else None
+        )
+        return {
+            "backend": "nvml",
+            "available": bool(devices),
+            "devices": devices,
+            "process_memory": process_memory,
+            "limitations": limitations,
+        }
+    except Exception:
+        return None
+    finally:
+        try:
+            pynvml.nvmlShutdown()
+        except Exception:
+            pass
+
+
+class CachedGpuMonitor:
+    """Throttled, cached GPU monitor preferring NVML with nvidia-smi fallback."""
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float = 4.0,
+        timeout: float = 1.5,
+        binary_name: str = "nvidia-smi",
+        prefer_nvml: bool = True,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.ttl_seconds = max(0.0, float(ttl_seconds))
+        self.timeout = float(timeout)
+        self.binary_name = binary_name
+        self.prefer_nvml = prefer_nvml
+        self._clock = clock
+        self._cached: Optional[dict[str, Any]] = None
+        self._last_sampled_at: Optional[float] = None
+
+    def snapshot(self, *, force: bool = False) -> dict[str, Any]:
+        """Return cached GPU telemetry or refresh if TTL has expired."""
+        now = self._clock()
+        if (
+            not force
+            and self._cached is not None
+            and self._last_sampled_at is not None
+            and (now - self._last_sampled_at) < self.ttl_seconds
+        ):
+            result = dict(self._cached)
+            result["age_seconds"] = max(0.0, now - self._last_sampled_at)
+            return result
+
+        payload: Optional[dict[str, Any]] = None
+        if self.prefer_nvml:
+            payload = _sample_nvml()
+
+        if payload is None:
+            devices = nvidia_gpus(timeout=self.timeout, binary_name=self.binary_name, include_power=True)
+            if devices or shutil.which(self.binary_name):
+                apps = gpu_process_memory(timeout=self.timeout, binary_name=self.binary_name)
+                proc_mem: dict[int, dict[str, Any]] = {}
+                for item in apps:
+                    pid = int(item["pid"])
+                    mem_val = item.get("memory_bytes")
+                    proc_mem[pid] = {
+                        "memory_bytes": int(mem_val) if mem_val is not None else None,
+                        "gpu_id": None,
+                        "provenance": "nvidia-smi",
+                    }
+                payload = {
+                    "backend": "nvidia-smi",
+                    "available": bool(devices),
+                    "devices": devices,
+                    "process_memory": proc_mem,
+                    "limitations": "nvidia-smi compute-apps only; graphics processes and per-process utilization may be unavailable.",
+                }
+            else:
+                payload = {
+                    "backend": "unavailable",
+                    "available": False,
+                    "devices": [],
+                    "process_memory": {},
+                    "limitations": "No supported GPU backend (NVML/nvidia-smi) available.",
+                }
+
+        sampled_at = self._clock()
+        payload["measured_at"] = sampled_at
+        payload["age_seconds"] = 0.0
+        self._cached = payload
+        self._last_sampled_at = sampled_at
+        return dict(payload)

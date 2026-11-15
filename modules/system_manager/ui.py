@@ -6,7 +6,11 @@ UI helpers for System Manager using TermDash.
 from __future__ import annotations
 import sys
 from typing import List, Dict, Any, Optional, Callable
-from termdash.interactive_list import InteractiveList, render_items_to_text
+try:
+    from termdash.interactive_list import InteractiveList, render_items_to_text
+except ImportError:
+    InteractiveList = None  # type: ignore[assignment]
+    render_items_to_text = None  # type: ignore[assignment]
 from cross_platform.size_utils import format_bytes_binary
 
 def generic_formatter(item: Dict[str, Any], sort_field: str, width: int, show_date: bool, show_time: bool, scroll_offset: int) -> str:
@@ -61,6 +65,19 @@ def show_list(
         col_line = "  ".join(columns)
     else:
         col_line = "  ".join([k.upper() for k in items[0].keys() if not k.startswith('_')])
+
+    if InteractiveList is None:
+        from rich.console import Console
+        from rich.table import Table
+
+        visible_keys = [k for k in items[0].keys() if not k.startswith('_')]
+        table = Table(title=title)
+        for col in (columns or [k.upper() for k in visible_keys]):
+            table.add_column(str(col))
+        for item in items:
+            table.add_row(*[str(item.get(k, "")) for k in visible_keys])
+        Console().print(table)
+        return
 
     list_view = InteractiveList(
         items=items,

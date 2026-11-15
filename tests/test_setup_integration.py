@@ -121,3 +121,38 @@ def test_setup_utils_windows_cmd_wrapper(mock_setup_env):
     assert wrapper_path.is_file()
     content = wrapper_path.read_text(encoding="utf-8")
     assert MANAGED_SIGNATURE_WINDOWS in content
+
+
+def test_setup_is_package_importable_detects_init_failure(tmp_path: Path, monkeypatch):
+    """_is_package_importable must execute import, not just find_spec."""
+    import subprocess
+    import venv
+
+    venv_dir = tmp_path / "venv"
+    venv.create(venv_dir, with_pip=False, symlinks=(os.name != "nt"))
+    venv_python = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    site_packages = Path(
+        subprocess.check_output(
+            [str(venv_python), "-c", "import site; print(site.getsitepackages()[-1])"],
+            text=True,
+        ).strip()
+    )
+
+    broken_pkg = site_packages / "broken_mod"
+    broken_pkg.mkdir(parents=True)
+    (broken_pkg / "__init__.py").write_text("raise ImportError('missing runtime dep')\n", encoding="utf-8")
+
+    good_pkg = site_packages / "good_mod"
+    good_pkg.mkdir(parents=True)
+    (good_pkg / "__init__.py").write_text("OK = True\n", encoding="utf-8")
+
+    import setup as root_setup
+
+    monkeypatch.setattr(root_setup.sys, "executable", str(venv_python))
+    monkeypatch.setattr(root_setup, "_get_pkg_name_from_source", lambda _p, _v: "dummy")
+
+    monkeypatch.setattr(root_setup, "_expected_import_modules", lambda _p, _pkg: ["broken_mod"])
+    assert root_setup._is_package_importable(tmp_path, verbose=False) is False
+
+    monkeypatch.setattr(root_setup, "_expected_import_modules", lambda _p, _pkg: ["good_mod"])
+    assert root_setup._is_package_importable(tmp_path, verbose=False) is True

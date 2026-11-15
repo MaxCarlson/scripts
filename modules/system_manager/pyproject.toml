@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "system_manager"
-version = "0.4.1"
+version = "1.1.0"
 description = "A comprehensive system management CLI leveraging cross_platform utilities."
 authors = [
     {name = "Your Name", email = "your.email@example.com"}
@@ -15,18 +15,30 @@ requires-python = ">=3.8"
 
 dependencies = [
     "cross_platform",
-    "resource-metrics>=0.1.0",
+    "resource-metrics>=0.3.0",
     "psutil",
+    "PyYAML",
     "requests",
     "rich>=13.0.0",
+    "termdash; python_version >= '3.9'",
+]
+
+[project.optional-dependencies]
+tui = [
+    "textual>=0.58.0; python_version >= '3.9'",
 ]
 
 [project.scripts]
 sys-mgr = "system_manager.cli:main"
 sm = "system_manager.cli:main"
+proc-stats = "system_manager.process_watch_cli:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
+[tool.setuptools]
+packages = ["system_manager", "system_manager.process_watch"]
+
+[tool.setuptools.package-dir]
+system_manager = "."
+"system_manager.process_watch" = "process_watch"
 
 [tool.pytest.ini_options]
 addopts = "-v --basetemp=.pytest_tmp"
