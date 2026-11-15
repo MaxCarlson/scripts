@@ -465,4 +465,92 @@ exit 4
         $threw | Should Be $true
         $errText | Should Match 'exit 4'
     }
+
+    It 'Stop-H4HostVm and Start-H4HostVm match real Hyper-V cmdlet parameter contracts (-VM, no -Id, no -TurnOff/-Force) and verify VM identity' {
+        $tokens = $null; $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should Be 0
+
+        $fnAsts = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+        $getFnAst = $fnAsts | Where-Object { $_.Name -eq 'Get-H4HostVm' } | Select-Object -First 1
+        $startFnAst = $fnAsts | Where-Object { $_.Name -eq 'Start-H4HostVm' } | Select-Object -First 1
+        $stopFnAst = $fnAsts | Where-Object { $_.Name -eq 'Stop-H4HostVm' } | Select-Object -First 1
+        ($null -ne $getFnAst) | Should Be $true
+        ($null -ne $startFnAst) | Should Be $true
+        ($null -ne $stopFnAst) | Should Be $true
+
+        # Verify real Hyper-V module cmdlet contracts when Hyper-V module is present on host
+        $realStopVm = Get-Command -Name 'Stop-VM' -Module 'Hyper-V' -ErrorAction SilentlyContinue
+        $realStartVm = Get-Command -Name 'Start-VM' -Module 'Hyper-V' -ErrorAction SilentlyContinue
+        if ($realStopVm) {
+            $realStopVm.Parameters.ContainsKey('Id') | Should Be $false
+            $realStopVm.Parameters.ContainsKey('VM') | Should Be $true
+        }
+        if ($realStartVm) {
+            $realStartVm.Parameters.ContainsKey('Id') | Should Be $false
+            $realStartVm.Parameters.ContainsKey('VM') | Should Be $true
+        }
+
+        # Verify AST parameter usage directly on Stop-VM / Start-VM
+        $stopText = $stopFnAst.Extent.Text
+        $startText = $startFnAst.Extent.Text
+        $stopText | Should Match 'Stop-VM\s+-VM\s+\$vmObj'
+        $stopText | Should Not Match 'Stop-VM\b[^\r\n]*\s-Id\b'
+        $stopText | Should Not Match 'Stop-VM\b[^\r\n]*\s-(TurnOff|Force)\b'
+        $startText | Should Match 'Start-VM\s+-VM\s+\$vmObj'
+        $startText | Should Not Match 'Start-VM\b[^\r\n]*\s-Id\b'
+
+        # Execute the real helper definitions against strict Hyper-V contract stubs (no -Id on Stop-VM/Start-VM)
+        $expectedId = 'd8483f98-8884-4758-abd1-cd6107c83c03'
+        $probeScript = @"
+`$ErrorActionPreference = 'Stop'
+`$VmName = 'RC-H4-Windows-Acceptance'
+`$calls = [System.Collections.Generic.List[string]]::new()
+function Get-VM {
+    param([Parameter(Mandatory)][guid]`$Id)
+    `$calls.Add("Get-VM:`$Id")
+    return [pscustomobject]@{ Id = `$Id; Name = 'RC-H4-Windows-Acceptance'; State = 'Running' }
+}
+function Stop-VM {
+    param([Parameter(Mandatory)]`$VM)
+    `$calls.Add("Stop-VM:`$(`$VM.Id):`$(`$VM.Name)")
+}
+function Start-VM {
+    param([Parameter(Mandatory)]`$VM)
+    `$calls.Add("Start-VM:`$(`$VM.Id):`$(`$VM.Name)")
+}
+$($getFnAst.Extent.Text)
+$($startFnAst.Extent.Text)
+$($stopFnAst.Extent.Text)
+Stop-H4HostVm -Id '$expectedId'
+Start-H4HostVm -Id '$expectedId'
+`$mismatchThrew = `$false
+try {
+    Stop-H4HostVm -Id '$expectedId' -ExpectedName 'Wrong-VM'
+} catch {
+    `$mismatchThrew = `$true
+}
+[pscustomobject]@{ calls = @(`$calls); mismatch_threw = `$mismatchThrew } | ConvertTo-Json -Compress
+"@
+        $probeOut = & pwsh -NoProfile -NonInteractive -Command $probeScript
+        $LASTEXITCODE | Should Be 0
+        $probe = $probeOut | ConvertFrom-Json
+        $probe.calls[0] | Should Be "Get-VM:$expectedId"
+        $probe.calls[1] | Should Be "Stop-VM:${expectedId}:RC-H4-Windows-Acceptance"
+        $probe.calls[2] | Should Be "Get-VM:$expectedId"
+        $probe.calls[3] | Should Be "Start-VM:${expectedId}:RC-H4-Windows-Acceptance"
+        $probe.calls[4] | Should Be "Get-VM:$expectedId"
+        $probe.calls.Count | Should Be 5
+        $probe.mismatch_threw | Should Be $true
+    }
+
+    It 'records Checkpoint stage as FAIL (not NOT_RUN) when checkpointing fails after entering Checkpoint stage' {
+        Initialize-QualMocks -DuplicateCheckpoint
+        $rCpFail = Invoke-Qual -Extra @{ Stage = 'Checkpoint'; Apply = $true; AuthorizeGuestMutation = $true; CheckpointName = 'dup-cp' }
+        $rCpFail.ExitCode | Should Not Be 0
+        $cpFailJson = $rCpFail.Output | ConvertFrom-Json
+        $cpFailJson.stage_results.Checkpoint | Should Be 'FAIL'
+        $savedSummary = Get-Content -LiteralPath (Join-Path $rCpFail.EvidenceDir 'final-summary.json') -Raw | ConvertFrom-Json
+        $savedSummary.stage_results.Checkpoint | Should Be 'FAIL'
+    }
 }

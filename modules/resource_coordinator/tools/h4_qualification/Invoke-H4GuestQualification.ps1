@@ -71,33 +71,46 @@ $RollbackStages = @(
 if (-not (Get-Command -Name Get-H4HostVm -ErrorAction SilentlyContinue)) {
     function Get-H4HostVm {
         param([Parameter(Mandatory)][string]$Id)
-        return Get-VM -Id $Id -ErrorAction Stop
+        $vmGuid = [guid]$Id
+        $vms = @(Get-VM -Id $vmGuid -ErrorAction Stop)
+        if ($vms.Count -ne 1) {
+            throw "Expected exactly 1 Hyper-V VM for ID '$Id', found $($vms.Count)."
+        }
+        return $vms[0]
     }
 }
 if (-not (Get-Command -Name Start-H4HostVm -ErrorAction SilentlyContinue)) {
     function Start-H4HostVm {
-        param([Parameter(Mandatory)][string]$Id)
-        Start-VM -Id $Id -ErrorAction Stop
+        param([Parameter(Mandatory)][string]$Id, [string]$ExpectedName = $VmName)
+        $vmObj = Get-H4HostVm -Id $Id
+        if (-not $vmObj -or [string]$vmObj.Id -ne $Id -or ($ExpectedName -and $vmObj.Name -ne $ExpectedName)) {
+            throw "Hyper-V VM verification failed before Start-VM for ID '$Id' (found name='$($vmObj.Name)', id='$($vmObj.Id)')."
+        }
+        Start-VM -VM $vmObj -ErrorAction Stop
     }
 }
 if (-not (Get-Command -Name Stop-H4HostVm -ErrorAction SilentlyContinue)) {
     function Stop-H4HostVm {
-        param([Parameter(Mandatory)][string]$Id)
+        param([Parameter(Mandatory)][string]$Id, [string]$ExpectedName = $VmName)
+        $vmObj = Get-H4HostVm -Id $Id
+        if (-not $vmObj -or [string]$vmObj.Id -ne $Id -or ($ExpectedName -and $vmObj.Name -ne $ExpectedName)) {
+            throw "Hyper-V VM verification failed before Stop-VM for ID '$Id' (found name='$($vmObj.Name)', id='$($vmObj.Id)')."
+        }
         # Graceful guest shutdown only; never -TurnOff or -Force
-        Stop-VM -Id $Id -ErrorAction Stop
+        Stop-VM -VM $vmObj -ErrorAction Stop
     }
 }
 if (-not (Get-Command -Name Get-H4HostCheckpoints -ErrorAction SilentlyContinue)) {
     function Get-H4HostCheckpoints {
         param([Parameter(Mandatory)][string]$Id)
-        $vmObj = Get-VM -Id $Id -ErrorAction Stop
+        $vmObj = Get-H4HostVm -Id $Id
         return @(Get-VMSnapshot -VM $vmObj -ErrorAction Stop)
     }
 }
 if (-not (Get-Command -Name New-H4HostCheckpoint -ErrorAction SilentlyContinue)) {
     function New-H4HostCheckpoint {
         param([Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][string]$SnapshotName)
-        $vmObj = Get-VM -Id $Id -ErrorAction Stop
+        $vmObj = Get-H4HostVm -Id $Id
         return Checkpoint-VM -VM $vmObj -SnapshotName $SnapshotName -Passthru -ErrorAction Stop
     }
 }
@@ -509,51 +522,58 @@ try {
             $overallExit = 3
             throw $summary['error']
         }
-        $existingCps = @(Get-H4HostCheckpoints -Id $VmId)
-        if ($existingCps | Where-Object { $_.Name -eq $CheckpointName }) {
-            throw "Checkpoint '$CheckpointName' already exists on VM '$VmName'. Supply a distinct -CheckpointName."
-        }
-        if ($session) {
-            Close-H4GuestSession -Session $session
-            $session = $null
-        }
-        $vmNow = Get-H4HostVm -Id $VmId
-        if ($vmNow.State -ne 'Off') {
-            Stop-H4HostVm -Id $VmId
-            $deadline = (Get-Date).AddMinutes(3)
-            do {
-                Start-Sleep -Seconds 2
-                $vmNow = Get-H4HostVm -Id $VmId
-            } while ($vmNow.State -ne 'Off' -and (Get-Date) -lt $deadline)
+        try {
+            $existingCps = @(Get-H4HostCheckpoints -Id $VmId)
+            if ($existingCps | Where-Object { $_.Name -eq $CheckpointName }) {
+                throw "Checkpoint '$CheckpointName' already exists on VM '$VmName'. Supply a distinct -CheckpointName."
+            }
+            if ($session) {
+                Close-H4GuestSession -Session $session
+                $session = $null
+            }
+            $vmNow = Get-H4HostVm -Id $VmId
             if ($vmNow.State -ne 'Off') {
-                throw "Guest '$VmName' did not shut down cleanly within timeout (state=$($vmNow.State))."
+                Stop-H4HostVm -Id $VmId
+                $deadline = (Get-Date).AddMinutes(3)
+                do {
+                    Start-Sleep -Seconds 2
+                    $vmNow = Get-H4HostVm -Id $VmId
+                } while ($vmNow.State -ne 'Off' -and (Get-Date) -lt $deadline)
+                if ($vmNow.State -ne 'Off') {
+                    throw "Guest '$VmName' did not shut down cleanly within timeout (state=$($vmNow.State))."
+                }
             }
-        }
-        $cp = New-H4HostCheckpoint -Id $VmId -SnapshotName $CheckpointName
-        if (-not $cp -or $cp.Name -ne $CheckpointName) {
-            throw "Checkpoint verification failed for '$CheckpointName'."
-        }
-        $cpRecord = [pscustomobject]@{
-            vm_id         = $VmId
-            vm_name       = $VmName
-            checkpoint_id = [string]$cp.Id
-            name          = $cp.Name
-            creation_time = if ($cp.CreationTime) { $cp.CreationTime.ToString('o') } else { (Get-Date).ToString('o') }
-        }
-        $summary['checkpoint'] = $cpRecord
-        Save-H4JsonArtifact -Dir $hostEvidenceDir -FileName 'clean-checkpoint.json' -Data $cpRecord
-        $stageResults['Checkpoint'] = 'PASS'
+            $cp = New-H4HostCheckpoint -Id $VmId -SnapshotName $CheckpointName
+            if (-not $cp -or $cp.Name -ne $CheckpointName) {
+                throw "Checkpoint verification failed for '$CheckpointName'."
+            }
+            $cpRecord = [pscustomobject]@{
+                vm_id         = $VmId
+                vm_name       = $VmName
+                checkpoint_id = [string]$cp.Id
+                name          = $cp.Name
+                creation_time = if ($cp.CreationTime) { $cp.CreationTime.ToString('o') } else { (Get-Date).ToString('o') }
+            }
+            $summary['checkpoint'] = $cpRecord
+            Save-H4JsonArtifact -Dir $hostEvidenceDir -FileName 'clean-checkpoint.json' -Data $cpRecord
+            $stageResults['Checkpoint'] = 'PASS'
 
-        if ($stagesToRun -contains 'Acceptance') {
-            Start-H4HostVm -Id $VmId
-            $deadline = (Get-Date).AddMinutes(3)
-            do {
-                Start-Sleep -Seconds 3
-                try { $session = Open-H4GuestSession -Id $VmId -Cred $Credential } catch { $session = $null }
-            } while (-not $session -and (Get-Date) -lt $deadline)
-            if (-not $session) {
-                throw "Failed to re-establish PowerShell Direct session after checkpoint restart."
+            if ($stagesToRun -contains 'Acceptance') {
+                Start-H4HostVm -Id $VmId
+                $deadline = (Get-Date).AddMinutes(3)
+                do {
+                    Start-Sleep -Seconds 3
+                    try { $session = Open-H4GuestSession -Id $VmId -Cred $Credential } catch { $session = $null }
+                } while (-not $session -and (Get-Date) -lt $deadline)
+                if (-not $session) {
+                    throw "Failed to re-establish PowerShell Direct session after checkpoint restart."
+                }
             }
+        } catch {
+            if ($stageResults['Checkpoint'] -eq 'NOT_RUN') {
+                $stageResults['Checkpoint'] = 'FAIL'
+            }
+            throw
         }
     }
 
