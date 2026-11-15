@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "procwatch"
-version = "0.2.0"
+version = "0.3.0"
 description = "Windows 11 live console/terminal popup guard, process catcher, and causal diagnostic CLI."
 readme = "README.md"
 requires-python = ">=3.11"

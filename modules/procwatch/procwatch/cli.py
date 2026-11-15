@@ -12,6 +12,9 @@ import time
 from typing import Sequence
 
 from procwatch import __version__
+from procwatch.analyzers.ast_scanner import apply_proposed_fixes, scan_directory
+from procwatch.analyzers.patterns import analyze_patterns
+from procwatch.analyzers.task_auditor import run_audit
 from procwatch.collectors.sysmon_evt import SysmonCollector
 from procwatch.collectors.task_events import TaskSchedulerCollector
 from procwatch.collectors.win_event import WinEventCollector
@@ -31,7 +34,14 @@ from procwatch.correlator.engine import LiveCorrelator
 from procwatch.guard.window_guard import RawWindowEvent
 from procwatch.models import CollectorStats
 from procwatch.mutex import CollectorAlreadyRunningError, CollectorMutex
-from procwatch.renderers.console import ConsoleRenderer, render_explain_detail, render_history_rows
+from procwatch.renderers.console import (
+    ConsoleRenderer,
+    render_analyze_report,
+    render_audit_report,
+    render_explain_detail,
+    render_history_rows,
+    render_scan_report,
+)
 from procwatch.renderers.doctor_view import collect_doctor_report, render_doctor_report
 from procwatch.storage import FlightRecorderStorage
 
@@ -63,12 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
         "Distinctions:\n"
         "  Window Owner       Process owning the HWND (often WindowsTerminal.exe).\n"
         "  Suspected Cause    Candidate initiating process correlated by timing/ancestry.\n\n"
-        "Planned future commands (Phases 3-4, not yet installed):\n"
-        "  scan, audit, analyze, exec\n"
+        "Planned future commands (Phase 4, not yet installed):\n"
+        "  exec\n"
     )
     parser = argparse.ArgumentParser(
         prog="procwatch",
-        description="Windows 11 live console/terminal popup guard, flight recorder, and causal explainer.",
+        description="Windows 11 console popup guard, flight recorder, static/task auditor, and pattern analyzer.",
         epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -330,6 +340,129 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mark_p.add_argument(
         "-d",
+        "--db-path",
+        type=Path,
+        default=None,
+        help="Override SQLite flight recorder DB path.",
+    )
+
+    scan_p = subparsers.add_parser(
+        "scan",
+        help="Scan Python and PowerShell codebases for unintended console-launching patterns (read-only by default).",
+    )
+    scan_p.add_argument(
+        "-d",
+        "--directory",
+        type=Path,
+        default=Path.cwd(),
+        help="Directory or file to scan (default: current working directory).",
+    )
+    scan_p.add_argument(
+        "-w",
+        "--include-worktrees",
+        action="store_true",
+        help="Also discover and scan active git worktrees via `git worktree list --porcelain`.",
+    )
+    scan_p.add_argument(
+        "-u",
+        "--unified-diff",
+        action="store_true",
+        help="Print reviewable unified diffs for safe Python remediation candidates.",
+    )
+    scan_p.add_argument(
+        "-a",
+        "--apply-fixes",
+        action="store_true",
+        help="Explicitly apply verified safe Python patches (creates backups; skips dirty files without --force).",
+    )
+    scan_p.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Allow --apply-fixes on files with uncommitted git changes (still creates backups).",
+    )
+    scan_p.add_argument(
+        "-j",
+        "--json-output",
+        action="store_true",
+        help="Emit scan report as JSON.",
+    )
+    scan_p.add_argument(
+        "-D",
+        "--db-path",
+        type=Path,
+        default=None,
+        help="Override SQLite flight recorder DB path for incident linking.",
+    )
+
+    audit_p = subparsers.add_parser(
+        "audit",
+        help="Audit Scheduled Tasks, Startup folders, Registry Run keys, and Default Terminal (read-only by default).",
+    )
+    audit_p.add_argument(
+        "-t",
+        "--target-type",
+        choices=["all", "tasks", "startup", "defterm"],
+        default="all",
+        help="Audit scope (default: all).",
+    )
+    audit_p.add_argument(
+        "-n",
+        "--task-name",
+        default=None,
+        help="Filter Scheduled Tasks by path/name substring.",
+    )
+    audit_p.add_argument(
+        "-a",
+        "--apply-task-fix",
+        action="store_true",
+        help="Preview-only notice in Phase 3 (live system task mutation requires explicit task XML backup flow).",
+    )
+    audit_p.add_argument(
+        "-j",
+        "--json-output",
+        action="store_true",
+        help="Emit audit report as JSON.",
+    )
+    audit_p.add_argument(
+        "-D",
+        "--db-path",
+        type=Path,
+        default=None,
+        help="Override SQLite flight recorder DB path for task/popup correlation.",
+    )
+
+    analyze_p = subparsers.add_parser(
+        "analyze",
+        help="Detect recurring process/popup bursts and compare coverage-normalized baselines.",
+    )
+    analyze_p.add_argument(
+        "-p",
+        "--periodicity",
+        action="store_true",
+        help="Filter output to periodic/bursty signatures.",
+    )
+    analyze_p.add_argument(
+        "-b",
+        "--baseline-window",
+        default="24h",
+        help="Baseline lookback duration before current window (e.g. '24h', '7d'; default '24h').",
+    )
+    analyze_p.add_argument(
+        "-w",
+        "--window-seconds",
+        type=float,
+        default=3600.0,
+        help="Current comparison window duration in seconds (default 3600.0).",
+    )
+    analyze_p.add_argument(
+        "-j",
+        "--json-output",
+        action="store_true",
+        help="Emit analysis report as JSON.",
+    )
+    analyze_p.add_argument(
+        "-D",
         "--db-path",
         type=Path,
         default=None,
@@ -604,6 +737,52 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"Bookmark #{bm.bookmark_id} recorded at {bm.ts_utc}: "
                     f"{bm.label!r} (matched_incidents={bm.matched_incident_ids})"
                 )
+            return 0
+
+        if args.command == "scan":
+            report = scan_directory(
+                args.directory,
+                include_worktrees=args.include_worktrees,
+                generate_diffs=True,
+                db_path=args.db_path,
+            )
+            payload = report.to_dict()
+            if args.apply_fixes:
+                payload["apply_result"] = apply_proposed_fixes(
+                    report,
+                    apply_fixes=True,
+                    force=args.force,
+                )
+            render_scan_report(
+                payload,
+                show_diff=args.unified_diff,
+                json_output=args.json_output,
+            )
+            return 0
+
+        if args.command == "audit":
+            report = run_audit(
+                target_type=args.target_type,
+                task_name=args.task_name,
+                db_path=args.db_path,
+            )
+            payload = report.to_dict()
+            if args.apply_task_fix:
+                payload["apply_notice"] = (
+                    "Read-only audit complete; live system tasks are never mutated automatically. "
+                    "Use `apply_task_fix_preview_or_xml` with explicit XML backup/hash verification."
+                )
+            render_audit_report(payload, json_output=args.json_output)
+            return 0
+
+        if args.command == "analyze":
+            comp = analyze_patterns(
+                db_path=args.db_path,
+                window_seconds=args.window_seconds,
+                baseline_window=args.baseline_window,
+                periodicity_only=args.periodicity,
+            )
+            render_analyze_report(comp.to_dict(), json_output=args.json_output)
             return 0
     except ConfigValidationError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)

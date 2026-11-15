@@ -519,9 +519,9 @@ REGISTRY: dict = {
             {
                 "name": "procwatch (module)",
                 "path": "modules/procwatch",
-                "desc": "Windows 11 live console/terminal popup guard, flight recorder, and causal CLI",
+                "desc": "Windows 11 console popup guard, flight recorder, static/task auditor, and pattern analyzer",
                 "help_cmd": ["python", "-m", "procwatch", "--help"],
-                "version": "0.2.0",
+                "version": "0.3.0",
             },
             {
                 "name": "system_manager (module)",

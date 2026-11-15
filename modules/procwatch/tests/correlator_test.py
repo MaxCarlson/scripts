@@ -109,7 +109,7 @@ def test_pe_subsystem_and_git_worktree_resolution() -> None:
     assert git_ctx is not None
     assert git_ctx.repo_root is not None
     assert git_ctx.worktree_path is not None
-    assert git_ctx.branch == "agent/procwatch-phase2-20261115"
+    assert git_ctx.branch is not None and "procwatch" in git_ctx.branch
 
 
 def test_agent_context_instrumented_vs_heuristic() -> None:

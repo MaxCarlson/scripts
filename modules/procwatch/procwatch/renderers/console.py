@@ -251,3 +251,122 @@ def render_explain_detail(
     else:
         con.print("[dim]No evidence edges recorded for this target.[/dim]")
 
+
+def render_scan_report(
+    report: dict[str, object],
+    *,
+    show_diff: bool = False,
+    json_output: bool = False,
+    console: Console | None = None,
+) -> None:
+    """Render static Python/PowerShell scan findings and optional unified diffs."""
+    if json_output:
+        print(json.dumps(report, indent=2, default=str))
+        return
+    con = console or Console()
+    con.print(
+        f"[bold cyan]ProcWatch Scan[/bold cyan] files={report.get('files_scanned', 0)} "
+        f"findings={report.get('finding_count', 0)}"
+    )
+    findings = report.get("findings")
+    if isinstance(findings, list) and findings:
+        from rich.table import Table
+
+        table = Table(title="Static Process-Launch Findings")
+        table.add_column("Category", style="bold")
+        table.add_column("Location")
+        table.add_column("Mechanism")
+        table.add_column("Remediation")
+        for f in findings[:50]:
+            if isinstance(f, dict):
+                table.add_row(
+                    str(f.get("category", "")),
+                    f"{f.get('file_path')}:{f.get('line')}",
+                    str(f.get("mechanism", "")),
+                    str(f.get("remediation", ""))[:100],
+                )
+        con.print(table)
+    else:
+        con.print("[green]No suspicious console-launching patterns found.[/green]")
+
+    diffs = report.get("diffs")
+    if show_diff and isinstance(diffs, dict) and diffs:
+        for path, diff_text in diffs.items():
+            con.print(f"[bold yellow]Proposed diff for {path}:[/bold yellow]")
+            con.print(str(diff_text))
+
+
+def render_audit_report(
+    report: dict[str, object],
+    *,
+    json_output: bool = False,
+    console: Console | None = None,
+) -> None:
+    """Render read-only Windows Task/Startup/DefTerm audit findings."""
+    if json_output:
+        print(json.dumps(report, indent=2, default=str))
+        return
+    con = console or Console()
+    con.print(
+        f"[bold cyan]ProcWatch Audit[/bold cyan] target={report.get('target_type')} "
+        f"findings={report.get('finding_count', 0)}"
+    )
+    findings = report.get("findings")
+    if isinstance(findings, list) and findings:
+        from rich.table import Table
+
+        table = Table(title="Windows Background Execution Audit")
+        table.add_column("Rank", style="bold")
+        table.add_column("Source")
+        table.add_column("Target")
+        table.add_column("Executable")
+        for f in findings[:60]:
+            if isinstance(f, dict):
+                table.add_row(
+                    str(f.get("evidence_rank", "")),
+                    str(f.get("source_type", "")),
+                    str(f.get("target_name", ""))[:45],
+                    str(f.get("executable") or "")[:55],
+                )
+        con.print(table)
+
+
+def render_analyze_report(
+    report: dict[str, object],
+    *,
+    json_output: bool = False,
+    console: Console | None = None,
+) -> None:
+    """Render periodicity and coverage-aware baseline comparison."""
+    if json_output:
+        print(json.dumps(report, indent=2, default=str))
+        return
+    con = console or Console()
+    con.print(
+        f"[bold cyan]ProcWatch Analyze[/bold cyan] outcome=[bold]{report.get('outcome')}[/bold] "
+        f"current={report.get('current_count')} ({report.get('current_rate_per_hour')}/hr) "
+        f"baseline={report.get('baseline_count')} ({report.get('baseline_rate_per_hour')}/hr)"
+    )
+    if report.get("coverage_warning"):
+        con.print(f"[yellow]Coverage warning:[/yellow] {report.get('coverage_warning')}")
+    patterns = report.get("patterns")
+    if isinstance(patterns, list) and patterns:
+        from rich.table import Table
+
+        table = Table(title="Detected Process/Popup Patterns")
+        table.add_column("Count", justify="right", style="bold")
+        table.add_column("Popups", justify="right")
+        table.add_column("Median (s)", justify="right")
+        table.add_column("Periodic")
+        table.add_column("Signature")
+        for p in patterns[:30]:
+            if isinstance(p, dict):
+                table.add_row(
+                    str(p.get("observed_count", 0)),
+                    str(p.get("popup_count", 0)),
+                    str(p.get("median_interval_seconds") or "-"),
+                    "yes" if p.get("is_periodic") else "no",
+                    str(p.get("signature", ""))[:65],
+                )
+        con.print(table)
+
