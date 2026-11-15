@@ -46,3 +46,63 @@ def test_fail_closed_redaction_on_bad_pattern() -> None:
 
 def test_escape_control_chars() -> None:
     assert escape_control_chars("a\x00b\nc\x1fd") == "a\\x00b\\nc\\x1fd"
+
+
+def test_no_plaintext_secrets_in_sqlite_wal_or_export(tmp_path) -> None:
+    import json
+    from procwatch.models import (
+        IncidentRecord,
+        ProcessIdentity,
+        ProcessObservation,
+        RawEventRecord,
+    )
+    from procwatch.storage import FlightRecorderStorage
+
+    secrets = [
+        "ghp_SuperSecretGitHubToken1234567890",
+        "sk-SecretOpenAIKey1234567890abcdef",
+        "SuperSecretDbPassword99",
+    ]
+    db_path = tmp_path / "redacted.db"
+    storage = FlightRecorderStorage(db_path=db_path)
+    try:
+        storage.ingest_event_batch(
+            source="sysmon_evt",
+            events=[
+                RawEventRecord(
+                    boot_id="b1",
+                    source="sysmon_evt",
+                    provider_event_id=1,
+                    source_record_id="1",
+                    event_ts_utc="2099-01-01T00:00:00.000Z",
+                    payload_redacted=f"<Data>--token {secrets[0]}</Data>",
+                )
+            ],
+        )
+        proc = ProcessObservation(
+            identity=ProcessIdentity.provisional("b1", 555, 1000),
+            image_name="python.exe",
+            command_line_redacted=f"python.exe --api-key={secrets[1]} --password {secrets[2]}",
+            source="wmi_trace",
+        )
+        storage.upsert_process(proc)
+        storage.insert_incident(
+            IncidentRecord(
+                created_ts_utc="2099-01-01T00:00:00.000Z",
+                category="console_popup",
+                primary_proc_key=proc.identity.proc_key,
+                summary_text=f"auth --password={secrets[2]}",
+            )
+        )
+        bundle = storage.export_bundle()
+    finally:
+        storage.close()
+
+    bundle_json = json.dumps(bundle)
+    db_bytes = db_path.read_bytes()
+    wal_path = tmp_path / "redacted.db-wal"
+    wal_bytes = wal_path.read_bytes() if wal_path.exists() else b""
+    for secret in secrets:
+        assert secret not in bundle_json
+        assert secret.encode("utf-8") not in db_bytes
+        assert secret.encode("utf-8") not in wal_bytes

@@ -229,3 +229,140 @@ class CollectorStats:
     guard_allowed_count: int = 0
     guard_pending_count: int = 0
     guard_errors: int = 0
+
+
+class EdgeRelation(StrEnum):
+    """Typed causal and structural relationships in the evidence graph."""
+
+    PARENT_OF = "parent_of"
+    TRIGGERED_BY = "triggered_by"
+    HOSTED_BY = "hosted_by"
+    CORRELATED_WITH = "correlated_with"
+    SUPERSEDES = "supersedes"
+
+
+@dataclass(slots=True)
+class EvidenceEdge:
+    """Directional evidence edge between two entities (process, window, task, agent)."""
+
+    from_node_id: str
+    to_node_id: str
+    relation: EdgeRelation
+    source: str
+    method: str
+    confidence: ConfidenceLevel
+    supporting_raw_ids: list[int] = field(default_factory=list)
+    notes: str = ""
+    edge_id: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class RawEventRecord:
+    """Normalized raw event ready for pre-persistence redaction and SQLite storage."""
+
+    boot_id: str
+    source: str
+    provider_event_id: int
+    source_record_id: str
+    event_ts_utc: str
+    payload_redacted: dict[str, Any]
+    machine_id: str = ""
+    ingestion_ts_utc: str = field(default_factory=utc_now_iso)
+    monotonic_ns: int | None = None
+    raw_id: int | None = None
+
+
+@dataclass(slots=True)
+class IngestGap:
+    """Explicit record of missing or interrupted Event Log / collector coverage."""
+
+    source: str
+    reason: str  # log_cleared | stale_bookmark | access_denied | queue_overflow | collector_down
+    start_ts_utc: str | None = None
+    end_ts_utc: str | None = None
+    remediation_status: str = "unrecovered"
+    created_at_utc: str = field(default_factory=utc_now_iso)
+    gap_id: int | None = None
+
+
+@dataclass(slots=True)
+class AgentContext:
+    """Parsed PROCWATCH_CONTEXT or passive heuristic agent provenance."""
+
+    version: str = "1"
+    correlation_id: str | None = None
+    agent_kind: str | None = None
+    agent_session: str | None = None
+    phase: str | None = None
+    repo: str | None = None
+    worktree: str | None = None
+    branch: str | None = None
+    producer: str | None = None
+    trust_level: str = "heuristic"  # "instrumented" | "heuristic"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class GitContext:
+    """Resolved Git repository/worktree context for a process CWD or script path."""
+
+    repo_root: str | None = None
+    worktree_path: str | None = None
+    branch: str | None = None
+    commit: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class TaskTriggerInfo:
+    """Task Scheduler operational event metadata."""
+
+    task_path: str
+    event_id: int
+    instance_guid: str | None = None
+    action_exe: str | None = None
+    action_args: str | None = None
+    process_id: int | None = None
+    engine_pid: int | None = None
+    result_code: int | None = None
+    ts_utc: str = ""
+    source_record_id: str = ""
+
+
+@dataclass(slots=True)
+class UserBookmark:
+    """User-created incident bookmark (distinct from Event Log subscription checkpoints)."""
+
+    ts_utc: str
+    monotonic_ns: int
+    label: str
+    matched_incident_ids: list[int] = field(default_factory=list)
+    bookmark_id: int | None = None
+
+
+@dataclass(slots=True)
+class IncidentRecord:
+    """Persisted incident grouping window/process/initiator evidence."""
+
+    created_ts_utc: str
+    category: str  # visible_popup | suppressed_popup | burst_loop | user_mark | process_only
+    primary_proc_key: str | None = None
+    collapsed_shim_key: str | None = None
+    root_initiator_key: str | None = None
+    window_instance_id: str | None = None
+    confidence: ConfidenceLevel = ConfidenceLevel.UNKNOWN
+    summary_text: str = ""
+    alternative_candidates: list[CandidateInitiator] = field(default_factory=list)
+    missing_reasons: list[MissingMetadataReason] = field(default_factory=list)
+    scorer_version: str = "0.2.0"
+    incident_id: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

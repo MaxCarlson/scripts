@@ -1,8 +1,10 @@
-"""Command-line interface for ProcWatch (Phase 1: `watch` and `guard`)."""
+"""Command-line interface for ProcWatch (Phase 2: live guard + persistent flight recorder)."""
 
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
 import queue
 import sys
@@ -17,29 +19,54 @@ from procwatch.config import (
     ConfigValidationError,
     GuardConfig,
     GuardMode,
+    StorageConfig,
     WatchConfig,
     compile_optional_regex,
+    get_data_dir,
 )
 from procwatch.correlator.ancestry import ProcessTableCache
 from procwatch.correlator.engine import LiveCorrelator
 from procwatch.guard.window_guard import RawWindowEvent
 from procwatch.models import CollectorStats
 from procwatch.mutex import CollectorAlreadyRunningError, CollectorMutex
-from procwatch.renderers.console import ConsoleRenderer
+from procwatch.renderers.console import ConsoleRenderer, render_explain_detail, render_history_rows
+from procwatch.renderers.doctor_view import collect_doctor_report, render_doctor_report
+from procwatch.storage import FlightRecorderStorage
+
+
+def _parse_time_window_utc(spec: str | None) -> str | None:
+    """Convert relative durations like '24h', '30m', '7d' into a UTC ISO-8601 cutoff."""
+    if not spec:
+        return None
+    raw = spec.strip().lower()
+    if raw.endswith("s"):
+        delta = timedelta(seconds=float(raw[:-1]))
+    elif raw.endswith("m"):
+        delta = timedelta(minutes=float(raw[:-1]))
+    elif raw.endswith("h"):
+        delta = timedelta(hours=float(raw[:-1]))
+    elif raw.endswith("d"):
+        delta = timedelta(days=float(raw[:-1]))
+    else:
+        raise ConfigValidationError(
+            f"Invalid time window {spec!r}. Use e.g. '30m', '24h', or '7d'."
+        )
+    cutoff = datetime.now(UTC) - delta
+    return cutoff.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the Phase 1 CLI argument parser."""
+    """Build the Phase 2 CLI argument parser."""
     epilog = (
         "Distinctions:\n"
         "  Window Owner       Process owning the HWND (often WindowsTerminal.exe).\n"
         "  Suspected Cause    Candidate initiating process correlated by timing/ancestry.\n\n"
-        "Planned future commands (Phases 2-4, not yet installed):\n"
-        "  history, explain, mark, doctor, scan, audit, analyze, exec\n"
+        "Planned future commands (Phases 3-4, not yet installed):\n"
+        "  scan, audit, analyze, exec\n"
     )
     parser = argparse.ArgumentParser(
         prog="procwatch",
-        description="Windows 11 live console/terminal popup guard and process catcher.",
+        description="Windows 11 live console/terminal popup guard, flight recorder, and causal explainer.",
         epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -155,6 +182,157 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Append redacted JSONL window events to disk.",
     )
+    for live_p in (watch_p, guard_p):
+        live_p.add_argument(
+            "-d",
+            "--db-path",
+            type=Path,
+            default=None,
+            help="Override SQLite flight recorder DB path (default ~/.procwatch/events.db).",
+        )
+        live_p.add_argument(
+            "-P",
+            "--no-persist",
+            action="store_true",
+            help="Disable SQLite flight recorder persistence during this live session.",
+        )
+
+    doctor_p = subparsers.add_parser(
+        "doctor",
+        help="Check collector availability, terminal delegation, privileges, and DB health (read-only).",
+    )
+    doctor_p.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Include detailed collector states and ingest gaps.",
+    )
+    doctor_p.add_argument(
+        "-j",
+        "--json-output",
+        action="store_true",
+        help="Emit diagnostics as JSON.",
+    )
+    doctor_p.add_argument(
+        "-d",
+        "--db-path",
+        type=Path,
+        default=None,
+        help="Override SQLite flight recorder DB path.",
+    )
+
+    history_p = subparsers.add_parser(
+        "history",
+        help="Query persisted flight recorder incidents and optionally export a redacted bundle.",
+    )
+    history_p.add_argument(
+        "-t",
+        "--time-window",
+        default="24h",
+        help="Lookback window (e.g. '30m', '24h', '7d'; default '24h').",
+    )
+    history_p.add_argument(
+        "-p",
+        "--popups-only",
+        action="store_true",
+        help="Show only popup/guard incidents.",
+    )
+    history_p.add_argument(
+        "-a",
+        "--agent-filter",
+        default=None,
+        help="Filter incidents by attributed agent kind (e.g. 'codex', 'claude_code').",
+    )
+    history_p.add_argument(
+        "-r",
+        "--replay-timeline",
+        action="store_true",
+        help="Render matching incidents in chronological replay order.",
+    )
+    history_p.add_argument(
+        "-e",
+        "--export-bundle",
+        type=Path,
+        default=None,
+        help="Write a redacted JSON diagnostic bundle to this path.",
+    )
+    history_p.add_argument(
+        "-l",
+        "--limit",
+        type=int,
+        default=50,
+        help="Maximum number of incidents to display (default 50).",
+    )
+    history_p.add_argument(
+        "-d",
+        "--db-path",
+        type=Path,
+        default=None,
+        help="Override SQLite flight recorder DB path.",
+    )
+
+    explain_p = subparsers.add_parser(
+        "explain",
+        help="Explain causal evidence edges and ancestry for an incident ID or PID.",
+    )
+    explain_p.add_argument(
+        "-i",
+        "--incident-id",
+        type=int,
+        default=None,
+        help="Incident ID from `procwatch history`.",
+    )
+    explain_p.add_argument(
+        "-p",
+        "--pid",
+        type=int,
+        default=None,
+        help="Process ID to explain.",
+    )
+    explain_p.add_argument(
+        "-j",
+        "--json-output",
+        action="store_true",
+        help="Emit explanation details as JSON.",
+    )
+    explain_p.add_argument(
+        "-d",
+        "--db-path",
+        type=Path,
+        default=None,
+        help="Override SQLite flight recorder DB path.",
+    )
+
+    mark_p = subparsers.add_parser(
+        "mark",
+        help="Record a timestamped user bookmark for manual popup correlation.",
+    )
+    mark_p.add_argument(
+        "-l",
+        "--label",
+        required=True,
+        help="Descriptive label for the observed popup or event.",
+    )
+    mark_p.add_argument(
+        "-w",
+        "--window-seconds",
+        type=float,
+        default=3.0,
+        help="Correlation lookback window in seconds (default 3.0).",
+    )
+    mark_p.add_argument(
+        "-j",
+        "--json-output",
+        action="store_true",
+        help="Emit created bookmark as JSON.",
+    )
+    mark_p.add_argument(
+        "-d",
+        "--db-path",
+        type=Path,
+        default=None,
+        help="Override SQLite flight recorder DB path.",
+    )
 
     return parser
 
@@ -165,6 +343,8 @@ def _run_live_session(
     guard_config: GuardConfig,
     watch_config: WatchConfig,
     renderer: ConsoleRenderer,
+    db_path: Path | None = None,
+    no_persist: bool = False,
 ) -> int:
     """Run the single-owner live WinEvent + WMI + Correlator loop until Ctrl+C."""
     if sys.platform != "win32":
@@ -177,6 +357,14 @@ def _run_live_session(
     except CollectorAlreadyRunningError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 3
+
+    storage: FlightRecorderStorage | None = None
+    if not no_persist:
+        try:
+            storage = FlightRecorderStorage(db_path=db_path)
+        except Exception as exc:
+            if not guard_config.quiet:
+                print(f"Warning: flight recorder persistence disabled ({exc}).", file=sys.stderr)
 
     stats = CollectorStats()
     win_queue: queue.Queue[RawWindowEvent] = queue.Queue(maxsize=watch_config.event_queue_maxsize)
@@ -200,6 +388,7 @@ def _run_live_session(
         stats=stats,
         on_incident=renderer.render,
         wmi_missing_reason=wmi_collector.missing_reason,
+        storage=storage,
     )
 
     if not guard_config.quiet:
@@ -224,6 +413,8 @@ def _run_live_session(
         win_collector.stop()
         wmi_collector.stop()
         renderer.close()
+        if storage is not None:
+            storage.close()
         mutex.release()
 
     if not guard_config.quiet:
@@ -270,6 +461,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 guard_config=guard_cfg,
                 watch_config=watch_cfg,
                 renderer=renderer,
+                db_path=args.db_path,
+                no_persist=args.no_persist,
             )
 
         if args.command == "guard":
@@ -301,7 +494,100 @@ def main(argv: Sequence[str] | None = None) -> int:
                 guard_config=guard_cfg,
                 watch_config=watch_cfg,
                 renderer=renderer,
+                db_path=args.db_path,
+                no_persist=args.no_persist,
             )
+
+        if args.command == "doctor":
+            report = collect_doctor_report(db_path=args.db_path, verbose=args.verbose)
+            render_doctor_report(report, json_output=args.json_output, verbose=args.verbose)
+            return 0
+
+        if args.command == "history":
+            since_utc = _parse_time_window_utc(args.time_window)
+            resolved_db = (args.db_path or StorageConfig().resolved_db_path(get_data_dir())).expanduser()
+            if not resolved_db.exists():
+                if args.export_bundle is not None:
+                    args.export_bundle.write_text(
+                        json.dumps({"incidents": [], "note": "flight recorder db not initialized"}, indent=2),
+                        encoding="utf-8",
+                    )
+                render_history_rows([], replay_timeline=args.replay_timeline)
+                return 0
+            storage = FlightRecorderStorage(resolved_db, read_only=True)
+            try:
+                rows = storage.query_history(
+                    since_utc=since_utc,
+                    popups_only=args.popups_only,
+                    agent_filter=args.agent_filter,
+                    limit=args.limit,
+                )
+                if args.export_bundle is not None:
+                    bundle = storage.export_bundle(
+                        since_utc=since_utc,
+                        popups_only=args.popups_only,
+                        agent_filter=args.agent_filter,
+                    )
+                    args.export_bundle.parent.mkdir(parents=True, exist_ok=True)
+                    args.export_bundle.write_text(
+                        json.dumps(bundle, indent=2, default=str),
+                        encoding="utf-8",
+                    )
+            finally:
+                storage.close()
+            render_history_rows(rows, replay_timeline=args.replay_timeline)
+            return 0
+
+        if args.command == "explain":
+            if args.incident_id is None and args.pid is None:
+                raise ConfigValidationError("Specify either --incident-id (-i) or --pid (-p).")
+            resolved_db = (args.db_path or StorageConfig().resolved_db_path(get_data_dir())).expanduser()
+            if not resolved_db.exists():
+                print("Error: flight recorder DB does not exist yet.", file=sys.stderr)
+                return 1
+            storage = FlightRecorderStorage(resolved_db, read_only=True)
+            try:
+                detail: dict[str, object] | None = None
+                if args.incident_id is not None:
+                    detail = storage.get_incident_detail(args.incident_id)
+                elif args.pid is not None:
+                    proc = storage.get_process_by_pid(args.pid)
+                    if proc is not None:
+                        edges = storage.get_edges_for_node(str(proc["proc_key"]))
+                        detail = {"process": proc, "edges": edges}
+            finally:
+                storage.close()
+            if detail is None:
+                print("No matching incident or process found.", file=sys.stderr)
+                return 1
+            render_explain_detail(detail, json_output=args.json_output)
+            return 0
+
+        if args.command == "mark":
+            storage = FlightRecorderStorage(db_path=args.db_path)
+            try:
+                bm = storage.add_user_mark(args.label, window_seconds=args.window_seconds)
+            finally:
+                storage.close()
+            if args.json_output:
+                print(
+                    json.dumps(
+                        {
+                            "bookmark_id": bm.bookmark_id,
+                            "ts_utc": bm.ts_utc,
+                            "label": bm.label,
+                            "window_seconds": args.window_seconds,
+                            "matched_incident_ids": bm.matched_incident_ids,
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                print(
+                    f"Bookmark #{bm.bookmark_id} recorded at {bm.ts_utc}: "
+                    f"{bm.label!r} (matched_incidents={bm.matched_incident_ids})"
+                )
+            return 0
     except ConfigValidationError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2

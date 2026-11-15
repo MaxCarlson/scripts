@@ -159,3 +159,95 @@ class ConsoleRenderer:
     @staticmethod
     def _format_chain(chain: list[ProcessObservation]) -> str:
         return " <- ".join(f"{node.image_name}({node.identity.pid})" for node in chain)
+
+
+def render_history_rows(
+    rows: list[dict[str, object]],
+    *,
+    replay_timeline: bool = False,
+    console: Console | None = None,
+) -> None:
+    """Render persisted Flight Recorder incidents as a summary table or chronological replay."""
+    con = console or Console()
+    if not rows:
+        con.print("[dim]No matching incidents recorded in the requested time window.[/dim]")
+        return
+
+    if replay_timeline:
+        con.print(f"[bold cyan]Incident Timeline Replay ({len(rows)} entries)[/bold cyan]")
+        for row in reversed(rows):
+            con.print(
+                f"  [cyan]{row.get('created_ts_utc', '')}[/cyan] "
+                f"#{row.get('incident_id')} [{row.get('category')}] "
+                f"conf={row.get('confidence')} {row.get('summary_text', '')}"
+            )
+        return
+
+    from rich.table import Table
+
+    table = Table(title=f"ProcWatch History ({len(rows)} incidents)")
+    table.add_column("ID", justify="right", style="bold")
+    table.add_column("Timestamp (UTC)")
+    table.add_column("Category")
+    table.add_column("Confidence")
+    table.add_column("Summary")
+    for row in rows:
+        table.add_row(
+            str(row.get("incident_id", "")),
+            str(row.get("created_ts_utc", "")),
+            str(row.get("category", "")),
+            str(row.get("confidence", "")),
+            str(row.get("summary_text", "")),
+        )
+    con.print(table)
+
+
+def render_explain_detail(
+    detail: dict[str, object],
+    *,
+    json_output: bool = False,
+    console: Console | None = None,
+) -> None:
+    """Render causal explanation for an incident ID or PID."""
+    if json_output:
+        print(json.dumps(detail, indent=2, default=str))
+        return
+
+    con = console or Console()
+    if "incident" in detail:
+        inc = detail["incident"]
+        if isinstance(inc, dict):
+            con.print(
+                f"[bold cyan]Incident #{inc.get('incident_id')}[/bold cyan] "
+                f"({inc.get('created_ts_utc')}) category={inc.get('category')} "
+                f"confidence=[bold]{inc.get('confidence')}[/bold]"
+            )
+            con.print(f"Summary: {inc.get('summary_text', '')}")
+    if "process" in detail and isinstance(detail["process"], dict):
+        proc = detail["process"]
+        con.print(
+            f"Process: {proc.get('image_name')} (PID {proc.get('pid')}, "
+            f"key={proc.get('proc_key')}, subsystem={proc.get('pe_subsystem') or 'unknown'})"
+        )
+        if proc.get("cwd"):
+            con.print(f"  CWD: {proc.get('cwd')}")
+        if proc.get("git_repo"):
+            con.print(f"  Git: repo={proc.get('git_repo')} branch={proc.get('git_branch') or '?'}")
+        if proc.get("agent_kind"):
+            con.print(
+                f"  Agent: {proc.get('agent_kind')} "
+                f"(trust={proc.get('agent_trust_level') or 'unknown'})"
+            )
+    edges = detail.get("edges")
+    if isinstance(edges, list) and edges:
+        con.print("[bold]Evidence Edges:[/bold]")
+        for edge in edges:
+            if isinstance(edge, dict):
+                con.print(
+                    f"  - {edge.get('from_node_id')} --[{edge.get('relation')}]--> "
+                    f"{edge.get('to_node_id')} (conf={edge.get('confidence')}, "
+                    f"via={edge.get('source')}/{edge.get('method')})"
+                )
+    else:
+        con.print("[dim]No evidence edges recorded for this target.[/dim]")
+

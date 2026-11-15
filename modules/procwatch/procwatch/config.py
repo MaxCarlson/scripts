@@ -119,12 +119,36 @@ class WatchConfig:
 
 
 @dataclass(slots=True)
+class StorageConfig:
+    """Configuration for SQLite WAL flight recorder persistence and retention."""
+
+    db_path: Path | None = None
+    max_age_days: int = 14
+    max_size_mb: int = 256
+    busy_timeout_ms: int = 5000
+
+    def __post_init__(self) -> None:
+        if self.max_age_days < 1:
+            raise ConfigValidationError("max_age_days must be at least 1.")
+        if self.max_size_mb < 1:
+            raise ConfigValidationError("max_size_mb must be at least 1.")
+        if self.busy_timeout_ms < 100:
+            raise ConfigValidationError("busy_timeout_ms must be at least 100.")
+
+    def resolved_db_path(self, data_dir: Path) -> Path:
+        if self.db_path is not None:
+            return Path(self.db_path).expanduser().resolve()
+        return (data_dir / "events.db").resolve()
+
+
+@dataclass(slots=True)
 class ProcWatchConfig:
-    """Top-level configuration container for Phase 1."""
+    """Top-level configuration container."""
 
     data_dir: Path = field(default_factory=get_data_dir)
     guard: GuardConfig = field(default_factory=GuardConfig)
     watch: WatchConfig = field(default_factory=WatchConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
     mutex_name: str = DEFAULT_MUTEX_NAME
     max_decoded_bytes: int = 16384
     max_decode_depth: int = 3
