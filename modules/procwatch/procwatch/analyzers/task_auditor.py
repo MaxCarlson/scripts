@@ -367,13 +367,7 @@ def apply_task_fix_preview_or_xml(
     apply_fix: bool = False,
     backup_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Validate, backup, and optionally rewrite a Scheduled Task XML action (never Phase 4 exec)."""
-    if "procwatch" in proposed_command.lower() and "exec" in (proposed_arguments or "").lower():
-        return {
-            "status": "not_applicable_yet",
-            "reason": "Phase 4 `procwatch exec` supervisor is not implemented yet; refusing dangling action.",
-        }
-
+    """Validate, backup, and optionally rewrite a Scheduled Task XML action."""
     actual_sha = hashlib.sha256(original_xml.encode("utf-8", errors="replace")).hexdigest()
     if actual_sha != expected_sha256:
         return {

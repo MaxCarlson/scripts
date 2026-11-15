@@ -366,3 +366,58 @@ class IncidentRecord:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+class RunStatus(StrEnum):
+    """Outcome status for a Phase 4 supervised `procwatch exec` run."""
+
+    SUCCESS = "success"
+    NONZERO_EXIT = "nonzero_exit"
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
+    LAUNCH_FAILED = "launch_failed"
+    UNKNOWN = "unknown"
+
+
+class ExecutionProfile(StrEnum):
+    """Execution console profile for `procwatch exec`."""
+
+    HEADLESS = "headless"
+    INHERITED_CONSOLE = "inherited-console"
+
+
+@dataclass(slots=True)
+class RunResult:
+    """Bounded, redacted outcome record for a supervised subprocess execution."""
+
+    execution_id: str
+    executable: str
+    argv_redacted: list[str]
+    cwd: str
+    profile: ExecutionProfile = ExecutionProfile.HEADLESS
+    start_ts_utc: str = field(default_factory=utc_now_iso)
+    end_ts_utc: str | None = None
+    duration_ms: float = 0.0
+    exit_code: int | None = None
+    status: RunStatus = RunStatus.UNKNOWN
+    pid: int | None = None
+    proc_key: str | None = None
+    job_assigned: bool = False
+    job_status: str = "not_applicable"
+    job_cleanup_outcome: str = "not_needed"
+    stdout_redacted: str = ""
+    stderr_redacted: str = ""
+    stdout_bytes: int = 0
+    stderr_bytes: int = 0
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    dropped_bytes: int = 0
+    agent_context: dict[str, Any] | None = None
+    error_detail: str | None = None
+    db_persisted: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["profile"] = self.profile.value
+        data["status"] = self.status.value
+        return data

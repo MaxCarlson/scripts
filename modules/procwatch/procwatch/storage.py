@@ -20,13 +20,14 @@ from procwatch.models import (
     IngestGap,
     ProcessObservation,
     RawEventRecord,
+    RunResult,
     UserBookmark,
     WindowObservation,
     utc_now_iso,
 )
 from procwatch.redactor import redact_dict, redact_text
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class UnsupportedSchemaVersionError(RuntimeError):
@@ -124,6 +125,47 @@ class FlightRecorderStorage:
                     "INSERT INTO schema_meta (version, applied_at_utc) VALUES (?, ?)",
                     (1, utc_now_iso()),
                 )
+            if current < 2:
+                self._apply_v2(conn)
+                conn.execute(
+                    "INSERT INTO schema_meta (version, applied_at_utc) VALUES (?, ?)",
+                    (2, utc_now_iso()),
+                )
+
+    @staticmethod
+    def _apply_v2(conn: sqlite3.Connection) -> None:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS supervised_runs (
+                execution_id TEXT PRIMARY KEY,
+                start_ts_utc TEXT NOT NULL,
+                end_ts_utc TEXT,
+                duration_ms REAL NOT NULL DEFAULT 0.0,
+                executable TEXT NOT NULL,
+                argv_redacted_json TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                profile TEXT NOT NULL,
+                exit_code INTEGER,
+                status TEXT NOT NULL,
+                pid INTEGER,
+                proc_key TEXT,
+                job_assigned INTEGER NOT NULL DEFAULT 0,
+                job_status TEXT NOT NULL DEFAULT 'unknown',
+                job_cleanup_outcome TEXT NOT NULL DEFAULT 'unknown',
+                stdout_bytes INTEGER NOT NULL DEFAULT 0,
+                stderr_bytes INTEGER NOT NULL DEFAULT 0,
+                stdout_truncated INTEGER NOT NULL DEFAULT 0,
+                stderr_truncated INTEGER NOT NULL DEFAULT 0,
+                dropped_bytes INTEGER NOT NULL DEFAULT 0,
+                stdout_redacted TEXT NOT NULL DEFAULT '',
+                stderr_redacted TEXT NOT NULL DEFAULT '',
+                agent_context_json TEXT,
+                error_detail TEXT,
+                incomplete INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_supervised_runs_start ON supervised_runs(start_ts_utc);
+            """
+        )
 
     @staticmethod
     def _apply_v1(conn: sqlite3.Connection) -> None:
@@ -804,6 +846,7 @@ class FlightRecorderStorage:
             deleted_raw += c1.rowcount
             c2 = conn.execute("DELETE FROM incidents WHERE created_ts_utc < ?", (cutoff_iso,))
             deleted_inc += c2.rowcount
+            conn.execute("DELETE FROM supervised_runs WHERE start_ts_utc < ?", (cutoff_iso,))
 
             # Enforce size cap by deleting oldest raw_events in batches if DB exceeds max_size_mb
             max_bytes = size_mb * 1024 * 1024
@@ -815,6 +858,94 @@ class FlightRecorderStorage:
 
         return {"deleted_raw_events": deleted_raw, "deleted_incidents": deleted_inc}
 
+    def record_supervised_run_start(
+        self,
+        *,
+        execution_id: str,
+        executable: str,
+        argv: list[str],
+        cwd: str,
+        profile: str,
+        start_ts_utc: str,
+        agent_context: dict[str, Any] | None = None,
+    ) -> None:
+        red_argv = [redact_text(a, escape_controls=True) or "" for a in argv]
+        red_ctx = json.dumps(redact_dict(agent_context), default=str) if agent_context else None
+        with self._write_tx() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO supervised_runs (
+                    execution_id, start_ts_utc, executable, argv_redacted_json,
+                    cwd, profile, status, agent_context_json, incomplete
+                ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, 1)
+                """,
+                (execution_id, start_ts_utc, executable, json.dumps(red_argv), cwd, profile, red_ctx),
+            )
+
+    def record_supervised_run(self, result: RunResult) -> None:
+        red_argv = [redact_text(a, escape_controls=True) or "" for a in result.argv_redacted]
+        red_stdout = redact_text(result.stdout_redacted, escape_controls=False) or ""
+        red_stderr = redact_text(result.stderr_redacted, escape_controls=False) or ""
+        red_err = redact_text(result.error_detail, escape_controls=True) if result.error_detail else None
+        red_ctx = json.dumps(redact_dict(result.agent_context), default=str) if result.agent_context else None
+        with self._write_tx() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO supervised_runs (
+                    execution_id, start_ts_utc, end_ts_utc, duration_ms, executable,
+                    argv_redacted_json, cwd, profile, exit_code, status, pid, proc_key,
+                    job_assigned, job_status, job_cleanup_outcome, stdout_bytes, stderr_bytes,
+                    stdout_truncated, stderr_truncated, dropped_bytes,
+                    stdout_redacted, stderr_redacted, agent_context_json, error_detail, incomplete
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    result.execution_id,
+                    result.start_ts_utc,
+                    result.end_ts_utc,
+                    result.duration_ms,
+                    result.executable,
+                    json.dumps(red_argv),
+                    result.cwd,
+                    result.profile.value,
+                    result.exit_code,
+                    result.status.value,
+                    result.pid,
+                    result.proc_key,
+                    1 if result.job_assigned else 0,
+                    result.job_status,
+                    result.job_cleanup_outcome,
+                    result.stdout_bytes,
+                    result.stderr_bytes,
+                    1 if result.stdout_truncated else 0,
+                    1 if result.stderr_truncated else 0,
+                    result.dropped_bytes,
+                    red_stdout,
+                    red_stderr,
+                    red_ctx,
+                    red_err,
+                ),
+            )
+
+    def query_supervised_runs(
+        self,
+        *,
+        execution_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        with self._read_conn() as conn:
+            if execution_id:
+                rows = conn.execute(
+                    "SELECT * FROM supervised_runs WHERE execution_id = ? LIMIT ?",
+                    (execution_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM supervised_runs ORDER BY start_ts_utc DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
     def db_stats(self) -> dict[str, Any]:
         with self._read_conn() as conn:
             raw_cnt = int(conn.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0])
@@ -822,6 +953,7 @@ class FlightRecorderStorage:
             win_cnt = int(conn.execute("SELECT COUNT(*) FROM windows").fetchone()[0])
             inc_cnt = int(conn.execute("SELECT COUNT(*) FROM incidents").fetchone()[0])
             gap_cnt = int(conn.execute("SELECT COUNT(*) FROM ingest_gaps").fetchone()[0])
+            runs_cnt = int(conn.execute("SELECT COUNT(*) FROM supervised_runs").fetchone()[0])
         size_bytes = self.db_path.stat().st_size if self.db_path.exists() else 0
         return {
             "db_path": str(self.db_path),
@@ -832,4 +964,5 @@ class FlightRecorderStorage:
             "windows": win_cnt,
             "incidents": inc_cnt,
             "ingest_gaps": gap_cnt,
+            "supervised_runs": runs_cnt,
         }

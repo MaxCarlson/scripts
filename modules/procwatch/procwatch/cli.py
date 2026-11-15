@@ -32,7 +32,7 @@ from procwatch.config import (
 from procwatch.correlator.ancestry import ProcessTableCache, get_boot_id
 from procwatch.correlator.engine import LiveCorrelator
 from procwatch.guard.window_guard import RawWindowEvent
-from procwatch.models import CollectorStats
+from procwatch.models import CollectorStats, RunStatus
 from procwatch.mutex import CollectorAlreadyRunningError, CollectorMutex
 from procwatch.renderers.console import (
     ConsoleRenderer,
@@ -43,6 +43,7 @@ from procwatch.renderers.console import (
     render_scan_report,
 )
 from procwatch.renderers.doctor_view import collect_doctor_report, render_doctor_report
+from procwatch.runner.supervisor import execute as run_supervised
 from procwatch.storage import FlightRecorderStorage
 
 
@@ -72,13 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
     epilog = (
         "Distinctions:\n"
         "  Window Owner       Process owning the HWND (often WindowsTerminal.exe).\n"
-        "  Suspected Cause    Candidate initiating process correlated by timing/ancestry.\n\n"
-        "Planned future commands (Phase 4, not yet installed):\n"
-        "  exec\n"
+        "  Suspected Cause    Candidate initiating process correlated by timing/ancestry.\n"
     )
     parser = argparse.ArgumentParser(
         prog="procwatch",
-        description="Windows 11 console popup guard, flight recorder, static/task auditor, and pattern analyzer.",
+        description="Windows 11 console popup guard, flight recorder, static/task auditor, pattern analyzer, and headless supervisor.",
         epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -469,6 +468,77 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override SQLite flight recorder DB path.",
     )
 
+    exec_p = subparsers.add_parser(
+        "exec",
+        help="Run a background command under Windows Job Object supervision without opening a popup console.",
+    )
+    exec_p.add_argument(
+        "-c",
+        "--command",
+        dest="command_argv",
+        nargs="+",
+        default=None,
+        help="Executable and arguments to run (or pass after '--').",
+    )
+    exec_p.add_argument(
+        "-w",
+        "--working-dir",
+        type=Path,
+        default=None,
+        help="Working directory for the supervised child process.",
+    )
+    exec_p.add_argument(
+        "-t",
+        "--timeout-seconds",
+        type=float,
+        default=None,
+        help="Terminate the supervised Job Object if execution exceeds this many seconds.",
+    )
+    exec_p.add_argument(
+        "-k",
+        "--keep-console-on-error",
+        action="store_true",
+        help="Emit a non-intrusive stderr failure diagnostic on nonzero/timeout exit (never opens a popup console).",
+    )
+    exec_p.add_argument(
+        "-p",
+        "--profile",
+        choices=["headless", "inherited-console"],
+        default="headless",
+        help="Execution profile (default: headless).",
+    )
+    exec_p.add_argument(
+        "-m",
+        "--max-output-bytes",
+        type=int,
+        default=262_144,
+        help="Maximum captured bytes per stream before truncation (default: 262144).",
+    )
+    exec_p.add_argument(
+        "-j",
+        "--json-output",
+        action="store_true",
+        help="Emit structured RunResult JSON.",
+    )
+    exec_p.add_argument(
+        "-D",
+        "--db-path",
+        type=Path,
+        default=None,
+        help="Override SQLite flight recorder DB path.",
+    )
+    exec_p.add_argument(
+        "-P",
+        "--no-persist",
+        action="store_true",
+        help="Disable SQLite flight recorder persistence for this run.",
+    )
+    exec_p.add_argument(
+        "remainder",
+        nargs=argparse.REMAINDER,
+        help="Command and arguments after '--'.",
+    )
+
     return parser
 
 
@@ -784,6 +854,59 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             render_analyze_report(comp.to_dict(), json_output=args.json_output)
             return 0
+
+        if args.command == "exec":
+            cmd_argv = list(args.command_argv or [])
+            if not cmd_argv:
+                rem = list(args.remainder or [])
+                if rem and rem[0] == "--":
+                    rem = rem[1:]
+                cmd_argv = rem
+            if not cmd_argv:
+                raise ConfigValidationError("Specify a command via -c/--command or after '--'.")
+
+            storage: FlightRecorderStorage | None = None
+            if not args.no_persist:
+                try:
+                    storage = FlightRecorderStorage(db_path=args.db_path)
+                except Exception as exc:
+                    print(f"Warning: flight recorder persistence disabled ({exc}).", file=sys.stderr)
+
+            try:
+                res = run_supervised(
+                    cmd_argv,
+                    cwd=args.working_dir,
+                    profile=args.profile,
+                    timeout_seconds=args.timeout_seconds,
+                    max_output_bytes=args.max_output_bytes,
+                    storage=storage,
+                    keep_console_on_error=args.keep_console_on_error,
+                )
+            finally:
+                if storage is not None:
+                    storage.close()
+
+            if args.json_output:
+                print(json.dumps(res.to_dict(), indent=2, default=str))
+            else:
+                if res.stdout_redacted:
+                    sys.stdout.write(res.stdout_redacted)
+                    if not res.stdout_redacted.endswith("\n"):
+                        sys.stdout.write("\n")
+                if res.stderr_redacted:
+                    sys.stderr.write(res.stderr_redacted)
+                    if not res.stderr_redacted.endswith("\n"):
+                        sys.stderr.write("\n")
+                if res.status == RunStatus.LAUNCH_FAILED and res.error_detail:
+                    print(f"Launch failed: {res.error_detail}", file=sys.stderr)
+
+            if res.status == RunStatus.TIMEOUT:
+                return 124
+            if res.status == RunStatus.LAUNCH_FAILED:
+                return 125
+            if res.status == RunStatus.CANCELLED:
+                return 130
+            return res.exit_code if res.exit_code is not None else 1
     except ConfigValidationError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2

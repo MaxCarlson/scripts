@@ -52,21 +52,21 @@ def test_parse_task_xml_and_redaction() -> None:
     assert finding.remediation_status == "not_applicable_yet"
 
 
-def test_task_fix_dry_run_phase4_refusal_and_backup(tmp_path: Path) -> None:
+def test_task_fix_dry_run_phase4_wrap_and_backup(tmp_path: Path) -> None:
     finding = parse_task_definition_xml(SAMPLE_TASK_XML, task_path=r"\Custom\WorkerPoll")
     assert finding is not None and finding.raw_xml_sha256
 
-    # Refuse Phase 4 wrapper before Phase 4 exists.
-    refused = apply_task_fix_preview_or_xml(
+    # Phase 4 `procwatch exec` wrapper preview is now supported and non-mutating by default.
+    wrap_preview = apply_task_fix_preview_or_xml(
         task_path=r"\Custom\WorkerPoll",
         original_xml=SAMPLE_TASK_XML,
         proposed_command="procwatch",
-        proposed_arguments="exec -- python.exe worker.py",
+        proposed_arguments="exec -- C:\\Python312\\python.exe worker.py",
         expected_sha256=finding.raw_xml_sha256,
-        apply_fix=True,
+        apply_fix=False,
         backup_dir=tmp_path,
     )
-    assert refused["status"] == "not_applicable_yet"
+    assert wrap_preview["status"] == "dry_run_preview"
 
     # Dry-run preview mutates nothing.
     preview = apply_task_fix_preview_or_xml(

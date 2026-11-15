@@ -1,34 +1,46 @@
-# `procwatch`
+# `procwatch` (v0.4.0)
 
-Windows 11 live console/terminal popup guard, event-driven process catcher, and causal diagnostic CLI.
+Windows 11 live console/terminal popup guard, SQLite WAL flight recorder, causal attribution engine, static/system auditor, periodicity analyzer, and Windows Job Object headless supervisor.
 
-## Phase 1 Scope (Implemented)
+## Implemented Capabilities (Phases 1–4)
 
-- **Live Window Observer (`win_event.py`):** Event-driven `SetWinEventHook` + `MsgWaitForMultipleObjects` observer for `CREATE`, `SHOW`, `DESTROY`, and `FOREGROUND` window transitions with bounded callbacks and HWND-instance lifecycle tracking.
-- **Targeted Window Guard (`window_guard.py`):** Preserves the `NeutralizeEngine` suppression sequence (`LockSetForegroundWindow`, `WS_EX_NOACTIVATE`, off-screen `SetWindowPos`, `SW_SHOWMINNOACTIVE`, `AttachThreadInput`) while fixing empty-title over-suppression, style/placement restoration, HWND reuse, and foreground-lock cleanup.
-  - Modes: `observe` (safe default), `smart` (positive automation evidence only), `all-consoles` (opt-in broad console suppression), and `all-windows` (experimental/unsafe).
-- **Event-Driven Process Watcher (`wmi_trace.py`):** COM-threaded `Win32_ProcessStartTrace` / `Win32_ProcessStopTrace` collector with bounded queue, clean `Ctrl+C` shutdown, and explicit `access_denied` degradation when run unprivileged.
-- **Process Ancestry & Payload Decoders (`ancestry.py`, `decoders.py`, `redactor.py`):** `CreateToolhelp32Snapshot` + `psutil` seeded cache keyed by durable process identity (handling PID reuse and fast-exiting parents), safe UTF-16LE PowerShell `-EncodedCommand` / `cmd /c` / `wsl -e` unwrapping, and pre-output secret redaction.
-- **Live CLI (`cli.py`):** `procwatch watch` and `procwatch guard` (consistent with `python -m procwatch`).
+1. **Live Window & Process Guard (`watch`, `guard`):**
+   - `SetWinEventHook` + `MsgWaitForMultipleObjects` observer for `CREATE`, `SHOW`, `DESTROY`, `NAMECHANGE`, and `FOREGROUND` transitions.
+   - Safe `observe` (default), `smart` (positive automation evidence only), `all-consoles`, and `all-windows` modes with window style/placement/foreground-lock restoration.
+   - `Win32_ProcessStartTrace` / `Toolhelp32` process ancestry cache, payload decoders (`-EncodedCommand`, `cmd /c`, `wsl -e`), and pre-output secret redaction.
+2. **Persistent Flight Recorder & Attribution (`doctor`, `history`, `explain`, `mark`):**
+   - SQLite WAL storage (`~/.procwatch/events.db`, schema v2) with atomic Event Log bookmark checkpoints (`Sysmon/Operational`, `TaskScheduler/Operational`), `IngestGap` tracking, provisional-to-canonical `SUPERSEDES` reconciliation, and age/size retention pruning.
+   - Live CWD, PE `CUI`/`GUI` subsystem, `.git` worktree/branch resolution, `HKCU\Console\%%Startup` read-only delegation inspection, and `PROCWATCH_CONTEXT` attribution.
+3. **Static Scanner, System Auditor & Pattern Analyzer (`scan`, `audit`, `analyze`):**
+   - Python `ast` and PowerShell `System.Management.Automation.Language.Parser` scanners with `git worktree list --porcelain` discovery, unified diffs, dirty-file guards, and SHA-256 verified backups.
+   - Read-only Task Scheduler, Registry `Run`/`RunOnce`, Startup folder, and Default Terminal auditing.
+   - Privacy-safe command signature normalization, periodic/burst detection, and coverage-normalized baseline comparisons.
+4. **Headless Supervisor (`exec`):**
+   - Runs background commands under `CREATE_NO_WINDOW` (`headless` profile) and Windows Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) with concurrent bounded `stdout`/`stderr` capture, truncation accounting, timeout/cancellation tree cleanup, `PROCWATCH_CONTEXT` propagation, and SQLite run telemetry.
+   - **Caveat:** `exec` is designed for non-interactive background commands; child processes that explicitly allocate their own GUI/console windows or break away from a nested job are reported in `RunResult` rather than silently suppressed.
 
-## Planned Future Phases
-
-- **Phase 2:** Persistent SQLite WAL flight recorder, Sysmon & Task Scheduler Event Log ingestion, Git/worktree & agent context, `history`, `explain`, `mark`, `doctor`.
-- **Phase 3:** Static AST/PowerShell scanner, Scheduled Task/Startup auditor, periodicity analyzer (`scan`, `audit`, `analyze`).
-- **Phase 4:** Supervised headless Job Object runner (`exec`).
-
-## Usage
+## Usage Examples (PowerShell)
 
 ```powershell
-# Observe console/terminal windows and process events (read-only default)
-procwatch watch
+# 1. Inspect collector readiness, terminal delegation, and DB health (read-only)
+procwatch doctor -v
 
-# Observe popups only, with smart guard enabled and redacted JSONL output
-procwatch watch -p -g -m smart -o .\popups.jsonl
+# 2. Observe popups live with smart guard and persistent recording
+procwatch watch -p -g -m smart
 
-# Run dedicated guard in observe mode (safe default)
-procwatch guard
+# 3. Query recent popups and explain a specific incident
+procwatch history -t 24h -p
+procwatch explain -i 1
 
-# Run dedicated guard in smart mode
-procwatch guard -m smart
+# 4. Scan a repository (and active worktrees) for unintended console launches
+procwatch scan -d C:\path\to\repo -w -u
+
+# 5. Audit Windows Scheduled Tasks, Startup folders, and Default Terminal (read-only)
+procwatch audit -t all
+
+# 6. Detect 10s polling loops and compare against a 24h baseline
+procwatch analyze -p -w 3600 -b 24h
+
+# 7. Run a background command headlessly with bounded capture and Job Object cleanup
+procwatch exec -t 30 -j -- python.exe -m scripts_help --help
 ```
