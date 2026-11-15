@@ -63,7 +63,7 @@ def test_experiment_plan_records_instruction_append_identity(tmp_path: Path, mon
     monkeypatch.setattr(cli.asyncio, "run", consume_readiness)
     assert cli.main([
         "experiment", "plan", "-m", "qwen38-27b-q4km", "-t", str(TASK),
-        "--instruction-append-file", str(overlay_path),
+        "--instruction-append-file", str(overlay_path), "-f", "json",
     ]) == 0
 
     plan = json.loads(capsys.readouterr().out)

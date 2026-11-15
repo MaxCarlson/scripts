@@ -88,9 +88,9 @@ def test_req1_unsupported_ifeval_instruction_does_not_pass() -> None:
 # ---------------------------------------------------------------------------
 # Requirement 2: Real IFEval reference results match adapter outputs
 # ---------------------------------------------------------------------------
-def test_req2_real_ifeval_reference_results_match_adapter() -> None:
+def test_req2_real_ifeval_reference_results_match_adapter(tmp_path: Path) -> None:
     """IFEval adapter outputs must match upstream reference evaluation on all 541 tasks."""
-    data_path = get_ifeval_data_path()
+    data_path = get_ifeval_data_path(resource_root=tmp_path / "empty-resources")
     assert data_path is not None and data_path.is_file(), "input_data.jsonl must exist"
 
     tasks = load_ifeval_tasks(data_path)
@@ -516,8 +516,9 @@ def test_req13_setup_planning_is_strictly_read_only(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Requirement 14: Full LCB cohort blocks without silent smoke fallback
 # ---------------------------------------------------------------------------
-def test_req14_full_lcb_cohort_blocks_without_silent_smoke_fallback() -> None:
+def test_req14_full_lcb_cohort_blocks_without_silent_smoke_fallback(tmp_path: Path, monkeypatch) -> None:
     """Full LiveCodeBench cohort must never silently fall back to smoke fixture data."""
+    monkeypatch.setenv("AGENT_BENCHMARK_RESOURCE_ROOT", str(tmp_path / "empty-resources"))
     manifest = build_manifest(
         cohort="lcb-v6-direct-100",
         agent="direct",

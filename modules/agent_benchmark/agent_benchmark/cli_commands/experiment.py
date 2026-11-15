@@ -12,6 +12,8 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from termdash import Table
+
 from benchmark_core import (
     ExperimentConfig,
     TrialResult,
@@ -103,6 +105,8 @@ def add_experiment_parser(actions: Any) -> None:
     )
     exp_plan.add_argument("-u", "--base-url", default="http://127.0.0.1:4096")
     exp_plan.add_argument("--random-seed", type=int, default=None)
+    exp_plan.add_argument("-f", "--format", choices=("table", "json"), default="table")
+    exp_plan.add_argument("-F", "--llm-friendly", action="store_true", help="Emit compact JSON for automation")
 
     # experiment run
     exp_run = exp_actions.add_parser(
@@ -223,7 +227,7 @@ def add_experiment_parser(actions: Any) -> None:
         help="Path to experiment directory",
     )
     exp_status.add_argument(
-        "--format", choices=("table", "json"), default="table"
+        "-f", "--format", choices=("table", "json"), default="table"
     )
 
     # experiment report
@@ -339,7 +343,16 @@ def handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPar
 
         payload = plan.to_dict()
         payload["model_readiness"] = asyncio.run(_readiness())
-        print(json.dumps(payload, indent=2))
+        if args.format == "json" or args.llm_friendly:
+            print(json.dumps(payload, separators=(",", ":")) if args.llm_friendly else json.dumps(payload, indent=2))
+        else:
+            table = Table(headers=["Field", "Value"], style="dash")
+            for key, value in payload.items():
+                if key == "planned_trials" and isinstance(value, list):
+                    table.add_row(key, f"{len(value)} planned trials")
+                else:
+                    table.add_row(key, json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value))
+            print(table.render())
         return 0
 
     elif cmd == "run":

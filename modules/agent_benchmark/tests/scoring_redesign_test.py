@@ -279,7 +279,7 @@ def test_budget_profiles():
 
 
 def test_plan_cli_outputs_budget_profile_info(capsys):
-    rc = main(["plan", "--budget-profile", "extended-90s"])
+    rc = main(["plan", "--budget-profile", "extended-90s", "-f", "json"])
     assert rc == 0
     captured = capsys.readouterr()
     payload = json.loads(captured.out)

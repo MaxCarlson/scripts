@@ -322,10 +322,10 @@ def test_setup_status_verify_install_agree_on_image_identity(
 
 
 # --------------------------------------------------------------------------- IFEval parity
-def test_ifeval_adapter_matches_upstream_evaluator_per_task_for_all_541() -> None:
+def test_ifeval_adapter_matches_upstream_evaluator_per_task_for_all_541(tmp_path: Path) -> None:
     from agent_benchmark.benchmarks.ifeval import evaluation_lib as upstream
 
-    data_path = get_ifeval_data_path()
+    data_path = get_ifeval_data_path(resource_root=tmp_path / "empty-resources")
     assert data_path is not None
     resp_path = data_path.parent / "input_response_data.jsonl"
     tasks = load_ifeval_tasks(data_path)

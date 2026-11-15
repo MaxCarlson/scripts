@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shlex
 import subprocess
 
 import pytest
@@ -299,7 +300,7 @@ def test_receipt_failure_rolls_back_new_resource(tmp_path: Path, monkeypatch: py
     assert not manager.get_target_path(spec).exists()
 
 
-def test_setup_inventory_and_flag_order(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_setup_inventory_and_flag_order(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     root = str(tmp_path / "store")
     assert main(["setup", "-f", "json", "list", "-A", "--resource-root", root]) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -312,3 +313,13 @@ def test_setup_inventory_and_flag_order(tmp_path: Path, capsys: pytest.CaptureFi
     missing = json.loads(capsys.readouterr().out)
     assert missing["benchmarks"]
     assert all(row["state"] == "MISSING" for row in missing["benchmarks"])
+    monkeypatch.setattr(SourceManager, "verify_resource", lambda *_args: {"status": "verified"})
+    assert main(["setup", "list", "-f", "json", "--resource-root", root]) == 0
+    ready_rows = json.loads(capsys.readouterr().out)["benchmarks"]
+    from agent_benchmark.cli import parser
+    from agent_benchmark.suite import COHORTS
+    suggestions = [row["next"] for row in ready_rows if row["next"].startswith("suite plan")]
+    assert suggestions
+    for suggestion in suggestions:
+        parsed = parser().parse_args(shlex.split(suggestion))
+        assert parsed.cohort in COHORTS

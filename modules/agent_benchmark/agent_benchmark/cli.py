@@ -47,7 +47,7 @@ __all__ = [
 def parser() -> argparse.ArgumentParser:
     """Build the root agent-bench CLI parser with modular command groups."""
     root = argparse.ArgumentParser(
-        prog="agent-bench",
+        prog="agent-benchmark",
         description=("Benchmark tools. setup discovers and verifies dependencies; suite selects cohorts and inspects evaluations; "
                      "task executes one task; experiment compares agents or models; models inspects model configurations; "
                      "external is the compatibility interface for legacy Harbor workflows."),

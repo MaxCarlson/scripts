@@ -70,6 +70,22 @@ def test_suite_status_without_id_lists_empty_run_store(tmp_path, monkeypatch, ca
     assert capsys.readouterr().out.strip() == "No saved suite runs."
 
 
+def test_suite_status_run_defaults_to_table_and_json_is_explicit(tmp_path, monkeypatch, capsys):
+    import json
+    import agent_benchmark.suite_cli as suite_cli
+    from agent_benchmark.cli import main
+
+    run_dir = tmp_path / "runs" / "fixture-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text('{"run_id":"fixture-run"}', encoding="utf-8")
+    monkeypatch.setattr(suite_cli, "status_run", lambda _path: {"run_id": "fixture-run", "state": "finished"})
+    args = ["suite", "status", "-r", "fixture-run", "-d", str(run_dir.parent)]
+    assert main(args) == 0
+    assert "Field" in capsys.readouterr().out
+    assert main([*args, "-f", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "finished"
+
+
 def test_suite_list_defaults_to_table(capsys):
     from agent_benchmark.cli import main
 
@@ -77,6 +93,21 @@ def test_suite_list_defaults_to_table(capsys):
     output = capsys.readouterr().out
     assert "Registered Datasets" in output
     assert not output.lstrip().startswith("{")
+
+
+def test_suite_list_state_matches_setup_inventory(tmp_path, monkeypatch, capsys):
+    import json
+    resource_root = tmp_path / "benchmark-resources"
+    monkeypatch.setenv("AGENT_BENCHMARK_RESOURCE_ROOT", str(resource_root))
+    assert main(["setup", "list", "-f", "json"]) == 0
+    setup_rows = json.loads(capsys.readouterr().out)["benchmarks"]
+    assert main(["suite", "list", "-f", "json"]) == 0
+    suite_rows = json.loads(capsys.readouterr().out)["datasets"]
+    expected = {row["benchmark_id"]: row["state"].lower() for row in setup_rows}
+    for row in suite_rows:
+        benchmark_id = row.get("benchmark_id")
+        if benchmark_id:
+            assert row["install_state"] == expected[benchmark_id]
 
 
 def test_llm_friendly_plan_preserves_harbor_execution_spec(monkeypatch, capsys):
@@ -91,7 +122,11 @@ def test_llm_friendly_plan_preserves_harbor_execution_spec(monkeypatch, capsys):
     monkeypatch.setattr(suite_cli, "build_manifest", fake_build_manifest)
     base = ["suite", "plan", "-c", "aider-python-10", "-a", "opencode", "-m", "openai/model"]
     assert main(base) == 0
-    capsys.readouterr()
+    readable = capsys.readouterr().out
+    assert "readiness" in readable and not readable.lstrip().startswith("{")
+    assert main([*base, "-f", "json"]) == 0
+    import json
+    assert json.loads(capsys.readouterr().out)["readiness"]["is_runnable"] is True
     assert main([*base, "-F"]) == 0
     capsys.readouterr()
     assert calls[0] == calls[1]
