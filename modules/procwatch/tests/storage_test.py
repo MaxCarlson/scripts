@@ -193,3 +193,39 @@ def test_retention_pruning(tmp_path: Path) -> None:
         assert remaining[0]["summary_text"] == "future incident"
     finally:
         storage.close()
+
+
+def test_task_scheduler_live_bookmark_and_stale_recovery(tmp_path: Path) -> None:
+    import sys
+    import pytest
+    from procwatch.collectors.task_events import TaskSchedulerCollector, check_task_scheduler_channel
+
+    if sys.platform != "win32":
+        pytest.skip("Windows Event Log only")
+
+    probe = check_task_scheduler_channel()
+    if not probe.available:
+        pytest.skip(f"Task Scheduler Operational log unavailable: {probe.detail}")
+
+    db_path = tmp_path / "tasks.db"
+    storage = FlightRecorderStorage(db_path=db_path)
+    try:
+        collector = TaskSchedulerCollector(storage, boot_id="test-boot")
+        first_count = collector.poll_once(max_events=5)
+        states = storage.get_collector_state("task_events")
+        assert len(states) == 1
+        assert states[0]["status"] == "active"
+
+        # Inject a corrupted bookmark and verify IngestGap recovery on next poll.
+        with storage._write_tx() as conn:
+            conn.execute(
+                "UPDATE collector_state SET evt_bookmark_xml = '<invalid/>' WHERE source = 'task_events'"
+            )
+        second_count = collector.poll_once(max_events=5)
+        assert second_count >= 0
+        gaps = storage.get_ingest_gaps("task_events")
+        assert len(gaps) >= 1
+        assert "invalid_bookmark" in gaps[0]["reason"] or "stale_bookmark" in gaps[0]["reason"]
+        assert first_count >= 0
+    finally:
+        storage.close()

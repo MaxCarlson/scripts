@@ -12,6 +12,8 @@ import time
 from typing import Sequence
 
 from procwatch import __version__
+from procwatch.collectors.sysmon_evt import SysmonCollector
+from procwatch.collectors.task_events import TaskSchedulerCollector
 from procwatch.collectors.win_event import WinEventCollector
 from procwatch.collectors.wmi_trace import WmiProcessEvent, WmiProcessTraceCollector
 from procwatch.config import (
@@ -24,7 +26,7 @@ from procwatch.config import (
     compile_optional_regex,
     get_data_dir,
 )
-from procwatch.correlator.ancestry import ProcessTableCache
+from procwatch.correlator.ancestry import ProcessTableCache, get_boot_id
 from procwatch.correlator.engine import LiveCorrelator
 from procwatch.guard.window_guard import RawWindowEvent
 from procwatch.models import CollectorStats
@@ -380,6 +382,13 @@ def _run_live_session(
     wmi_collector = WmiProcessTraceCollector(event_queue=wmi_queue, stats=stats)
     wmi_status = wmi_collector.start()
 
+    sysmon_collector: SysmonCollector | None = None
+    task_collector: TaskSchedulerCollector | None = None
+    if storage is not None:
+        boot_id = get_boot_id()
+        sysmon_collector = SysmonCollector(storage, boot_id=boot_id)
+        task_collector = TaskSchedulerCollector(storage, boot_id=boot_id)
+
     correlator = LiveCorrelator(
         process_cache=cache,
         win_queue=win_queue,
@@ -403,12 +412,20 @@ def _run_live_session(
     try:
         win_collector.start()
         correlator.start()
+        if sysmon_collector is not None:
+            sysmon_collector.start()
+        if task_collector is not None:
+            task_collector.start()
         while True:
             time.sleep(0.2)
     except KeyboardInterrupt:
         if not guard_config.quiet:
             print("\nStopping ProcWatch...", flush=True)
     finally:
+        if task_collector is not None:
+            task_collector.stop()
+        if sysmon_collector is not None:
+            sysmon_collector.stop()
         correlator.stop()
         win_collector.stop()
         wmi_collector.stop()
