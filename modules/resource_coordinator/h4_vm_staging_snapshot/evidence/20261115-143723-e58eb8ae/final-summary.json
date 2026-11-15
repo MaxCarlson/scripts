@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "operation_id": "20261115-143723-e58eb8ae",
+  "stage_requested": "All",
+  "apply_requested": true,
+  "whatif": false,
+  "guest_authorized": true,
+  "vm_id": "d8483f98-8884-4758-abd1-cd6107c83c03",
+  "vm_name": "RC-H4-Windows-Acceptance",
+  "expected_guest": "DESKTOP-1ITSJV0",
+  "evidence_dir": "C:\\H4-VM-Staging\\evidence\\20261115-143723-e58eb8ae",
+  "stage_results": {
+    "Preflight": "PASS",
+    "Setup": "PASS",
+    "Checkpoint": "NOT_RUN",
+    "Acceptance": "NOT_RUN"
+  },
+  "profiles": [],
+  "checkpoint": null,
+  "error": "A parameter cannot be found that matches parameter name 'Id'.",
+  "error_category": "execution_error",
+  "guest_os": "Microsoft Windows 11 Pro Build 26300 (64-bit)"
+}
