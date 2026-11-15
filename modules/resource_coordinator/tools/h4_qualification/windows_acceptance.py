@@ -22,6 +22,26 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
 try:
+    from tools.h4_qualification.python_compat import (
+        PythonCompatibilityError,
+        enforce_cli_python,
+        require_supported_python,
+    )
+except ImportError:  # pragma: no cover - direct harness execution fallback
+    _compat_dir = str(Path(__file__).resolve().parent)
+    if _compat_dir not in sys.path:
+        sys.path.insert(0, _compat_dir)
+    from python_compat import (  # type: ignore[no-redef]
+        PythonCompatibilityError,
+        enforce_cli_python,
+        require_supported_python,
+    )
+
+if __name__ == "__main__":
+    enforce_cli_python("windows_acceptance", sys.argv[1:])
+require_supported_python("windows_acceptance")
+
+try:
     from tools.h4_qualification.source_integrity import (
         HASH_ALGORITHM,
         SourceIntegrityError,
@@ -794,8 +814,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Dict[str, Any]] = None,
-         is_windows: Optional[bool] = None, lifecycle_runner_override=None) -> int:
+         is_windows: Optional[bool] = None, lifecycle_runner_override=None,
+         python_version_info: Optional[Sequence[int]] = None) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        require_supported_python("windows_acceptance", version_info=python_version_info)
+    except PythonCompatibilityError as exc:
+        payload = {"status": "failed", "reason_code": exc.code, "error": str(exc), "details": exc.details}
+        print(json.dumps(payload, sort_keys=True) if args.json else str(exc), file=sys.stderr)
+        return 2
     is_windows = os.name == "nt" if is_windows is None else is_windows
     guest_profiles = {"task", "install", "upgrade", "rollback", "full", "cleanup"}
     lifecycle_profiles = {"install", "upgrade", "rollback", "full"}

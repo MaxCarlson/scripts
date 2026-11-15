@@ -74,11 +74,19 @@ The latest H4.5 focused combined regression passed 134 tests with 3 opt-in Windo
 
 Prior harmless native Windows probes reproduced error 206 with oversized command arguments and an overlong executable path. This demonstrates that both boundaries can produce the code; it does not identify the historical failing upgrade operation. The existing file-backed helper transport has offline tests proving large task XML stays out of the process command line. The actual RC upgrade orchestration has not been executed in an isolated Windows guest, so the historical issue is not declared fixed.
 
-## Reproducible guest bundle and staging (H4.6 / H4.7)
+## Reproducible guest bundle and staging (H4.6–H4.9)
 
 Source integrity uses `tools/h4_qualification/source_integrity.py` (`rc-h4-tree-sha256-v2`): canonical sorted POSIX relative paths, explicit exclusion of `.git`/`__pycache__`/`.pytest_cache`/`.pytest_tmp_*`/`*.pyc`/`*.pyo`, explicit empty-directory entries, reparse-point/symlink rejection, and Unicode/case collision checks.
 
-Build and verify a portable guest bundle (`h4-windows-acceptance.zip`) from immutable Git commits into an ignored destination:
+### Python compatibility contract (Stage A)
+
+- **Production Resource Coordinator package (`modules/resource_coordinator/pyproject.toml`)**: preserves `requires-python = ">=3.10"`.
+- **H4 release-building & guest-acceptance tooling (`tools/h4_qualification/`)**: explicitly requires **Python `>=3.12`** (validated on Python `3.12.10`) because the release pipeline uses stdlib `tomllib` (3.11+) and `tarfile.extractall(..., filter="data")` (3.12+).
+- `python_compat.py`, `source_integrity.py`, `bundle_builder.py`, `windows_acceptance.py`, `Bootstrap-H4GuestBundle.ps1`, and `Verify-H4GuestBundle.ps1` fail closed with exit code `2` before importing 3.11+ modules, extracting archives, or creating test artifacts if an unsupported interpreter is invoked. Do not assume all Python 3.12+ installations have third-party packages preinstalled; verify dependencies with the prerequisite check below.
+
+### Build and trusted guest bootstrap (Stage B)
+
+Build and verify a portable guest bundle (`h4-windows-acceptance.zip`) from immutable Git commits into an ignored destination using Python `3.12+`:
 
 ```powershell
 $module = 'C:\path\to\scripts\modules\resource_coordinator'
@@ -87,10 +95,34 @@ $out = Join-Path $module '.pytest_tmp_root\h4-release-bundle'
 python tools\h4_qualification\bundle_builder.py -o $out -a -j
 ```
 
-Inside the authorized disposable guest (after taking a standard Hyper-V checkpoint), verify the external SHA-256 digest BEFORE extracting or executing any bundled script using the standalone `Bootstrap-H4GuestBundle.ps1` (which uses PowerShell `Get-FileHash`):
+Inside the authorized disposable guest (after taking a standard Hyper-V checkpoint):
+
+1. Obtain `<PUBLISHED_SHA256>` from **separately trusted release evidence** — **never** accept or read an unauthenticated `.sha256` sidecar transferred in the same untrusted folder as `h4-windows-acceptance.zip`.
+2. Run standalone `Bootstrap-H4GuestBundle.ps1`. It checks Python `3.12+`, rejects reparse points / non-empty destinations, and verifies `Get-FileHash -Algorithm SHA256` against `-ExpectedSha256` **before** creating `$DestinationRoot` or calling `Expand-Archive` (`Expand-Archive` relies directly on that prior external digest match):
 
 ```powershell
 pwsh -File .\Bootstrap-H4GuestBundle.ps1 -ArchivePath .\h4-windows-acceptance.zip -ExpectedSha256 <PUBLISHED_SHA256>
 ```
 
-The bundle `manifest.json` (`bundle_manifest_version=2`, deterministic `source_date_epoch`) sits outside `sources/rc-1.0.0/` and `sources/rc-0.14.0/`, covers every payload file in `harness/`, `scripts/`, `config/`, `dependencies/`, and `sources/`, and is **required** via `--source-manifest` for all guest `task`, `install`, `upgrade`, `rollback`, and `full` runs (`cleanup` remains usable from `cleanup-manifest.json` even if the bundle is missing). `resource-metrics==0.2.0` is staged in-bundle under `sources/rc-1.0.0/modules/resource_metrics`; third-party packages are `resolved_not_hashed` (`wheelhouse_status: unavailable`).
+3. `Bootstrap-H4GuestBundle.ps1` then invokes `scripts/Verify-H4GuestBundle.ps1`, which re-verifies Python `3.12+`, confirms `Schedule` is running, runs `harness/source_integrity.py -b <bundle_root> -j` over every file in `manifest.json`'s v2 `files` table plus `sources/rc-1.0.0` and `sources/rc-0.14.0`, and executes read-only `preflight` only (never `--apply`).
+4. The bundle `manifest.json` (`bundle_manifest_version=2`, deterministic `source_date_epoch`) sits outside `sources/rc-1.0.0/` and `sources/rc-0.14.0/`, covers every payload file, and is **required** via `--source-manifest` for all guest `task`, `install`, `upgrade`, `rollback`, and `full` runs (`cleanup` remains usable from `cleanup-manifest.json` even if the bundle is missing).
+
+### Dependency readiness & guest prerequisite check (Stage D)
+
+`dependencies/dependency-lock.json` (`schema_version=2`) explicitly separates dependency provenance and remains classified as **`dependency_status: resolved_not_hashed`** and **`wheelhouse_status: unavailable`** (this bundle is **not** a self-contained offline wheelhouse installer for PyPI packages):
+
+| Category | Status | Details |
+|---|---|---|
+| Direct runtime pins | Pinned, not wheel-hashed | `anyio==4.12.1`, `httpx==0.28.1`, `starlette==0.50.0`, `uvicorn==0.40.0`, `psutil==7.1.3`, `PyYAML==6.0.3`, `rich==14.2.0` (`dependencies/requirements.txt`) |
+| Transitive runtime versions | Pinned, not wheel-hashed | `certifi==2025.11.12`, `click==8.3.1`, `colorama==0.4.6`, `h11==0.16.0`, `httpcore==1.0.9`, `idna==3.11`, `markdown-it-py==4.0.0`, `mdurl==0.1.2`, `Pygments==2.19.2`, `sniffio==1.3.1`, `typing_extensions==4.15.0` |
+| Dev / test & build system | Pinned (`requirements-dev.txt`) | `iniconfig==2.3.0`, `packaging==25.0`, `pluggy==1.6.0`, `pytest==9.0.3`, `pytest-asyncio==1.3.0`; build: `setuptools>=68`, `wheel` |
+| Artifact-level wheel hashes | **Unavailable** | PyPI `.whl` SHA-256 digests and binary wheels are not shipped in-bundle; use `pip download` + `pip hash` / `--require-hashes` on a networked guest staging step if needed |
+| Python / platform compatibility | Distinguished | RC runtime supports Python `>=3.10`; H4 release/acceptance tooling requires Python `>=3.12` (Windows x86_64 validated on `3.12.10`) |
+| Guest-side package availability | Unverified until guest check | Do not assume guest Python 3.12 has third-party packages installed; run the prerequisite check below before `offline` or lifecycle profiles |
+| In-repo `resource-metrics` | Staged & hashed in-bundle | `resource-metrics==0.2.0` staged at `sources/rc-1.0.0/modules/resource_metrics` and covered by `manifest.json` (`files` SHA-256) |
+
+Run this read-only prerequisite check in the guest's Python `3.12+` environment before running guest test profiles:
+
+```powershell
+python -c "import sys, importlib.util; mods=('anyio','httpx','starlette','uvicorn','psutil','yaml','rich','pytest','pytest_asyncio'); missing=[m for m in mods if importlib.util.find_spec(m) is None]; print({'python': sys.version.split()[0], 'h4_python_ok': sys.version_info[:2]>=(3,12), 'missing': missing}); raise SystemExit(0 if sys.version_info[:2]>=(3,12) and not missing else 2)"
+```

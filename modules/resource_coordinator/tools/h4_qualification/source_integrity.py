@@ -2,16 +2,42 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
+import re
 import stat
-import tomllib
+import sys
 import unicodedata
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+
+try:
+    from tools.h4_qualification.python_compat import (
+        PythonCompatibilityError,
+        enforce_cli_python,
+        require_supported_python,
+    )
+except ImportError:  # pragma: no cover - direct harness execution fallback
+    _compat_dir = str(Path(__file__).resolve().parent)
+    if _compat_dir not in sys.path:
+        sys.path.insert(0, _compat_dir)
+    from python_compat import (  # type: ignore[no-redef]
+        PythonCompatibilityError,
+        enforce_cli_python,
+        require_supported_python,
+    )
+
+if __name__ == "__main__":
+    enforce_cli_python("source_integrity", sys.argv[1:])
+require_supported_python("source_integrity")
+
+import tomllib  # noqa: E402 - imported only after Python 3.12+ check
 
 HASH_ALGORITHM = "rc-h4-tree-sha256-v2"
+BUNDLE_MANIFEST_VERSION = 2
+_HEX64_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 EXCLUDED_DIR_NAMES = frozenset({".git", "__pycache__", ".pytest_cache"})
 EXCLUDED_DIR_PREFIXES = (".pytest_tmp_",)
 EXCLUDED_FILE_SUFFIXES = (".pyc", ".pyo")
@@ -332,3 +358,102 @@ def verify_source_tree(
         "hash_algorithm": HASH_ALGORITHM,
         "source_tree_sha256": digest,
     }
+
+
+def verify_extracted_bundle(bundle_root: Path) -> Dict[str, Any]:
+    """Verify every component file and source tree inside an extracted H4 bundle."""
+    unresolved = bundle_root.expanduser()
+    if not unresolved.exists() or not unresolved.is_dir() or is_reparse_point(unresolved):
+        raise SourceIntegrityError(
+            "bundle_root_invalid",
+            f"Bundle root directory is missing or unsafe: {bundle_root}",
+            path=str(bundle_root),
+        )
+    extract_root = unresolved.resolve(strict=True)
+    manifest = load_source_manifest(extract_root / "manifest.json")
+    if manifest.get("bundle_manifest_version") != BUNDLE_MANIFEST_VERSION or not isinstance(manifest.get("files"), list):
+        raise SourceIntegrityError("source_manifest_invalid", "Bundle manifest missing v2 component 'files' table")
+
+    expected_files: Dict[str, Dict[str, Any]] = {}
+    for entry in manifest["files"]:
+        if not isinstance(entry, dict) or not entry.get("path") or not _HEX64_RE.match(str(entry.get("sha256", ""))):
+            raise SourceIntegrityError("source_manifest_invalid", f"Invalid component file entry in manifest: {entry!r}")
+        rel = str(entry["path"])
+        if rel in expected_files:
+            raise SourceIntegrityError("source_manifest_invalid", f"Duplicate manifest file entry: {rel!r}")
+        expected_files[rel] = entry
+
+    actual_files = {
+        p.relative_to(extract_root).as_posix(): p
+        for p in extract_root.rglob("*")
+        if p.is_file() and p.relative_to(extract_root).as_posix() != "manifest.json"
+    }
+    missing = sorted(set(expected_files) - set(actual_files))
+    if missing:
+        raise SourceIntegrityError("bundle_component_missing", f"Missing manifested component(s): {missing[:5]}")
+    unmanifested = sorted(set(actual_files) - set(expected_files))
+    if unmanifested:
+        raise SourceIntegrityError("bundle_component_mismatch", f"Unmanifested file(s) in bundle: {unmanifested[:5]}")
+
+    for rel, entry in expected_files.items():
+        target = actual_files[rel]
+        if is_reparse_point(target):
+            raise SourceIntegrityError("bundle_archive_unsafe_member", f"Extracted component is a reparse point: {rel}")
+        data = target.read_bytes()
+        if len(data) != entry["size"] or hashlib.sha256(data).hexdigest() != entry["sha256"].lower():
+            raise SourceIntegrityError(
+                "bundle_component_mismatch",
+                f"Component integrity mismatch for {rel}",
+                component=rel,
+            )
+
+    new_entry = manifest_entry_for_role(manifest, "new_1_0_0")
+    old_entry = manifest_entry_for_role(manifest, "old_0_14_0")
+    new_info = verify_source_tree(
+        extract_root / "sources" / "rc-1.0.0",
+        expected_version="1.0.0",
+        expected_role="new_1_0_0",
+        manifest_entry=new_entry,
+    )
+    old_info = verify_source_tree(
+        extract_root / "sources" / "rc-0.14.0",
+        expected_version="0.14.0",
+        expected_role="old_0_14_0",
+        manifest_entry=old_entry,
+    )
+    return {
+        "verified": True,
+        "bundle_root": str(extract_root),
+        "bundle_manifest_version": BUNDLE_MANIFEST_VERSION,
+        "hash_algorithm": HASH_ALGORITHM,
+        "component_count": len(expected_files),
+        "new_1_0_0": new_info,
+        "old_0_14_0": old_info,
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("-b", "--verify-bundle", required=True, type=Path,
+                        help="Extracted H4 bundle directory containing manifest.json")
+    parser.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON output")
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        require_supported_python("source_integrity")
+        result = verify_extracted_bundle(args.verify_bundle)
+    except (SourceIntegrityError, PythonCompatibilityError) as exc:
+        code = getattr(exc, "code", "verification_failed")
+        details = getattr(exc, "details", {})
+        payload = {"status": "failed", "reason_code": code, "error": str(exc), "details": details}
+        print(json.dumps(payload, sort_keys=True) if args.json else str(exc), file=sys.stderr)
+        return 2
+    print(json.dumps(result, sort_keys=True) if args.json else f"Verified {result['component_count']} bundle components")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,224 @@
+"""H4.9 Python 3.12+ compatibility and trusted-bootstrap regression tests."""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import sys
+import tomllib
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from tools.h4_qualification import bundle_builder, python_compat, source_integrity, windows_acceptance
+
+MODULE_ROOT = Path(__file__).resolve().parents[1]
+TOOLS_DIR = MODULE_ROOT / "tools" / "h4_qualification"
+BOOTSTRAP_PS1 = TOOLS_DIR / "Bootstrap-H4GuestBundle.ps1"
+PWSH = shutil.which("pwsh")
+
+
+def _build_bundle(tmp_path: Path, name: str = "bundle_out") -> tuple[Path, Path, str]:
+    out = tmp_path / name
+    res = bundle_builder.build_bundle(
+        repo_root=MODULE_ROOT.parents[1],
+        output_dir=out,
+        new_ref="HEAD",
+        apply=True,
+    )
+    return out, Path(res["archive_path"]), res["archive_sha256"]
+
+
+def test_rc_package_keeps_python_310_contract_while_h4_tools_require_312():
+    pyproject = tomllib.loads((MODULE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["project"]["requires-python"] == ">=3.10"
+    assert python_compat.RC_PACKAGE_PYTHON_REQUIRES == ">=3.10"
+    assert python_compat.H4_TOOLING_PYTHON_REQUIRES == ">=3.12"
+    assert python_compat.require_supported_python("bundle_builder", version_info=(3, 12, 10)) == "3.12.10"
+    assert python_compat.require_supported_python("windows_acceptance", version_info=(3, 13, 0)) == "3.13.0"
+
+
+@pytest.mark.parametrize("bad_version", [(3, 9, 18), (3, 10, 11), (3, 11, 9)])
+def test_unsupported_python_versions_rejected_with_actionable_error(bad_version):
+    with pytest.raises(python_compat.PythonCompatibilityError) as exc:
+        python_compat.require_supported_python("windows_acceptance", version_info=bad_version)
+    msg = str(exc.value)
+    assert exc.value.code == "unsupported_python_version"
+    assert "3.12+" in msg
+    assert ">=3.10" in msg
+
+
+def test_entrypoints_reject_unsupported_python_before_side_effects(tmp_path, capsys):
+    out_dir = tmp_path / "never_created_bundle"
+    assert bundle_builder.main(["-o", str(out_dir), "-a", "-j"], python_version_info=(3, 10, 11)) == 2
+    err = capsys.readouterr().err
+    payload = json.loads(err)
+    assert payload["reason_code"] == "unsupported_python_version"
+    assert "3.12+" in payload["error"]
+    assert not out_dir.exists()
+
+    run_root = tmp_path / "h4-rc-untouched"
+    run_root.mkdir()
+    assert windows_acceptance.main(
+        ["-r", str(run_root), "-p", "offline", "-a", "-j"],
+        is_windows=True,
+        python_version_info=(3, 11, 8),
+    ) == 2
+    err2 = capsys.readouterr().err
+    payload2 = json.loads(err2)
+    assert payload2["reason_code"] == "unsupported_python_version"
+    assert not list(run_root.iterdir())
+
+
+@pytest.mark.parametrize("script_name", [
+    "source_integrity.py",
+    "bundle_builder.py",
+    "windows_acceptance.py",
+])
+def test_subprocess_cli_fails_before_tomllib_import_under_simulated_py310(tmp_path, script_name):
+    script_path = TOOLS_DIR / script_name
+    probe = (
+        "import sys, runpy; "
+        "target = sys.argv[1]; "
+        "sys.modules['tomllib'] = None; "
+        "sys.version_info = (3, 10, 11, 'final', 0); "
+        "sys.argv = [target, '-j']; "
+        "runpy.run_path(target, run_name='__main__')"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-B", "-c", probe, str(script_path)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert proc.returncode == 2
+    assert "ModuleNotFoundError" not in proc.stderr
+    payload = json.loads(proc.stderr.strip())
+    assert payload["reason_code"] == "unsupported_python_version"
+    assert "3.12+" in payload["error"]
+
+
+def test_bundle_metadata_distinguishes_rc_and_h4_python_contracts_and_dependencies(tmp_path):
+    out_dir, _, expected_sha = _build_bundle(tmp_path)
+    bundle_root = out_dir / "h4-windows-acceptance"
+    manifest = json.loads((bundle_root / "manifest.json").read_text(encoding="utf-8"))
+    lock = json.loads((bundle_root / "dependencies" / "dependency-lock.json").read_text(encoding="utf-8"))
+    readme = (bundle_root / "README.md").read_text(encoding="utf-8")
+
+    assert manifest["rc_package_python_requires"] == ">=3.10"
+    assert manifest["tool_python_requires"] == ">=3.12"
+    assert lock["python_requires"] == ">=3.10"
+    assert lock["rc_package_python_requires"] == ">=3.10"
+    assert lock["h4_tooling_python_requires"] == ">=3.12"
+    assert lock["dependency_status"] == "resolved_not_hashed"
+    assert lock["wheelhouse_status"] == "unavailable"
+    assert (bundle_root / "harness" / "python_compat.py").is_file()
+    assert "unauthenticated `.sha256`" in readme
+
+    verified = source_integrity.verify_extracted_bundle(bundle_root)
+    assert verified["verified"] is True
+    assert expected_sha == (out_dir / f"{bundle_builder.ARCHIVE_FILENAME}.sha256").read_text(encoding="utf-8").split()[0]
+
+
+@pytest.mark.skipif(not PWSH, reason="pwsh required for PowerShell bootstrap tests")
+def test_trusted_bootstrap_rejects_bad_digest_bad_python_and_cleans_partial_extract(tmp_path):
+    _, zip_path, expected_sha = _build_bundle(tmp_path, "src_bundle")
+
+    # 1. Mismatched digest aborts BEFORE creating DestinationRoot
+    bad_dest = tmp_path / "dest_bad_digest"
+    proc_bad = subprocess.run(
+        [
+            PWSH, "-NoProfile", "-NonInteractive", "-File", str(BOOTSTRAP_PS1),
+            "-ArchivePath", str(zip_path),
+            "-ExpectedSha256", "0" * 64,
+            "-DestinationRoot", str(bad_dest),
+            "-Python", sys.executable,
+        ],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc_bad.returncode != 0
+    assert not bad_dest.exists()
+
+    # 2. Unsupported Python shim fails BEFORE extraction
+    fake_py = tmp_path / "python310.cmd"
+    fake_py.write_text("@echo 3.10.11\r\n@exit /b 2\r\n", encoding="utf-8")
+    py_dest = tmp_path / "dest_bad_py"
+    proc_py = subprocess.run(
+        [
+            PWSH, "-NoProfile", "-NonInteractive", "-File", str(BOOTSTRAP_PS1),
+            "-ArchivePath", str(zip_path),
+            "-ExpectedSha256", expected_sha,
+            "-DestinationRoot", str(py_dest),
+            "-Python", str(fake_py),
+        ],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc_py.returncode == 2
+    assert "3.12+" in (proc_py.stdout + proc_py.stderr)
+    assert not py_dest.exists()
+
+    # 3. Valid extraction succeeds andVerify-H4GuestBundle catches tampered extracted component
+    ok_dest = tmp_path / "dest_ok"
+    proc_ok = subprocess.run(
+        [
+            PWSH, "-NoProfile", "-NonInteractive", "-File", str(BOOTSTRAP_PS1),
+            "-ArchivePath", str(zip_path),
+            "-ExpectedSha256", expected_sha,
+            "-DestinationRoot", str(ok_dest),
+            "-Python", sys.executable,
+        ],
+        capture_output=True, text=True, timeout=45, check=False,
+    )
+    # Exits 0 on clean virtual guest or 3 on non-guest primary host (never unexpected crash).
+    assert proc_ok.returncode in {0, 3}
+    preflight = json.loads(proc_ok.stdout.strip().splitlines()[-1])
+    assert preflight["source_integrity"]["verified"] is True
+
+    # Verify-H4GuestBundle directly rejects unsupported Python shim with exit 2
+    verify_ps1 = ok_dest / "scripts" / "Verify-H4GuestBundle.ps1"
+    proc_verify_py = subprocess.run(
+        [
+            PWSH, "-NoProfile", "-NonInteractive", "-File", str(verify_ps1),
+            "-BundleRoot", str(ok_dest),
+            "-Python", str(fake_py),
+        ],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc_verify_py.returncode == 2
+    assert "3.12+" in (proc_verify_py.stdout + proc_verify_py.stderr)
+
+    # Tamper extracted component -> Verify-H4GuestBundle must fail BEFORE preflight
+    (ok_dest / "harness" / "windows_acceptance.py").write_text("# tampered\n", encoding="utf-8")
+    proc_tamper = subprocess.run(
+        [
+            PWSH, "-NoProfile", "-NonInteractive", "-File", str(verify_ps1),
+            "-BundleRoot", str(ok_dest),
+            "-Python", sys.executable,
+        ],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc_tamper.returncode == 2
+    assert "bundle_component_mismatch" in proc_tamper.stderr
+
+    # 4. Missing Verify-H4GuestBundle.ps1 inside custom zip triggers cleanup of newly created dest
+    incomplete_zip = tmp_path / "incomplete.zip"
+    with zipfile.ZipFile(incomplete_zip, "w") as zf:
+        zf.writestr("README.md", b"no verify script")
+    import hashlib
+    inc_sha = hashlib.sha256(incomplete_zip.read_bytes()).hexdigest()
+    inc_dest = tmp_path / "dest_incomplete"
+    proc_inc = subprocess.run(
+        [
+            PWSH, "-NoProfile", "-NonInteractive", "-File", str(BOOTSTRAP_PS1),
+            "-ArchivePath", str(incomplete_zip),
+            "-ExpectedSha256", inc_sha,
+            "-DestinationRoot", str(inc_dest),
+            "-Python", sys.executable,
+        ],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc_inc.returncode != 0
+    assert not inc_dest.exists()

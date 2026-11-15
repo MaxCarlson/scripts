@@ -22,27 +22,50 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 try:
+    from tools.h4_qualification.python_compat import (
+        H4_TOOLING_PYTHON_REQUIRES,
+        PythonCompatibilityError,
+        RC_PACKAGE_PYTHON_REQUIRES,
+        enforce_cli_python,
+        require_supported_python,
+    )
+except ImportError:  # pragma: no cover - direct script execution fallback
+    _compat_dir = str(Path(__file__).resolve().parent)
+    if _compat_dir not in sys.path:
+        sys.path.insert(0, _compat_dir)
+    from python_compat import (  # type: ignore[no-redef]
+        H4_TOOLING_PYTHON_REQUIRES,
+        PythonCompatibilityError,
+        RC_PACKAGE_PYTHON_REQUIRES,
+        enforce_cli_python,
+        require_supported_python,
+    )
+
+if __name__ == "__main__":
+    enforce_cli_python("bundle_builder", sys.argv[1:])
+require_supported_python("bundle_builder")
+
+try:
     from tools.h4_qualification.source_integrity import (
+        BUNDLE_MANIFEST_VERSION,
         HASH_ALGORITHM,
         SourceIntegrityError,
         is_reparse_point,
-        load_source_manifest,
-        manifest_entry_for_role,
+        verify_extracted_bundle,
         verify_source_tree,
     )
 except ImportError:  # pragma: no cover - direct script execution fallback
     from source_integrity import (  # type: ignore[no-redef]
+        BUNDLE_MANIFEST_VERSION,
         HASH_ALGORITHM,
         SourceIntegrityError,
         is_reparse_point,
-        load_source_manifest,
-        manifest_entry_for_role,
+        verify_extracted_bundle,
         verify_source_tree,
     )
 
 DEFAULT_OLD_COMMIT = "873a49382a5e03da47f793608d3519f7e69da646"
 ARCHIVE_FILENAME = "h4-windows-acceptance.zip"
-BUNDLE_MANIFEST_VERSION = 2
 
 # Strict archive extraction limits tailored for the H4 bundle.
 MAX_ARCHIVE_MEMBERS = 2000
@@ -198,23 +221,49 @@ $bundle = (Resolve-Path -LiteralPath $BundleRoot).Path
 $manifest = Join-Path $bundle "manifest.json"
 $newSource = Join-Path $bundle "sources\\rc-1.0.0"
 $oldSource = Join-Path $bundle "sources\\rc-0.14.0"
+$integrityScript = Join-Path $bundle "harness\\source_integrity.py"
 $runner = Join-Path $bundle "harness\\windows_acceptance.py"
-foreach ($required in @($manifest, $newSource, $oldSource, $runner)) {
+foreach ($required in @($manifest, $newSource, $oldSource, $integrityScript, $runner)) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Required bundle component missing: $required"
     }
+}
+try {
+    $pyInfo = & $Python -B -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}'); raise SystemExit(0 if sys.version_info[:2] >= (3, 12) else 2)"
+    $pyExit = $LASTEXITCODE
+} catch {
+    [Console]::Error.WriteLine("Failed to invoke Python interpreter '$Python'. H4 guest acceptance tooling requires Python 3.12+ (production resource-coordinator package remains >=3.10).")
+    exit 2
+}
+if ($pyExit -ne 0) {
+    [Console]::Error.WriteLine("H4 guest acceptance tooling requires Python 3.12+ (detected '$($pyInfo -join '')' from '$Python'; exit=$pyExit). Production resource-coordinator package remains >=3.10.")
+    exit 2
 }
 $schedule = Get-Service -Name Schedule -ErrorAction Stop
 if ($schedule.Status -ne "Running") {
     throw "Windows Task Scheduler service (Schedule) is not running."
 }
-$pyVer = & $Python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
-if ($LASTEXITCODE -ne 0) { throw "Python interpreter check failed: $Python" }
+$integrityRaw = & $Python -B $integrityScript -b $bundle -j
+$integrityExit = $LASTEXITCODE
+if ($integrityExit -ne 0) {
+    exit $integrityExit
+}
+try {
+    $integrityInfo = ($integrityRaw -join "`n") | ConvertFrom-Json -ErrorAction Stop
+} catch {
+    [Console]::Error.WriteLine("Bundle component verifier did not return valid JSON (bundle_component_mismatch).")
+    exit 2
+}
+if (-not $integrityInfo.verified) {
+    [Console]::Error.WriteLine("Bundle component verification failed (bundle_component_mismatch).")
+    exit 2
+}
 $env:PYTHONPATH = (Join-Path $newSource "modules\\resource_coordinator") + [IO.Path]::PathSeparator + (Join-Path $newSource "modules\\resource_metrics")
 $run = Join-Path $env:TEMP ("h4-rc-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $run | Out-Null
-& $Python $runner --test-root $run --source-root $newSource --old-source-root $oldSource --source-manifest $manifest --json
-exit $LASTEXITCODE
+& $Python -B $runner --test-root $run --source-root $newSource --old-source-root $oldSource --source-manifest $manifest --json
+$runnerExit = $LASTEXITCODE
+exit $runnerExit
 """
 
 
@@ -227,11 +276,20 @@ def _render_bundle_readme(manifest: Dict[str, Any]) -> str:
         f"`{HASH_ALGORITHM}` and complete component manifest (`bundle_manifest_version={BUNDLE_MANIFEST_VERSION}`).\n\n"
         f"- **New RC `1.0.0`**: `{new_src['commit_sha']}` (`{new_src['source_tree_sha256']}`)\n"
         f"- **Legacy RC `0.14.0`**: `{old_src['commit_sha']}` (`{old_src['source_tree_sha256']}`)\n"
-        "- **In-repo dependency**: `resource-metrics==0.2.0` is staged under `sources/rc-1.0.0/modules/resource_metrics`.\n\n"
+        f"- **Python Compatibility**: Production RC package supports `{RC_PACKAGE_PYTHON_REQUIRES}`; "
+        f"H4 release/acceptance tooling requires Python `{H4_TOOLING_PYTHON_REQUIRES}` (validated `{manifest['tool_python_version']}`).\n"
+        "- **Dependencies**: `resource-metrics==0.2.0` is staged in-bundle under `sources/rc-1.0.0/modules/resource_metrics`. "
+        "Third-party PyPI packages are recorded in `dependencies/dependency-lock.json` (`dependency_status=resolved_not_hashed`, "
+        "`wheelhouse_status=unavailable`; no offline wheelhouse is staged in this bundle).\n\n"
         "## Trusted Guest Bootstrap (Read-Only Preflight)\n\n"
-        "Verify the external SHA-256 digest BEFORE extracting or running any bundled script:\n\n"
+        "1. Obtain `<PUBLISHED_SHA256>` from **separately trusted release evidence** — never trust an unauthenticated `.sha256` file transferred alongside an untrusted ZIP.\n"
+        "2. `Bootstrap-H4GuestBundle.ps1` verifies Python 3.12+ and compares `Get-FileHash -Algorithm SHA256` against `-ExpectedSha256` **before** calling `Expand-Archive` (its extraction step assumes that external digest check succeeded), then runs `scripts/Verify-H4GuestBundle.ps1` (`source_integrity.py -b` + read-only `preflight` only).\n\n"
         "```powershell\n"
         "pwsh -File .\\Bootstrap-H4GuestBundle.ps1 -ArchivePath .\\h4-windows-acceptance.zip -ExpectedSha256 <PUBLISHED_SHA256>\n"
+        "```\n\n"
+        "## Guest Python & Dependency Prerequisite Check\n\n"
+        "```powershell\n"
+        "python -c \"import sys, importlib.util; mods=('anyio','httpx','starlette','uvicorn','psutil','yaml','rich','pytest','pytest_asyncio'); missing=[m for m in mods if importlib.util.find_spec(m) is None]; print({'python': sys.version.split()[0], 'ok': sys.version_info[:2]>=(3,12) and not missing, 'missing': missing}); raise SystemExit(0 if sys.version_info[:2]>=(3,12) and not missing else 2)\"\n"
         "```\n"
     )
 
@@ -335,64 +393,14 @@ def verify_bundle_archive(
         except (zipfile.BadZipFile, OSError, EOFError, RuntimeError) as exc:
             raise SourceIntegrityError("bundle_archive_corrupt", f"Bundle archive is corrupt or incomplete: {exc}") from exc
 
-        manifest = load_source_manifest(extract_root / "manifest.json")
-        if manifest.get("bundle_manifest_version") != BUNDLE_MANIFEST_VERSION or not isinstance(manifest.get("files"), list):
-            raise SourceIntegrityError("source_manifest_invalid", "Bundle manifest missing v2 component 'files' table")
-
-        expected_files: Dict[str, Dict[str, Any]] = {}
-        for entry in manifest["files"]:
-            if not isinstance(entry, dict) or not entry.get("path") or not _HEX64_RE.match(str(entry.get("sha256", ""))):
-                raise SourceIntegrityError("source_manifest_invalid", f"Invalid component file entry in manifest: {entry!r}")
-            rel = str(entry["path"])
-            if rel in expected_files:
-                raise SourceIntegrityError("source_manifest_invalid", f"Duplicate manifest file entry: {rel!r}")
-            expected_files[rel] = entry
-
-        actual_files = {
-            p.relative_to(extract_root).as_posix(): p
-            for p in extract_root.rglob("*")
-            if p.is_file() and p.relative_to(extract_root).as_posix() != "manifest.json"
-        }
-        missing = sorted(set(expected_files) - set(actual_files))
-        if missing:
-            raise SourceIntegrityError("bundle_component_missing", f"Missing manifested component(s): {missing[:5]}")
-        unmanifested = sorted(set(actual_files) - set(expected_files))
-        if unmanifested:
-            raise SourceIntegrityError("bundle_component_mismatch", f"Unmanifested file(s) in bundle: {unmanifested[:5]}")
-
-        for rel, entry in expected_files.items():
-            target = actual_files[rel]
-            if is_reparse_point(target):
-                raise SourceIntegrityError("bundle_archive_unsafe_member", f"Extracted component is a reparse point: {rel}")
-            data = target.read_bytes()
-            if len(data) != entry["size"] or hashlib.sha256(data).hexdigest() != entry["sha256"].lower():
-                raise SourceIntegrityError(
-                    "bundle_component_mismatch",
-                    f"Component integrity mismatch for {rel}",
-                    component=rel,
-                )
-
-        new_entry = manifest_entry_for_role(manifest, "new_1_0_0")
-        old_entry = manifest_entry_for_role(manifest, "old_0_14_0")
-        new_info = verify_source_tree(
-            extract_root / "sources" / "rc-1.0.0",
-            expected_version="1.0.0",
-            expected_role="new_1_0_0",
-            manifest_entry=new_entry,
-        )
-        old_info = verify_source_tree(
-            extract_root / "sources" / "rc-0.14.0",
-            expected_version="0.14.0",
-            expected_role="old_0_14_0",
-            manifest_entry=old_entry,
-        )
+        summary = verify_extracted_bundle(extract_root)
         return {
-            "verified": True,
+            "verified": summary["verified"],
             "archive_sha256": archive_sha256,
             "hash_algorithm": HASH_ALGORITHM,
-            "component_count": len(expected_files),
-            "new_1_0_0": new_info,
-            "old_0_14_0": old_info,
+            "component_count": summary["component_count"],
+            "new_1_0_0": summary["new_1_0_0"],
+            "old_0_14_0": summary["old_0_14_0"],
         }
 
 
@@ -445,7 +453,7 @@ def build_bundle(
     harness_dir.mkdir(parents=True, exist_ok=True)
     src_h4 = new_dest / "modules" / "resource_coordinator" / "tools" / "h4_qualification"
     local_h4 = Path(__file__).resolve().parent
-    for name in ("windows_acceptance.py", "source_integrity.py", "wddm_probe.py"):
+    for name in ("python_compat.py", "windows_acceptance.py", "source_integrity.py", "wddm_probe.py"):
         candidate = src_h4 / name if (src_h4 / name).is_file() else local_h4 / name
         shutil.copy2(candidate, harness_dir / name)
 
@@ -464,7 +472,9 @@ def build_bundle(
     (deps_dir / "dependency-lock.json").write_text(
         json.dumps({
             "schema_version": 2,
-            "python_requires": ">=3.10",
+            "python_requires": RC_PACKAGE_PYTHON_REQUIRES,
+            "rc_package_python_requires": RC_PACKAGE_PYTHON_REQUIRES,
+            "h4_tooling_python_requires": H4_TOOLING_PYTHON_REQUIRES,
             "dependency_status": "resolved_not_hashed",
             "wheelhouse_status": "unavailable",
             "runtime_direct": PINNED_RUNTIME_DIRECT,
@@ -494,6 +504,8 @@ def build_bundle(
         "bundle_manifest_version": BUNDLE_MANIFEST_VERSION,
         "hash_algorithm": HASH_ALGORITHM,
         "source_date_epoch": epoch,
+        "rc_package_python_requires": RC_PACKAGE_PYTHON_REQUIRES,
+        "tool_python_requires": H4_TOOLING_PYTHON_REQUIRES,
         "tool_python_version": plan["python_version"],
         "sources": [
             {
@@ -557,9 +569,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(
+    argv: Optional[Sequence[str]] = None,
+    *,
+    python_version_info: Optional[Sequence[int]] = None,
+) -> int:
     args = build_parser().parse_args(argv)
     try:
+        require_supported_python("bundle_builder", version_info=python_version_info)
         if args.verify is not None:
             result = verify_bundle_archive(args.verify, expected_archive_sha256=args.expected_sha256)
         else:
@@ -572,7 +589,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 old_ref=args.old_ref,
                 apply=args.apply,
             )
-    except SourceIntegrityError as exc:
+    except (SourceIntegrityError, PythonCompatibilityError) as exc:
         payload = {"status": "failed", "reason_code": exc.code, "error": str(exc), "details": exc.details}
         print(json.dumps(payload, sort_keys=True) if args.json else str(exc), file=sys.stderr)
         return 2
