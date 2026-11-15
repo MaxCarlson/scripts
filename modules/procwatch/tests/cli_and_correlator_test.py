@@ -114,3 +114,34 @@ def test_collector_mutex_blocks_duplicate_owner(tmp_path: Path) -> None:
     # After release, m2 can acquire cleanly
     m2.acquire()
     m2.release()
+
+
+def test_cli_help_menus_include_examples(capsys) -> None:
+    from procwatch.cli import build_parser
+
+    parser = build_parser()
+    main_help = parser.format_help()
+    assert "Examples:" in main_help
+    assert "procwatch watch -g -m all-consoles" in main_help
+    assert "procwatch guard -m all-consoles" in main_help
+    assert "subset" in main_help.lower()
+
+    expected_subcommands = (
+        "watch",
+        "guard",
+        "doctor",
+        "history",
+        "explain",
+        "mark",
+        "scan",
+        "audit",
+        "analyze",
+        "exec",
+    )
+    for subcmd in expected_subcommands:
+        with pytest.raises(SystemExit) as exc_info:
+            parser.parse_args([subcmd, "-h"])
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "Examples:" in out, f"Missing Examples section in `{subcmd} -h`"
+        assert f"procwatch {subcmd}" in out, f"Missing command example in `{subcmd} -h`"
