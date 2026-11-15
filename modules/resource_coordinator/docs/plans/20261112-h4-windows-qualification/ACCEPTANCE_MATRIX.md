@@ -45,3 +45,16 @@ Result: **14 passed, exit 0**. JUnit output was generated in the ignored module-
 - NVIDIA's [NVML clock-offset query](https://docs.nvidia.com/deploy/nvml-api/latest/api/group__nvmlDeviceQueries.html) defines a versioned read API; it can still return unsupported for a device/driver. WDDM's process/memory visibility is a distinct capability and remains unqualified here.
 - Microsoft defines [system error 206](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-) as `ERROR_FILENAME_EXCED_RANGE`. The local synthetic repros establish the process-creation boundary but not the historical installer call site.
 - No production service, task, miner, GPU setting, LM Studio backend, WSL instance, or credential was modified.
+
+## 2026-11-14 disposable-host and WDDM follow-up
+
+| Gate | Result | New evidence | Remaining |
+|---|---|---|---|
+| Local disposable VM/Sandbox | UNAVAILABLE | Windows 11 Pro 26300; Hyper-V present but no VM; Sandbox disabled; approximately 3.4 GB free RAM during existing KRig/WSL/Docker activity. | Use a separately authorized idle Windows VM/host; do not provision here. |
+| H4 runner/preflight | PASS | `tools/h4_qualification/windows_acceptance.py`; default is read-only; primary host refused task profile; guest and inventory guard is repeated inside the mutating task test. | Actual task profile is unrun; full install/upgrade/rollback remains guest procedure. |
+| Offline installer regression via runner | PASS | 110 tests, 109 passed, 1 skipped, 0 failed, exit 0; mock-backed module tests. | Does not prove Task Scheduler, UAC, or real upgrade operations. |
+| WDDM process identity sample | PARTIAL | In 3/3 samples, compute=41 rows, graphics=39 rows; all 41 union rows had readable Windows identities; known KRig PID/create-time/executable matched compute API in all samples, absent from graphics API. | No complete-inventory guarantee; `gpu_process_attribution_confirmed=false`. |
+| WDDM process memory | PARTIAL | Known PID had `NVML_VALUE_NOT_AVAILABLE` under WDDM. | Not an absence signal and not proof of memory attribution. |
+| WinError 206 actual upgrade cause | PARTIAL | Earlier harmless argument/path probes reproduced code 206; file-backed payload regression passed. | Root cause remains unverified until actual isolated upgrade path is run. |
+| Supervised H5 | NOT READY | Current status endpoint reports 0.11.3; merged source is 1.0.0. | Disposable acceptance, separately authorized deployment, runtime identity, safe preflight, abort/restoration plan, explicit one-run authorization. |
+| Unattended recovery | BLOCKED | Repeated known-process correlation is not complete attribution. | Keep disabled until authoritative execution-boundary evidence and separate approval. |

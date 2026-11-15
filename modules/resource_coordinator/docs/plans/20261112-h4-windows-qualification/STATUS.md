@@ -139,3 +139,66 @@ Follow-up observations were collected on 2026-11-12 at approximately 01:15–01:
 | Unattended recovery | BLOCKED | Keep disabled until complete process-boundary and deployment qualification plus separate approval. |
 
 The new evidence does not change production state. Exact command families, result codes, test command, and follow-up gates are summarized in `ACCEPTANCE_MATRIX.md`.
+
+## H4 disposable-host and WDDM follow-up (2026-11-14)
+
+### Environment selection
+
+The completed read-only preflight found Windows 11 Pro build 26300, Hyper-V enabled, Windows Sandbox disabled, and no local Hyper-V VM in the explicit local inventory. Hyper-V management/compute, WSL, and Docker services were already running. At the time of the preflight, 61.6 GB RAM was installed and approximately 3.4 GB was free while KRig, Docker, and WSL activity existed. This host is not a suitable target for guest creation/start: it would require an unapproved host mutation and would compete with current workloads. No host feature, VM, service, task, or workload was changed.
+
+The preferred environment is a separately authorized idle Windows host with a dedicated Hyper-V guest and checkpoints. A restrictive Sandbox is suitable only for a smaller task/helper test after feature enablement on an idle test host. See `DISPOSABLE_ENVIRONMENT.md`.
+
+### Acceptance harness
+
+Added `tools/h4_qualification/windows_acceptance.py` and fake-backed guard tests. Default mode is read-only and records an isolated preflight. Its offline profile invokes mock-backed installation tests; its task profile is gated by observed WMI guest identity, successful task/service/process inventories, an isolated absolute `h4-rc-*` root, no RC/miner task/service/process, and an explicit operator phrase. The task integration test repeats the guest/inventory guard itself and uses a random exact task name; cleanup failure fails the test. It stores sanitized task summaries and an exact cleanup manifest, not task XML or credentials.
+
+The current runner does not invoke the real `ManagedInstallation.setup()` or `.upgrade()` flow: those paths still bind to fixed production RC task names, shared credential lookup, service status, and runtime activation. The full install/upgrade/interruption/rollback sequence remains an explicitly documented disposable-guest procedure, not a completed acceptance. No task profile was run because no suitable authorized guest was available.
+
+The runner's final read-only primary-host preflight (2026-11-14 23:27 Pacific) successfully queried OS, WMI, tasks, services, and filtered process identity using a test root outside the source tree. It refused the task profile for `guest_identity_not_independently_verified`, `rc_task_present`, and `rc_or_miner_process_present` (exit 3). Its output and raw identities are in `%TEMP%\h4-rc-host-preflight-release-20261115\`; no command lines or credentials were retained.
+
+### WDDM samples
+
+Added `tools/h4_qualification/wddm_probe.py`, which queries NVML compute and graphics process APIs separately, runs vendor reads in bounded helper processes, and independently correlates PID, creation time, and executable identity. Final samples on 2026-11-14 at 23:25:28–23:25:32 Pacific observed the RTX 5090 UUID and driver 621.14 consistently; compute API returned 41 rows and graphics API 39 rows in each sample. The RC-reported KRig PID appeared in the compute rows all three times and matched Windows creation-time/executable identity; it was absent from the graphics rows. All 41 union PIDs could be independently inspected in each sample. Its `usedGpuMemory` field was unavailable under WDDM, which does not indicate absence of the PID.
+
+This repeatable known-process match corrects the earlier snapshot's observation that the PID was missing in sampled compute output. It does not prove complete host/GPU-process coverage: both APIs are dynamic, report separate process classes, and this sampling has no authoritative completeness signal. Keep `gpu_process_attribution_confirmed=false`; Case C and unattended recovery remain unavailable. Raw snapshots, including ephemeral PIDs and paths, remain in ignored `.pytest_tmp_root/h4-wddm-probe-20261114/` and are not committed. See `WDDM_ATTRIBUTION.md`.
+
+### Validation run
+
+- New fake-backed probe/harness selection: final run 19 passed, exit 0. It covers WDDM memory sentinel handling, API classification, identity reuse/mismatch, UUID/driver mismatch, query timeout, guest guard, inventory refusal, artifact initialization, dry-run task profile, short/long CLI options, and offline-profile gating.
+- Harness offline profile: 110 tests, 109 passed, 1 skipped, 0 failures, exit 0. Final JUnit is in ignored `.pytest_tmp_root/h4-rc-offline-release-final-20261115/`. The skipped helper integration test was not enabled in that profile.
+- Read-only live NVML process sampling: final 3/3 samples (23:25:28–23:25:32 Pacific) returned successful compute/graphics inventories, stable UUID/driver, and exact known-miner identity match. No setter or process-control call occurred.
+- Actual disposable Scheduled Task, UAC, installation, upgrade, interruption, and operational rollback acceptance: not run; no suitable independently authorized guest.
+- Intermediate validation findings were corrected: a non-`h4-rc-*` path was refused with exit 3 before tests; one fake subprocess result initially lacked captured output fields; and a task-profile dry run was initially blocked by a source-tree restriction intended only for mutations. The fixture and guard scope were corrected; final focused tests passed. No mutation occurred during these attempts.
+
+Source import provenance is the task worktree; H4 source/package baseline remains `1.0.0`.
+
+Commands and final exits (PowerShell, module worktree, unique module-local pytest roots):
+
+```powershell
+$env:PYTHONPATH = (Get-Location).Path
+python -m pytest tests\test_h4_wddm_probe.py tests\test_h4_windows_acceptance.py -q --basetemp <absolute-module>\.pytest_tmp_root\h4-ship-focus-20261115 --junitxml <absolute-module>\.pytest_tmp_root\h4-ship-focus-20261115\junit.xml
+# final run exit 0; 19 passed
+
+python tools\h4_qualification\windows_acceptance.py --test-root <absolute-module>\.pytest_tmp_root\h4-rc-offline-release-final-20261115 --apply --profile offline --json
+# final run exit 0; JUnit: 110 total, 109 passed, 1 skipped, 0 failed
+
+python -m ruff check tools\h4_qualification\wddm_probe.py tools\h4_qualification\windows_acceptance.py tests\test_h4_wddm_probe.py tests\test_h4_windows_acceptance.py tests\test_windows_task_transport_integration.py
+# exit 0
+
+python -m compileall -q tools\h4_qualification\wddm_probe.py tools\h4_qualification\windows_acceptance.py tests\test_h4_wddm_probe.py tests\test_h4_windows_acceptance.py tests\test_windows_task_transport_integration.py
+# exit 0
+```
+
+### Current disposition
+
+| Gate | Result | Evidence / next requirement |
+|---|---|---|
+| Disposable VM selection | UNAVAILABLE | No local VM; Sandbox disabled; separate idle authorized Windows VM/host needed. |
+| Harness preflight and offline profile | PASS | Fail-closed runner, isolated artifacts, and 110-test offline profile. |
+| Real task profile | NOT_TESTED | Requires a separately authorized guest; primary host correctly refused. |
+| Actual install/upgrade/rollback | NOT_TESTED | Full guest procedure exists; runner does not yet isolate the production installation interface. |
+| Historical WinError 206 upgrade cause | PARTIAL | Long command/path boundaries were reproduced earlier; actual upgrade path still untested. |
+| RTX 5090 read-only compute/graphics PID correlation | PARTIAL | Known KRig PID matched compute + Windows identity in three snapshots; graphics API did not list it. |
+| Complete WDDM attribution / Case C | BLOCKED | No authoritative proof of complete process coverage; keep configuration false. |
+| H5 supervised maintenance | NOT READY | Runtime still reports 0.11.3 vs source 1.0.0; disposable acceptance, approved deployment, and bounded preflight remain. |
+| Unattended recovery | BLOCKED | Keep disabled pending execution-boundary qualification and separate approval. |
