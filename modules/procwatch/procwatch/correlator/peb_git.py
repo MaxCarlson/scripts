@@ -102,7 +102,7 @@ def resolve_git_context(
     result: GitContext | None = None
     for _ in range(32):
         dot_git = current / ".git"
-        if dot_git.is_dir():
+        if dot_git.is_dir() and (dot_git / "HEAD").is_file():
             branch, commit = _parse_head_branch(dot_git)
             result = GitContext(
                 repo_root=str(current),
