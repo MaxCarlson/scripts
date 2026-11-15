@@ -28,7 +28,10 @@
         'Invoke-VmLabGuestBootstrap',
         'Test-VmLabGuestVerify',
         'New-VmLabCheckpoint',
+        'New-VmLabBaselineCheckpoint',
         'Get-VmLabCheckpoint',
+        'Get-VmLabRecoveryPlan',
+        'New-VmLabUnattendXml',
         'Invoke-VmLab'
     )
     AliasesToExport   = @('vm-lab')

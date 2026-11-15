@@ -707,6 +707,48 @@ Describe 'vm_lab module' {
             $gvRes.status | Should Be 'verified'
             $gvRes.checks.bootstrap_marker | Should Be $true
         }
+
+        It 'creates baseline checkpoints and generates non-destructive recovery plans' {
+            $blPlan = Invoke-VmLab -Operation baseline -Name 'Managed-VM' -ManifestRoot $Global:vmLabManifestRoot
+            $blPlan.status | Should Be 'planned'
+            $blPlan.checkpoint_name | Should Be 'clean-baseline'
+
+            $blRes = Invoke-VmLab -Operation baseline -Name 'Managed-VM' -Apply -ManifestRoot $Global:vmLabManifestRoot
+            $blRes.status | Should Be 'baseline_created'
+            $blRes.baseline | Should Be $true
+            $blRes.checkpoint_id | Should Be '66666666-6666-6666-6666-666666666666'
+
+            # Stale lock + partial artifacts recovery-plan
+            $partialRoot = Join-Path $testTemp 'partial_rec_vm'
+            New-Item -ItemType Directory -Path (Join-Path $partialRoot 'vhdx') -Force | Out-Null
+            [System.IO.File]::WriteAllText((Join-Path $partialRoot 'vhdx\Interrupted-VM.vhdx'), 'partial')
+            $lockFile = Join-Path $Global:vmLabManifestRoot 'Interrupted-VM.lock'
+            [System.IO.File]::WriteAllText($lockFile, 'lock')
+
+            $rec = Invoke-VmLab -Operation recovery-plan -Name 'Interrupted-VM' -VmRoot $partialRoot -ManifestRoot $Global:vmLabManifestRoot -Json | ConvertFrom-Json
+            $rec.lock_present | Should Be $true
+            $rec.vhdx_exists | Should Be $true
+            $rec.vm_registered | Should Be $false
+            (Test-Path -LiteralPath $lockFile) | Should Be $true
+            (Test-Path -LiteralPath (Join-Path $partialRoot 'vhdx\Interrupted-VM.vhdx')) | Should Be $true
+        }
+
+        It 'generates bounded Autounattend.xml without passwords and enforces overwrite protection' {
+            $outXml = Join-Path $testTemp 'Autounattend.xml'
+            $planXml = Invoke-VmLab -Operation unattend-xml -OutputPath $outXml -ImageEdition 'Windows 11 Pro' -Json | ConvertFrom-Json
+            $planXml.status | Should Be 'planned'
+            ($planXml.xml -match '<AcceptEula>true</AcceptEula>') | Should Be $true
+            ($planXml.xml -match 'AdministratorPassword|Password') | Should Be $false
+            (Test-Path -LiteralPath $outXml) | Should Be $false
+
+            $written = Invoke-VmLab -Operation unattend-xml -OutputPath $outXml -ImageEdition 'Windows 11 Pro' -Apply
+            $written.status | Should Be 'written'
+            (Test-Path -LiteralPath $outXml) | Should Be $true
+
+            $errOvr = $null
+            try { $null = Invoke-VmLab -Operation unattend-xml -OutputPath $outXml -Apply } catch { $errOvr = $_.Exception.Message }
+            $errOvr | Should Match '-Overwrite'
+        }
     }
 
     It 'imports and invokes cleanly from an isolated PowerShell session with accurate exit codes' {

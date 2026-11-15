@@ -396,3 +396,125 @@ function Invoke-VmLabQuickstart {
         next_action          = $nextAction
     }
 }
+
+function New-VmLabUnattendXml {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [string]$OutputPath,
+        [string]$Locale = 'en-US',
+        [string]$KeyboardLayout = 'en-US',
+        [string]$ImageEdition,
+        [int]$TargetDiskIndex = 0,
+        [switch]$Overwrite,
+        [Alias('a')][switch]$Apply
+    )
+    if ($TargetDiskIndex -lt 0 -or $TargetDiskIndex -gt 15) {
+        throw "TargetDiskIndex must be between 0 and 15 (got $TargetDiskIndex)."
+    }
+    $safeLocale = [System.Security.SecurityElement]::Escape($Locale)
+    $safeKb = [System.Security.SecurityElement]::Escape($KeyboardLayout)
+    $imageInstallXml = if (-not [string]::IsNullOrWhiteSpace($ImageEdition)) {
+        $safeEd = [System.Security.SecurityElement]::Escape($ImageEdition)
+        @"
+        <OSImage>
+          <InstallFrom>
+            <MetaData wcm:action="add">
+              <Key>/IMAGE/NAME</Key>
+              <Value>$safeEd</Value>
+            </MetaData>
+          </InstallFrom>
+          <InstallTo>
+            <DiskID>$TargetDiskIndex</DiskID>
+            <PartitionID>3</PartitionID>
+          </InstallTo>
+        </OSImage>
+"@
+    } else {
+        @"
+        <OSImage>
+          <InstallTo>
+            <DiskID>$TargetDiskIndex</DiskID>
+            <PartitionID>3</PartitionID>
+          </InstallTo>
+        </OSImage>
+"@
+    }
+
+    $xml = @"
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <SetupUILanguage>
+        <UILanguage>$safeLocale</UILanguage>
+      </SetupUILanguage>
+      <InputLocale>$safeKb</InputLocale>
+      <SystemLocale>$safeLocale</SystemLocale>
+      <UILanguage>$safeLocale</UILanguage>
+      <UserLocale>$safeLocale</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <DiskConfiguration>
+        <Disk wcm:action="add">
+          <DiskID>$TargetDiskIndex</DiskID>
+          <WillWipeDisk>true</WillWipeDisk>
+          <CreatePartitions>
+            <CreatePartition wcm:action="add"><Order>1</Order><Type>EFI</Type><Size>260</Size></CreatePartition>
+            <CreatePartition wcm:action="add"><Order>2</Order><Type>MSR</Type><Size>16</Size></CreatePartition>
+            <CreatePartition wcm:action="add"><Order>3</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Format>FAT32</Format><Label>System</Label></ModifyPartition>
+            <ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID></ModifyPartition>
+            <ModifyPartition wcm:action="add"><Order>3</Order><PartitionID>3</PartitionID><Format>NTFS</Format><Label>Windows</Label><Letter>C</Letter></ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+      </DiskConfiguration>
+      <ImageInstall>
+$imageInstallXml
+      </ImageInstall>
+      <UserData>
+        <AcceptEula>true</AcceptEula>
+      </UserData>
+    </component>
+  </settings>
+</unattend>
+"@
+
+    if (-not $Apply -or $WhatIfPreference -or [string]::IsNullOrWhiteSpace($OutputPath)) {
+        if ($WhatIfPreference -and -not [string]::IsNullOrWhiteSpace($OutputPath)) {
+            $null = $PSCmdlet.ShouldProcess($OutputPath, 'Write Autounattend.xml')
+        }
+        return [pscustomobject]@{
+            status      = 'planned'
+            operation   = 'unattend-xml'
+            output_path = $OutputPath
+            locale      = $Locale
+            edition     = $ImageEdition
+            note        = 'No passwords are embedded; Windows Setup stops at the OOBE account-creation boundary.'
+            xml         = $xml
+        }
+    }
+
+    $outFull = Resolve-VmLabFullPath -Path $OutputPath -Label 'OutputPath' -RejectDriveRoot
+    Assert-VmLabNoReparsePoint -FullPath $outFull -Label 'OutputPath'
+    if ((Test-Path -LiteralPath $outFull) -and -not $Overwrite) {
+        throw "OutputPath already exists and -Overwrite was not specified: '$outFull'."
+    }
+    if (-not $PSCmdlet.ShouldProcess($outFull, 'Write Autounattend.xml')) {
+        return [pscustomobject]@{ status = 'declined'; operation = 'unattend-xml'; output_path = $outFull }
+    }
+    $parent = Split-Path -Parent $outFull
+    if (-not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    [System.IO.File]::WriteAllText($outFull, $xml, [System.Text.UTF8Encoding]::new($false))
+    return [pscustomobject]@{
+        status      = 'written'
+        operation   = 'unattend-xml'
+        output_path = $outFull
+        locale      = $Locale
+        edition     = $ImageEdition
+        note        = 'No passwords are embedded; Windows Setup stops at the OOBE account-creation boundary.'
+    }
+}

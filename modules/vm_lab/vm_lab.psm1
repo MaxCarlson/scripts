@@ -10,6 +10,7 @@ $srcFiles = @(
     'Checkpoints.ps1',
     'Guest.ps1',
     'Bootstrap.ps1',
+    'Recovery.ps1',
     'Wizard.ps1',
     'Output.ps1'
 )
@@ -45,6 +46,9 @@ Export-ModuleMember -Function @(
     'Invoke-VmLabGuestBootstrap',
     'Test-VmLabGuestVerify',
     'New-VmLabCheckpoint',
+    'New-VmLabBaselineCheckpoint',
     'Get-VmLabCheckpoint',
+    'Get-VmLabRecoveryPlan',
+    'New-VmLabUnattendXml',
     'Invoke-VmLab'
 ) -Alias @('vm-lab')

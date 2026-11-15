@@ -93,3 +93,20 @@ function Get-VmLabCheckpoint {
         }
     })
 }
+
+function New-VmLabBaselineCheckpoint {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [string]$CheckpointName = 'clean-baseline',
+        [Alias('a')][switch]$Apply,
+        [string]$ManifestRoot = (Get-VmLabDefaultManifestRoot)
+    )
+    $res = New-VmLabCheckpoint -Name $Name -CheckpointName $CheckpointName -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+    if ($res.status -eq 'checkpoint_created') {
+        $res | Add-Member -NotePropertyName 'baseline' -NotePropertyValue $true -Force
+        $res.status = 'baseline_created'
+    }
+    $res.operation = 'baseline'
+    return $res
+}

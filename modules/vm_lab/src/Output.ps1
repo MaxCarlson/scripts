@@ -19,7 +19,7 @@ function Invoke-VmLab {
     param(
         [Parameter(Mandatory, Position = 0)]
         [Alias('o')]
-        [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'checkpoint', 'checkpoints')]
+        [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
         [string]$Operation,
 
         [Alias('n')][string]$Name,
@@ -46,7 +46,11 @@ function Invoke-VmLab {
         [ValidateSet('windows-minimal', 'python-dev', 'powershell-dev')][string]$GuestProfile = 'windows-minimal',
         [string]$InstallerPath,
         [string]$WheelhousePath,
-        [string]$VenvPath = 'C:\venvs\dev'
+        [string]$VenvPath = 'C:\venvs\dev',
+        [string]$OutputPath,
+        [string]$Locale = 'en-US',
+        [string]$KeyboardLayout = 'en-US',
+        [string]$ImageEdition
     )
 
     $result = switch ($Operation) {
@@ -136,9 +140,20 @@ function Invoke-VmLab {
             if ([string]::IsNullOrWhiteSpace($CheckpointName)) { throw '-CheckpointName (-m) is required for checkpoint.' }
             New-VmLabCheckpoint -Name $Name -CheckpointName $CheckpointName -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
         }
+        'baseline' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for baseline.' }
+            $cpName = if ([string]::IsNullOrWhiteSpace($CheckpointName)) { 'clean-baseline' } else { $CheckpointName }
+            New-VmLabBaselineCheckpoint -Name $Name -CheckpointName $cpName -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+        }
         'checkpoints' {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for checkpoints.' }
             @(Get-VmLabCheckpoint -Name $Name -ManifestRoot $ManifestRoot)
+        }
+        { $_ -in @('recovery-plan', 'doctor') } {
+            Get-VmLabRecoveryPlan -Name $Name -VmRoot $VmRoot -Credential $Credential -ManifestRoot $ManifestRoot
+        }
+        'unattend-xml' {
+            New-VmLabUnattendXml -OutputPath $OutputPath -Locale $Locale -KeyboardLayout $KeyboardLayout -ImageEdition $ImageEdition -Overwrite:$Overwrite -Apply:$Apply -WhatIf:$WhatIfPreference
         }
     }
 
