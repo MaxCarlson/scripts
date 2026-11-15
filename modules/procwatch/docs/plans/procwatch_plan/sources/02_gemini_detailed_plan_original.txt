@@ -1,0 +1,706 @@
+````
+# `procwatch` — Engineering Specification & Implementation Plan
+
+## 1. Problem Statement & Core Objectives
+
+On Windows 11, background CLI agents (Codex, Claude Code, local orchestrators), Scheduled Tasks (`svchost.exe`), and `.venv\Scripts\python.exe` wrapper shims frequently spawn console-subsystem (`IMAGE_SUBSYSTEM_WINDOWS_CUI`) processes without passing `CREATE_NO_WINDOW` (`0x08000000`). Because Windows 11 delegates console allocations via `HKCU\Console\%%Startup` (`DelegationTerminal` / `DelegationConsole`) to Windows Terminal (`WindowsTerminal.exe`, window class `CASCADIA_HOSTING_WINDOW_CLASS`) or `conhost.exe` (`ConsoleWindowClass`), these transient processes open visible terminal windows (e.g., titled `C:\Users\mcarls\src\scripts\.venv\...`) for a fraction of a second, stealing foreground keyboard and mouse focus before exiting.
+
+`procwatch` is a Windows-native Python package and CLI tool that solves this in four layers:
+
+1. **Immediate Window Interception & Focus Protection (`guard` & `watch` — Phase 1 Priority):** Intercepts newly created popup console/terminal windows in `<1 ms` using an out-of-context Win32 `SetWinEventHook` + `MsgWaitForMultipleObjects` loop, prevents focus activation (`LockSetForegroundWindow` + `WS_EX_NOACTIVATE`), moves the frame off-screen, minimizes it (`SW_SHOWMINNOACTIVE`), and restores focus to the user's active window while logging the spawning process tree in real time.
+2. **Persistent Flight Recorder & Causal Attribution (`history`, `explain`, `mark`, `doctor` — Phase 2):** Captures process lifecycles from WMI trace events, Windows 11 Sysmon (`EvtSubscribe` with transactional XML bookmarks), Task Scheduler operational logs, and WinEvents into a local SQLite WAL database (`~/.procwatch/events.db`), linking transient popups to their root agent session, Git worktree, or Scheduled Task with explicit evidence edges and confidence scores.
+3. **Static Code & System Auditing (`scan`, `audit`, `analyze` — Phase 3):** Scans Python (`ast` / `libcst`) and PowerShell (`System.Management.Automation.Language.Parser`) codebases across active Git worktrees for unguarded subprocess launches, audits Windows Scheduled Tasks and Startup entries, and measures periodicity and before/after popup reduction.
+4. **Observable Headless Execution (`exec` — Phase 4):** Wraps background commands in a Windows Job Object with `CREATE_NO_WINDOW`, capturing bounded `stdout`/`stderr`, exit codes, and execution telemetry without ever allocating a visible console window.
+
+---
+
+## 2. Mandatory Coding & Architecture Conventions
+
+All implementation work on this repository must strictly adhere to the following rules:
+
+* **Indentation:** Always use 4 spaces for indentation.
+* **Complete File Outputs:** Never use placeholder comments, ellipses (`# ...`), or truncated blocks when writing or updating files. Every file must be complete and directly executable.
+* **CLI Argument Formatting:** Every command-line argument must define both a single-dash single-character short flag (upper or lower case) and a double-dash hyphenated full-word flag (e.g., `-p, --popups-only`, `-g, --guard-windows`).
+* **Test File Naming:** All unit and integration test files must reside in `./tests/` and be named `./tests/<module_name>_test.py`.
+* **Privilege Model:** The UI/window watcher (`SetWinEventHook`) must run in the user's interactive desktop session (never isolated in Session 0). Elevated Event Log readers (such as Security or Sysmon if restricted) must degrade gracefully when run unprivileged and report their status in `procwatch doctor`.
+* **Single-Collector Ownership:** Live event collection (`watch` / `guard` with persistence enabled) must acquire a per-user named mutex (`Local\ProcWatchCollectorMutex`) so concurrent CLI invocations (`history`, `explain`, `analyze`, `mark`, `doctor`) read/write against the shared SQLite WAL database without registering duplicate OS hooks or conflicting window guard actions.
+* **Pre-Persistence Secret Redaction:** Command lines, decoded Base64 payloads, and environment variables must pass through `procwatch/redactor.py` *before* being inserted into SQLite or written to JSONL exports.
+
+---
+
+## 3. Proven Reference Implementation: Sub-Millisecond Window Guard & Live Catcher
+
+Testing confirmed that standard polling (`time.sleep`) or waiting until `EVENT_OBJECT_SHOW` to call `ShowWindowAsync` is too slow on Windows 11—Windows Terminal renders a translucent XAML frame and steals keyboard focus within the default 15.6 ms timer tick.
+
+The exact mechanism below **must be preserved** in `procwatch/guard/window_guard.py`. It uses kernel-signaled `MsgWaitForMultipleObjects` (`<1 ms` wakeup), hooks `EVENT_OBJECT_CREATE` (`0x8000`) through `EVENT_OBJECT_SHOW` (`0x8002`) and `EVENT_SYSTEM_FOREGROUND` (`0x0003`), snapshots existing HWNDs on startup, locks foreground changes (`LockSetForegroundWindow`), injects `WS_EX_NOACTIVATE` during initialization, relocates the frame to `(-32000, -32000)`, minimizes via `SW_SHOWMINNOACTIVE`, restores `orig_ex` on `SHOW` (so the user can still manually click the taskbar icon later), and restores keyboard focus via `AttachThreadInput`.
+
+`procwatch/guard/window_guard.py`
+
+```python
+#!/usr/bin/env python3
+"""Sub-millisecond WinEvent hook to intercept, neutralize, and log popup console windows."""
+
+import argparse
+import ctypes
+from ctypes import wintypes
+from datetime import datetime
+import os
+import re
+import sys
+import threading
+import time
+from typing import Callable
+
+if sys.platform != "win32":
+    sys.exit("Error: window_guard.py requires Windows (win32).")
+
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+# Win32 event & window constants
+WINEVENT_OUTOFCONTEXT = 0x0000
+WINEVENT_SKIPOWNPROCESS = 0x0002
+EVENT_SYSTEM_FOREGROUND = 0x0003
+EVENT_OBJECT_CREATE = 0x8000
+EVENT_OBJECT_DESTROY = 0x8001
+EVENT_OBJECT_SHOW = 0x8002
+OBJID_WINDOW = 0
+CHILDID_SELF = 0
+
+SW_HIDE = 0
+SW_SHOWMINNOACTIVE = 7
+GA_ROOT = 2
+GWL_EXSTYLE = -20
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_NOACTIVATE = 0x08000000
+
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
+
+LSFW_LOCK = 1
+VK_LBUTTON = 0x01
+QS_ALLINPUT = 0x04FF
+PM_REMOVE = 0x0001
+WM_QUIT = 0x0012
+
+CONSOLE_CLASSES = {
+    "CASCADIA_HOSTING_WINDOW_CLASS",  # Windows Terminal
+    "ConsoleWindowClass",             # Legacy conhost.exe
+}
+
+DEFAULT_AUTOMATION_TITLE_REGEX = re.compile(
+    r"(\.venv\\Scripts\\|pythonw?3?\.exe|pwsh\.exe|powershell\.exe|cmd\.exe|conhost\.exe|node\.exe|wsl\.exe)",
+    re.IGNORECASE,
+)
+
+WinEventProcType = ctypes.WINFUNCTYPE(
+    None,
+    wintypes.HANDLE,
+    wintypes.DWORD,
+    wintypes.HWND,
+    wintypes.LONG,
+    wintypes.LONG,
+    wintypes.DWORD,
+    wintypes.DWORD,
+)
+
+EnumWindowsProcType = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+# Explicit 64-bit safe Win32 prototypes
+user32.SetWinEventHook.argtypes = [
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.HMODULE,
+    WinEventProcType,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.DWORD,
+]
+user32.SetWinEventHook.restype = wintypes.HANDLE
+user32.UnhookWinEvent.argtypes = [wintypes.HANDLE]
+user32.UnhookWinEvent.restype = wintypes.BOOL
+user32.EnumWindows.argtypes = [EnumWindowsProcType, wintypes.LPARAM]
+user32.EnumWindows.restype = wintypes.BOOL
+user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+user32.GetAncestor.restype = wintypes.HWND
+user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetClassNameW.restype = ctypes.c_int
+user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+user32.GetWindowTextLengthW.restype = ctypes.c_int
+user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetWindowTextW.restype = ctypes.c_int
+user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.GetWindowLongW.restype = wintypes.LONG
+user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+user32.SetWindowLongW.restype = wintypes.LONG
+user32.SetWindowPos.argtypes = [
+    wintypes.HWND,
+    wintypes.HWND,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.UINT,
+]
+user32.SetWindowPos.restype = wintypes.BOOL
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+user32.ShowWindowAsync.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindowAsync.restype = wintypes.BOOL
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = wintypes.HWND
+user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+user32.SetForegroundWindow.restype = wintypes.BOOL
+user32.LockSetForegroundWindow.argtypes = [wintypes.UINT]
+user32.LockSetForegroundWindow.restype = wintypes.BOOL
+user32.IsWindow.argtypes = [wintypes.HWND]
+user32.IsWindow.restype = wintypes.BOOL
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.restype = wintypes.BOOL
+user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+user32.AttachThreadInput.restype = wintypes.BOOL
+user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+user32.GetAsyncKeyState.restype = ctypes.c_short
+user32.MsgWaitForMultipleObjects.argtypes = [
+    wintypes.DWORD,
+    ctypes.c_void_p,
+    wintypes.BOOL,
+    wintypes.DWORD,
+    wintypes.DWORD,
+]
+user32.MsgWaitForMultipleObjects.restype = wintypes.DWORD
+user32.PeekMessageW.argtypes = [
+    ctypes.POINTER(wintypes.MSG),
+    wintypes.HWND,
+    wintypes.UINT,
+    wintypes.UINT,
+    wintypes.UINT,
+]
+user32.PeekMessageW.restype = wintypes.BOOL
+user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+user32.TranslateMessage.restype = wintypes.BOOL
+user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+user32.DispatchMessageW.restype = wintypes.LPARAM
+user32.PostThreadMessageW.argtypes = [
+    wintypes.DWORD,
+    wintypes.UINT,
+    wintypes.WPARAM,
+    wintypes.LPARAM,
+]
+user32.PostThreadMessageW.restype = wintypes.BOOL
+kernel32.GetCurrentThreadId.argtypes = []
+kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
+
+def get_window_class(hwnd: int) -> str:
+    buf = ctypes.create_unicode_buffer(256)
+    length = user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value if length > 0 else ""
+
+
+def get_window_title(hwnd: int) -> str:
+    length = user32.GetWindowTextLengthW(hwnd)
+    if length <= 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buf, length + 1)
+    return buf.value
+
+
+def get_window_pid(hwnd: int) -> int:
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return int(pid.value)
+
+
+def snapshot_existing_windows() -> set[int]:
+    handles: set[int] = set()
+
+    def _collect(hwnd: int, _lparam: int) -> bool:
+        handles.add(int(hwnd))
+        return True
+
+    user32.EnumWindows(EnumWindowsProcType(_collect), 0)
+    return handles
+
+
+def restore_focus(target_hwnd: int) -> None:
+    if not target_hwnd or not user32.IsWindow(target_hwnd) or not user32.IsWindowVisible(target_hwnd):
+        return
+    if user32.GetAsyncKeyState(VK_LBUTTON) < 0:
+        return
+
+    fg_hwnd = user32.GetForegroundWindow()
+    if fg_hwnd == target_hwnd:
+        return
+
+    cur_tid = kernel32.GetCurrentThreadId()
+    fg_tid = user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
+    target_tid = user32.GetWindowThreadProcessId(target_hwnd, None)
+
+    attached_fg = False
+    attached_target = False
+    try:
+        if fg_tid and fg_tid != cur_tid:
+            attached_fg = bool(user32.AttachThreadInput(cur_tid, fg_tid, True))
+        if target_tid and target_tid != cur_tid and target_tid != fg_tid:
+            attached_target = bool(user32.AttachThreadInput(cur_tid, target_tid, True))
+        user32.SetForegroundWindow(target_hwnd)
+    finally:
+        if attached_target:
+            user32.AttachThreadInput(cur_tid, target_tid, False)
+        if attached_fg:
+            user32.AttachThreadInput(cur_tid, fg_tid, False)
+
+
+class NeutralizeEngine:
+    """Hooks Win32 window creation/show events to suppress popup consoles without losing focus."""
+
+    def __init__(
+        self,
+        mode: str = "all-consoles",
+        do_restore_focus: bool = True,
+        title_pattern: re.Pattern[str] = DEFAULT_AUTOMATION_TITLE_REGEX,
+        exclude_pattern: re.Pattern[str] | None = None,
+        quiet: bool = False,
+        on_window_event: Callable[[dict[str, object]], None] | None = None,
+    ) -> None:
+        self.mode = mode  # "all-consoles" | "smart" | "observe" | "all-windows"
+        self.do_restore_focus = do_restore_focus
+        self.title_pattern = title_pattern
+        self.exclude_pattern = exclude_pattern
+        self.quiet = quiet
+        self.on_window_event = on_window_event
+        self.own_pid = os.getpid()
+
+        self.known_hwnds: set[int] = snapshot_existing_windows()
+        self.suppress_until: dict[int, float] = {}
+        self.last_valid_fg: int = int(user32.GetForegroundWindow() or 0)
+        self._callback = WinEventProcType(self._on_event)
+        self._thread: threading.Thread | None = None
+        self._thread_id: int = 0
+        self._stop_event = threading.Event()
+
+    def _should_intercept(self, hwnd: int, cls_name: str, title: str) -> bool:
+        if user32.GetAncestor(hwnd, GA_ROOT) != hwnd:
+            return False
+        if self.exclude_pattern and title and self.exclude_pattern.search(title):
+            return False
+        if self.mode == "all-windows":
+            ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            return not bool(ex_style & WS_EX_TOOLWINDOW)
+        if cls_name not in CONSOLE_CLASSES:
+            return False
+        if self.mode in ("all-consoles", "observe"):
+            return True
+        # "smart" mode: intercept if title is still empty at CREATE time or matches automation patterns
+        if not title:
+            return True
+        return bool(self.title_pattern.search(title))
+
+    def _neutralize_window(self, hwnd: int, restore_exstyle: bool = False) -> None:
+        if self.mode == "observe":
+            return
+        user32.LockSetForegroundWindow(LSFW_LOCK)
+        orig_ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        if not (orig_ex & WS_EX_NOACTIVATE):
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, orig_ex | WS_EX_NOACTIVATE)
+
+        user32.SetWindowPos(
+            hwnd,
+            None,
+            -32000,
+            -32000,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+        user32.ShowWindowAsync(hwnd, SW_SHOWMINNOACTIVE)
+
+        if restore_exstyle and not (orig_ex & WS_EX_NOACTIVATE):
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, orig_ex)
+
+        if self.do_restore_focus and self.last_valid_fg and self.last_valid_fg != hwnd:
+            restore_focus(self.last_valid_fg)
+
+    def _on_event(
+        self,
+        _hook: int,
+        event: int,
+        hwnd: int,
+        id_object: int,
+        id_child: int,
+        _event_thread: int,
+        _event_time: int,
+    ) -> None:
+        if not hwnd or id_object != OBJID_WINDOW or id_child != CHILDID_SELF:
+            return
+
+        hwnd_int = int(hwnd)
+        now = time.monotonic()
+
+        if hwnd_int in self.suppress_until:
+            if now < self.suppress_until[hwnd_int]:
+                self._neutralize_window(hwnd_int, restore_exstyle=(event == EVENT_OBJECT_SHOW))
+                return
+            del self.suppress_until[hwnd_int]
+
+        if hwnd_int in self.known_hwnds:
+            if event == EVENT_SYSTEM_FOREGROUND and user32.IsWindowVisible(hwnd_int):
+                self.last_valid_fg = hwnd_int
+            return
+
+        pid = get_window_pid(hwnd_int)
+        if pid == self.own_pid:
+            self.known_hwnds.add(hwnd_int)
+            return
+
+        cls_name = get_window_class(hwnd_int)
+        title = get_window_title(hwnd_int)
+
+        if not self._should_intercept(hwnd_int, cls_name, title):
+            if event != EVENT_OBJECT_CREATE:
+                self.known_hwnds.add(hwnd_int)
+                if event == EVENT_SYSTEM_FOREGROUND and user32.IsWindowVisible(hwnd_int):
+                    self.last_valid_fg = hwnd_int
+            return
+
+        self.known_hwnds.add(hwnd_int)
+        self.suppress_until[hwnd_int] = now + 0.6
+        self._neutralize_window(hwnd_int, restore_exstyle=False)
+
+        ts_utc = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+        ts_local = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        action_taken = "observed" if self.mode == "observe" else "minimized"
+
+        if not self.quiet:
+            print(
+                f"[{ts_local}] Intercepted ({action_taken}, event={hex(event)}): "
+                f"{cls_name} (PID: {pid}, HWND: {hex(hwnd_int)}) | {title or '<creating>'}",
+                flush=True,
+            )
+
+        if self.on_window_event:
+            self.on_window_event(
+                {
+                    "timestamp_utc": ts_utc,
+                    "monotonic_ns": time.monotonic_ns(),
+                    "hwnd": hwnd_int,
+                    "owner_pid": pid,
+                    "window_class": cls_name,
+                    "initial_title": title or "",
+                    "win_event": int(event),
+                    "guard_action": action_taken,
+                }
+            )
+
+    def run_blocking(self) -> None:
+        self._thread_id = int(kernel32.GetCurrentThreadId())
+        hook = user32.SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_OBJECT_SHOW,
+            None,
+            self._callback,
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        )
+        if not hook:
+            raise RuntimeError("Failed to register SetWinEventHook.")
+
+        if not self.quiet:
+            print(f"Window guard active (mode={self.mode})... Press Ctrl+C to stop.", flush=True)
+
+        msg = wintypes.MSG()
+        try:
+            while not self._stop_event.is_set():
+                user32.MsgWaitForMultipleObjects(0, None, False, 50, QS_ALLINPUT)
+                while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
+                    if msg.message == WM_QUIT:
+                        return
+                    user32.TranslateMessage(ctypes.byref(msg))
+                    user32.DispatchMessageW(ctypes.byref(msg))
+        except KeyboardInterrupt:
+            if not self.quiet:
+                print("\nStopped window guard.", flush=True)
+        finally:
+            user32.UnhookWinEvent(hook)
+
+    def start_background(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self.run_blocking, name="procwatch-win-guard", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread_id:
+            user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+        if self._thread:
+            self._thread.join(timeout=1.0)
+
+```
+
+File: `procwatch/guard/window_guard.py`
+
+---
+
+## 4. Package Directory Structure
+
+```text
+procwatch/
+├── pyproject.toml
+├── README.md
+├── procwatch/
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── cli.py                      # 10-command argparse router (-x, --long-name flags)
+│   ├── config.py                   # Retention (age + MB), redaction patterns, allowlists
+│   ├── models.py                   # Typed dataclasses & process/window capability flags
+│   ├── mutex.py                    # Per-user single-collector named mutex (Local\ProcWatchCollectorMutex)
+│   ├── redactor.py                 # Pre-persistence secret, token, and API-key scrubber
+│   ├── storage.py                  # SQLite WAL engine, transactional bookmarks, migrations
+│   ├── guard/
+│   │   ├── __init__.py
+│   │   └── window_guard.py         # NeutralizeEngine (CREATE/SHOW hook + focus protection)
+│   ├── collectors/
+│   │   ├── __init__.py
+│   │   ├── win_event.py            # Bridges NeutralizeEngine window telemetry to event bus
+│   │   ├── wmi_trace.py            # Threaded Win32_ProcessStartTrace / StopTrace collector
+│   │   ├── sysmon_evt.py           # EvtSubscribe reader with XML bookmarks & rollover recovery
+│   │   └── task_events.py          # Microsoft-Windows-TaskScheduler/Operational log reader
+│   ├── correlator/
+│   │   ├── __init__.py
+│   │   ├── engine.py               # Async queue bus, provisional->canonical ID reconciler
+│   │   ├── ancestry.py             # Toolhelp32 pre-warmed cache + multi-gen parent walker
+│   │   ├── terminal_session.py     # Windows Terminal / ConPTY / Console\%%Startup correlator
+│   │   ├── peb_git.py              # Live CWD/flags reader + Git repo/worktree/branch resolver
+│   │   ├── decoders.py             # Unwraps Base64 -EncodedCommand, cmd /c, and wsl -e payloads
+│   │   └── scorer.py               # Builds evidence_edges and scores incident confidence
+│   ├── analyzers/
+│   │   ├── __init__.py
+│   │   ├── ast_scanner.py          # Python (ast/libcst) & PowerShell subprocess scanner
+│   │   ├── task_auditor.py         # Scheduled Tasks, Startup folders, Run keys, DefTerm auditor
+│   │   └── patterns.py             # Periodicity clustering & before/after baseline comparison
+│   ├── runner/
+│   │   ├── __init__.py
+│   │   └── supervisor.py           # Windows Job Object CREATE_NO_WINDOW runner + log capture
+│   └── renderers/
+│       ├── __init__.py
+│       ├── console.py              # Rich live trees, incident explain views, timeline replay
+│       └── doctor_view.py          # Collector health, privilege matrix, and drop counters
+└── tests/
+    ├── ancestry_test.py
+    ├── ast_scanner_test.py
+    ├── correlator_test.py
+    ├── decoders_test.py
+    ├── integration_win32_test.py   # Controlled ground-truth Windows process & popup test harness
+    ├── patterns_test.py
+    ├── redactor_test.py
+    ├── storage_test.py
+    ├── supervisor_test.py
+    └── window_guard_test.py
+
+```
+
+---
+
+## 5. SQLite Data Model & Identity Reconciliation (`procwatch/storage.py`)
+
+### 5.1 Process & Window Identity Rules
+
+1. **Provisional-to-Canonical Process Identity:**
+* A WMI `Win32_ProcessStartTrace` event may arrive milliseconds before its corresponding Sysmon Event ID 1 record.
+* When a process is first seen without a Sysmon GUID or kernel `CREATE_TIME`, assign `proc_key = "prov:{boot_id}:{pid}:{time_bucket_ms}"` with `is_provisional = 1`.
+* When Sysmon Event ID 1 or `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetProcessTimes` resolves the canonical identity (`canon:{boot_id}:{sysmon_guid}` or `canon:{boot_id}:{pid}:{create_time_100ns}`), upsert the canonical row, migrate edges, and insert an `evidence_edges` record with `relation = 'supersedes'`.
+
+
+2. **Window Instance Identity:** Because Windows recycles `HWND` integers rapidly, every window record is keyed by `window_instance_id = "{boot_id}:{hwnd}:{create_monotonic_ns}"`.
+3. **Transactional Event Log Bookmarks:** `EvtSubscribe` XML bookmarks for Sysmon and Task Scheduler logs must be updated in `collector_state` inside the exact same SQLite `BEGIN IMMEDIATE ... COMMIT` transaction that inserts the batch of `raw_events` (`INSERT OR IGNORE INTO raw_events`). If a bookmark is stale (`ERROR_EVT_INVALID_BOOKMARK` or cleared log), log a gap warning in `collector_state` and reset subscription to `EvtSubscribeToFutureEvents`.
+
+### 5.2 Core Tables
+
+* **`schema_meta`:** `version INTEGER PRIMARY KEY`, `applied_at_utc TEXT NOT NULL`.
+* **`collector_state`:** `source TEXT PRIMARY KEY`, `status TEXT`, `evt_bookmark_xml TEXT`, `events_ingested INTEGER`, `events_dropped INTEGER`, `last_error TEXT`, `updated_at_utc TEXT`.
+* **`raw_events`:** `raw_id INTEGER PRIMARY KEY AUTOINCREMENT`, `boot_id TEXT`, `source TEXT`, `provider_event_id INTEGER`, `source_record_id TEXT`, `event_ts_utc TEXT`, `monotonic_ns INTEGER`, `payload_redacted_json TEXT`, `UNIQUE(boot_id, source, source_record_id)`.
+* **`processes`:**
+* `proc_key TEXT PRIMARY KEY`, `boot_id TEXT`, `pid INTEGER`, `ppid INTEGER`, `sysmon_guid TEXT`, `kernel_create_100ns INTEGER`, `is_provisional INTEGER`
+* `image_path TEXT`, `cmdline_redacted TEXT`, `decoded_payload TEXT`, `cwd TEXT`, `git_repo TEXT`, `git_worktree TEXT`, `git_branch TEXT`, `pe_subsystem TEXT`, `startup_flags INTEGER`
+* `agent_context_json TEXT` (parsed `PROCWATCH_CONTEXT` with `trust_level`: `instrumented` vs `heuristic`)
+* `start_ts_utc TEXT`, `exit_ts_utc TEXT`, `duration_ms REAL`, `exit_code INTEGER`
+* Capability booleans (`INTEGER` 0/1): `process_created`, `process_terminated`, `exit_code_known`, `window_observed`, `command_line_captured`, `ancestry_complete`.
+
+
+* **`windows`:** `window_instance_id TEXT PRIMARY KEY`, `hwnd INTEGER`, `owner_pid INTEGER`, `window_class TEXT`, `initial_title TEXT`, `title_history_json TEXT`, `became_visible INTEGER`, `stole_foreground INTEGER`, `guard_action TEXT`, `create_ts_utc TEXT`, `destroy_ts_utc TEXT`.
+* **`evidence_edges`:** `edge_id INTEGER PRIMARY KEY AUTOINCREMENT`, `from_node_id TEXT`, `to_node_id TEXT`, `relation TEXT` (`parent_of` | `triggered_by` | `hosted_by` | `correlated_with` | `supersedes`), `source TEXT`, `method TEXT`, `confidence TEXT` (`high` | `medium` | `low`), `notes TEXT`.
+* **`incidents`:** `incident_id INTEGER PRIMARY KEY AUTOINCREMENT`, `created_ts_utc TEXT`, `category TEXT` (`visible_popup` | `suppressed_popup` | `burst_loop` | `user_mark`), `primary_proc_key TEXT`, `collapsed_shim_key TEXT`, `root_initiator_key TEXT`, `window_instance_id TEXT`, `confidence TEXT`, `summary_text TEXT`.
+* **`bookmarks`:** `bookmark_id INTEGER PRIMARY KEY AUTOINCREMENT`, `ts_utc TEXT`, `monotonic_ns INTEGER`, `label TEXT`, `matched_incident_ids_json TEXT`.
+
+---
+
+## 6. Complete 10-Command CLI Contract (`procwatch/cli.py`)
+
+Every command option must provide both its short single-character flag and its full hyphenated flag:
+
+1. **`procwatch guard`** — Standalone low-overhead window guard daemon (prevents popups from interrupting work).
+* `-m, --mode <all-consoles|smart|observe|all-windows>`: Suppression policy (default: `all-consoles`).
+* `-n, --no-focus-restore`: Minimize without forcing foreground focus back.
+* `-t, --title-pattern <regex>`: Regex of window titles to suppress in `smart` mode.
+* `-e, --exclude-pattern <regex>`: Regex of window titles to never suppress.
+* `-q, --quiet`: Suppress console log output (for background `pythonw.exe` usage).
+* `-o, --output-file <path>`: Append intercepted window events to a JSONL file.
+
+
+2. **`procwatch watch`** — Live process & popup stream with optional active window suppression.
+* `-p, --popups-only`: Display only events that created a window or matched popup heuristics.
+* `-g, --guard-windows`: Enable active `NeutralizeEngine` window suppression while watching.
+* `-m, --guard-mode <all-consoles|smart|observe>`: Guard policy when `-g` is active (default: `all-consoles`).
+* `-c, --collapse-bursts`: Group repetitive polling spawns into rolling counters.
+* `-s, --show-headless`: Include `conhost.exe 0x4` headless spawns in output.
+* `-f, --filter-regex <pattern>`: Filter output by command line, CWD, or ancestor name.
+* `-o, --output-file <path>`: Append redacted JSONL events to disk.
+
+
+3. **`procwatch history`** — Search, replay, or export recorded SQLite incidents.
+* `-t, --time-window <duration>`: Lookback window (e.g., `15m`, `2h`, `7d`; default: `1h`).
+* `-p, --popups-only`: Filter strictly to confirmed or suppressed window incidents.
+* `-a, --agent-filter <name>`: Filter by initiator tag (`codex`, `claude`, `task`, `docker`).
+* `-r, --replay-timeline`: Reconstruct incidents chronologically with millisecond deltas.
+* `-e, --export-bundle <path>`: Export a redacted JSON forensic bundle for an AI agent.
+
+
+4. **`procwatch explain`** — Deep causal explanation of an incident ID or live PID.
+* `-i, --incident-id <id>`: Explain a recorded incident (ancestry, `evidence_edges`, confidence, alternative candidates, and remediation).
+* `-p, --pid <int>`: Inspect a live PID (PEB `CWD`, Git worktree, ancestry chain, open HWNDs).
+* `-j, --json-output`: Emit machine-readable JSON.
+
+
+5. **`procwatch mark`** — Record an instant timestamp bookmark when a sub-second window flashes.
+* `-l, --label <text>`: User note describing what happened.
+* `-w, --window-seconds <float>`: Correlation window in seconds around the mark (default: `3.0`).
+
+
+6. **`procwatch analyze`** — Detect periodic polling loops and compare before/after remediation baselines.
+* `-p, --periodicity`: Cluster recurring spawns and report inter-arrival intervals (e.g., `10.0s ± 0.1s`).
+* `-b, --baseline-window <duration>`: Compare recent popup rates against a baseline period.
+* `-w, --window-seconds <int>`: Lookback window in seconds (default: `3600`).
+* `-j, --json-output`: Emit machine-readable JSON.
+
+
+7. **`procwatch scan`** — Static AST scanner for unguarded subprocess calls in Python & PowerShell.
+* `-d, --directory <path>`: Root directory or repository to scan (default: `.`).
+* `-w, --include-worktrees`: Discover and scan all worktrees via `git worktree list --porcelain`.
+* `-u, --unified-diff`: Output reviewable unified diffs adding `CREATE_NO_WINDOW` on `win32` (default).
+* `-a, --apply-fixes`: Apply vetted fixes in place using `libcst` (refuses dirty Git files unless `-f, --force` is passed).
+* `-f, --force`: Allow `--apply-fixes` on files with uncommitted changes.
+* `-j, --json-output`: Output structured JSON findings.
+
+
+8. **`procwatch audit`** — Audit Scheduled Tasks, Startup entries, Run keys, and Windows Terminal delegation.
+* `-t, --target-type <all|tasks|startup|defterm>`: Audit scope (default: `all`).
+* `-n, --task-name <name>`: Filter to a specific Scheduled Task path/name.
+* `-a, --apply-task-fix`: Wrap a culprit Scheduled Task in `procwatch exec` or `pythonw.exe` (saves XML backup to `~/.procwatch/backups/` first).
+
+
+9. **`procwatch exec`** — Supervised headless command runner with captured output and exit status.
+* `-c, --command <cmd...>`: Command and arguments to execute with `CREATE_NO_WINDOW`.
+* `-w, --working-dir <path>`: Working directory for the child process.
+* `-t, --timeout-seconds <int>`: Kill child process tree if timeout is exceeded.
+* `-k, --keep-console-on-error`: Emit notification/log alert on non-zero exit code.
+
+
+10. **`procwatch doctor`** — Read-only diagnostic check of collectors, Sysmon status, privileges, and DB health.
+* `-v, --verbose`: Show full capability matrix (`Console\%%Startup` delegation GUIDs, Sysmon status, queue drops, DB size).
+* `-j, --json-output`: Emit structured JSON health report.
+
+
+
+---
+
+## 7. Phased Implementation Order (Prioritizing Window Guard & Live Catching First)
+
+### Phase 1: Immediate Priority — Live Window Guard & Real-Time Popup/Process Catcher (P0)
+
+Build the working window interceptor and live process-tree watcher **first** so the tool immediately stops popup interruptions and identifies what spawned them.
+
+1. **Scaffold Package & Models:** Create `pyproject.toml`, `procwatch/models.py`, `procwatch/config.py`, `procwatch/redactor.py`, and `procwatch/mutex.py`.
+2. **Implement Proven Window Guard (`procwatch/guard/window_guard.py` & `procwatch/collectors/win_event.py`):** Implement `NeutralizeEngine` (from Section 3) supporting `all-consoles`, `smart`, `observe`, and `all-windows` modes.
+3. **Implement Pre-Warmed Ancestry Cache & WMI Trace Collector (`procwatch/correlator/ancestry.py`, `procwatch/correlator/decoders.py`, `procwatch/collectors/wmi_trace.py`):**
+* Seed an in-memory `ProcessTableCache` on startup using `CreateToolhelp32Snapshot` (`TH32CS_SNAPPROCESS`) so fast-exiting parent processes never show up as blank/`<exited>`.
+* Subscribe to `Win32_ProcessStartTrace` and `Win32_ProcessStopTrace` on a background daemon thread pushing onto a `queue.Queue` (ensuring `Ctrl+C` exits instantaneously).
+* Correlate intercepted `HWND` events (`CASCADIA_HOSTING_WINDOW_CLASS` and `ConsoleWindowClass`) with processes spawned within the surrounding correlation window, collapsing `.venv\Scripts\python.exe` $\rightarrow$ base `python.exe` shims in the display while preserving both nodes.
+
+
+4. **Wire Up `procwatch guard` and `procwatch watch` in `procwatch/cli.py` and `procwatch/renderers/console.py`.**
+5. **Phase 1 Verification (`./tests/window_guard_test.py`, `./tests/ancestry_test.py`, `./tests/decoders_test.py`):**
+* Spawn a synthetic background `.venv\Scripts\python.exe` popup process and verify `procwatch guard` intercepts the window in `<15 ms`, minimizes it without stealing foreground focus, and `procwatch watch -g` prints the full command line and multi-generation parent chain.
+
+
+
+---
+
+### Phase 2: Persistent SQLite Flight Recorder, Sysmon Ingestion & Causal Attribution (P0)
+
+Add durable storage, historical backfill, and high-confidence attribution across agents, Git worktrees, and Scheduled Tasks.
+
+1. **SQLite WAL Store (`procwatch/storage.py`):** Implement schema creation, migrations, size/age retention pruning, and atomic transactions coupling `raw_events` inserts with `collector_state.evt_bookmark_xml` updates.
+2. **Sysmon & Task Scheduler Collectors (`procwatch/collectors/sysmon_evt.py`, `procwatch/collectors/task_events.py`):**
+* Subscribe to `Microsoft-Windows-Sysmon/Operational` (Event IDs 1 and 5) and `Microsoft-Windows-TaskScheduler/Operational` (Event IDs 100, 129, 200, 201) via `win32evtlog.EvtSubscribe` with XML bookmarks.
+
+
+3. **PEB / Git Worktree Enricher & Agent Context (`procwatch/correlator/peb_git.py`, `procwatch/correlator/terminal_session.py`, `procwatch/correlator/scorer.py`):**
+* Extract live process `cwd`, `pe_subsystem` (`CUI` vs `GUI`), and `PROCWATCH_CONTEXT` (`agent=codex;session=...;worktree=...`) with explicit `trust_level` (`instrumented` vs `heuristic`).
+* Resolve `cwd` or script paths to their Git repository, worktree (`git rev-parse --show-toplevel` / `.git` file inspection), and branch.
+* Populate `evidence_edges` (`parent_of`, `triggered_by`, `hosted_by`, `correlated_with`, `supersedes`) and compute incident confidence (`high`, `medium`, `low`).
+
+
+4. **Wire Up `procwatch doctor`, `procwatch history`, `procwatch explain`, and `procwatch mark`.**
+5. **Phase 2 Verification (`./tests/storage_test.py`, `./tests/correlator_test.py`, `./tests/redactor_test.py`):**
+* Verify zero unredacted secrets in SQLite, lossless bookmark recovery across simulated restarts, and accurate `explain` output linking a popup to its Scheduled Task or agent session.
+
+
+
+---
+
+### Phase 3: Static Codebase Scanner, Task Auditor & Periodicity Analyzer (P1)
+
+Find and fix the code and system configurations causing popups.
+
+1. **Python & PowerShell Static Scanner (`procwatch/analyzers/ast_scanner.py`):**
+* Discover Git worktrees via `git worktree list --porcelain`.
+* Parse Python files with `ast` (and generate source-preserving unified diffs or in-place edits via `libcst`) to flag `subprocess.run`, `Popen`, `check_output`, `check_call`, and `asyncio.create_subprocess_*` calls lacking `creationflags=subprocess.CREATE_NO_WINDOW` in background modules.
+* Parse `.ps1` files to flag `Start-Process` calls missing `-WindowStyle Hidden`.
+
+
+2. **System & Task Auditor (`procwatch/analyzers/task_auditor.py`):**
+* Inspect Scheduled Tasks, Registry `Run` keys, Startup folders, and `HKCU\Console\%%Startup` (`DelegationTerminal` / `DelegationConsole`).
+* Implement opt-in `--apply-task-fix` with automatic XML backup to `~/.procwatch/backups/`.
+
+
+3. **Periodicity & Baseline Analyzer (`procwatch/analyzers/patterns.py`):**
+* Cluster recurring process spawns by command-line signature, calculate inter-arrival intervals (e.g., 10s polling loops), and compare popup incident rates before and after fixes.
+
+
+4. **Wire Up `procwatch scan`, `procwatch audit`, and `procwatch analyze`.**
+5. **Phase 3 Verification (`./tests/ast_scanner_test.py`, `./tests/patterns_test.py`):**
+* Verify `procwatch scan -u` produces valid unified diffs on unguarded `subprocess.run` calls, refuses to modify dirty files without `-f, --force`, and `patterns_test.py` accurately detects 10-second periodic bursts.
+
+
+
+---
+
+### Phase 4: Supervised Headless Runner & Integration Test Harness (P1)
+
+Provide a zero-popup execution wrapper for background tasks and validate end-to-end performance.
+
+1. **Headless Supervisor (`procwatch/runner/supervisor.py`):**
+* Launch target commands with `creationflags=subprocess.CREATE_NO_WINDOW`, assign the child process to a Windows Job Object (`CreateJobObjectW` + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), capture bounded `stdout`/`stderr` streams, record duration and exit code in SQLite, and propagate `PROCWATCH_CONTEXT`.
+
+
+2. **Wire Up `procwatch exec`.**
+3. **End-to-End Windows Integration Test Harness (`./tests/integration_win32_test.py`):**
+* Controlled test launcher that records ground-truth timestamps and PIDs independently of `procwatch`, spawns 20 ms processes, nested `.venv` shims, and transient console windows, and asserts capture recall, parent attribution accuracy, and `0%` false-positive suppression on user-interactive windows.
+````

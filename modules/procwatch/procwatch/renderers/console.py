@@ -1,0 +1,372 @@
+"""Console and redacted JSONL output renderer for `watch` and `guard`."""
+
+from __future__ import annotations
+
+from dataclasses import asdict
+import json
+from pathlib import Path
+import re
+from typing import TextIO
+
+from rich.console import Console
+
+from procwatch.config import CONSOLE_WINDOW_CLASSES
+from procwatch.models import LiveIncidentEvent, ProcessObservation
+from procwatch.redactor import redact_dict
+
+
+class ConsoleRenderer:
+    """Renders LiveIncidentEvent streams to console and/or redacted JSONL."""
+
+    def __init__(
+        self,
+        *,
+        popups_only: bool = False,
+        collapse_bursts: bool = False,
+        show_headless: bool = False,
+        filter_regex: re.Pattern[str] | None = None,
+        output_file: Path | None = None,
+        quiet: bool = False,
+        console: Console | None = None,
+    ) -> None:
+        self.popups_only = popups_only
+        self.collapse_bursts = collapse_bursts
+        self.show_headless = show_headless
+        self.filter_regex = filter_regex
+        self.output_file = output_file
+        self.quiet = quiet
+        self.console = console or Console(highlight=False)
+        self._jsonl_fp: TextIO | None = None
+        self._last_burst_key: str | None = None
+        self._burst_count: int = 0
+
+        if self.output_file is not None:
+            self.output_file.parent.mkdir(parents=True, exist_ok=True)
+            self._jsonl_fp = self.output_file.open("a", encoding="utf-8")
+
+    def close(self) -> None:
+        if self._jsonl_fp is not None:
+            self._jsonl_fp.flush()
+            self._jsonl_fp.close()
+            self._jsonl_fp = None
+
+    def _should_display(self, event: LiveIncidentEvent) -> bool:
+        if self.popups_only and event.window is None:
+            return False
+
+        if not self.show_headless and event.process is not None and event.window is None:
+            cmd = (event.process.command_line_redacted or "").lower()
+            if "conhost.exe" in event.process.image_name.lower() and "0x4" in cmd:
+                return False
+
+        if self.filter_regex is not None:
+            haystack_parts: list[str] = []
+            if event.window is not None:
+                haystack_parts.extend([event.window.window_class, event.window.current_title])
+            if event.process is not None:
+                haystack_parts.extend(
+                    [
+                        event.process.image_name,
+                        event.process.command_line_redacted or "",
+                    ]
+                )
+            for cand in event.candidate_initiators:
+                haystack_parts.extend([cand.image_name, cand.command_line_redacted or ""])
+            for node in event.ancestry_chain:
+                haystack_parts.append(node.image_name)
+            if not self.filter_regex.search(" ".join(haystack_parts)):
+                return False
+
+        return True
+
+    def render(self, event: LiveIncidentEvent) -> None:
+        """Render an incident event to console and append redacted JSONL if configured."""
+        if not self._should_display(event):
+            return
+
+        if self._jsonl_fp is not None:
+            payload = redact_dict(asdict(event))
+            self._jsonl_fp.write(json.dumps(payload, default=str) + "\n")
+            self._jsonl_fp.flush()
+
+        if self.quiet:
+            return
+
+        if self.collapse_bursts and event.window is None and event.process is not None:
+            burst_key = f"{event.event_type}:{event.process.image_name}:{event.process.command_line_redacted or ''}"
+            if burst_key == self._last_burst_key:
+                self._burst_count += 1
+                if self._burst_count % 10 == 0:
+                    self.console.print(f"[dim]  ... repeated {self._burst_count}x: {event.process.image_name}[/dim]")
+                return
+            self._last_burst_key = burst_key
+            self._burst_count = 1
+
+        ts = event.timestamp_utc
+        if event.window is not None:
+            w = event.window
+            is_console = w.window_class in CONSOLE_WINDOW_CLASSES
+            tag = "POPUP" if is_console else "WINDOW"
+            action = event.guard_decision.observed_outcome if event.guard_decision else w.state.value
+            owner_name = event.process.image_name if event.process else "<unavailable>"
+            title_disp = w.current_title or "<untitled>"
+            self.console.print(
+                f"[bold cyan][{ts}][/bold cyan] [yellow]{tag}[/yellow] "
+                f"state=[bold]{action}[/bold] class={w.window_class} hwnd={hex(w.hwnd)} "
+                f"owner={owner_name} (PID {w.owner_pid}) title={title_disp!r}"
+            )
+            if event.guard_decision is not None:
+                gd = event.guard_decision
+                lat = f"{gd.action_latency_ms:.2f}ms" if gd.action_latency_ms is not None else "n/a"
+                self.console.print(
+                    f"  [dim]guard: rule={gd.matched_rule} intended={gd.intended_action} "
+                    f"outcome={gd.observed_outcome} latency={lat}[/dim]"
+                )
+            if event.candidate_initiators:
+                for cand in event.candidate_initiators[:3]:
+                    delta = f"{cand.time_delta_ms:+.1f}ms" if cand.time_delta_ms is not None else "n/a"
+                    self.console.print(
+                        f"  [green]suspected initiator[/green] ({cand.confidence.value}, {delta}): "
+                        f"{cand.image_name} (PID {cand.pid}) [{', '.join(cand.reasons)}] "
+                        f"cmd={cand.command_line_redacted or '<unavailable>'}"
+                    )
+            else:
+                self.console.print("  [dim]suspected initiator: <unavailable / none matched in window>[/dim]")
+
+            chain = event.collapsed_ancestry_chain or event.ancestry_chain
+            if chain:
+                self.console.print(f"  [dim]owner chain: {self._format_chain(chain)}[/dim]")
+            if event.missing_reasons:
+                reasons = ", ".join(r.value for r in event.missing_reasons)
+                self.console.print(f"  [dim]metadata gaps: {reasons}[/dim]")
+            return
+
+        if event.process is not None:
+            p = event.process
+            if event.event_type == "process_start":
+                self.console.print(
+                    f"[dim][{ts}][/dim] START {p.image_name} (PID {p.identity.pid}, PPID {p.ppid}) "
+                    f"cmd={p.command_line_redacted or '<unavailable>'}"
+                )
+                if p.decoded_payload_redacted:
+                    self.console.print(f"  [magenta]decoded:[/magenta] {p.decoded_payload_redacted}")
+            elif event.event_type == "process_stop":
+                code = str(p.exit_code) if p.capabilities.exit_code_known else "<unknown>"
+                self.console.print(
+                    f"[dim][{ts}][/dim] STOP  {p.image_name} (PID {p.identity.pid}) exit={code}"
+                )
+
+    @staticmethod
+    def _format_chain(chain: list[ProcessObservation]) -> str:
+        return " <- ".join(f"{node.image_name}({node.identity.pid})" for node in chain)
+
+
+def render_history_rows(
+    rows: list[dict[str, object]],
+    *,
+    replay_timeline: bool = False,
+    console: Console | None = None,
+) -> None:
+    """Render persisted Flight Recorder incidents as a summary table or chronological replay."""
+    con = console or Console()
+    if not rows:
+        con.print("[dim]No matching incidents recorded in the requested time window.[/dim]")
+        return
+
+    if replay_timeline:
+        con.print(f"[bold cyan]Incident Timeline Replay ({len(rows)} entries)[/bold cyan]")
+        for row in reversed(rows):
+            con.print(
+                f"  [cyan]{row.get('created_ts_utc', '')}[/cyan] "
+                f"#{row.get('incident_id')} [{row.get('category')}] "
+                f"conf={row.get('confidence')} {row.get('summary_text', '')}"
+            )
+        return
+
+    from rich.table import Table
+
+    table = Table(title=f"ProcWatch History ({len(rows)} incidents)")
+    table.add_column("ID", justify="right", style="bold")
+    table.add_column("Timestamp (UTC)")
+    table.add_column("Category")
+    table.add_column("Confidence")
+    table.add_column("Summary")
+    for row in rows:
+        table.add_row(
+            str(row.get("incident_id", "")),
+            str(row.get("created_ts_utc", "")),
+            str(row.get("category", "")),
+            str(row.get("confidence", "")),
+            str(row.get("summary_text", "")),
+        )
+    con.print(table)
+
+
+def render_explain_detail(
+    detail: dict[str, object],
+    *,
+    json_output: bool = False,
+    console: Console | None = None,
+) -> None:
+    """Render causal explanation for an incident ID or PID."""
+    if json_output:
+        print(json.dumps(detail, indent=2, default=str))
+        return
+
+    con = console or Console()
+    if "incident" in detail:
+        inc = detail["incident"]
+        if isinstance(inc, dict):
+            con.print(
+                f"[bold cyan]Incident #{inc.get('incident_id')}[/bold cyan] "
+                f"({inc.get('created_ts_utc')}) category={inc.get('category')} "
+                f"confidence=[bold]{inc.get('confidence')}[/bold]"
+            )
+            con.print(f"Summary: {inc.get('summary_text', '')}")
+    if "process" in detail and isinstance(detail["process"], dict):
+        proc = detail["process"]
+        con.print(
+            f"Process: {proc.get('image_name')} (PID {proc.get('pid')}, "
+            f"key={proc.get('proc_key')}, subsystem={proc.get('pe_subsystem') or 'unknown'})"
+        )
+        if proc.get("cwd"):
+            con.print(f"  CWD: {proc.get('cwd')}")
+        if proc.get("git_repo"):
+            con.print(f"  Git: repo={proc.get('git_repo')} branch={proc.get('git_branch') or '?'}")
+        if proc.get("agent_kind"):
+            con.print(
+                f"  Agent: {proc.get('agent_kind')} "
+                f"(trust={proc.get('agent_trust_level') or 'unknown'})"
+            )
+    edges = detail.get("edges")
+    if isinstance(edges, list) and edges:
+        con.print("[bold]Evidence Edges:[/bold]")
+        for edge in edges:
+            if isinstance(edge, dict):
+                con.print(
+                    f"  - {edge.get('from_node_id')} --[{edge.get('relation')}]--> "
+                    f"{edge.get('to_node_id')} (conf={edge.get('confidence')}, "
+                    f"via={edge.get('source')}/{edge.get('method')})"
+                )
+    else:
+        con.print("[dim]No evidence edges recorded for this target.[/dim]")
+
+
+def render_scan_report(
+    report: dict[str, object],
+    *,
+    show_diff: bool = False,
+    json_output: bool = False,
+    console: Console | None = None,
+) -> None:
+    """Render static Python/PowerShell scan findings and optional unified diffs."""
+    if json_output:
+        print(json.dumps(report, indent=2, default=str))
+        return
+    con = console or Console()
+    con.print(
+        f"[bold cyan]ProcWatch Scan[/bold cyan] files={report.get('files_scanned', 0)} "
+        f"findings={report.get('finding_count', 0)}"
+    )
+    findings = report.get("findings")
+    if isinstance(findings, list) and findings:
+        from rich.table import Table
+
+        table = Table(title="Static Process-Launch Findings")
+        table.add_column("Category", style="bold")
+        table.add_column("Location")
+        table.add_column("Mechanism")
+        table.add_column("Remediation")
+        for f in findings[:50]:
+            if isinstance(f, dict):
+                table.add_row(
+                    str(f.get("category", "")),
+                    f"{f.get('file_path')}:{f.get('line')}",
+                    str(f.get("mechanism", "")),
+                    str(f.get("remediation", ""))[:100],
+                )
+        con.print(table)
+    else:
+        con.print("[green]No suspicious console-launching patterns found.[/green]")
+
+    diffs = report.get("diffs")
+    if show_diff and isinstance(diffs, dict) and diffs:
+        for path, diff_text in diffs.items():
+            con.print(f"[bold yellow]Proposed diff for {path}:[/bold yellow]")
+            con.print(str(diff_text))
+
+
+def render_audit_report(
+    report: dict[str, object],
+    *,
+    json_output: bool = False,
+    console: Console | None = None,
+) -> None:
+    """Render read-only Windows Task/Startup/DefTerm audit findings."""
+    if json_output:
+        print(json.dumps(report, indent=2, default=str))
+        return
+    con = console or Console()
+    con.print(
+        f"[bold cyan]ProcWatch Audit[/bold cyan] target={report.get('target_type')} "
+        f"findings={report.get('finding_count', 0)}"
+    )
+    findings = report.get("findings")
+    if isinstance(findings, list) and findings:
+        from rich.table import Table
+
+        table = Table(title="Windows Background Execution Audit")
+        table.add_column("Rank", style="bold")
+        table.add_column("Source")
+        table.add_column("Target")
+        table.add_column("Executable")
+        for f in findings[:60]:
+            if isinstance(f, dict):
+                table.add_row(
+                    str(f.get("evidence_rank", "")),
+                    str(f.get("source_type", "")),
+                    str(f.get("target_name", ""))[:45],
+                    str(f.get("executable") or "")[:55],
+                )
+        con.print(table)
+
+
+def render_analyze_report(
+    report: dict[str, object],
+    *,
+    json_output: bool = False,
+    console: Console | None = None,
+) -> None:
+    """Render periodicity and coverage-aware baseline comparison."""
+    if json_output:
+        print(json.dumps(report, indent=2, default=str))
+        return
+    con = console or Console()
+    con.print(
+        f"[bold cyan]ProcWatch Analyze[/bold cyan] outcome=[bold]{report.get('outcome')}[/bold] "
+        f"current={report.get('current_count')} ({report.get('current_rate_per_hour')}/hr) "
+        f"baseline={report.get('baseline_count')} ({report.get('baseline_rate_per_hour')}/hr)"
+    )
+    if report.get("coverage_warning"):
+        con.print(f"[yellow]Coverage warning:[/yellow] {report.get('coverage_warning')}")
+    patterns = report.get("patterns")
+    if isinstance(patterns, list) and patterns:
+        from rich.table import Table
+
+        table = Table(title="Detected Process/Popup Patterns")
+        table.add_column("Count", justify="right", style="bold")
+        table.add_column("Popups", justify="right")
+        table.add_column("Median (s)", justify="right")
+        table.add_column("Periodic")
+        table.add_column("Signature")
+        for p in patterns[:30]:
+            if isinstance(p, dict):
+                table.add_row(
+                    str(p.get("observed_count", 0)),
+                    str(p.get("popup_count", 0)),
+                    str(p.get("median_interval_seconds") or "-"),
+                    "yes" if p.get("is_periodic") else "no",
+                    str(p.get("signature", ""))[:65],
+                )
+        con.print(table)
+
