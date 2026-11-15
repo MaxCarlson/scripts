@@ -19,7 +19,8 @@
       "origin": "integration/rc-h4-5-windows-review-20261115",
       "commit_sha": "83849e3e5b55d1bb7851dd9daaa6ef53bc02a47b",
       "package_version": "1.0.0",
-      "source_tree_sha256": "4a7b5a0c307b22b867edb9c6a2451ac213ce3dc67ac444ecdd8f2592f88277e8",
+      "hash_algorithm": "rc-h4-tree-sha256-v2",
+      "source_tree_sha256": "2f7c3e3c55d26603a6df605068023f95f132d873ee181c75af2593597a8a9c76",
       "python_version": ">=3.10 (validated: 3.12.10)",
       "dependencies": [
         "anyio>=4.0",
@@ -42,7 +43,8 @@
       "origin": "git history (feat(resource-coordinator): verify maintenance restoration)",
       "commit_sha": "873a49382a5e03da47f793608d3519f7e69da646",
       "package_version": "0.14.0",
-      "source_tree_sha256": "847ca50aa85f58e1804f920d986ba80d15cc70e4754f9ea103c90320dc109529",
+      "hash_algorithm": "rc-h4-tree-sha256-v2",
+      "source_tree_sha256": "4fa9978efc5c0045594a6fa115e803de7da837ccb80863e51324b69c85718dc0",
       "python_version": ">=3.10",
       "dependencies": [
         "anyio>=4.0",

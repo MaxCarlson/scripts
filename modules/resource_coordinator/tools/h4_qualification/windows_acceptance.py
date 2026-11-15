@@ -9,7 +9,6 @@ operator authorization. No profile falls back to the source host defaults.
 
 import argparse
 from dataclasses import asdict
-import hashlib
 import json
 import os
 import secrets
@@ -21,6 +20,23 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
+
+try:
+    from tools.h4_qualification.source_integrity import (
+        HASH_ALGORITHM,
+        SourceIntegrityError,
+        load_source_manifest,
+        manifest_entry_for_role,
+        verify_source_tree,
+    )
+except ImportError:  # pragma: no cover - direct harness execution fallback
+    from source_integrity import (  # type: ignore[no-redef]
+        HASH_ALGORITHM,
+        SourceIntegrityError,
+        load_source_manifest,
+        manifest_entry_for_role,
+        verify_source_tree,
+    )
 
 
 AUTHORIZATION_PHRASE = "I AUTHORIZE DISPOSABLE H4 WINDOWS MUTATION"
@@ -458,47 +474,35 @@ def _available_loopback_port() -> int:
     return port
 
 
-def _repository_roots(source_root: Path, old_source_root: Optional[Path]) -> tuple:
-    import tomllib
-
-    def verify(path: Path, expected: str) -> tuple:
-        root = path.expanduser().resolve(strict=True)
-        manifest = root / "modules" / "resource_coordinator" / "pyproject.toml"
-        if not manifest.is_file() or _is_reparse_point(manifest):
-            raise RuntimeError(f"source root has no regular Resource Coordinator manifest: {root}")
-        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
-        version = str(data.get("project", {}).get("version", ""))
-        if version != expected:
-            raise RuntimeError(f"expected source version {expected}, found {version or 'unknown'}")
-        module_root = root / "modules" / "resource_coordinator"
-        digest = hashlib.sha256()
-        for current, directories, filenames in os.walk(module_root, topdown=True, followlinks=False):
-            current_path = Path(current)
-            for directory in list(directories):
-                candidate = current_path / directory
-                if (directory in {".git", "__pycache__", ".pytest_cache"} or
-                        directory.startswith(".pytest_tmp_")):
-                    directories.remove(directory)
-                elif _is_reparse_point(candidate):
-                    raise RuntimeError(f"source bundle contains a reparse-point directory: {candidate}")
-            for filename in filenames:
-                item = current_path / filename
-                if _is_reparse_point(item):
-                    raise RuntimeError(f"source bundle contains a reparse-point file: {item}")
-                relative = item.relative_to(module_root).as_posix().encode("utf-8")
-                content = item.read_bytes()
-                digest.update(len(relative).to_bytes(4, "big"))
-                digest.update(relative)
-                digest.update(len(content).to_bytes(8, "big"))
-                digest.update(content)
-        return str(root), digest.hexdigest()
-
-    new_value = verify(source_root, "1.0.0")
-    new_root, new_digest = Path(new_value[0]), new_value[1]
-    old_value = verify(old_source_root, "0.14.0") if old_source_root else None
-    old_root, old_digest = (Path(old_value[0]), old_value[1]) if old_value else (None, None)
+def _repository_roots(
+    source_root: Path,
+    old_source_root: Optional[Path],
+    *,
+    source_manifest: Optional[Path] = None,
+) -> tuple:
+    manifest = load_source_manifest(source_manifest) if source_manifest is not None else None
+    new_entry = manifest_entry_for_role(manifest, "new_1_0_0") if manifest is not None else None
+    old_entry = (
+        manifest_entry_for_role(manifest, "old_0_14_0")
+        if manifest is not None and old_source_root is not None
+        else None
+    )
+    new_info = verify_source_tree(
+        source_root, expected_version="1.0.0", expected_role="new_1_0_0", manifest_entry=new_entry,
+    )
+    new_root, new_digest = Path(new_info["source_root"]), new_info["source_tree_sha256"]
+    if old_source_root is not None:
+        old_info = verify_source_tree(
+            old_source_root, expected_version="0.14.0", expected_role="old_0_14_0", manifest_entry=old_entry,
+        )
+        old_root, old_digest = Path(old_info["source_root"]), old_info["source_tree_sha256"]
+    else:
+        old_root, old_digest = None, None
     if old_root and old_root == new_root:
-        raise RuntimeError("old and new source roots must be different immutable source trees")
+        raise SourceIntegrityError(
+            "source_roots_identical",
+            "old and new source roots must be different immutable source trees",
+        )
     return new_root, old_root, new_digest, old_digest
 
 
@@ -779,6 +783,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Absolute staged RC 1.0.0 source repository")
     parser.add_argument("-O", "--old-source-root", type=Path,
                         help="Absolute staged RC 0.14.0 source repository for upgrade/rollback/full")
+    parser.add_argument("-M", "--source-manifest", type=Path,
+                        help="Pinned source/bundle manifest JSON enforcing canonical tree digests")
     parser.add_argument("-F", "--fault-stage", choices=FAULT_STAGES,
                         help="Bounded upgrade interruption point used by rollback/full guest profiles")
     parser.add_argument("-j", "--json", action="store_true", help="Print a machine-readable result")
@@ -878,6 +884,27 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
     elif args.apply and not reasons and args.profile in guest_profiles:
         # A guest mutation is permitted only after independent guest and inventory checks.
         pass
+    source_integrity: Optional[Dict[str, Any]] = None
+    if args.source_manifest is not None:
+        try:
+            new_root, old_root, new_digest, old_digest = _repository_roots(
+                args.source_root, args.old_source_root, source_manifest=args.source_manifest,
+            )
+            source_integrity = {
+                "verified": True,
+                "hash_algorithm": HASH_ALGORITHM,
+                "source_root": str(new_root),
+                "source_tree_sha256": new_digest,
+                "old_source_root": str(old_root) if old_root else None,
+                "old_source_tree_sha256": old_digest,
+            }
+        except SourceIntegrityError as exc:
+            source_integrity = {
+                "verified": False,
+                "reason_code": exc.code,
+                "error": str(exc),
+            }
+            reasons.append(f"source_integrity:{exc.code}")
     preflight = {
         "schema_version": 1, "observed_at": _now(), "guest_verified": bool(
             is_windows and guest_identity(evidence)
@@ -885,6 +912,7 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
         "mutation_ready": args.profile in guest_profiles and not reasons,
         "profile": args.profile, "apply_requested": args.apply,
         "observed_guard_reasons": observed_reasons, "profile_blockers": reasons,
+        "source_integrity": source_integrity,
     }
     _initialize_artifacts(test_root, evidence, preflight)
     if not args.apply:
@@ -906,7 +934,16 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
         targets = []
         env_name = None
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+    selected_module_root = (
+        args.source_root.expanduser().resolve() / "modules" / "resource_coordinator"
+        if args.profile == "offline"
+        else Path(__file__).resolve().parents[2]
+    )
+    metrics_root = selected_module_root.parent / "resource_metrics"
+    pythonpath_entries = [str(selected_module_root)]
+    if metrics_root.is_dir():
+        pythonpath_entries.append(str(metrics_root))
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
     if env_name:
         env[env_name] = "1"
         env["RC_H4_TEST_ROOT"] = str(test_root)
@@ -959,7 +996,7 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
     command = [sys.executable, "-m", "pytest", *targets, "-q",
                "--basetemp", str(pytest_temp), "--junitxml", str(junit)]
     try:
-        result = subprocess.run(command, cwd=Path(__file__).resolve().parents[2], env=env,
+        result = subprocess.run(command, cwd=selected_module_root, env=env,
                                 timeout=args.timeout_seconds + 30, check=False, capture_output=True, text=True)
         pytest_log.write_text((result.stdout or "") + (result.stderr or ""), encoding="utf-8")
         counts: Dict[str, int] = {}

@@ -1,5 +1,12 @@
 # H4 Windows Qualification — Read-Only Status
 
+## H4.7 release integrity & portable guest bundle (2026-11-15)
+
+- Branch: `agent/rc-h4-release-integrity-20261115` (descended from H4.6 `555cf4804ee4f62d8691b61a663da162a829e808` and `origin/main` `0d29b59c722b998dc84ed80caa1c383f04b2cae9`).
+- Replaced unsorted `os.walk` hashing with canonical `rc-h4-tree-sha256-v2` (`tools/h4_qualification/source_integrity.py`) and enforced `--source-manifest` verification in `windows_acceptance.py` before test/mutation execution.
+- Added `tools/h4_qualification/bundle_builder.py` to export immutable `1.0.0` + `0.14.0` + `resource-metrics` snapshots, dependency lock (`dependencies/dependency-lock.json`), PowerShell 7 preflight script (`scripts/Verify-H4GuestBundle.ps1`), external non-self-referential `manifest.json`, and deterministic `.zip` archive with fresh-extraction verification.
+- Disposable Windows guest execution (`task`, `install`, `upgrade`, `rollback`, `full`, `cleanup`) remains `NOT_TESTED` pending an authorized disposable Windows VM.
+
 ## H4.6 operational acceptance readiness (2026-11-15)
 
 - Reviewed H4.5 integration candidate: `integration/rc-h4-5-windows-review-20261115` at `83849e3e5b55d1bb7851dd9daaa6ef53bc02a47b` (reconciled with `origin/main` `0d29b59c722b998dc84ed80caa1c383f04b2cae9`); `main` merge remains gated on explicit protected-branch authorization.
