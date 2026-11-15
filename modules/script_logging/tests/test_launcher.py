@@ -1,5 +1,7 @@
 import json
+from pathlib import Path
 import pytest
+from script_logging.invocation_store import InvocationStore
 from script_logging.launcher import launch_target, main
 from script_logging.reader import open_invocation_reader
 
@@ -293,4 +295,51 @@ def test_launcher_child_exit_code_fidelity(tmp_path, monkeypatch, exit_val):
 
     code = launch_target(manifest_file, "cmd", [])
     assert code == exit_val
+
+
+def test_launcher_executes_powershell_script_target(tmp_path: Path, monkeypatch) -> None:
+    ps1 = tmp_path / "Invoke-Test.ps1"
+    ps1.write_text('param([string]$Msg)\nWrite-Output "PS:$Msg"\nexit 0\n', encoding="utf-8")
+
+    manifest_file = tmp_path / "scripts_manifest.json"
+    manifest_data = {
+        "schema_version": 1,
+        "commands": {
+            "vm-lab-test": {
+                "program_id": "module:vm_lab",
+                "kind": "powershell_script",
+                "target": str(ps1),
+            }
+        },
+    }
+    manifest_file.write_text(json.dumps(manifest_data), encoding="utf-8")
+
+    db_path = tmp_path / "invocations.sqlite3"
+    monkeypatch.setenv("SCRIPT_LOGGING_INVOCATION_DB", str(db_path))
+
+    code = launch_target(manifest_file, "vm-lab-test", ["-Msg", "ok"])
+    assert code == 0
+
+    reader = open_invocation_reader(db_path)
+    page = reader.list_invocations(program_id="module:vm_lab")
+    assert len(page.items) == 1
+    assert page.items[0].status == "exited"
+    assert page.items[0].exit_code == 0
+    assert page.items[0].invoked_name == "vm-lab-test"
+
+
+def test_launcher_generator_discovers_vm_lab() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    import sys
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from scripts_setup.launcher_generator import scan_repository_programs
+
+    commands = scan_repository_programs(repo_root)
+    assert "vm-lab" in commands
+    entry = commands["vm-lab"]
+    assert entry.kind == "powershell_script"
+    assert entry.program_id == "module:vm_lab"
+    assert entry.target == "modules/vm_lab/Invoke-VmLab.ps1"
+
 

@@ -224,6 +224,21 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
                 version="0.1.0",
             )
 
+    # 5. PowerShell module CLI entry points (e.g. modules/vm_lab/Invoke-VmLab.ps1)
+    vm_lab_cli = modules_dir / "vm_lab" / "Invoke-VmLab.ps1"
+    if vm_lab_cli.is_file():
+        rel_path = str(vm_lab_cli.relative_to(root)).replace("\\", "/")
+        commands["vm-lab"] = CommandEntry(
+            name="vm-lab",
+            program_id="module:vm_lab",
+            kind="powershell_script",
+            source_path="modules/vm_lab",
+            target=rel_path,
+            target_windows=rel_path,
+            target_posix=rel_path,
+            version="0.1.0",
+        )
+
     return commands
 
 

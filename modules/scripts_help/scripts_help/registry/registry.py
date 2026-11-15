@@ -496,6 +496,13 @@ REGISTRY: dict = {
                 "version": "1.0.0",
             },
             {
+                "name": "vm_lab (module)",
+                "path": "modules/vm_lab",
+                "desc": "Disposable Windows Hyper-V lab VM lifecycle, ownership, and safety manager (vm-lab)",
+                "help_cmd": ["pwsh", "-NoProfile", "-Command", "Get-Help ./modules/vm_lab/Invoke-VmLab.ps1"],
+                "version": "0.1.0",
+            },
+            {
                 "name": "monitor-disks.py",
                 "path": "pyscripts/monitor-disks.py",
                 "desc": "Real-time disk usage monitoring with interactive Rich terminal UI",
