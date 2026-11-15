@@ -166,3 +166,95 @@ def test_exec_redacts_secrets_in_db_and_cli_real_repo_workflows(tmp_path: Path, 
     git_res = execute(["git", "-C", str(repo_root), "-c", "submodule.recurse=false", "status", "--short"], timeout_seconds=10.0)
     assert git_res.status == RunStatus.SUCCESS
     assert git_res.exit_code == 0
+
+
+def test_exec_immediate_exit_and_orphan_descendant_cleanup_on_job_close(tmp_path: Path) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows Job Object test")
+
+    # 1. Immediate exit: child finishes as fast as possible; CREATE_SUSPENDED ensures Job assignment never races.
+    fast_ok = execute([sys.executable, "-c", "import sys; sys.exit(0)"])
+    assert fast_ok.status == RunStatus.SUCCESS
+    assert fast_ok.exit_code == 0
+    assert fast_ok.job_assigned is True
+
+    fast_nz = execute([sys.executable, "-c", "import sys; sys.exit(42)"])
+    assert fast_nz.status == RunStatus.NONZERO_EXIT
+    assert fast_nz.exit_code == 42
+    assert fast_nz.job_assigned is True
+
+    # 2. Rapid descendant creation followed by immediate parent exit:
+    #    KILL_ON_JOB_CLOSE must terminate the orphaned descendant when execute() closes the job handle.
+    pid_file = tmp_path / "orphan_child.pid"
+    parent_code = (
+        "import pathlib, subprocess, sys; "
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+        f"pathlib.Path(r'{pid_file}').write_text(str(p.pid), encoding='utf-8'); "
+        "sys.exit(0)"
+    )
+    res = execute([sys.executable, "-c", parent_code], timeout_seconds=10.0)
+    assert res.status == RunStatus.SUCCESS
+    assert res.job_assigned is True
+    child_pid = int(pid_file.read_text(encoding="utf-8").strip())
+    deadline = time.monotonic() + 2.0
+    while psutil.pid_exists(child_pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not psutil.pid_exists(child_pid)
+
+
+def test_exec_job_assignment_failure_aborts_before_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows Job Object test")
+
+    marker = tmp_path / "should_not_exist.txt"
+    from procwatch.runner import supervisor
+
+    monkeypatch.setattr(
+        supervisor._Win32JobHandle,
+        "assign_handle",
+        lambda self, _h: (False, "mock_assign_failed"),
+    )
+    res = execute(
+        [
+            sys.executable,
+            "-c",
+            f"import pathlib; pathlib.Path(r'{marker}').write_text('ran', encoding='utf-8')",
+        ]
+    )
+    assert res.status == RunStatus.LAUNCH_FAILED
+    assert res.job_assigned is False
+    assert res.job_cleanup_outcome == "terminated_before_resume"
+    assert "mock_assign_failed" in (res.error_detail or "")
+    assert not marker.exists()
+
+
+def test_exec_cancellation_preserves_unrelated_process(tmp_path: Path) -> None:
+    import subprocess as sp
+
+    unrelated = sp.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        pid_file = tmp_path / "owned_descendant.pid"
+        cancel = threading.Event()
+        timer = threading.Timer(0.5, cancel.set)
+        parent_code = (
+            "import pathlib, subprocess, sys, time; "
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+            f"pathlib.Path(r'{pid_file}').write_text(str(p.pid), encoding='utf-8'); "
+            "time.sleep(30)"
+        )
+        timer.start()
+        try:
+            res = execute([sys.executable, "-c", parent_code], cancel_event=cancel)
+        finally:
+            timer.cancel()
+        assert res.status == RunStatus.CANCELLED
+        assert psutil.pid_exists(unrelated.pid)
+        if pid_file.exists():
+            owned_child = int(pid_file.read_text(encoding="utf-8").strip())
+            deadline = time.monotonic() + 2.0
+            while psutil.pid_exists(owned_child) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert not psutil.pid_exists(owned_child)
+    finally:
+        unrelated.terminate()
+        unrelated.wait(timeout=3.0)

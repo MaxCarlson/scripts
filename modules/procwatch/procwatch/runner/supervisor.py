@@ -15,6 +15,9 @@ import time
 from typing import Any, BinaryIO, Mapping, Sequence
 import uuid
 
+if sys.platform == "win32":
+    import msvcrt
+
 from procwatch.correlator.ancestry import _read_windows_process_create_100ns, get_boot_id
 from procwatch.models import (
     ExecutionProfile,
@@ -33,9 +36,58 @@ _JOB_OBJECT_EXTENDED_LIMIT_INFO_CLASS = 9
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _PROCESS_ALL_ACCESS = 0x001F0FFF
 _DEFAULT_MAX_OUTPUT_BYTES = 262_144
+_CREATE_SUSPENDED = 0x00000004
+_CREATE_UNICODE_ENVIRONMENT = 0x00000400
+_CREATE_NO_WINDOW = 0x08000000
+_STARTF_USESHOWWINDOW = 0x00000001
+_STARTF_USESTDHANDLES = 0x00000100
+_HANDLE_FLAG_INHERIT = 0x00000001
+_WAIT_OBJECT_0 = 0x00000000
+_STD_INPUT_HANDLE = -10
+_GENERIC_READ = 0x80000000
+_FILE_SHARE_READ_WRITE = 0x00000003
+_OPEN_EXISTING = 3
+_FILE_ATTRIBUTE_NORMAL = 0x00000080
 
 
 if sys.platform == "win32":
+
+    class _SECURITY_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [
+            ("nLength", wintypes.DWORD),
+            ("lpSecurityDescriptor", wintypes.LPVOID),
+            ("bInheritHandle", wintypes.BOOL),
+        ]
+
+    class _STARTUPINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("lpReserved", wintypes.LPWSTR),
+            ("lpDesktop", wintypes.LPWSTR),
+            ("lpTitle", wintypes.LPWSTR),
+            ("dwX", wintypes.DWORD),
+            ("dwY", wintypes.DWORD),
+            ("dwXSize", wintypes.DWORD),
+            ("dwYSize", wintypes.DWORD),
+            ("dwXCountChars", wintypes.DWORD),
+            ("dwYCountChars", wintypes.DWORD),
+            ("dwFillAttribute", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("wShowWindow", wintypes.WORD),
+            ("cbReserved2", wintypes.WORD),
+            ("lpReserved2", ctypes.POINTER(ctypes.c_byte)),
+            ("hStdInput", wintypes.HANDLE),
+            ("hStdOutput", wintypes.HANDLE),
+            ("hStdError", wintypes.HANDLE),
+        ]
+
+    class _PROCESS_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("hProcess", wintypes.HANDLE),
+            ("hThread", wintypes.HANDLE),
+            ("dwProcessId", wintypes.DWORD),
+            ("dwThreadId", wintypes.DWORD),
+        ]
 
     class _IO_COUNTERS(ctypes.Structure):
         _fields_ = [
@@ -121,6 +173,18 @@ class _Win32JobHandle:
             return
         self.handle = int(job)
 
+    def assign_handle(self, proc_h: int) -> tuple[bool, str]:
+        """Assign an already-opened process handle (e.g. from CreateProcessW) to this Job."""
+        if sys.platform != "win32":
+            return False, "not_applicable"
+        if not self.handle:
+            return False, self.last_error or "job_unavailable"
+        ok = self._k32.AssignProcessToJobObject(self.handle, proc_h)
+        if not ok:
+            err = ctypes.get_last_error()
+            return False, f"AssignProcessToJobObject failed (winerror={err})"
+        return True, "assigned"
+
     def assign_pid(self, pid: int) -> tuple[bool, str]:
         if sys.platform != "win32":
             return False, "not_applicable"
@@ -132,11 +196,7 @@ class _Win32JobHandle:
             err = ctypes.get_last_error()
             return False, f"OpenProcess failed (winerror={err})"
         try:
-            ok = self._k32.AssignProcessToJobObject(self.handle, proc_h)
-            if not ok:
-                err = ctypes.get_last_error()
-                return False, f"AssignProcessToJobObject failed (winerror={err})"
-            return True, "assigned"
+            return self.assign_handle(int(proc_h))
         finally:
             self._k32.CloseHandle(proc_h)
 
@@ -155,6 +215,260 @@ class _Win32JobHandle:
                 self._k32.CloseHandle(self.handle)
             finally:
                 self.handle = None
+
+
+class _JobAssignmentError(RuntimeError):
+    """Raised when Job Object assignment fails while the child is still suspended."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class _Win32ProcessHandle:
+    """Minimal Popen-compatible wrapper around a Win32 process HANDLE."""
+
+    def __init__(
+        self,
+        k32: Any,
+        h_process: int,
+        pid: int,
+        stdout: BinaryIO | None,
+        stderr: BinaryIO | None,
+    ) -> None:
+        self._k32 = k32
+        self._h_process: int | None = h_process
+        self.pid = pid
+        self.stdout = stdout
+        self.stderr = stderr
+        self._returncode: int | None = None
+
+    def poll(self) -> int | None:
+        if self._returncode is not None:
+            return self._returncode
+        if self._h_process is None:
+            return None
+        wait_res = self._k32.WaitForSingleObject(self._h_process, 0)
+        if wait_res != _WAIT_OBJECT_0:
+            return None
+        code = wintypes.DWORD(0)
+        if self._k32.GetExitCodeProcess(self._h_process, ctypes.byref(code)):
+            self._returncode = int(code.value)
+        else:
+            self._returncode = -1
+        return self._returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self._returncode is not None:
+            return self._returncode
+        if self._h_process is None:
+            return -1
+        ms = 0xFFFFFFFF if timeout is None else max(0, int(timeout * 1000))
+        wait_res = self._k32.WaitForSingleObject(self._h_process, ms)
+        if wait_res != _WAIT_OBJECT_0:
+            raise subprocess.TimeoutExpired(cmd="win32_process", timeout=timeout or 0.0)
+        code = wintypes.DWORD(0)
+        if self._k32.GetExitCodeProcess(self._h_process, ctypes.byref(code)):
+            self._returncode = int(code.value)
+        else:
+            self._returncode = -1
+        return self._returncode
+
+    def terminate(self) -> None:
+        if self._h_process is not None and self.poll() is None:
+            self._k32.TerminateProcess(self._h_process, 1)
+
+    def kill(self) -> None:
+        self.terminate()
+
+    def close(self) -> None:
+        if self._h_process is not None:
+            try:
+                self._k32.CloseHandle(self._h_process)
+            finally:
+                self._h_process = None
+
+
+def _launch_win32_suspended_in_job(
+    *,
+    arg_list: list[str],
+    resolved_exe: str,
+    cwd: str,
+    child_env: Mapping[str, str],
+    prof: ExecutionProfile,
+    creationflags: int,
+    job: _Win32JobHandle,
+) -> tuple[_Win32ProcessHandle, str]:
+    """Create process suspended, assign to Job Object before ResumeThread, then resume.
+
+    Guarantees zero race window between process start and Job Object containment.
+    """
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreatePipe.argtypes = [
+        ctypes.POINTER(wintypes.HANDLE),
+        ctypes.POINTER(wintypes.HANDLE),
+        ctypes.POINTER(_SECURITY_ATTRIBUTES),
+        wintypes.DWORD,
+    ]
+    k32.CreatePipe.restype = wintypes.BOOL
+    k32.SetHandleInformation.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD]
+    k32.SetHandleInformation.restype = wintypes.BOOL
+    k32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(_SECURITY_ATTRIBUTES),
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.GetStdHandle.argtypes = [wintypes.DWORD]
+    k32.GetStdHandle.restype = wintypes.HANDLE
+    k32.CreateProcessW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPWSTR,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+        wintypes.BOOL,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(_STARTUPINFOW),
+        ctypes.POINTER(_PROCESS_INFORMATION),
+    ]
+    k32.CreateProcessW.restype = wintypes.BOOL
+    k32.ResumeThread.argtypes = [wintypes.HANDLE]
+    k32.ResumeThread.restype = wintypes.DWORD
+    k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    k32.TerminateProcess.restype = wintypes.BOOL
+    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    k32.GetExitCodeProcess.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+
+    sa = _SECURITY_ATTRIBUTES()
+    sa.nLength = ctypes.sizeof(_SECURITY_ATTRIBUTES)
+    sa.lpSecurityDescriptor = None
+    sa.bInheritHandle = True
+
+    out_r = wintypes.HANDLE()
+    out_w = wintypes.HANDLE()
+    err_r = wintypes.HANDLE()
+    err_w = wintypes.HANDLE()
+    if not k32.CreatePipe(ctypes.byref(out_r), ctypes.byref(out_w), ctypes.byref(sa), 0):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if not k32.CreatePipe(ctypes.byref(err_r), ctypes.byref(err_w), ctypes.byref(sa), 0):
+        err = ctypes.get_last_error()
+        k32.CloseHandle(out_r)
+        k32.CloseHandle(out_w)
+        raise ctypes.WinError(err)
+
+    k32.SetHandleInformation(out_r, _HANDLE_FLAG_INHERIT, 0)
+    k32.SetHandleInformation(err_r, _HANDLE_FLAG_INHERIT, 0)
+
+    stdin_nul: wintypes.HANDLE | None = None
+    stdin_handle: int | wintypes.HANDLE
+    if prof == ExecutionProfile.HEADLESS:
+        stdin_nul = k32.CreateFileW(
+            "NUL",
+            _GENERIC_READ,
+            _FILE_SHARE_READ_WRITE,
+            ctypes.byref(sa),
+            _OPEN_EXISTING,
+            _FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+        stdin_handle = stdin_nul
+    else:
+        stdin_handle = k32.GetStdHandle(wintypes.DWORD(_STD_INPUT_HANDLE & 0xFFFFFFFF))
+
+    si = _STARTUPINFOW()
+    si.cb = ctypes.sizeof(_STARTUPINFOW)
+    si.dwFlags = _STARTF_USESTDHANDLES
+    if prof == ExecutionProfile.HEADLESS:
+        si.dwFlags |= _STARTF_USESHOWWINDOW
+        si.wShowWindow = 0
+    si.hStdInput = stdin_handle
+    si.hStdOutput = out_w
+    si.hStdError = err_w
+
+    env_str = "".join(
+        f"{k}={v}\0" for k, v in sorted(child_env.items(), key=lambda kv: kv[0].upper())
+    ) + "\0"
+    env_buf = ctypes.create_unicode_buffer(env_str)
+    cmdline_buf = ctypes.create_unicode_buffer(subprocess.list2cmdline(arg_list))
+    app_name = resolved_exe if Path(resolved_exe).is_file() else None
+    flags = creationflags | _CREATE_SUSPENDED | _CREATE_UNICODE_ENVIRONMENT
+
+    pi = _PROCESS_INFORMATION()
+    try:
+        ok = k32.CreateProcessW(
+            app_name,
+            cmdline_buf,
+            None,
+            None,
+            True,
+            flags,
+            env_buf,
+            cwd,
+            ctypes.byref(si),
+            ctypes.byref(pi),
+        )
+        if not ok:
+            raise ctypes.WinError(ctypes.get_last_error())
+    except Exception:
+        k32.CloseHandle(out_r)
+        k32.CloseHandle(err_r)
+        raise
+    finally:
+        k32.CloseHandle(out_w)
+        k32.CloseHandle(err_w)
+        if stdin_nul is not None and int(stdin_nul) not in (0, -1):
+            k32.CloseHandle(stdin_nul)
+
+    # Child is suspended (0 instructions executed). Assign to Job BEFORE ResumeThread.
+    try:
+        job_assigned, job_status = job.assign_handle(int(pi.hProcess))
+        if not job_assigned:
+            k32.TerminateProcess(pi.hProcess, 1)
+            raise _JobAssignmentError(job_status)
+
+        out_stream = os.fdopen(msvcrt.open_osfhandle(int(out_r.value), os.O_RDONLY), "rb")
+        err_stream = os.fdopen(msvcrt.open_osfhandle(int(err_r.value), os.O_RDONLY), "rb")
+    except Exception:
+        k32.CloseHandle(pi.hThread)
+        k32.CloseHandle(pi.hProcess)
+        try:
+            k32.CloseHandle(out_r)
+        except Exception:
+            pass
+        try:
+            k32.CloseHandle(err_r)
+        except Exception:
+            pass
+        raise
+
+    prev_suspend = k32.ResumeThread(pi.hThread)
+    k32.CloseHandle(pi.hThread)
+    if prev_suspend == 0xFFFFFFFF:
+        err = ctypes.get_last_error()
+        k32.TerminateProcess(pi.hProcess, 1)
+        k32.CloseHandle(pi.hProcess)
+        out_stream.close()
+        err_stream.close()
+        raise ctypes.WinError(err)
+
+    proc_handle = _Win32ProcessHandle(
+        k32=k32,
+        h_process=int(pi.hProcess),
+        pid=int(pi.dwProcessId),
+        stdout=out_stream,
+        stderr=err_stream,
+    )
+    return proc_handle, job_status
 
 
 class _BoundedStreamReader:
@@ -314,7 +628,7 @@ def execute(
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
     job = _Win32JobHandle()
-    proc: subprocess.Popen[bytes] | None = None
+    proc: subprocess.Popen[bytes] | _Win32ProcessHandle | None = None
     job_assigned = False
     job_status = "not_applicable" if sys.platform != "win32" else (job.last_error or "created")
     cleanup_outcome = "not_needed"
@@ -327,24 +641,34 @@ def execute(
     stderr_reader = _BoundedStreamReader(None, max_output_bytes)
 
     try:
-        proc = subprocess.Popen(
-            arg_list,
-            cwd=resolved_cwd,
-            env=child_env,
-            stdin=subprocess.DEVNULL if prof == ExecutionProfile.HEADLESS else None,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=False,
-            creationflags=creationflags,
-        )
         if sys.platform == "win32":
-            job_assigned, job_status = job.assign_pid(proc.pid)
+            proc, job_status = _launch_win32_suspended_in_job(
+                arg_list=arg_list,
+                resolved_exe=resolved_exe,
+                cwd=resolved_cwd,
+                child_env=child_env,
+                prof=prof,
+                creationflags=creationflags,
+                job=job,
+            )
+            job_assigned = True
             k_time = _read_windows_process_create_100ns(proc.pid)
             boot_id = get_boot_id()
             if k_time is not None:
                 proc_key = ProcessIdentity.canonical_kernel(boot_id, proc.pid, k_time).proc_key
             else:
                 proc_key = ProcessIdentity.provisional(boot_id, proc.pid, start_ns).proc_key
+        else:
+            proc = subprocess.Popen(
+                arg_list,
+                cwd=resolved_cwd,
+                env=child_env,
+                stdin=subprocess.DEVNULL if prof == ExecutionProfile.HEADLESS else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+                creationflags=creationflags,
+            )
 
         stdout_reader = _BoundedStreamReader(proc.stdout, max_output_bytes)
         stderr_reader = _BoundedStreamReader(proc.stderr, max_output_bytes)
@@ -369,7 +693,13 @@ def execute(
                 cleanup_outcome = _terminate_owned_tree(proc, job, job_assigned)
                 exit_code = proc.poll()
                 break
-            time.sleep(0.02)
+            time.sleep(0.01)
+    except _JobAssignmentError as exc:
+        status = RunStatus.LAUNCH_FAILED
+        job_assigned = False
+        job_status = exc.reason
+        cleanup_outcome = "terminated_before_resume"
+        err_detail = f"Job assignment failed before resume: {exc.reason}"
     except KeyboardInterrupt:
         status = RunStatus.CANCELLED
         err_detail = "Interrupted by KeyboardInterrupt"
@@ -382,6 +712,8 @@ def execute(
     finally:
         out_text = stdout_reader.join()
         err_text = stderr_reader.join()
+        if isinstance(proc, _Win32ProcessHandle):
+            proc.close()
         job.close()
 
     duration_ms = round((time.monotonic_ns() - start_ns) / 1_000_000.0, 3)
@@ -434,7 +766,7 @@ def execute(
 
 
 def _terminate_owned_tree(
-    proc: subprocess.Popen[bytes],
+    proc: subprocess.Popen[bytes] | _Win32ProcessHandle,
     job: _Win32JobHandle,
     job_assigned: bool,
 ) -> str:
