@@ -1,0 +1,13 @@
+version: '1.0'
+service:
+  listen_host: 127.0.0.1
+  listen_port: 49684
+  upstream_url: http://127.0.0.1:1
+  model_load_timeout_seconds: 1800.0
+  state_persistence_path: C:\H4-Guest-Work\runs\h4-rc-full-v6-20261115-190301-cca665\runs\42c1752123-install\coordinator_state.json
+resources:
+  gpu.inference:
+    type: shared
+    cooldown_seconds: 10.0
+processes: {}
+policies: []

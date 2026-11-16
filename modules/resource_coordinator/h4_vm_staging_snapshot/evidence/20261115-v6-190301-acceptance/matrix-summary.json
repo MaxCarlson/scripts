@@ -1,0 +1,76 @@
+[
+  {
+    "phase": "offline",
+    "test_root": "C:\\H4-Guest-Work\\runs\\h4-rc-offline-v6-20261115-190301-cca665",
+    "exit_code": 0,
+    "status": "PASS",
+    "evidence_transfer_status": "COMPLETE",
+    "evidence_transfer_error": null,
+    "guest_evidence_path": "C:\\H4-Guest-Work\\runs\\h4-rc-offline-v6-20261115-190301-cca665",
+    "retry_hint": null,
+    "parsed": {
+      "completed_at": "2026-11-15T19:03:45.7928-08:00",
+      "counts": {
+        "errors": 0,
+        "failures": 0,
+        "skipped": 1,
+        "tests": 112
+      },
+      "exit_code": 0,
+      "junit": "C:\\H4-Guest-Work\\runs\\h4-rc-offline-v6-20261115-190301-cca665\\junit-20261116T030336195638Z.xml",
+      "log": "C:\\H4-Guest-Work\\runs\\h4-rc-offline-v6-20261115-190301-cca665\\pytest-output.log",
+      "profile": "offline",
+      "schema_version": 1,
+      "status": "passed"
+    }
+  },
+  {
+    "phase": "task",
+    "test_root": "C:\\H4-Guest-Work\\runs\\h4-rc-task-v6-20261115-190301-cca665",
+    "exit_code": 0,
+    "status": "PASS",
+    "evidence_transfer_status": "COMPLETE",
+    "evidence_transfer_error": null,
+    "guest_evidence_path": "C:\\H4-Guest-Work\\runs\\h4-rc-task-v6-20261115-190301-cca665",
+    "retry_hint": null,
+    "parsed": {
+      "completed_at": "2026-11-15T19:04:03.736462-08:00",
+      "counts": {
+        "errors": 0,
+        "failures": 0,
+        "skipped": 0,
+        "tests": 1
+      },
+      "exit_code": 0,
+      "junit": "C:\\H4-Guest-Work\\runs\\h4-rc-task-v6-20261115-190301-cca665\\junit-20261116T030356100252Z.xml",
+      "log": "C:\\H4-Guest-Work\\runs\\h4-rc-task-v6-20261115-190301-cca665\\pytest-output.log",
+      "profile": "task",
+      "schema_version": 1,
+      "status": "passed"
+    }
+  },
+  {
+    "phase": "full",
+    "test_root": "C:\\H4-Guest-Work\\runs\\h4-rc-full-v6-20261115-190301-cca665",
+    "exit_code": 4,
+    "status": "FAIL",
+    "evidence_transfer_status": "COMPLETE",
+    "evidence_transfer_error": null,
+    "guest_evidence_path": "C:\\H4-Guest-Work\\runs\\h4-rc-full-v6-20261115-190301-cca665",
+    "retry_hint": null,
+    "parsed": {
+      "completed_at": "2026-11-15T19:04:09.545853-08:00",
+      "exception_chain": [
+        "InstallationError",
+        "RuntimeError"
+      ],
+      "exit_code": 4,
+      "guard_reasons": [],
+      "profile": "full",
+      "reason_code": "InstallationError",
+      "schema_version": 1,
+      "stage": "lifecycle",
+      "status": "failed"
+    }
+  }
+]

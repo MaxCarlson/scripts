@@ -1,0 +1,15 @@
+{
+  "apply_requested": true,
+  "guest_verified": true,
+  "mutation_ready": false,
+  "observed_at": "2026-11-16T03:03:36.160500+00:00",
+  "observed_guard_reasons": [],
+  "profile": "offline",
+  "profile_blockers": [],
+  "profile_ready": true,
+  "schema_version": 1,
+  "source_integrity": {
+    "mode": "diagnostic_unpinned",
+    "verified": false
+  }
+}

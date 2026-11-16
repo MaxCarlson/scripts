@@ -1,0 +1,5 @@
+{
+  "evidence": "pytest finally-block and post-delete verification",
+  "schema_version": 1,
+  "status": "task_cleanup_asserted_by_test"
+}

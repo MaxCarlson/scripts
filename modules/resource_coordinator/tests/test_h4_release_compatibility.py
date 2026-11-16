@@ -499,3 +499,24 @@ def test_isolated_service_config_clears_policies_and_validates_with_load_config(
     assert cfg.service.listen_port == 49679
     assert dict(cfg.processes) == {}
     assert list(cfg.policies) == []
+
+
+def test_guest_credential_provider_provisions_and_verifies_isolated_acl(tmp_path):
+    import os
+
+    if os.name != "nt":
+        pytest.skip("Windows ACL test")
+    root = tmp_path / "cred_root"
+    root.mkdir()
+    provider = windows_acceptance.GuestCredentialProvider(root)
+    token_path = root / "operator.token"
+    provider.ensure(token_path)
+    assert token_path.is_file()
+    doc = provider.doctor(token_path)
+    assert doc["credential_file_exists"] is True
+    assert doc["credential_file_readable"] is True
+    assert doc["credential_valid"] is True
+    assert doc["acl_restricted"] is True
+    assert provider.load(token_path) == provider.token
+    with pytest.raises(RuntimeError):
+        provider._check_path(tmp_path / "outside.token")

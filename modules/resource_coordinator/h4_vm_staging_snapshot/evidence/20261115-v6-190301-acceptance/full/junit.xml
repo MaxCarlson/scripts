@@ -1,0 +1,2 @@
+<?xml version='1.0' encoding='utf-8'?>
+<testsuite name="h4_guest_lifecycle" tests="1" failures="0" errors="1" skipped="0"><testcase classname="h4_guest_lifecycle" name="full"><error type="InstallationError" message="guest lifecycle failed; inspect bounded JSON evidence">No exception text is stored because it may contain host-specific arguments or paths.</error></testcase></testsuite>

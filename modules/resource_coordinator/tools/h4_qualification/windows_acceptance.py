@@ -366,7 +366,8 @@ class GuestCredentialProvider:
 
     def _check_path(self, token_path: Path) -> Path:
         path = token_path.resolve(strict=False)
-        if path.parent != self.root or _is_reparse_point(token_path) or not path.name.endswith(".token"):
+        token_reparse = (token_path.exists() or token_path.is_symlink()) and _is_reparse_point(token_path)
+        if path.parent != self.root or _is_reparse_point(self.root) or token_reparse or not path.name.endswith(".token"):
             raise RuntimeError("dummy credential path is outside the isolated guest root")
         return path
 
@@ -398,7 +399,8 @@ $userSid=([Security.Principal.NTAccount]::new($env:RC_H4_USER)).Translate([Secur
 $acl=Get-Acl -LiteralPath $env:RC_H4_TOKEN_PATH
 $read=[int][Security.AccessControl.FileSystemRights]::Read
 $full=[int][Security.AccessControl.FileSystemRights]::FullControl
-$rows=@($acl.Access | ForEach-Object { $sid=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value; @{sid=$sid;type=[string]$_.AccessControlType;read_only=([int]$_.FileSystemRights -eq $read);full=([int]$_.FileSystemRights -eq $full);inherited=[bool]$_.IsInherited} })
+$sync=[int][Security.AccessControl.FileSystemRights]::Synchronize
+$rows=@($acl.Access | ForEach-Object { $sid=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value; $masked=([int]$_.FileSystemRights -band (-bnot $sync)); @{sid=$sid;type=[string]$_.AccessControlType;read_only=($masked -eq $read);full=([int]$_.FileSystemRights -eq $full);inherited=[bool]$_.IsInherited} })
 ConvertTo-Json -Compress -InputObject @{user_sid=$userSid;rows=$rows}
 """
         env = os.environ.copy()

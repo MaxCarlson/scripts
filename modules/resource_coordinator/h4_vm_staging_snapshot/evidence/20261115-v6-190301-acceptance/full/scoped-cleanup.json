@@ -1,0 +1,7 @@
+{
+  "exit_code": 0,
+  "output": "{\"completed_at\": \"2026-11-16T03:04:19.992517+00:00\", \"exit_code\": 0, \"phases\": [{\"cleanup_return_status\": \"already-stopped\", \"listener\": \"not-found\", \"phase\": \"install\", \"process_termination_verified\": true, \"remaining_tasks\": [], \"status\": \"verified\", \"task_names\": [\"ResourceCoordinator-H4-42c1752123-install-boot\", \"ResourceCoordinator-H4-42c1752123-install-logon\", \"ResourceCoordinator-H4-42c1752123-install-viewer\"]}], \"schema_version\": 1, \"source_tree_sha256\": \"27764f44b7311072b62b0dbf8d8faa96260f3deb8a0f09bf0bef969368599989\", \"status\": \"verified\"}",
+  "PSComputerName": "RC-H4-Windows-Acceptance",
+  "RunspaceId": "6a251a2e-7f98-4f71-baa2-f06bd16f4615",
+  "PSShowComputerName": true
+}
