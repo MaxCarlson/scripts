@@ -1,4 +1,7 @@
+import json
 from pathlib import Path
+import subprocess
+from types import SimpleNamespace
 
 from local_agent_bridge import __version__
 from local_agent_bridge.commands import main
@@ -53,32 +56,76 @@ def test_setup_retrieval_opt_in_is_saved_and_can_be_disabled(tmp_path, capsys):
 
     home = tmp_path / "home"
     saved = tmp_path / "retrieval-plan.json"
-    assert main([
-        "setup", "plan", "-H", str(home), "-s", "copy", "-m", "generic",
-        "--code-retrieval", "-o", str(saved),
-    ]) == 0
+    assert (
+        main(
+            [
+                "setup",
+                "plan",
+                "-H",
+                str(home),
+                "-s",
+                "copy",
+                "-m",
+                "generic",
+                "--code-retrieval",
+                "-o",
+                str(saved),
+            ]
+        )
+        == 0
+    )
     assert json.loads(saved.read_text())["code_retrieval"] is True
     assert main(["setup", "apply", "-i", str(saved)]) == 0
     installed = home / ".config/opencode/tools/code_locate.js"
     assert installed.is_file()
     capsys.readouterr()
-    assert main([
-        "setup", "plan", "-H", str(home), "-s", "copy", "-m", "generic",
-        "--no-code-retrieval", "-j",
-    ]) == 0
+    assert (
+        main(
+            [
+                "setup",
+                "plan",
+                "-H",
+                str(home),
+                "-s",
+                "copy",
+                "-m",
+                "generic",
+                "--no-code-retrieval",
+                "-j",
+            ]
+        )
+        == 0
+    )
     output = capsys.readouterr().out
-    plan = json.loads(output[output.index("{\n"):])
+    plan = json.loads(output[output.index("{\n") :])
     assert plan["code_retrieval"] is False
-    assert any(op["resource_id"] == "shared.code-retrieval.code_locate" and op["retire"]
-               for op in plan["operations"])
-    assert main([
-        "setup", "apply", "-H", str(home), "-s", "copy", "-m", "generic", "--no-code-retrieval",
-    ]) == 0
+    assert any(
+        op["resource_id"] == "shared.code-retrieval.code_locate" and op["retire"]
+        for op in plan["operations"]
+    )
+    assert (
+        main(
+            [
+                "setup",
+                "apply",
+                "-H",
+                str(home),
+                "-s",
+                "copy",
+                "-m",
+                "generic",
+                "--no-code-retrieval",
+            ]
+        )
+        == 0
+    )
     assert not installed.exists()
     capsys.readouterr()
 
 
-def test_checkpoint_cli_save_show_and_recover_are_local_and_stale_aware(tmp_path, capsys):
+def test_checkpoint_cli_save_show_and_recover_are_local_and_stale_aware(
+    tmp_path, capsys
+):
     import json
 
     workspace = tmp_path / "project"
@@ -86,24 +133,80 @@ def test_checkpoint_cli_save_show_and_recover_are_local_and_stale_aware(tmp_path
     source = workspace / "module.py"
     source.write_text("VALUE = 1\n", encoding="utf-8")
     payload = tmp_path / "task.json"
-    payload.write_text(json.dumps({
-        "task_id": "task-cli",
-        "objective": "Inspect the module",
-        "authorized_scope": ["module.py"],
-        "next_action": "Check the existing session before continuing.",
-        "identities": {"session_id": "ses-cli", "job_id": "job-cli", "message_id": "msg-cli",
-                        "provider_id": "local", "model_id": "model-cli", "worker_agent": "local-worker"},
-        "confirmed_sources": [{"path": "module.py", "start_line": 1, "end_line": 1}],
-    }), encoding="utf-8")
+    payload.write_text(
+        json.dumps(
+            {
+                "task_id": "task-cli",
+                "objective": "Inspect the module",
+                "authorized_scope": ["module.py"],
+                "next_action": "Check the existing session before continuing.",
+                "identities": {
+                    "session_id": "ses-cli",
+                    "job_id": "job-cli",
+                    "message_id": "msg-cli",
+                    "provider_id": "local",
+                    "model_id": "model-cli",
+                    "worker_agent": "local-worker",
+                },
+                "confirmed_sources": [
+                    {"path": "module.py", "start_line": 1, "end_line": 1}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     state = tmp_path / "outside-state"
-    assert main(["checkpoint", "save", "-C", str(workspace), "-S", str(state), "-i", str(payload), "-j"]) == 0
+    assert (
+        main(
+            [
+                "checkpoint",
+                "save",
+                "-C",
+                str(workspace),
+                "-S",
+                str(state),
+                "-i",
+                str(payload),
+                "-j",
+            ]
+        )
+        == 0
+    )
     saved = json.loads(capsys.readouterr().out)
     assert saved["identities"]["message_id"] == "msg-cli"
     assert not Path(saved["checkpoint_path"]).is_relative_to(workspace)
-    assert main(["checkpoint", "show", "task-cli", "-C", str(workspace), "-S", str(state), "-j"]) == 0
+    assert (
+        main(
+            [
+                "checkpoint",
+                "show",
+                "task-cli",
+                "-C",
+                str(workspace),
+                "-S",
+                str(state),
+                "-j",
+            ]
+        )
+        == 0
+    )
     assert json.loads(capsys.readouterr().out)["task_id"] == "task-cli"
     source.write_text("VALUE = 2\n", encoding="utf-8")
-    assert main(["checkpoint", "recover", "task-cli", "-C", str(workspace), "-S", str(state), "-j"]) == 1
+    assert (
+        main(
+            [
+                "checkpoint",
+                "recover",
+                "task-cli",
+                "-C",
+                str(workspace),
+                "-S",
+                str(state),
+                "-j",
+            ]
+        )
+        == 1
+    )
     packet = json.loads(capsys.readouterr().out)
     assert packet["status"] == "stale"
     assert packet["automatic_resubmission"] is False
@@ -115,6 +218,450 @@ def test_run_parser_keeps_management_in_model_group():
     parser = build_parser(runtime_only=True)
     assert parser.parse_args(["-M", "ls"]).nickname == "ls"
     assert "--delete-model" not in parser.format_help()
+
+
+def test_run_parser_supports_explicit_loaded_model_only_mode():
+    from local_agent_bridge.cli import build_parser
+
+    args = build_parser(runtime_only=True).parse_args(["-L", "-M", "qwen"])
+    assert args.require_loaded_model is True
+
+
+def test_require_loaded_model_refuses_mismatch_before_unloading_or_loading(
+    monkeypatch, tmp_path, capsys
+):
+    from local_agent_bridge import cli as runtime
+
+    monkeypatch.setattr(runtime, "check_prerequisites", lambda *args: None)
+    monkeypatch.setattr(
+        runtime,
+        "resolve_nickname_and_model",
+        lambda args: ("bench-qwen", "qwen/model@q4_k_m"),
+    )
+    selection = runtime.ModelSelection(
+        base="qwen/model",
+        load_key="qwen/model@q4_k_m",
+        quant="q4_k_m",
+        display="qwen/model@q4_k_m",
+        expected_size="",
+    )
+    monkeypatch.setattr(runtime, "resolve_model_selection", lambda *args, **kwargs: selection)
+    monkeypatch.setattr(runtime, "load_opencode_config", lambda: {})
+    monkeypatch.setattr(
+        runtime, "validate_opencode_provider_config", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        runtime, "resolve_run_limits", lambda *args, **kwargs: (98304, 8192)
+    )
+    monkeypatch.setattr(runtime, "get_loaded_instance", lambda *args: (None, ""))
+    monkeypatch.setattr(
+        runtime,
+        "unload_other_loaded_llms",
+        lambda *args: pytest.fail("must not unload models"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "run_cmd",
+        lambda *args, **kwargs: pytest.fail("must not run lms load/unload"),
+    )
+    runtime_root = tmp_path / "runtime"
+    for name, child in (
+        ("AGENT_BENCHMARK_RUNTIME_ROOT", ""),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_DATA_HOME", "data"),
+        ("TEMP", "temp"),
+        ("TMP", "temp"),
+    ):
+        path = runtime_root / child if child else runtime_root
+        path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv(name, str(path))
+
+    code = runtime.main(
+        [
+            "-L",
+            "-U",
+            "--no-codex",
+            "--no-agy",
+            "-M",
+            "bench-qwen",
+            "--models-dir",
+            str(tmp_path),
+        ],
+        runtime_only=True,
+    )
+
+    assert code == 1
+    assert (
+        "require-loaded-model refused before any model transition"
+        in capsys.readouterr().out
+    )
+
+
+def test_loaded_only_model_resolution_uses_read_only_inventory_without_catalog_scan(monkeypatch):
+    from local_agent_bridge import cli as runtime
+
+    inventory = [{
+        "type": "llm",
+        "identifier": "qwen38-27b-q4km",
+        "modelKey": "qwen38-27b-q4km",
+        "path": "local/qwen38-27b-q4km/Qwen3.8-27B-Q4_K_M.gguf",
+        "sizeBytes": 16810714336,
+        "quantization": {"name": "Q4_K_M", "bits": 4},
+    }]
+    calls = []
+
+    def run_cmd(args, *, check):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(inventory), stderr="")
+
+    monkeypatch.setattr(runtime, "run_cmd", run_cmd)
+    selection = runtime.resolve_model_selection("qwen38-27b-q4km", require_loaded_only=True)
+    assert selection.load_key == "qwen38-27b-q4km"
+    assert selection.quant == "q4_k_m"
+    assert selection.expected_size == ""
+    assert calls == [["lms", "ps", "--json"]]
+
+
+@pytest.mark.parametrize(
+    "requested,inventory,reason",
+    [
+        (
+            "qwen38-27b-q4km@q6_k",
+            [{"type": "llm", "identifier": "qwen38-27b-q4km", "modelKey": "qwen38-27b-q4km",
+              "path": "local/model-q4km.gguf", "sizeBytes": 1, "quantization": {"name": "Q4_K_M"}}],
+            "quantization",
+        ),
+        (
+            "qwen38-27b-q4km",
+            [{"type": "llm", "identifier": "qwen38-27b-q4km", "modelKey": "qwen38-27b-q4km",
+              "path": "local/model-a.gguf", "sizeBytes": 1, "quantization": {"name": "Q4_K_M"}},
+             {"type": "llm", "identifier": "qwen38-27b-q4km", "modelKey": "qwen38-27b-q4km",
+              "path": "local/model-b.gguf", "sizeBytes": 1, "quantization": {"name": "Q4_K_M"}}],
+            "uniquely",
+        ),
+    ],
+)
+def test_loaded_only_model_resolution_refuses_mismatch_or_ambiguous_inventory(
+    monkeypatch, requested, inventory, reason
+):
+    from local_agent_bridge import cli as runtime
+
+    monkeypatch.setattr(
+        runtime,
+        "run_cmd",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(inventory), stderr=""),
+    )
+    with pytest.raises(RuntimeError, match=reason):
+        runtime.resolve_model_selection(requested, require_loaded_only=True)
+
+
+def test_require_loaded_model_requires_isolated_config_and_disabled_user_integrations(
+    monkeypatch, tmp_path, capsys
+):
+    from local_agent_bridge import cli as runtime
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    code = runtime.main(["-L", "-M", "bench-qwen"], runtime_only=True)
+    assert code == 1
+    assert "AGENT_BENCHMARK_RUNTIME_ROOT" in capsys.readouterr().out
+
+
+def test_isolated_benchmark_environment_rejects_inherited_temp(tmp_path):
+    from local_agent_bridge.cli import validate_isolated_benchmark_environment
+
+    root = tmp_path / "runtime"
+    for name in ("config", "cache", "data", "temp"):
+        (root / name).mkdir(parents=True)
+    environment = {
+        "AGENT_BENCHMARK_RUNTIME_ROOT": str(root),
+        "XDG_CONFIG_HOME": str(root / "config"),
+        "XDG_CACHE_HOME": str(root / "cache"),
+        "XDG_DATA_HOME": str(root / "data"),
+        "TEMP": str(root / "temp"),
+        "TMP": str(root / "temp"),
+    }
+    assert validate_isolated_benchmark_environment(environment) == root.resolve()
+    environment["TMP"] = str(tmp_path)
+    with pytest.raises(RuntimeError, match="isolated TMP"):
+        validate_isolated_benchmark_environment(environment)
+
+
+def test_opencode_benchmark_server_uses_disposable_runtime_root_as_cwd(
+    tmp_path, monkeypatch
+):
+    from local_agent_bridge.cli import (
+        build_benchmark_opencode_environment,
+        opencode_server_working_directory,
+    )
+
+    root = tmp_path / "runtime"
+    values = {
+        "AGENT_BENCHMARK_RUNTIME_ROOT": str(root),
+        "XDG_CONFIG_HOME": str(root / "config"),
+        "XDG_CACHE_HOME": str(root / "cache"),
+        "XDG_DATA_HOME": str(root / "data"),
+        "TEMP": str(root / "tmp"),
+        "TMP": str(root / "tmp"),
+    }
+    for value in values.values():
+        Path(value).mkdir(parents=True, exist_ok=True)
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+
+    assert opencode_server_working_directory() == root.resolve()
+    source = {
+        **values,
+        "USERPROFILE": str(tmp_path / "user"),
+        "APPDATA": str(tmp_path / "user" / "AppData" / "Roaming"),
+        "LOCALAPPDATA": str(tmp_path / "user" / "AppData" / "Local"),
+        "OPENCODE_CONFIG": str(tmp_path / "user" / "opencode.json"),
+        "OPENAI_API_KEY": "synthetic-secret",
+        "ANTHROPIC_API_KEY": "synthetic-secret",
+        "OPENCODE_CONFIG_CONTENT": '{"model":"unexpected/user-model"}',
+    }
+    child = build_benchmark_opencode_environment(
+        source, launcher_pid=123, opencode_port=4178, port_unbound_at=12.5
+    )
+    assert child["USERPROFILE"] == str(root / "home")
+    assert child["APPDATA"] == str(root / "appdata" / "roaming")
+    assert child["LOCALAPPDATA"] == str(root / "appdata" / "local")
+    assert (
+        child["OPENCODE_CONFIG"]
+        == child["XDG_CONFIG_HOME"] + "\\opencode\\opencode.json"
+    )
+    assert child["OPENCODE_CONFIG_DIR"] == child["XDG_CONFIG_HOME"] + "\\opencode"
+    assert child["OPENCODE_DB"].startswith(child["XDG_DATA_HOME"])
+    assert child["AGENT_BENCHMARK_LAUNCHER_PID"] == "123"
+    assert child["AGENT_BENCHMARK_PORT_PROBE_PORT"] == "4178"
+    assert child["AGENT_BENCHMARK_PORT_PROBE_AT"] == "12.5"
+    assert "OPENAI_API_KEY" not in child and "ANTHROPIC_API_KEY" not in child
+    assert "OPENCODE_CONFIG_CONTENT" not in child
+
+
+def test_benchmark_opencode_port_probe_refuses_an_occupied_loopback_port():
+    import socket
+
+    from local_agent_bridge.cli import verify_benchmark_opencode_port_unbound
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        with pytest.raises(RuntimeError, match="already occupied"):
+            verify_benchmark_opencode_port_unbound(port)
+
+
+def test_benchmark_opencode_server_refuses_to_adopt_existing_instance(monkeypatch):
+    from local_agent_bridge import cli
+
+    monkeypatch.setenv("AGENT_BENCHMARK_RUNTIME_ROOT", "C:/fixture/runtime")
+    monkeypatch.setattr(
+        cli, "http_get_json", lambda url: {"healthy": True, "version": "1.19.5"}
+    )
+    monkeypatch.setattr(
+        cli,
+        "verify_opencode_provider",
+        lambda *args: pytest.fail("benchmark mode must not adopt an existing server"),
+    )
+
+    with pytest.raises(RuntimeError, match="refusing to adopt an unowned instance"):
+        cli.run_opencode_server_foreground(
+            4178, 1234, "qwen38-27b-q4km", "already loaded", False, False,
+            98304, 8192, "http://127.0.0.1:8788/v1",
+        )
+
+
+def test_benchmark_opencode_server_launch_carries_its_fresh_port_probe(
+    tmp_path, monkeypatch
+):
+    from local_agent_bridge import cli
+
+    root = tmp_path / "runtime"
+    for name in ("config", "cache", "data", "temp"):
+        (root / name).mkdir(parents=True)
+    for key, value in {
+        "AGENT_BENCHMARK_RUNTIME_ROOT": str(root),
+        "XDG_CONFIG_HOME": str(root / "config"),
+        "XDG_CACHE_HOME": str(root / "cache"),
+        "XDG_DATA_HOME": str(root / "data"),
+        "TEMP": str(root / "temp"),
+        "TMP": str(root / "temp"),
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    launched = {}
+
+    class FinishedProcess:
+        stdout = None
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(cli, "http_get_json", lambda url: None)
+    monkeypatch.setattr(cli, "verify_benchmark_opencode_port_unbound", lambda port: 1000.5)
+    monkeypatch.setattr(cli, "resolve_executable", lambda name: "opencode.exe")
+    monkeypatch.setattr(
+        cli,
+        "wait_http_json",
+        lambda *args, **kwargs: {"healthy": True, "version": "1.19.5"},
+    )
+    monkeypatch.setattr(cli, "verify_opencode_provider", lambda *args: (True, "ok"))
+
+    def fake_popen(command, **kwargs):
+        launched.update(command=command, kwargs=kwargs)
+        return FinishedProcess()
+
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+    cli.run_opencode_server_foreground(
+        4178, 1234, "qwen38-27b-q4km", "already loaded", False, False,
+        98304, 8192, "http://127.0.0.1:8788/v1",
+    )
+
+    child_env = launched["kwargs"]["env"]
+    assert launched["command"][0] == "opencode.exe"
+    assert launched["command"] == ["opencode.exe", "serve", "--hostname", "127.0.0.1", "--port", "4178"]
+    assert launched["kwargs"]["creationflags"] == subprocess.CREATE_NEW_PROCESS_GROUP
+    assert child_env["AGENT_BENCHMARK_PORT_PROBE_PORT"] == "4178"
+    assert child_env["AGENT_BENCHMARK_PORT_PROBE_AT"] == "1000.5"
+    assert child_env["OPENCODE_CONFIG_DIR"].startswith(str(root))
+
+
+def test_opencode_server_resolution_uses_npm_shims_target_executable(tmp_path, monkeypatch):
+    from local_agent_bridge import cli
+
+    npm_bin = tmp_path / "npm"
+    shim = npm_bin / "opencode.cmd"
+    target = npm_bin / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
+    target.parent.mkdir(parents=True)
+    target.touch()
+    shim.touch()
+    monkeypatch.setattr(cli, "resolve_executable", lambda name: str(shim) if name == "opencode" else None)
+
+    assert cli._resolve_opencode_server_executable() == str(target)
+
+
+def test_opencode_server_resolution_refuses_unknown_command_shim(tmp_path, monkeypatch):
+    from local_agent_bridge import cli
+
+    shim = tmp_path / "opencode.cmd"
+    shim.touch()
+    monkeypatch.setattr(cli, "resolve_executable", lambda name: str(shim) if name == "opencode" else None)
+
+    with pytest.raises(RuntimeError, match="cannot safely launch the owned server process"):
+        cli._resolve_opencode_server_executable()
+
+
+def test_stop_process_on_port_windows_never_kills_unowned_listener(monkeypatch):
+    from local_agent_bridge import cli
+
+    monkeypatch.setattr(cli, "run_cmd", lambda *_args, **_kwargs: pytest.fail("must not inspect or kill by port"))
+    assert cli.stop_process_on_port_windows(4196) is False
+
+
+def test_owned_opencode_shutdown_uses_process_group_and_waits_without_pid_kill():
+    import signal
+    from local_agent_bridge import cli
+
+    class OwnedProcess:
+        returncode = None
+
+        def __init__(self):
+            self.signals = []
+            self.wait_timeouts = []
+
+        def poll(self):
+            return self.returncode
+
+        def send_signal(self, value):
+            self.signals.append(value)
+
+        def wait(self, timeout):
+            self.wait_timeouts.append(timeout)
+            self.returncode = 0
+            return 0
+
+        def terminate(self):
+            pytest.fail("owned shutdown must not use a numeric PID termination fallback")
+
+        def kill(self):
+            pytest.fail("owned shutdown must not force-kill a process by PID")
+
+    process = OwnedProcess()
+    assert cli._shutdown_owned_opencode_process(process, timeout=3) is True
+    assert process.signals == [signal.CTRL_BREAK_EVENT]
+    assert process.wait_timeouts == [3]
+
+
+def test_owned_opencode_shutdown_reports_live_process_without_forcing_kill():
+    from local_agent_bridge import cli
+
+    class StuckProcess:
+        returncode = None
+
+        def __init__(self):
+            self.signals = []
+
+        def poll(self):
+            return self.returncode
+
+        def send_signal(self, value):
+            self.signals.append(value)
+
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired("opencode", timeout)
+
+        def terminate(self):
+            pytest.fail("timeout must preserve the process for identity-based review")
+
+        def kill(self):
+            pytest.fail("timeout must preserve the process for identity-based review")
+
+    process = StuckProcess()
+    assert cli._shutdown_owned_opencode_process(process, timeout=0.01) is False
+    assert process.signals
+
+
+def test_owned_opencode_shutdown_fails_if_listener_remains(monkeypatch):
+    from local_agent_bridge import cli
+
+    class ExitedProcess:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(
+        cli,
+        "verify_benchmark_opencode_port_unbound",
+        lambda _port: (_ for _ in ()).throw(RuntimeError("listener remains")),
+    )
+    assert cli._shutdown_owned_opencode_process(ExitedProcess(), port=4196) is False
+
+
+def test_benchmark_opencode_config_receipt_state_stays_inside_runtime_root(
+    tmp_path, monkeypatch
+):
+    import json
+    from local_agent_bridge import cli as runtime
+
+    root = tmp_path / "runtime"
+    config = root / "config" / "opencode" / "opencode.json"
+    config.parent.mkdir(parents=True)
+    user_home = tmp_path / "user"
+    receipt = user_home / ".local" / "share" / "local-agent" / "receipt.json"
+    receipt.parent.mkdir(parents=True)
+    original_receipt = '{"resources": {"user": {"path": "untouched"}}}\n'
+    receipt.write_text(original_receipt, encoding="utf-8")
+    monkeypatch.setattr(runtime, "OPENCODE_CONFIG_PATH", config)
+    monkeypatch.setattr(runtime, "HOME_DIR", user_home)
+    monkeypatch.setenv("AGENT_BENCHMARK_RUNTIME_ROOT", str(root))
+
+    assert runtime.save_opencode_config({"model": "lmstudio/fixture"}) is True
+
+    assert json.loads(config.read_text(encoding="utf-8"))["model"] == "lmstudio/fixture"
+    assert receipt.read_text(encoding="utf-8") == original_receipt
 
 
 def test_gpu_headroom_uses_shared_used_free_and_total_bytes(monkeypatch, capsys):
@@ -597,10 +1144,30 @@ def test_checkpoint_recover_session_cli_is_additive_and_json(tmp_path, capsys):
     workspace = tmp_path / "project"
     workspace.mkdir()
     state = tmp_path / "state"
-    save_checkpoint(workspace, "task-session", "Continue the checkpoint", state_dir=state,
-                    authorized_scope=[], next_action="Check the existing job first.",
-                    identities={"session_id": "ses-cli-recover", "job_id": "job-cli"})
-    assert main(["checkpoint", "recover-session", "ses-cli-recover", "-C", str(workspace), "-S", str(state), "-j"]) == 0
+    save_checkpoint(
+        workspace,
+        "task-session",
+        "Continue the checkpoint",
+        state_dir=state,
+        authorized_scope=[],
+        next_action="Check the existing job first.",
+        identities={"session_id": "ses-cli-recover", "job_id": "job-cli"},
+    )
+    assert (
+        main(
+            [
+                "checkpoint",
+                "recover-session",
+                "ses-cli-recover",
+                "-C",
+                str(workspace),
+                "-S",
+                str(state),
+                "-j",
+            ]
+        )
+        == 0
+    )
     packet = json.loads(capsys.readouterr().out)
     assert packet["task_id"] == "task-session"
     assert packet["identities"]["job_id"] == "job-cli"
@@ -612,8 +1179,25 @@ def test_checkpoint_compaction_setup_flag_survives_saved_plan_replay(tmp_path, c
 
     home = tmp_path / "home"
     plan_path = tmp_path / "compaction-plan.json"
-    assert main(["setup", "plan", "-H", str(home), "-s", "copy", "-m", "generic",
-                 "--checkpoint-compaction", "-o", str(plan_path), "-j"]) == 0
+    assert (
+        main(
+            [
+                "setup",
+                "plan",
+                "-H",
+                str(home),
+                "-s",
+                "copy",
+                "-m",
+                "generic",
+                "--checkpoint-compaction",
+                "-o",
+                str(plan_path),
+                "-j",
+            ]
+        )
+        == 0
+    )
     assert json.loads(plan_path.read_text())["checkpoint_compaction"] is True
     capsys.readouterr()
     assert main(["setup", "apply", "-i", str(plan_path)]) == 0
@@ -626,8 +1210,25 @@ def test_structural_setup_flag_is_saved_and_installs_optional_tools(tmp_path, ca
 
     home = tmp_path / "home"
     plan_path = tmp_path / "structural-plan.json"
-    assert main(["setup", "plan", "-H", str(home), "-s", "copy", "-m", "generic",
-                 "--structural-retrieval", "-o", str(plan_path), "-j"]) == 0
+    assert (
+        main(
+            [
+                "setup",
+                "plan",
+                "-H",
+                str(home),
+                "-s",
+                "copy",
+                "-m",
+                "generic",
+                "--structural-retrieval",
+                "-o",
+                str(plan_path),
+                "-j",
+            ]
+        )
+        == 0
+    )
     plan = json.loads(plan_path.read_text())
     assert plan["structural_retrieval"] is True
     assert plan["code_retrieval"] is True

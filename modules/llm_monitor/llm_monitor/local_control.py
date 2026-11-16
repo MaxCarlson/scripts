@@ -9,7 +9,7 @@ requiring manual browser login codes or persistent cookie files.
 from __future__ import annotations
 
 import contextlib
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 import hmac
 import json
 import os
@@ -21,7 +21,6 @@ import threading
 import time
 from typing import Any
 
-from .server_lifecycle import get_current_owner_identity
 
 PROTOCOL_VERSION = 1
 MAX_FRAME_SIZE = 65536  # 64 KiB
@@ -34,6 +33,7 @@ ALLOWED_READ_SCOPES = {
     "requests:summary:read",
     "history:verification:read",
 }
+ALLOWED_CAPABILITY_SCOPES = ALLOWED_READ_SCOPES | {"benchmark:correlation:write"}
 
 
 @dataclass(frozen=True)
@@ -74,7 +74,7 @@ class LocalCapabilityManager:
         if requested_scopes is None:
             scopes = sorted(ALLOWED_READ_SCOPES)
         else:
-            scopes = sorted(s for s in requested_scopes if s in ALLOWED_READ_SCOPES)
+            scopes = sorted(s for s in requested_scopes if s in ALLOWED_CAPABILITY_SCOPES)
             if not scopes:
                 scopes = sorted(ALLOWED_READ_SCOPES)
 

@@ -30,9 +30,12 @@ import argparse
 import ctypes
 import ipaddress
 import json
+import math
 import os
 import re
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -56,7 +59,9 @@ QWEN38_23GB_OUTPUT_TOKENS = 8192
 DEFAULT_GPU = "max"
 DEFAULT_LMS_PORT = 1234
 DEFAULT_OPENCODE_PORT = 4096
-DEFAULT_INFERENCE_URL = os.environ.get("LOCAL_AGENT_INFERENCE_URL", "http://127.0.0.1:1235/v1")
+DEFAULT_INFERENCE_URL = os.environ.get(
+    "LOCAL_AGENT_INFERENCE_URL", "http://127.0.0.1:1235/v1"
+)
 
 PROVIDER_ID = "lmstudio"
 BRIDGE_NAME = "opencode_worker"
@@ -64,9 +69,13 @@ BRIDGE_PACKAGE = "opencode-mcp@3.0.0"
 
 HOME_DIR = Path.home()
 OPENCODE_CONFIG_PATH = (
-    Path(os.environ.get('XDG_CONFIG_HOME', str(HOME_DIR / '.config'))).expanduser() / 'opencode/opencode.json'
+    Path(os.environ.get("XDG_CONFIG_HOME", str(HOME_DIR / ".config"))).expanduser()
+    / "opencode/opencode.json"
 )
-CODEX_CONFIG_PATH = Path(os.environ.get('CODEX_HOME', str(HOME_DIR / '.codex'))).expanduser() / 'config.toml'
+CODEX_CONFIG_PATH = (
+    Path(os.environ.get("CODEX_HOME", str(HOME_DIR / ".codex"))).expanduser()
+    / "config.toml"
+)
 
 # Google Gemini Antigravity (`agy`) configuration & cache paths
 GEMINI_DIR = HOME_DIR / ".gemini"
@@ -171,7 +180,11 @@ def resolve_executable(name: str) -> str | None:
                 return str(fallback)
         if name == "agy":
             for cand in (
-                 Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Antigravity" / "bin" / "agy.exe",
+                Path(os.environ.get("LOCALAPPDATA", ""))
+                / "Programs"
+                / "Antigravity"
+                / "bin"
+                / "agy.exe",
                 HOME_DIR / ".gemini" / "bin" / "agy.exe",
             ):
                 if cand.is_file():
@@ -276,6 +289,7 @@ def load_json_file(path: Path) -> dict[str, Any]:
 
 def save_json_file_atomic(path: Path, data: dict[str, Any]) -> bool:
     from .setup.runtime_config import save_json
+
     return save_json(path, data, HOME_DIR)
 
 
@@ -349,7 +363,9 @@ def detect_models_dir(explicit_dir: str = "") -> Path | None:
     if explicit_dir:
         p = Path(explicit_dir).expanduser().resolve()
         if not p.is_dir():
-            raise RuntimeError(f"Provided --models-dir '{explicit_dir}' does not exist.")
+            raise RuntimeError(
+                f"Provided --models-dir '{explicit_dir}' does not exist."
+            )
         return p
 
     appdata = os.environ.get("APPDATA", "")
@@ -417,9 +433,8 @@ def find_registered_repo_key(user_repo: str, repo_leaf: str) -> str | None:
             for item in items:
                 key = str(item.get("modelKey") or item.get("key") or "")
                 path = str(item.get("path") or "")
-                if (
-                    key.lower() in (user_repo.lower(), repo_leaf.lower())
-                    or re.search(rf"(^|[\\/]){re.escape(repo_leaf)}([\\/]|$)", path, re.IGNORECASE)
+                if key.lower() in (user_repo.lower(), repo_leaf.lower()) or re.search(
+                    rf"(^|[\\/]){re.escape(repo_leaf)}([\\/]|$)", path, re.IGNORECASE
                 ):
                     if key:
                         return key
@@ -451,9 +466,19 @@ def ensure_hard_linked_variant(base: str, quant: str, models_dir: str = "") -> s
         raise RuntimeError("Could not detect LM Studio models directory.")
 
     gguf_path = find_variant_gguf(base, quant, models_root)
-    print_work(f"Registering hard-linked variant '{user_repo}' from {gguf_path.name}...")
+    print_work(
+        f"Registering hard-linked variant '{user_repo}' from {gguf_path.name}..."
+    )
     run_cmd(
-        ["lms", "import", str(gguf_path), "--user-repo", user_repo, "--hard-link", "-y"],
+        [
+            "lms",
+            "import",
+            str(gguf_path),
+            "--user-repo",
+            user_repo,
+            "--hard-link",
+            "-y",
+        ],
         check=True,
     )
     registered = find_registered_repo_key(user_repo, repo_leaf) or user_repo
@@ -461,7 +486,9 @@ def ensure_hard_linked_variant(base: str, quant: str, models_dir: str = "") -> s
     return registered
 
 
-def resolve_model_selection(requested: str, models_dir: str = "") -> ModelSelection:
+def resolve_model_selection(
+    requested: str, models_dir: str = "", *, require_loaded_only: bool = False
+) -> ModelSelection:
     if "@" in requested:
         base, quant = requested.split("@", 1)
         quant = quant.strip().lower()
@@ -470,6 +497,55 @@ def resolve_model_selection(requested: str, models_dir: str = "") -> ModelSelect
 
     if not base:
         raise RuntimeError(f"Invalid model specification: '{requested}'")
+
+    if require_loaded_only:
+        # The no-transition benchmark path must not depend on `lms ls`, which
+        # can block while enumerating the full downloaded catalog. Resolve only
+        # the exact, already-loaded instance from LM Studio's read-only view.
+        result = run_cmd(["lms", "ps", "--json"], check=False)
+        if result.returncode != 0:
+            raise RuntimeError("Could not inspect loaded models with `lms ps --json`; refusing model transition")
+        try:
+            loaded_items = json.loads(result.stdout)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise RuntimeError("Malformed loaded-model inventory from `lms ps --json`; refusing model transition") from error
+        if not isinstance(loaded_items, list):
+            raise RuntimeError("Loaded-model inventory is not a list; refusing model transition")
+        matches = [
+            item
+            for item in loaded_items
+            if isinstance(item, dict)
+            and item.get("type") == "llm"
+            and base.casefold()
+            in {
+                str(item.get("identifier") or "").casefold(),
+                str(item.get("modelKey") or "").casefold(),
+            }
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                "The exact requested model is not uniquely present in the loaded-model inventory; refusing model transition"
+            )
+        item = matches[0]
+        key = str(item.get("modelKey") or item.get("identifier") or "").strip()
+        path = str(item.get("path") or "").strip()
+        quantization = item.get("quantization")
+        if isinstance(quantization, dict):
+            loaded_quant = str(quantization.get("name") or "").strip().lower()
+        else:
+            loaded_quant = str(quantization or "").strip().lower()
+        if not key or not path or not loaded_quant or type(item.get("sizeBytes")) is not int or item["sizeBytes"] <= 0:
+            raise RuntimeError("Loaded model identity, quantization, path, or size is unavailable; refusing model transition")
+        if quant and re.sub(r"[_-]+", "", quant) != re.sub(r"[_-]+", "", loaded_quant):
+            raise RuntimeError("The loaded model quantization does not match the requested variant; refusing model transition")
+        return ModelSelection(
+            base=base,
+            load_key=key,
+            quant=loaded_quant,
+            display=f"{key}@{loaded_quant}",
+            expected_size="",
+            used_hard_link=False,
+        )
 
     _, variants, standalone = parse_lms_variants()
     matching_variants = [v for v in variants if v.base.lower() == base.lower()]
@@ -513,7 +589,9 @@ def resolve_model_selection(requested: str, models_dir: str = "") -> ModelSelect
             used_hard_link=False,
         )
 
-    hard_link_key = ensure_hard_linked_variant(target_v.base, target_v.quant, models_dir)
+    hard_link_key = ensure_hard_linked_variant(
+        target_v.base, target_v.quant, models_dir
+    )
     return ModelSelection(
         base=target_v.base,
         load_key=hard_link_key,
@@ -559,9 +637,15 @@ def list_all_loaded_models() -> list[LoadedBrief]:
                     item.get("path") or item.get("modelKey") or item.get("model") or ""
                 ).strip()
                 mtype = str(item.get("type") or "").lower()
-                is_emb = mtype == "embedding" or "embed" in model_str.lower() or "embed" in ident.lower()
+                is_emb = (
+                    mtype == "embedding"
+                    or "embed" in model_str.lower()
+                    or "embed" in ident.lower()
+                )
                 seen.add(ident)
-                results.append(LoadedBrief(identifier=ident, model=model_str, is_embedding=is_emb))
+                results.append(
+                    LoadedBrief(identifier=ident, model=model_str, is_embedding=is_emb)
+                )
             if results:
                 return results
     except Exception:
@@ -579,7 +663,9 @@ def list_all_loaded_models() -> list[LoadedBrief]:
             if ident.upper() != "IDENTIFIER" and ident not in seen:
                 is_emb = "embed" in model_str.lower() or "embed" in ident.lower()
                 seen.add(ident)
-                results.append(LoadedBrief(identifier=ident, model=model_str, is_embedding=is_emb))
+                results.append(
+                    LoadedBrief(identifier=ident, model=model_str, is_embedding=is_emb)
+                )
     return results
 
 
@@ -626,11 +712,14 @@ def get_loaded_instance(identifier: str) -> tuple[LoadedInstance | None, str]:
             for item in items:
                 if str(item.get("identifier") or "") == identifier:
                     json_path = str(
-                        item.get("path") or item.get("modelKey") or item.get("model") or ""
+                        item.get("path")
+                        or item.get("modelKey")
+                        or item.get("model")
+                        or ""
                     ).strip()
                     sb = item.get("sizeBytes")
                     if isinstance(sb, (int, float)) and sb > 0:
-                        size_gib = f"{sb / (1024 ** 3):.2f} GiB"
+                        size_gib = f"{sb / (1024**3):.2f} GiB"
                     elif item.get("size"):
                         size_gib = str(item.get("size"))
                     if ctx_len is None and item.get("contextLength"):
@@ -663,10 +752,7 @@ def is_same_model_loaded(
     if loaded is None or not loaded.model_Or_path:
         return False
 
-    if (
-        requested_context is not None
-        and loaded.context_length != requested_context
-    ):
+    if requested_context is not None and loaded.context_length != requested_context:
         return False
 
     path_norm = loaded.model_Or_path.replace("\\", "/").lower()
@@ -698,6 +784,141 @@ def is_same_model_loaded(
     return True
 
 
+def validate_isolated_benchmark_environment(
+    environment: dict[str, str] | None = None,
+) -> Path:
+    """Require all OpenCode config/cache/data/temp paths to stay in a private trial root."""
+    environment = os.environ if environment is None else environment
+    raw_root = environment.get("AGENT_BENCHMARK_RUNTIME_ROOT")
+    if not raw_root:
+        raise RuntimeError(
+            "--require-loaded-model requires AGENT_BENCHMARK_RUNTIME_ROOT"
+        )
+
+    def ordinary(path: Path) -> bool:
+        current = path.expanduser().absolute()
+        while True:
+            if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
+                return False
+            if current.parent == current:
+                return True
+            current = current.parent
+
+    raw_root_path = Path(raw_root).expanduser()
+    if not raw_root_path.is_absolute() or not ordinary(raw_root_path):
+        raise RuntimeError(
+            "benchmark runtime root must be an absolute ordinary directory"
+        )
+    root = raw_root_path.resolve()
+    if root == HOME_DIR.resolve():
+        raise RuntimeError("benchmark runtime root must be distinct from the user home")
+    required = ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "TEMP", "TMP")
+    for name in required:
+        raw_path = environment.get(name)
+        if not raw_path:
+            raise RuntimeError(f"--require-loaded-model requires isolated {name}")
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute() or not ordinary(candidate):
+            raise RuntimeError(
+                f"--require-loaded-model requires an absolute ordinary {name} directory"
+            )
+        path = candidate.resolve()
+        if not path.is_relative_to(root) or path == root:
+            raise RuntimeError(
+                f"--require-loaded-model requires isolated {name} within the benchmark runtime root"
+            )
+        if not path.is_dir():
+            raise RuntimeError(
+                f"--require-loaded-model requires an existing ordinary {name} directory"
+            )
+    return root
+
+
+def opencode_server_working_directory() -> Path:
+    """Keep benchmark OpenCode project context inside its disposable runtime root."""
+    if os.environ.get("AGENT_BENCHMARK_RUNTIME_ROOT"):
+        return validate_isolated_benchmark_environment()
+    return HOME_DIR
+
+
+def build_benchmark_opencode_environment(
+    environment: dict[str, str], *, launcher_pid: int, opencode_port: int | None = None,
+    port_unbound_at: float | None = None,
+) -> dict[str, str]:
+    """Build a private OpenCode process environment without inherited user credentials."""
+    root = validate_isolated_benchmark_environment(environment)
+    private_paths = {
+        "USERPROFILE": root / "home",
+        "HOME": root / "home",
+        "APPDATA": root / "appdata" / "roaming",
+        "LOCALAPPDATA": root / "appdata" / "local",
+        "XDG_STATE_HOME": root / "state",
+        "OPENCODE_CONFIG_DIR": Path(environment["XDG_CONFIG_HOME"]) / "opencode",
+        "OPENCODE_CONFIG": Path(environment["XDG_CONFIG_HOME"])
+        / "opencode"
+        / "opencode.json",
+        "OPENCODE_DATA_DIR": Path(environment["XDG_DATA_HOME"]) / "opencode",
+        "OPENCODE_DB": Path(environment["XDG_DATA_HOME"]) / "opencode" / "opencode.db",
+    }
+    child = dict(environment)
+    for key, path in private_paths.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if key not in {"OPENCODE_CONFIG", "OPENCODE_DB"}:
+            path.mkdir(parents=True, exist_ok=True)
+        if not path.resolve().is_relative_to(root):
+            raise RuntimeError(
+                f"Benchmark OpenCode {key} path escaped the private runtime root"
+            )
+        child[key] = str(path)
+    child["HOMEDRIVE"] = root.drive
+    child["HOMEPATH"] = "\\" + str(root.relative_to(root.anchor))
+    # OpenCode supports an environment-supplied config overlay. It must not
+    # override the disposable config file with inherited user settings.
+    child.pop("OPENCODE_CONFIG_CONTENT", None)
+
+    credential_names = {
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
+        "AZURE_TENANT_ID",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "OPENCODE_SERVER_PASSWORD",
+        "OPENCODE_SERVER_USERNAME",
+    }
+    for name in tuple(child):
+        if (
+            name.endswith("_API_KEY")
+            or name in credential_names
+            or name == "OPENCODE_TEST_HOME"
+        ):
+            child.pop(name, None)
+    child["AGENT_BENCHMARK_LAUNCHER_PID"] = str(launcher_pid)
+    child.pop("AGENT_BENCHMARK_PORT_PROBE_PORT", None)
+    child.pop("AGENT_BENCHMARK_PORT_PROBE_AT", None)
+    if (opencode_port is None) != (port_unbound_at is None):
+        raise ValueError("OpenCode port ownership requires both port and pre-bind timestamp")
+    if opencode_port is not None:
+        if not 1 <= opencode_port <= 65535 or not math.isfinite(float(port_unbound_at)):
+            raise ValueError("Invalid OpenCode port ownership receipt")
+        child["AGENT_BENCHMARK_PORT_PROBE_PORT"] = str(opencode_port)
+        child["AGENT_BENCHMARK_PORT_PROBE_AT"] = str(float(port_unbound_at))
+    return child
+
+
+def verify_benchmark_opencode_port_unbound(port: int) -> float:
+    """Prove a benchmark loopback port was free immediately before server launch."""
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("OpenCode port must be an integer from 1 through 65535")
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", port))
+    except OSError as exc:
+        raise RuntimeError(f"Benchmark OpenCode port {port} is already occupied") from exc
+    return time.time()
+
+
 # ---------------------------------------------------------------------------
 # OpenCode (`opencode.json`), Codex (`config.toml`), & Gemini `agy` Configs
 # ---------------------------------------------------------------------------
@@ -720,7 +941,20 @@ def save_opencode_config(data: dict[str, Any]) -> bool:
     from .setup.runtime_config import refresh_receipt
 
     path = OPENCODE_CONFIG_PATH
-    layout = Layout.discover(HOME_DIR, None, {})
+    runtime_root = os.environ.get("AGENT_BENCHMARK_RUNTIME_ROOT")
+    if runtime_root:
+        root = Path(runtime_root).expanduser().resolve()
+        target = path.expanduser().resolve()
+        if not target.is_relative_to(root):
+            raise RuntimeError(
+                "Benchmark runtime config path escaped AGENT_BENCHMARK_RUNTIME_ROOT"
+            )
+        # Keep the installer lock and receipt state inside the disposable runtime home.
+        layout = Layout(root, root / "state", root / "codex", path.parent)
+        receipt_home = root
+    else:
+        layout = Layout.discover(HOME_DIR, None, {})
+        receipt_home = HOME_DIR
     with install_lock(layout):
         before_text = path.read_text(encoding="utf-8-sig") if path.is_file() else "{}\n"
         before = loads(before_text)
@@ -728,7 +962,7 @@ def save_opencode_config(data: dict[str, Any]) -> bool:
             return False
         after_text = update(before_text, before, data)
         atomic_write(path, after_text.encode("utf-8"))
-        refresh_receipt(path, HOME_DIR, before_text)
+        refresh_receipt(path, receipt_home, before_text)
         return True
 
 
@@ -755,15 +989,21 @@ def validate_model_limits(context: Any, output: Any) -> tuple[int, int]:
     return context, output
 
 
-def get_model_limits(cfg: dict[str, Any], nickname: str) -> tuple[int | None, int | None]:
+def get_model_limits(
+    cfg: dict[str, Any], nickname: str
+) -> tuple[int | None, int | None]:
     model = get_configured_models_map(cfg).get(nickname)
     limit = model.get("limit") if isinstance(model, dict) else None
     if not isinstance(limit, dict):
         return None, None
     context, output = limit.get("context"), limit.get("output")
     return (
-        context if isinstance(context, int) and not isinstance(context, bool) and context > 0 else None,
-        output if isinstance(output, int) and not isinstance(output, bool) and output > 0 else None,
+        context
+        if isinstance(context, int) and not isinstance(context, bool) and context > 0
+        else None,
+        output
+        if isinstance(output, int) and not isinstance(output, bool) and output > 0
+        else None,
     )
 
 
@@ -796,18 +1036,31 @@ def resolve_run_limits(
 
     configured = get_configured_models_map(cfg).get(nickname)
     existing_limit = configured.get("limit") if isinstance(configured, dict) else None
-    if existing_limit is not None and not isinstance(existing_limit, dict) and not overwrite:
-        raise RuntimeError(f"Model '{nickname}' has incompatible OpenCode limit metadata.")
+    if (
+        existing_limit is not None
+        and not isinstance(existing_limit, dict)
+        and not overwrite
+    ):
+        raise RuntimeError(
+            f"Model '{nickname}' has incompatible OpenCode limit metadata."
+        )
     if isinstance(existing_limit, dict):
         for key, requested in (("context", context), ("output", output)):
             current = existing_limit.get(key)
-            if requested is not None and current is not None and current != requested and not overwrite:
+            if (
+                requested is not None
+                and current is not None
+                and current != requested
+                and not overwrite
+            ):
                 raise RuntimeError(
                     f"OpenCode model limit conflict for '{nickname}.{key}': configured {current}, "
                     f"requested {requested}. Pass --update-model-limits to correct it explicitly."
                 )
             if key in existing_limit and (
-                isinstance(current, bool) or not isinstance(current, int) or current <= 0
+                isinstance(current, bool)
+                or not isinstance(current, int)
+                or current <= 0
             ):
                 if not overwrite:
                     raise RuntimeError(
@@ -848,11 +1101,15 @@ def normalize_inference_url(inference_url: str | None = None) -> str:
     except ValueError:
         is_loopback = hostname == "localhost"
     if is_loopback and port == DEFAULT_LMS_PORT:
-        raise ValueError("Inference URL cannot point directly to the LM Studio control port 1234")
+        raise ValueError(
+            "Inference URL cannot point directly to the LM Studio control port 1234"
+        )
     path = parsed.path.rstrip("/")
     if not path.endswith("/v1"):
         path += "/v1"
-    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
+    )
 
 
 def validate_opencode_provider_config(
@@ -866,14 +1123,20 @@ def validate_opencode_provider_config(
     """Reject incompatible explicit provider data before a run changes runtime state."""
     providers = cfg.get("provider")
     if providers is not None and not isinstance(providers, dict):
-        raise RuntimeError("OpenCode provider configuration is not an object; reconcile it before running.")
+        raise RuntimeError(
+            "OpenCode provider configuration is not an object; reconcile it before running."
+        )
     provider = providers.get(PROVIDER_ID) if isinstance(providers, dict) else None
     if provider is not None and not isinstance(provider, dict):
-        raise RuntimeError(f"OpenCode provider '{PROVIDER_ID}' is not an object; reconcile it before running.")
+        raise RuntimeError(
+            f"OpenCode provider '{PROVIDER_ID}' is not an object; reconcile it before running."
+        )
     if isinstance(provider, dict):
         options = provider.get("options")
         if options is not None and not isinstance(options, dict):
-            raise RuntimeError(f"OpenCode provider '{PROVIDER_ID}' options are not an object; reconcile them first.")
+            raise RuntimeError(
+                f"OpenCode provider '{PROVIDER_ID}' options are not an object; reconcile them first."
+            )
         expected = {
             "npm": "@ai-sdk/openai-compatible",
             "baseURL": normalize_inference_url(inference_url),
@@ -883,7 +1146,11 @@ def validate_opencode_provider_config(
             values["baseURL"] = options.get("baseURL")
         for key, wanted in expected.items():
             current = values.get(key)
-            is_explicit = key in provider if key == "npm" else isinstance(options, dict) and key in options
+            is_explicit = (
+                key in provider
+                if key == "npm"
+                else isinstance(options, dict) and key in options
+            )
             if is_explicit and current != wanted and not overwrite:
                 raise RuntimeError(
                     f"OpenCode provider '{PROVIDER_ID}' {key} conflicts with the configured inference route; "
@@ -891,10 +1158,14 @@ def validate_opencode_provider_config(
                 )
         models = provider.get("models")
         if models is not None and not isinstance(models, dict):
-            raise RuntimeError(f"OpenCode provider '{PROVIDER_ID}' models are not an object; reconcile them first.")
+            raise RuntimeError(
+                f"OpenCode provider '{PROVIDER_ID}' models are not an object; reconcile them first."
+            )
         alias = models.get(nickname) if isinstance(models, dict) else None
         if alias is not None and not isinstance(alias, dict):
-            raise RuntimeError(f"OpenCode alias '{nickname}' is not an object; reconcile it before running.")
+            raise RuntimeError(
+                f"OpenCode alias '{nickname}' is not an object; reconcile it before running."
+            )
 
 
 def configure_opencode_inference_route(
@@ -907,7 +1178,9 @@ def configure_opencode_inference_route(
 ) -> str:
     """Validate and install the protected provider endpoint without changing LM Studio control routing."""
     provider_url = normalize_inference_url(inference_url)
-    validate_opencode_provider_config(cfg, nickname, lms_port, inference_url=provider_url, overwrite=overwrite)
+    validate_opencode_provider_config(
+        cfg, nickname, lms_port, inference_url=provider_url, overwrite=overwrite
+    )
     providers = cfg.setdefault("provider", {})
     provider = providers.setdefault(PROVIDER_ID, {})
     if overwrite:
@@ -952,7 +1225,9 @@ def update_opencode_for_model(
     cfg = load_opencode_config()
     if context_limit is not None and output_limit is not None:
         validate_model_limits(context_limit, output_limit)
-    configure_opencode_inference_route(cfg, nickname, lms_port, inference_url, overwrite=overwrite_provider)
+    configure_opencode_inference_route(
+        cfg, nickname, lms_port, inference_url, overwrite=overwrite_provider
+    )
     if "$schema" not in cfg:
         cfg["$schema"] = "https://opencode.ai/config.json"
     lms_prov = cfg["provider"][PROVIDER_ID]
@@ -991,7 +1266,11 @@ def update_opencode_for_model(
         next_limit.update(requested_limit)
         if next_limit != current_limit:
             model["limit"] = next_limit
-    elif not isinstance(model.get("limit"), dict) or not model["limit"].get("context") or not model["limit"].get("output"):
+    elif (
+        not isinstance(model.get("limit"), dict)
+        or not model["limit"].get("context")
+        or not model["limit"].get("output")
+    ):
         print_warn(
             f"OpenCode model '{nickname}' has no complete positive context/output limits; "
             "use --output-tokens to configure them."
@@ -1021,16 +1300,26 @@ def verify_model_configuration(
     diagnostics: list[str] = []
     warnings: list[str] = []
     if not isinstance(model, dict):
-        diagnostics.append(f"OpenCode alias '{nickname}' is not configured under provider.{PROVIDER_ID}.models.")
+        diagnostics.append(
+            f"OpenCode alias '{nickname}' is not configured under provider.{PROVIDER_ID}.models."
+        )
     if active_model != expected_model:
-        diagnostics.append(f"Configured active model is '{active_model or 'unset'}', expected '{expected_model}'.")
-    provider = cfg.get("provider", {}).get(PROVIDER_ID, {}) if isinstance(cfg.get("provider"), dict) else {}
+        diagnostics.append(
+            f"Configured active model is '{active_model or 'unset'}', expected '{expected_model}'."
+        )
+    provider = (
+        cfg.get("provider", {}).get(PROVIDER_ID, {})
+        if isinstance(cfg.get("provider"), dict)
+        else {}
+    )
     options = provider.get("options", {}) if isinstance(provider, dict) else {}
     base_url = options.get("baseURL") if isinstance(options, dict) else None
     provider_npm = provider.get("npm") if isinstance(provider, dict) else None
     expected_base = normalize_inference_url(inference_url)
     if base_url != expected_base:
-        diagnostics.append(f"Configured inference baseURL is '{base_url or 'unset'}', expected '{expected_base}'.")
+        diagnostics.append(
+            f"Configured inference baseURL is '{base_url or 'unset'}', expected '{expected_base}'."
+        )
     if provider_npm != "@ai-sdk/openai-compatible":
         diagnostics.append(
             f"Configured LM Studio provider package is '{provider_npm or 'unset'}', expected '@ai-sdk/openai-compatible'."
@@ -1041,42 +1330,86 @@ def verify_model_configuration(
             f"OpenCode alias '{nickname}' has absent or invalid limit.context/limit.output metadata."
         )
     elif configured_output >= configured_context:
-        diagnostics.append("Configured OpenCode output limit is not less than context limit.")
+        diagnostics.append(
+            "Configured OpenCode output limit is not less than context limit."
+        )
 
-    target_context = expected_context if expected_context is not None else configured_context
-    target_output = expected_output if expected_output is not None else configured_output
+    target_context = (
+        expected_context if expected_context is not None else configured_context
+    )
+    target_output = (
+        expected_output if expected_output is not None else configured_output
+    )
     if expected_context is not None and configured_context != expected_context:
-        diagnostics.append(f"Configured context {configured_context} does not match requested {expected_context}.")
+        diagnostics.append(
+            f"Configured context {configured_context} does not match requested {expected_context}."
+        )
     if expected_output is not None and configured_output != expected_output:
-        diagnostics.append(f"Configured output {configured_output} does not match requested {expected_output}.")
+        diagnostics.append(
+            f"Configured output {configured_output} does not match requested {expected_output}."
+        )
 
     query = f"?{urlencode({'directory': directory})}" if directory else ""
     opencode_url = f"http://127.0.0.1:{opencode_port}"
     effective_config = http_get_json(f"{opencode_url}/config{query}")
     effective_catalog = http_get_json(f"{opencode_url}/config/providers{query}")
-    effective_model = effective_config.get("model") if isinstance(effective_config, dict) else None
+    effective_model = (
+        effective_config.get("model") if isinstance(effective_config, dict) else None
+    )
     effective_provider = None
     effective_entry = None
     if isinstance(effective_catalog, dict):
         providers = effective_catalog.get("providers") or []
         effective_provider = next(
-            (item for item in providers if isinstance(item, dict) and item.get("id") == PROVIDER_ID), None
+            (
+                item
+                for item in providers
+                if isinstance(item, dict) and item.get("id") == PROVIDER_ID
+            ),
+            None,
         )
-        models = effective_provider.get("models", {}) if isinstance(effective_provider, dict) else {}
+        models = (
+            effective_provider.get("models", {})
+            if isinstance(effective_provider, dict)
+            else {}
+        )
         effective_entry = models.get(nickname) if isinstance(models, dict) else None
-    api_reachable = isinstance(effective_config, dict) and isinstance(effective_catalog, dict)
-    effective_limit = effective_entry.get("limit") if isinstance(effective_entry, dict) else None
-    effective_context = effective_limit.get("context") if isinstance(effective_limit, dict) else None
-    effective_output = effective_limit.get("output") if isinstance(effective_limit, dict) else None
-    effective_context = effective_context if isinstance(effective_context, int) and not isinstance(effective_context, bool) else None
-    effective_output = effective_output if isinstance(effective_output, int) and not isinstance(effective_output, bool) else None
+    api_reachable = isinstance(effective_config, dict) and isinstance(
+        effective_catalog, dict
+    )
+    effective_limit = (
+        effective_entry.get("limit") if isinstance(effective_entry, dict) else None
+    )
+    effective_context = (
+        effective_limit.get("context") if isinstance(effective_limit, dict) else None
+    )
+    effective_output = (
+        effective_limit.get("output") if isinstance(effective_limit, dict) else None
+    )
+    effective_context = (
+        effective_context
+        if isinstance(effective_context, int)
+        and not isinstance(effective_context, bool)
+        else None
+    )
+    effective_output = (
+        effective_output
+        if isinstance(effective_output, int) and not isinstance(effective_output, bool)
+        else None
+    )
     if api_reachable:
         if effective_model != expected_model:
-            diagnostics.append(f"Effective OpenCode model is '{effective_model or 'unset'}', expected '{expected_model}'.")
+            diagnostics.append(
+                f"Effective OpenCode model is '{effective_model or 'unset'}', expected '{expected_model}'."
+            )
         if effective_provider is None or effective_entry is None:
-            diagnostics.append(f"Effective OpenCode provider/model '{expected_model}' is not resolved.")
+            diagnostics.append(
+                f"Effective OpenCode provider/model '{expected_model}' is not resolved."
+            )
         if effective_context is None or effective_output is None:
-            diagnostics.append("Effective OpenCode limit.context/limit.output metadata is absent or invalid.")
+            diagnostics.append(
+                "Effective OpenCode limit.context/limit.output metadata is absent or invalid."
+            )
         else:
             if target_context is not None and effective_context != target_context:
                 diagnostics.append(
@@ -1086,34 +1419,61 @@ def verify_model_configuration(
                 diagnostics.append(
                     f"Effective OpenCode output {effective_output} does not match expected {target_output}."
                 )
-        effective_options = effective_provider.get("options", {}) if isinstance(effective_provider, dict) else {}
-        effective_base = effective_options.get("baseURL") if isinstance(effective_options, dict) else None
+        effective_options = (
+            effective_provider.get("options", {})
+            if isinstance(effective_provider, dict)
+            else {}
+        )
+        effective_base = (
+            effective_options.get("baseURL")
+            if isinstance(effective_options, dict)
+            else None
+        )
         if effective_base != expected_base:
-            diagnostics.append(f"Effective OpenCode provider baseURL is '{effective_base}', expected '{expected_base}'.")
-        if effective_context != configured_context or effective_output != configured_output:
+            diagnostics.append(
+                f"Effective OpenCode provider baseURL is '{effective_base}', expected '{expected_base}'."
+            )
+        if (
+            effective_context != configured_context
+            or effective_output != configured_output
+        ):
             diagnostics.append(
                 "Effective OpenCode limits do not match the static alias metadata "
                 f"(effective {effective_context}/{effective_output}, configured {configured_context}/{configured_output})."
             )
         if expected_context is not None and effective_context != expected_context:
-            diagnostics.append(f"Effective OpenCode context {effective_context} does not match requested {expected_context}.")
+            diagnostics.append(
+                f"Effective OpenCode context {effective_context} does not match requested {expected_context}."
+            )
         if expected_output is not None and effective_output != expected_output:
-            diagnostics.append(f"Effective OpenCode output {effective_output} does not match requested {expected_output}.")
+            diagnostics.append(
+                f"Effective OpenCode output {effective_output} does not match requested {expected_output}."
+            )
     else:
-        warnings.append("OpenCode API is offline or unavailable; effective limits are unknown, static verification only.")
+        warnings.append(
+            "OpenCode API is offline or unavailable; effective limits are unknown, static verification only."
+        )
 
     loaded: LoadedInstance | None = None
     try:
         loaded, _ = get_loaded_instance(nickname)
     except (OSError, RuntimeError, ValueError):
-        warnings.append("LM Studio loaded state could not be queried; loaded capacity is unknown.")
+        warnings.append(
+            "LM Studio loaded state could not be queried; loaded capacity is unknown."
+        )
     loaded_context = loaded.context_length if loaded is not None else None
     if loaded is None:
-        warnings.append(f"LM Studio does not report alias '{nickname}' as loaded; loaded capacity is unknown.")
+        warnings.append(
+            f"LM Studio does not report alias '{nickname}' as loaded; loaded capacity is unknown."
+        )
     elif loaded_context is None:
-        warnings.append(f"LM Studio reports '{nickname}' loaded but does not report its context; loaded capacity is unknown.")
+        warnings.append(
+            f"LM Studio reports '{nickname}' loaded but does not report its context; loaded capacity is unknown."
+        )
     elif target_context is not None and loaded_context != target_context:
-        diagnostics.append(f"LM Studio loaded context {loaded_context} does not match requested/configured context {target_context}.")
+        diagnostics.append(
+            f"LM Studio loaded context {loaded_context} does not match requested/configured context {target_context}."
+        )
 
     return {
         "status": "mismatch" if diagnostics else "ok",
@@ -1132,7 +1492,9 @@ def verify_model_configuration(
         "effective_opencode": {
             "reachable": api_reachable,
             "model": effective_model,
-            "provider": effective_provider.get("id") if isinstance(effective_provider, dict) else None,
+            "provider": effective_provider.get("id")
+            if isinstance(effective_provider, dict)
+            else None,
             "alias": nickname if isinstance(effective_entry, dict) else None,
             "context": effective_context,
             "output": effective_output,
@@ -1162,6 +1524,7 @@ def build_bridge_env(nickname: str, opencode_port: int) -> dict[str, str]:
 def update_codex_mcp_toml(nickname: str, opencode_port: int) -> bool:
     """Update bridge fields while preserving unrelated TOML and extra options."""
     from .setup.runtime_config import save_codex
+
     return save_codex(CODEX_CONFIG_PATH, nickname, opencode_port, HOME_DIR)
 
 
@@ -1197,7 +1560,9 @@ def _update_single_agy_mcp_file(path: Path, nickname: str, opencode_port: int) -
     entry = data["mcpServers"].setdefault(BRIDGE_NAME, {})
     if not isinstance(entry, dict):
         raise RuntimeError("Existing bridge configuration must be an object")
-    entry.update({"command": npx_cmd, "args": ["-y", BRIDGE_PACKAGE], "disabled": False})
+    entry.update(
+        {"command": npx_cmd, "args": ["-y", BRIDGE_PACKAGE], "disabled": False}
+    )
     if not isinstance(entry.get("env", {}), dict):
         raise RuntimeError("Existing bridge env must be an object")
     entry.setdefault("env", {}).update(build_bridge_env(nickname, opencode_port))
@@ -1220,7 +1585,11 @@ def _ensure_agy_cli_permission_allow() -> bool:
         perms["allow"] = allow_list
 
     rule = f"mcp({BRIDGE_NAME}/*)"
-    if rule not in allow_list and f"mcp({BRIDGE_NAME})" not in allow_list and "mcp(*)" not in allow_list:
+    if (
+        rule not in allow_list
+        and f"mcp({BRIDGE_NAME})" not in allow_list
+        and "mcp(*)" not in allow_list
+    ):
         allow_list.append(rule)
 
     return save_json_file_atomic(AGY_CLI_SETTINGS_PATH, settings)
@@ -1246,13 +1615,19 @@ def _ensure_agy_global_config_permission_allow() -> bool:
         grants["allow"] = allow_list
 
     rule = f"mcp({BRIDGE_NAME}/*)"
-    if rule not in allow_list and f"mcp({BRIDGE_NAME})" not in allow_list and "mcp(*)" not in allow_list:
+    if (
+        rule not in allow_list
+        and f"mcp({BRIDGE_NAME})" not in allow_list
+        and "mcp(*)" not in allow_list
+    ):
         allow_list.append(rule)
 
     return save_json_file_atomic(AGY_GLOBAL_CONFIG_PATH, cfg)
 
 
-def update_agy_mcp_configs(nickname: str, opencode_port: int) -> tuple[bool, list[Path]]:
+def update_agy_mcp_configs(
+    nickname: str, opencode_port: int
+) -> tuple[bool, list[Path]]:
     """
     Updates both:
       1. ~/.gemini/config/mcp_config.json (shared global config for AGY 1.1+, AGY IDE, AGY App)
@@ -1286,11 +1661,15 @@ def remove_agy_mcp_configs() -> None:
         if isinstance(perms, dict) and isinstance(perms.get("allow"), list):
             before_len = len(perms["allow"])
             perms["allow"] = [
-                r for r in perms["allow"] if r not in (f"mcp({BRIDGE_NAME}/*)", f"mcp({BRIDGE_NAME})")
+                r
+                for r in perms["allow"]
+                if r not in (f"mcp({BRIDGE_NAME}/*)", f"mcp({BRIDGE_NAME})")
             ]
             if len(perms["allow"]) != before_len:
                 save_json_file_atomic(AGY_CLI_SETTINGS_PATH, settings)
-                print_ok(f"Removed 'mcp({BRIDGE_NAME}/*)' permission rule from {AGY_CLI_SETTINGS_PATH}")
+                print_ok(
+                    f"Removed 'mcp({BRIDGE_NAME}/*)' permission rule from {AGY_CLI_SETTINGS_PATH}"
+                )
 
     if AGY_GLOBAL_CONFIG_PATH.is_file():
         cfg = load_json_file(AGY_GLOBAL_CONFIG_PATH)
@@ -1298,7 +1677,9 @@ def remove_agy_mcp_configs() -> None:
         if isinstance(grants, dict) and isinstance(grants.get("allow"), list):
             before_len = len(grants["allow"])
             grants["allow"] = [
-                r for r in grants["allow"] if r not in (f"mcp({BRIDGE_NAME}/*)", f"mcp({BRIDGE_NAME})")
+                r
+                for r in grants["allow"]
+                if r not in (f"mcp({BRIDGE_NAME}/*)", f"mcp({BRIDGE_NAME})")
             ]
             if len(grants["allow"]) != before_len:
                 save_json_file_atomic(AGY_GLOBAL_CONFIG_PATH, cfg)
@@ -1326,10 +1707,14 @@ def handle_delete_model(
     cfg = load_opencode_config()
     models_map = get_configured_models_map(cfg)
     if nickname not in models_map:
-        raise RuntimeError(f"Nickname '{nickname}' does not exist in {OPENCODE_CONFIG_PATH}.")
+        raise RuntimeError(
+            f"Nickname '{nickname}' does not exist in {OPENCODE_CONFIG_PATH}."
+        )
 
     remaining = [name for name in models_map if name != nickname]
-    switches_active = cfg.get("model") == f"{PROVIDER_ID}/{nickname}" and bool(remaining)
+    switches_active = cfg.get("model") == f"{PROVIDER_ID}/{nickname}" and bool(
+        remaining
+    )
     if switches_active:
         configure_opencode_inference_route(
             cfg, remaining[0], lms_port, inference_url, overwrite=overwrite_provider
@@ -1337,7 +1722,9 @@ def handle_delete_model(
 
     loaded, _ = get_loaded_instance(nickname)
     if loaded is not None:
-        print_work(f"Unloading '{nickname}' from LM Studio memory (`lms unload {nickname}`)...")
+        print_work(
+            f"Unloading '{nickname}' from LM Studio memory (`lms unload {nickname}`)..."
+        )
         run_cmd(["lms", "unload", nickname], check=False)
         print_ok(f"Unloaded '{nickname}' from LM Studio memory.")
     else:
@@ -1348,10 +1735,16 @@ def handle_delete_model(
         models_map = get_configured_models_map(cfg)
         if nickname in models_map:
             remaining = [name for name in models_map if name != nickname]
-            switches_active = cfg.get("model") == f"{PROVIDER_ID}/{nickname}" and bool(remaining)
+            switches_active = cfg.get("model") == f"{PROVIDER_ID}/{nickname}" and bool(
+                remaining
+            )
             if switches_active:
                 configure_opencode_inference_route(
-                    cfg, remaining[0], lms_port, inference_url, overwrite=overwrite_provider
+                    cfg,
+                    remaining[0],
+                    lms_port,
+                    inference_url,
+                    overwrite=overwrite_provider,
                 )
             del models_map[nickname]
             print_ok(f"Removed '{nickname}' from {OPENCODE_CONFIG_PATH}")
@@ -1363,11 +1756,15 @@ def handle_delete_model(
             if cfg.get("model") == f"{PROVIDER_ID}/{nickname}":
                 next_nick = remaining[0]
                 cfg["model"] = f"{PROVIDER_ID}/{next_nick}"
-                print_info(f"Switched active OpenCode model to '{PROVIDER_ID}/{next_nick}'")
+                print_info(
+                    f"Switched active OpenCode model to '{PROVIDER_ID}/{next_nick}'"
+                )
                 save_opencode_config(cfg)
                 update_codex_mcp_toml(next_nick, opencode_port)
                 update_agy_mcp_configs(next_nick, opencode_port)
-                print_ok(f"Updated Codex & Gemini `agy` MCP '{BRIDGE_NAME}' default model to '{next_nick}'")
+                print_ok(
+                    f"Updated Codex & Gemini `agy` MCP '{BRIDGE_NAME}' default model to '{next_nick}'"
+                )
             else:
                 save_opencode_config(cfg)
         else:
@@ -1381,8 +1778,11 @@ def handle_delete_model(
 
             if CODEX_CONFIG_PATH.is_file():
                 from .setup.runtime_config import remove_codex_bridge
+
                 remove_codex_bridge(CODEX_CONFIG_PATH, HOME_DIR)
-                print_ok(f"Removed '[mcp_servers.{BRIDGE_NAME}]' from {CODEX_CONFIG_PATH}")
+                print_ok(
+                    f"Removed '[mcp_servers.{BRIDGE_NAME}]' from {CODEX_CONFIG_PATH}"
+                )
 
             remove_agy_mcp_configs()
     else:
@@ -1409,7 +1809,9 @@ def handle_rename_model(
             f"Nickname '{old_nick}' does not exist in {OPENCODE_CONFIG_PATH}."
         )
     if new_nick in models_map:
-        raise RuntimeError(f"Nickname '{new_nick}' already exists; choose an unused nickname.")
+        raise RuntimeError(
+            f"Nickname '{new_nick}' already exists; choose an unused nickname."
+        )
 
     was_active = cfg.get("model") == f"{PROVIDER_ID}/{old_nick}"
     if was_active:
@@ -1434,14 +1836,20 @@ def handle_rename_model(
 
     if was_active:
         update_codex_mcp_toml(new_nick, opencode_port)
-        print_ok(f"Updated Codex MCP '{BRIDGE_NAME}' default model to '{new_nick}' in {CODEX_CONFIG_PATH}")
+        print_ok(
+            f"Updated Codex MCP '{BRIDGE_NAME}' default model to '{new_nick}' in {CODEX_CONFIG_PATH}"
+        )
         update_agy_mcp_configs(new_nick, opencode_port)
-        print_ok(f"Updated Gemini `agy` MCP '{BRIDGE_NAME}' default model to '{new_nick}'")
+        print_ok(
+            f"Updated Gemini `agy` MCP '{BRIDGE_NAME}' default model to '{new_nick}'"
+        )
 
     if loaded is not None:
         spec = extract_model_spec_from_opencode(cfg, new_nick) or loaded.model_Or_path
         ctx = loaded.context_length
-        print_work(f"Unloading old identifier '{old_nick}' and reloading as '{new_nick}'...")
+        print_work(
+            f"Unloading old identifier '{old_nick}' and reloading as '{new_nick}'..."
+        )
         run_cmd(["lms", "unload", old_nick], check=False)
         sel = resolve_model_selection(spec)
         run_cmd(
@@ -1488,22 +1896,34 @@ def handle_ls_command() -> None:
         else:
             for nick, meta in models_map.items():
                 is_active = active_model == f"{PROVIDER_ID}/{nick}"
-                marker = f"{Style.GREEN}* [ACTIVE]{Style.RESET}" if is_active else "          "
+                marker = (
+                    f"{Style.GREEN}* [ACTIVE]{Style.RESET}"
+                    if is_active
+                    else "          "
+                )
                 desc = meta.get("name") if isinstance(meta, dict) else str(meta)
                 print(f"    {marker} {Style.BOLD}{nick:<18}{Style.RESET} -> {desc}")
 
     print_header("Codex & Gemini `agy` MCP Bridge Status...")
     if CODEX_CONFIG_PATH.is_file():
         try:
-            parsed = tomllib.loads(CODEX_CONFIG_PATH.read_text(encoding="utf-8", errors="replace"))
+            parsed = tomllib.loads(
+                CODEX_CONFIG_PATH.read_text(encoding="utf-8", errors="replace")
+            )
             bridge = (parsed.get("mcp_servers") or {}).get(BRIDGE_NAME)
-            if bridge and bridge.get('enabled', True):
+            if bridge and bridge.get("enabled", True):
                 env_model = (bridge.get("env") or {}).get("OPENCODE_DEFAULT_MODEL", "?")
-                print_ok(f"Codex MCP ({CODEX_CONFIG_PATH}) : '{BRIDGE_NAME}' enabled (model: '{env_model}')")
+                print_ok(
+                    f"Codex MCP ({CODEX_CONFIG_PATH}) : '{BRIDGE_NAME}' enabled (model: '{env_model}')"
+                )
             elif bridge:
-                print_info(f"Codex MCP ({CODEX_CONFIG_PATH}) : '{BRIDGE_NAME}' disabled")
+                print_info(
+                    f"Codex MCP ({CODEX_CONFIG_PATH}) : '{BRIDGE_NAME}' disabled"
+                )
             else:
-                print_info(f"Codex MCP ({CODEX_CONFIG_PATH}) : '{BRIDGE_NAME}' not configured")
+                print_info(
+                    f"Codex MCP ({CODEX_CONFIG_PATH}) : '{BRIDGE_NAME}' not configured"
+                )
         except Exception:
             print_warn(f"Could not parse {CODEX_CONFIG_PATH}")
     else:
@@ -1515,9 +1935,13 @@ def handle_ls_command() -> None:
             srv = (data.get("mcpServers") or {}).get(BRIDGE_NAME)
             if isinstance(srv, dict) and not srv.get("disabled", False):
                 env_model = (srv.get("env") or {}).get("OPENCODE_DEFAULT_MODEL", "?")
-                print_ok(f"Gemini `agy` MCP ({agy_path}) : '{BRIDGE_NAME}' enabled (model: '{env_model}')")
+                print_ok(
+                    f"Gemini `agy` MCP ({agy_path}) : '{BRIDGE_NAME}' enabled (model: '{env_model}')"
+                )
             else:
-                print_info(f"Gemini `agy` MCP ({agy_path}) : '{BRIDGE_NAME}' not configured")
+                print_info(
+                    f"Gemini `agy` MCP ({agy_path}) : '{BRIDGE_NAME}' not configured"
+                )
         else:
             print_info(f"Gemini `agy` MCP config not found at {agy_path}")
 
@@ -1570,17 +1994,61 @@ def show_recommended_settings(context_length: int) -> None:
         else "F16 initially (100% baseline quality)"
     )
     rows = [
-        ("Model Quantization", "Q4_K_M initially; test Q6_K", "Q6_K (~21.75 GiB) improves coding accuracy if headroom permits"),
-        ("GPU Offload", "Max (--gpu max)", "Keeps all layers resident in RTX 5090 32 GB VRAM"),
-        ("Context Length", f"{context_length} tokens", "32,768 baseline; test 65,536 or 131,072 with Q8_0 KV cache"),
-        ("Flash Attention", "Enabled (GUI)", "Improves speed and reduces KV cache memory overhead"),
-        ("KV Cache Offload", "GPU (GUI)", "Avoids PCIe CPU memory transfer bottlenecks"),
-        ("K-Cache / V-Cache Type", kv_rec, "Avoid KV compression until scaling context to 64K/128K"),
-        ("Enable Thinking", "On (GUI default)", "Crucial for multi-step coding and autonomous planning"),
-        ("Reasoning Effort", "xhigh initially", "Qwen3.8 default; benchmark against 'medium' for latency"),
-        ("Preserve Thinking", "On (GUI default)", "Maintains multi-turn reasoning continuity across tool calls"),
-        ("Concurrent Requests", "1 initially", "Prevents VRAM spikes and contention during agent runs"),
-        ("MTP / Speculative Dec.", "Off initially", "Avoids baseline complexity before benchmarking"),
+        (
+            "Model Quantization",
+            "Q4_K_M initially; test Q6_K",
+            "Q6_K (~21.75 GiB) improves coding accuracy if headroom permits",
+        ),
+        (
+            "GPU Offload",
+            "Max (--gpu max)",
+            "Keeps all layers resident in RTX 5090 32 GB VRAM",
+        ),
+        (
+            "Context Length",
+            f"{context_length} tokens",
+            "32,768 baseline; test 65,536 or 131,072 with Q8_0 KV cache",
+        ),
+        (
+            "Flash Attention",
+            "Enabled (GUI)",
+            "Improves speed and reduces KV cache memory overhead",
+        ),
+        (
+            "KV Cache Offload",
+            "GPU (GUI)",
+            "Avoids PCIe CPU memory transfer bottlenecks",
+        ),
+        (
+            "K-Cache / V-Cache Type",
+            kv_rec,
+            "Avoid KV compression until scaling context to 64K/128K",
+        ),
+        (
+            "Enable Thinking",
+            "On (GUI default)",
+            "Crucial for multi-step coding and autonomous planning",
+        ),
+        (
+            "Reasoning Effort",
+            "xhigh initially",
+            "Qwen3.8 default; benchmark against 'medium' for latency",
+        ),
+        (
+            "Preserve Thinking",
+            "On (GUI default)",
+            "Maintains multi-turn reasoning continuity across tool calls",
+        ),
+        (
+            "Concurrent Requests",
+            "1 initially",
+            "Prevents VRAM spikes and contention during agent runs",
+        ),
+        (
+            "MTP / Speculative Dec.",
+            "Off initially",
+            "Avoids baseline complexity before benchmarking",
+        ),
     ]
     print(f"    {'Setting':<24} {'Recommendation':<38} {'Why'}")
     print(f"    {'-' * 24} {'-' * 38} {'-' * 60}")
@@ -1615,7 +2083,9 @@ def ensure_lms_http_server(lms_port: int, nickname: str) -> str:
 
     api = wait_http_json(f"{lms_url}/v1/models", max_seconds=30, label="LM Studio API")
     if not api:
-        raise RuntimeError(f"LM Studio API failed readiness check at {lms_url}/v1/models.")
+        raise RuntimeError(
+            f"LM Studio API failed readiness check at {lms_url}/v1/models."
+        )
 
     model_ids = [str(m.get("id") or "") for m in (api.get("data") or [])]
     if nickname not in model_ids:
@@ -1624,7 +2094,9 @@ def ensure_lms_http_server(lms_port: int, nickname: str) -> str:
         )
 
     state_label = "Already running" if was_running else "Started and running"
-    print_ok(f"LM Studio HTTP API : {state_label} at {lms_url} (advertising '{nickname}')")
+    print_ok(
+        f"LM Studio HTTP API : {state_label} at {lms_url} (advertising '{nickname}')"
+    )
     return state_label
 
 
@@ -1640,7 +2112,10 @@ def verify_opencode_provider(
         return False, "/config endpoint unavailable"
     expected_model = f"{PROVIDER_ID}/{nickname}"
     if cfg.get("model") != expected_model:
-        return False, f"server active model is '{cfg.get('model')}', expected '{expected_model}'"
+        return (
+            False,
+            f"server active model is '{cfg.get('model')}', expected '{expected_model}'",
+        )
 
     catalog = http_get_json(f"{opencode_url}/config/providers")
     if not catalog:
@@ -1654,12 +2129,19 @@ def verify_opencode_provider(
     expected_base = normalize_inference_url(inference_url)
     if effective_base != expected_base:
         configured_base = effective_base or "unset"
-        return False, f"provider baseURL is '{configured_base}', expected '{expected_base}'"
+        return (
+            False,
+            f"provider baseURL is '{configured_base}', expected '{expected_base}'",
+        )
     models = lm_prov.get("models") or {}
     if nickname not in models:
         return False, f"nickname '{nickname}' not listed in OpenCode provider models"
     if context_limit is not None and output_limit is not None:
-        limit = models[nickname].get("limit") if isinstance(models[nickname], dict) else None
+        limit = (
+            models[nickname].get("limit")
+            if isinstance(models[nickname], dict)
+            else None
+        )
         if not isinstance(limit, dict):
             return False, f"OpenCode provider model '{nickname}' has no resolved limits"
         if limit.get("context") != context_limit or limit.get("output") != output_limit:
@@ -1671,18 +2153,60 @@ def verify_opencode_provider(
 
 
 def stop_process_on_port_windows(port: int) -> bool:
+    """Deprecated no-op: a port observation is not process ownership evidence.
+
+    Kept as a compatibility symbol for callers that used the old helper. Owned
+    OpenCode servers must be stopped through their retained ``Popen`` handle.
+    """
+    return False
+
+
+def _resolve_opencode_server_executable() -> str:
+    """Resolve a directly launchable OpenCode binary, never a shell shim on Windows."""
     if os.name != "nt":
+        return resolve_executable("opencode") or "opencode"
+
+    executable = resolve_executable("opencode.exe")
+    if executable:
+        return executable
+    shim = resolve_executable("opencode")
+    if shim is None:
+        raise RuntimeError("OpenCode executable was not found on PATH")
+    if Path(shim).suffix.casefold() in {".cmd", ".bat", ".ps1"}:
+        npm_target = Path(shim).parent / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
+        if npm_target.is_file():
+            return str(npm_target)
+        raise RuntimeError(
+            "OpenCode resolves to a command shim that cannot safely launch the owned server process"
+        )
+    return shim
+
+
+def _shutdown_owned_opencode_process(
+    proc: subprocess.Popen[str], *, port: int | None = None, timeout: float = 8.0
+) -> bool:
+    """Gracefully stop the exact Popen-owned server and verify listener release.
+
+    Never fall back to a PID-based process-tree kill. If the owned process does
+    not exit or its listener remains, preserve it for operator review.
+    """
+    if proc.poll() is None:
+        try:
+            if os.name == "nt":
+                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                proc.terminate()
+            proc.wait(timeout=timeout)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return False
+    if proc.poll() is None:
         return False
-    res = run_cmd(["netstat", "-ano", "-p", "tcp"], check=False)
-    pids: set[int] = set()
-    for line in res.stdout.splitlines():
-        if f"127.0.0.1:{port}" in line and "LISTENING" in line:
-            parts = line.split()
-            if parts and parts[-1].isdigit():
-                pids.add(int(parts[-1]))
-    for pid in pids:
-        run_cmd(["taskkill", "/F", "/PID", str(pid)], check=False)
-    return bool(pids)
+    if port is not None:
+        try:
+            verify_benchmark_opencode_port_unbound(port)
+        except (OSError, RuntimeError, ValueError):
+            return False
+    return True
 
 
 def run_opencode_server_foreground(
@@ -1697,17 +2221,28 @@ def run_opencode_server_foreground(
     inference_url: str | None = None,
 ) -> None:
     opencode_url = f"http://127.0.0.1:{opencode_port}"
-    print_header(f"Starting/verifying OpenCode HTTP server on 127.0.0.1:{opencode_port}...")
+    print_header(
+        f"Starting/verifying OpenCode HTTP server on 127.0.0.1:{opencode_port}..."
+    )
 
     health = http_get_json(f"{opencode_url}/global/health")
     proc: subprocess.Popen[str] | None = None
     opencode_state = "Started and running"
+    benchmark_runtime = bool(os.environ.get("AGENT_BENCHMARK_RUNTIME_ROOT"))
 
-    if health and not health.get('healthy'):
-        raise RuntimeError(f'Existing OpenCode service is unhealthy at {opencode_url}; inspect it before restarting.')
+    if health and not health.get("healthy"):
+        raise RuntimeError(
+            f"Existing OpenCode service is unhealthy at {opencode_url}; inspect it before restarting."
+        )
 
     if health and health.get("healthy"):
-        ok, reason = verify_opencode_provider(opencode_url, nickname, context_limit, output_limit, inference_url)
+        if benchmark_runtime:
+            raise RuntimeError(
+                f"Benchmark OpenCode port {opencode_port} already has a server; refusing to adopt an unowned instance."
+            )
+        ok, reason = verify_opencode_provider(
+            opencode_url, nickname, context_limit, output_limit, inference_url
+        )
         if ok:
             opencode_state = f"Already running (v{health.get('version', 'unknown')})"
             print_ok(
@@ -1723,35 +2258,58 @@ def run_opencode_server_foreground(
         print_work(
             f"Starting `opencode serve --hostname 127.0.0.1 --port {opencode_port}`..."
         )
-        opencode_exe = resolve_executable("opencode") or "opencode"
-        cmd = (
-            ["cmd.exe", "/d", "/c", f"opencode serve --hostname 127.0.0.1 --port {opencode_port}"]
-            if os.name == "nt"
-            else [opencode_exe, "serve", "--hostname", "127.0.0.1", "--port", str(opencode_port)]
-        )
+        opencode_exe = _resolve_opencode_server_executable()
+        cmd = [
+            opencode_exe,
+            "serve",
+            "--hostname",
+            "127.0.0.1",
+            "--port",
+            str(opencode_port),
+        ]
+        process_options = {}
+        if os.name == "nt":
+            process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        server_environment = os.environ.copy()
+        if server_environment.get("AGENT_BENCHMARK_RUNTIME_ROOT"):
+            port_unbound_at = verify_benchmark_opencode_port_unbound(opencode_port)
+            server_environment = build_benchmark_opencode_environment(
+                server_environment,
+                launcher_pid=os.getpid(),
+                opencode_port=opencode_port,
+                port_unbound_at=port_unbound_at,
+            )
+            process_options["env"] = server_environment
         proc = subprocess.Popen(
             cmd,
-            cwd=str(HOME_DIR),
+            cwd=str(opencode_server_working_directory()),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
+            **process_options,
         )
         health = wait_http_json(
-            f"{opencode_url}/global/health", max_seconds=40, label="OpenCode HTTP server"
+            f"{opencode_url}/global/health",
+            max_seconds=40,
+            label="OpenCode HTTP server",
         )
         if not health or not health.get("healthy"):
-            if proc:
-                proc.terminate()
+            stopped = _shutdown_owned_opencode_process(proc, port=opencode_port)
             raise RuntimeError(
-                f"OpenCode server failed health check at {opencode_url}/global/health."
+                f"OpenCode server failed health check at {opencode_url}/global/health. "
+                + ("Owned listener was closed." if stopped else "Owned process/listener remains; do not retry.")
             )
-        ok, reason = verify_opencode_provider(opencode_url, nickname, context_limit, output_limit, inference_url)
+        ok, reason = verify_opencode_provider(
+            opencode_url, nickname, context_limit, output_limit, inference_url
+        )
         if not ok:
-            if proc:
-                proc.terminate()
-            raise RuntimeError(f"OpenCode configuration check failed: {reason}")
+            stopped = _shutdown_owned_opencode_process(proc, port=opencode_port)
+            raise RuntimeError(
+                f"OpenCode configuration check failed: {reason}. "
+                + ("Owned listener was closed." if stopped else "Owned process/listener remains; do not retry.")
+            )
         opencode_state = f"Started and running (v{health.get('version', 'unknown')})"
         print_ok(
             f"OpenCode HTTP Server: {opencode_state} at {opencode_url} ({PROVIDER_ID}/{nickname})"
@@ -1759,19 +2317,32 @@ def run_opencode_server_foreground(
 
     # Print active servers summary banner
     print_header("Active Services & Bridge Status")
-    print_ok(f"LM Studio HTTP API  : {lms_state} -> http://127.0.0.1:{lms_port}/v1 (model: '{nickname}')")
+    print_ok(
+        f"LM Studio HTTP API  : {lms_state} -> http://127.0.0.1:{lms_port}/v1 (model: '{nickname}')"
+    )
     print_ok(f"OpenCode inference : {normalize_inference_url(inference_url)}")
-    print_ok(f"OpenCode HTTP Server: {opencode_state} -> {opencode_url} ({PROVIDER_ID}/{nickname})")
+    print_ok(
+        f"OpenCode HTTP Server: {opencode_state} -> {opencode_url} ({PROVIDER_ID}/{nickname})"
+    )
     if enable_codex:
-        print_ok(f"Codex MCP Bridge    : Configured ('{BRIDGE_NAME}' in {CODEX_CONFIG_PATH})")
+        print_ok(
+            f"Codex MCP Bridge    : Configured ('{BRIDGE_NAME}' in {CODEX_CONFIG_PATH})"
+        )
     if enable_agy:
         print_ok(
             f"Gemini `agy` Bridge : Configured ('{BRIDGE_NAME}' in {AGY_GLOBAL_MCP_PATH} & {AGY_CLI_MCP_PATH})"
         )
 
-    clients_str = " & ".join(
-        [c for c, en in [("Codex", enable_codex), ("Gemini `agy`", enable_agy)] if en]
-    ) or "OpenCode"
+    clients_str = (
+        " & ".join(
+            [
+                c
+                for c, en in [("Codex", enable_codex), ("Gemini `agy`", enable_agy)]
+                if en
+            ]
+        )
+        or "OpenCode"
+    )
     print(
         f"\n{Style.GREEN}{Style.BOLD}==> READY: [{clients_str}] -> {BRIDGE_NAME} -> OpenCode ({opencode_url}) -> LM Studio/{nickname}{Style.RESET}"
     )
@@ -1782,6 +2353,7 @@ def run_opencode_server_foreground(
 
     stop_event = threading.Event()
     if proc and proc.stdout:
+
         def _drain_logs() -> None:
             assert proc is not None and proc.stdout is not None
             for line in proc.stdout:
@@ -1789,7 +2361,10 @@ def run_opencode_server_foreground(
                     break
                 stripped = line.rstrip()
                 if stripped:
-                    print(f"    {Style.GRAY}[opencode] {stripped}{Style.RESET}", flush=True)
+                    print(
+                        f"    {Style.GRAY}[opencode] {stripped}{Style.RESET}",
+                        flush=True,
+                    )
 
         t = threading.Thread(target=_drain_logs, daemon=True)
         t.start()
@@ -1797,7 +2372,9 @@ def run_opencode_server_foreground(
     try:
         while True:
             if proc is not None and proc.poll() is not None:
-                print_warn(f"OpenCode server process exited with code {proc.returncode}.")
+                print_warn(
+                    f"OpenCode server process exited with code {proc.returncode}."
+                )
                 break
             if os.name == "nt":
                 import msvcrt
@@ -1805,7 +2382,9 @@ def run_opencode_server_foreground(
                 if msvcrt.kbhit():
                     ch = msvcrt.getwch()
                     if ch in ("q", "Q", "\x03"):
-                        print_info("Received 'q' keypress; shutting down OpenCode server...")
+                        print_info(
+                            "Received 'q' keypress; shutting down OpenCode server..."
+                        )
                         break
             time.sleep(0.25)
     except KeyboardInterrupt:
@@ -1813,16 +2392,14 @@ def run_opencode_server_foreground(
         print_info("Received Ctrl+C; shutting down OpenCode server...")
     finally:
         stop_event.set()
-        if proc is not None and proc.poll() is None:
-            if os.name == "nt":
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+        if proc is not None:
+            if _shutdown_owned_opencode_process(proc, port=opencode_port):
+                print_ok("Stopped OpenCode HTTP server and confirmed its listener closed.")
             else:
-                proc.terminate()
-            print_ok("Stopped OpenCode HTTP server.")
+                raise RuntimeError(
+                    "Owned OpenCode process or listener remains after graceful shutdown; "
+                    "preserve its identity and do not retry or kill by port."
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -1938,6 +2515,12 @@ def build_parser(*, runtime_only: bool = False) -> argparse.ArgumentParser:
         help="Force unloading and reloading the model even if it is already loaded in LM Studio.",
     )
     parser.add_argument(
+        "-L",
+        "--require-loaded-model",
+        action="store_true",
+        help="Refuse unless the exact requested model/context is already loaded; never load or unload a model.",
+    )
+    parser.add_argument(
         "-U",
         "--no-unload",
         "--keep-other-models",
@@ -1994,7 +2577,9 @@ def build_parser(*, runtime_only: bool = False) -> argparse.ArgumentParser:
 
 
 def check_prerequisites(gpu: str, enable_codex: bool, enable_agy: bool) -> None:
-    print_header("Checking Python, Node.js, LM Studio CLI, OpenCode, Codex, and Gemini `agy`...")
+    print_header(
+        "Checking Python, Node.js, LM Studio CLI, OpenCode, Codex, and Gemini `agy`..."
+    )
     for cmd_name in ("lms", "node", "npm", "npx"):
         if not resolve_executable(cmd_name):
             raise RuntimeError(f"Required command '{cmd_name}' was not found in PATH.")
@@ -2011,7 +2596,9 @@ def check_prerequisites(gpu: str, enable_codex: bool, enable_agy: bool) -> None:
         )
 
     if not resolve_executable("opencode"):
-        print_work("OpenCode CLI not found; installing `opencode-ai` globally via npm...")
+        print_work(
+            "OpenCode CLI not found; installing `opencode-ai` globally via npm..."
+        )
         run_cmd(["npm", "install", "-g", "opencode-ai"], timeout=300, check=True)
 
     oc_ver = run_cmd(["opencode", "--version"], check=True).stdout.strip()
@@ -2025,12 +2612,16 @@ def check_prerequisites(gpu: str, enable_codex: bool, enable_agy: bool) -> None:
         if resolve_executable("codex"):
             cli_notes.append("codex CLI found")
         else:
-            print_warn("`codex` CLI not found in PATH (will still configure ~/.codex/config.toml).")
+            print_warn(
+                "`codex` CLI not found in PATH (will still configure ~/.codex/config.toml)."
+            )
     if enable_agy:
         if resolve_executable("agy"):
             cli_notes.append("agy CLI found")
         else:
-            print_info("`agy` CLI not found in PATH (will still configure ~/.gemini/... MCP & permission files).")
+            print_info(
+                "`agy` CLI not found in PATH (will still configure ~/.gemini/... MCP & permission files)."
+            )
 
     print_ok(f"Prerequisites verified ({', '.join(cli_notes)})")
 
@@ -2082,7 +2673,9 @@ def unload_other_loaded_llms(active_nickname: str) -> None:
     """
     for item in list_all_loaded_models():
         if item.identifier != active_nickname and not item.is_embedding:
-            label = f"{item.identifier} ({item.model})" if item.model else item.identifier
+            label = (
+                f"{item.identifier} ({item.model})" if item.model else item.identifier
+            )
             print_info(
                 f"Unloading other loaded LLM '{label}' to free GPU VRAM (`lms unload {item.identifier}`)..."
             )
@@ -2098,6 +2691,16 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
     enable_agy = not args.no_agy
 
     try:
+        if args.require_loaded_model:
+            validate_isolated_benchmark_environment()
+            if not (args.no_codex and args.no_agy):
+                raise RuntimeError(
+                    "--require-loaded-model requires --no-codex and --no-agy to protect user configuration"
+                )
+            if args.reload:
+                raise RuntimeError(
+                    "--require-loaded-model cannot be combined with --reload"
+                )
         # 1. Handle `ls` subcommand / flag
         if args.command == "ls" or args.ls:
             handle_ls_command()
@@ -2133,10 +2736,16 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
         print_header(
             f"Resolving LM Studio model '{requested_model}' for nickname '{nickname}'..."
         )
-        selection = resolve_model_selection(requested_model, args.models_dir)
+        selection = resolve_model_selection(
+            requested_model, args.models_dir, require_loaded_only=args.require_loaded_model
+        )
         print_ok(
             f"Validated model '{selection.display}' (load key: '{selection.load_key}'"
-            + (f", disk size: {selection.expected_size}" if selection.expected_size else "")
+            + (
+                f", disk size: {selection.expected_size}"
+                if selection.expected_size
+                else ""
+            )
             + ")"
         )
 
@@ -2161,12 +2770,22 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
                 f"OpenCode limits for '{nickname}' are incomplete; context/output metadata will remain absent. "
                 "Set --output-tokens to configure a complete pair."
             )
-        print_header(f"Checking if identifier '{nickname}' is already loaded (lms ps)...")
-        if not args.no_unload:
+        print_header(
+            f"Checking if identifier '{nickname}' is already loaded (lms ps)..."
+        )
+        if not args.require_loaded_model and not args.no_unload:
             unload_other_loaded_llms(nickname)
 
         loaded, _ = get_loaded_instance(nickname)
         already_loaded = is_same_model_loaded(loaded, selection, effective_context)
+
+        if args.require_loaded_model and not already_loaded:
+            observed = loaded.model_Or_path if loaded is not None else "<not loaded>"
+            raise RuntimeError(
+                "--require-loaded-model refused before any model transition: "
+                f"loaded identity/context '{observed}' does not match requested '{selection.display}' "
+                f"at context {effective_context}."
+            )
 
         if already_loaded and not args.reload:
             print_ok(
@@ -2217,14 +2836,18 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
             print(ps_table)
 
         print_header("Inspecting machine-readable instance metadata (lms ps --json)...")
-        if loaded is None or not is_same_model_loaded(loaded, selection, effective_context):
+        if loaded is None or not is_same_model_loaded(
+            loaded, selection, effective_context
+        ):
             obs = loaded.model_Or_path if loaded else "<not loaded>"
             raise RuntimeError(
                 f"Verification failed: LM Studio reports '{obs}' for '{nickname}', "
                 f"which does not match requested '{selection.display}'."
             )
         if loaded.context_length is None:
-            print_warn("LM Studio did not report the loaded context; effective loaded capacity is unknown.")
+            print_warn(
+                "LM Studio did not report the loaded context; effective loaded capacity is unknown."
+            )
         elif loaded.context_length != effective_context:
             raise RuntimeError(
                 f"LM Studio loaded context {loaded.context_length} does not match requested {effective_context}."
@@ -2243,7 +2866,9 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
         show_recommended_settings(effective_context)
 
         # 9. Update OpenCode, Codex MCP, and Gemini `agy` MCP configuration files
-        print_header("Synchronizing OpenCode, Codex MCP, and Gemini `agy` Configuration Files...")
+        print_header(
+            "Synchronizing OpenCode, Codex MCP, and Gemini `agy` Configuration Files..."
+        )
         oc_changed = update_opencode_for_model(
             nickname,
             selection.display,
@@ -2275,7 +2900,9 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
             )
 
         if enable_agy:
-            agy_changed, agy_paths = update_agy_mcp_configs(nickname, args.opencode_port)
+            agy_changed, agy_paths = update_agy_mcp_configs(
+                nickname, args.opencode_port
+            )
             paths_str = f"{agy_paths[0]} & {agy_paths[1]}"
             print_ok(
                 f"Gemini `agy` MCP config ({paths_str}): "
@@ -2289,10 +2916,22 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
         # 10. Start/verify servers and stay running unless -N/--no-servers is passed
         if args.no_servers:
             print_header("Server Startup Skipped (-N / --no-servers)")
-            print_info("LM Studio HTTP server and OpenCode HTTP server were not started.")
-            clients_str = " & ".join(
-                [c for c, en in [("Codex", enable_codex), ("Gemini `agy`", enable_agy)] if en]
-            ) or "OpenCode"
+            print_info(
+                "LM Studio HTTP server and OpenCode HTTP server were not started."
+            )
+            clients_str = (
+                " & ".join(
+                    [
+                        c
+                        for c, en in [
+                            ("Codex", enable_codex),
+                            ("Gemini `agy`", enable_agy),
+                        ]
+                        if en
+                    ]
+                )
+                or "OpenCode"
+            )
             print(
                 f"\n{Style.GREEN}{Style.BOLD}==> CONFIGURED: [{clients_str}] -> {BRIDGE_NAME} -> OpenCode -> "
                 f"{normalize_inference_url(args.inference_url)} ({nickname}; {selection.display}){Style.RESET}"

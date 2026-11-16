@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from .events import NormalizedEvent
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_RETENTION_POLICY = "manual_prune_only"
 BASE_REQUIRED_TABLES = {
     "schema_metadata", "provider_instances", "sessions", "jobs", "events", "inferences",
@@ -225,9 +225,14 @@ class TelemetryStore:
             elif version == 1:
                 self._migrate_v1_to_v2(connection)
                 self._migrate_v2_to_v3(connection)
+                self._migrate_v3_to_v4(connection)
                 version = SCHEMA_VERSION
             elif version == 2:
                 self._migrate_v2_to_v3(connection)
+                self._migrate_v3_to_v4(connection)
+                version = SCHEMA_VERSION
+            elif version == 3:
+                self._migrate_v3_to_v4(connection)
                 version = SCHEMA_VERSION
             elif version != SCHEMA_VERSION:
                 raise UnsupportedSchemaError(f"unsupported telemetry schema version {version}")
@@ -240,7 +245,7 @@ class TelemetryStore:
                 raise UnsupportedSchemaError(
                     f"database schema {version} is newer than supported schema {SCHEMA_VERSION}"
                 )
-            if version not in {1, 2, SCHEMA_VERSION}:
+            if version not in {1, 2, 3, SCHEMA_VERSION}:
                 raise TelemetryStoreError(f"unsupported telemetry schema version {version}")
             self._verify_schema_tables(connection, version)
 
@@ -279,7 +284,7 @@ class TelemetryStore:
                 "CREATE TABLE collection_checkpoints (session_key TEXT PRIMARY KEY REFERENCES sessions(session_key) ON DELETE CASCADE, last_polled_at TEXT NOT NULL, last_event_at TEXT, coverage_json TEXT NOT NULL, last_error_sources_json TEXT NOT NULL)",
                 "CREATE TABLE collection_gaps (gap_id TEXT PRIMARY KEY, session_key TEXT NOT NULL REFERENCES sessions(session_key) ON DELETE CASCADE, category TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, status TEXT NOT NULL, reason_code TEXT NOT NULL, detail_json TEXT NOT NULL)",
                 "CREATE TABLE alert_states (alert_id TEXT PRIMARY KEY, provider_instance_id TEXT NOT NULL, session_id TEXT NOT NULL, rule_id TEXT NOT NULL, category TEXT NOT NULL, severity TEXT NOT NULL, classification TEXT NOT NULL, status TEXT NOT NULL, summary TEXT NOT NULL, evidence_json TEXT NOT NULL, threshold REAL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, last_notified_at TEXT, acknowledged_at TEXT, resolved_at TEXT, last_updated TEXT NOT NULL)",
-                "CREATE TABLE IF NOT EXISTS inference_requests (request_id TEXT PRIMARY KEY, server_instance_id TEXT, model_instance_id TEXT, provider_model_id TEXT, model_name TEXT, provider_request_id TEXT, source TEXT NOT NULL, state TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, duration_seconds REAL, time_to_first_text_seconds REAL, time_to_first_text_source TEXT, input_tokens REAL, reasoning_tokens REAL, output_tokens REAL, generated_tokens REAL, usage_source TEXT, finish_reason TEXT, generation_tokens_per_second REAL, generation_speed_source TEXT, gpu_average_percent REAL, gpu_peak_percent REAL, gpu_peak_vram_bytes REAL, gpu_scope TEXT, recording_mode TEXT NOT NULL, is_sparse INTEGER NOT NULL DEFAULT 0, coverage_json TEXT, hardware_telemetry_json TEXT, error_message TEXT, created_at TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS inference_requests (request_id TEXT PRIMARY KEY, server_instance_id TEXT, model_instance_id TEXT, provider_model_id TEXT, model_name TEXT, provider_request_id TEXT, source TEXT NOT NULL, state TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, duration_seconds REAL, time_to_first_text_seconds REAL, time_to_first_text_source TEXT, input_tokens REAL, reasoning_tokens REAL, output_tokens REAL, generated_tokens REAL, usage_source TEXT, finish_reason TEXT, generation_tokens_per_second REAL, generation_speed_source TEXT, gpu_average_percent REAL, gpu_peak_vram_bytes REAL, gpu_peak_percent REAL, gpu_scope TEXT, recording_mode TEXT NOT NULL, is_sparse INTEGER NOT NULL DEFAULT 0, coverage_json TEXT, hardware_telemetry_json TEXT, correlation_json TEXT, error_message TEXT, created_at TEXT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS inference_contents (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL REFERENCES inference_requests(request_id) ON DELETE CASCADE, sequence INTEGER, kind TEXT NOT NULL, role TEXT NOT NULL, text TEXT, content_type TEXT NOT NULL DEFAULT 'text/plain', source TEXT, truncated INTEGER NOT NULL DEFAULT 0, observed_at TEXT)",
                 "CREATE TABLE IF NOT EXISTS inference_hardware_samples (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL REFERENCES inference_requests(request_id) ON DELETE CASCADE, sample_id INTEGER, timestamp TEXT NOT NULL, timestamp_monotonic REAL, device_id TEXT NOT NULL, device_name TEXT NOT NULL, source TEXT NOT NULL, gpu_utilization_percent REAL, memory_controller_utilization_percent REAL, vram_used_bytes REAL, vram_total_bytes REAL, temperature_celsius REAL, power_watts REAL, validity TEXT NOT NULL DEFAULT 'valid')",
                 "CREATE INDEX ix_alert_states_status_updated ON alert_states(status, last_updated)",
@@ -356,6 +361,24 @@ class TelemetryStore:
                 "ON CONFLICT(key) DO UPDATE SET value='3'"
             )
             connection.execute("PRAGMA user_version=3")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    @staticmethod
+    def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
+        """Add nullable, metadata-only benchmark correlation to inference history."""
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(inference_requests)")}
+            if "correlation_json" not in columns:
+                connection.execute("ALTER TABLE inference_requests ADD COLUMN correlation_json TEXT")
+            connection.execute(
+                "INSERT INTO schema_metadata(key, value) VALUES('schema_version', '4') "
+                "ON CONFLICT(key) DO UPDATE SET value='4'"
+            )
+            connection.execute("PRAGMA user_version=4")
             connection.commit()
         except Exception:
             connection.rollback()
@@ -968,7 +991,7 @@ class TelemetryStore:
     def check_integrity(self) -> dict[str, Any]:
         with closing(self._connect(readonly=True)) as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {1, 2, SCHEMA_VERSION}:
+            if version not in {1, 2, 3, SCHEMA_VERSION}:
                 return {"ok": False, "schema_version": version, "integrity": [],
                         "error": f"unsupported schema version {version}"}
             self._verify_schema_tables(connection, version)
@@ -1111,10 +1134,23 @@ class TelemetryStore:
 
         hw_tel = req_dict.get("hardware_telemetry")
         hw_tel_json = _json(hw_tel) if hw_tel is not None else None
+        correlation_json = _json(req_dict.get("benchmark_correlation")) if req_dict.get("benchmark_correlation") is not None else None
 
         is_sparse = 1 if (hw_tel and hw_tel.get("is_sparse")) else 0
 
         with self._transaction() as connection:
+            existing_correlation = connection.execute(
+                "SELECT correlation_json FROM inference_requests WHERE request_id=?", (req_id,)
+            ).fetchone()
+            if existing_correlation and existing_correlation["correlation_json"] and correlation_json:
+                try:
+                    existing_trace = json.loads(existing_correlation["correlation_json"])
+                    incoming_trace = json.loads(correlation_json)
+                    if existing_trace.get("trial_id") and not incoming_trace.get("trial_id"):
+                        incoming_trace["trial_id"] = existing_trace["trial_id"]
+                        correlation_json = _json(incoming_trace)
+                except (TypeError, json.JSONDecodeError):
+                    pass
             connection.execute(
                 """INSERT INTO inference_requests(
                     request_id, server_instance_id, model_instance_id, provider_model_id,
@@ -1124,8 +1160,8 @@ class TelemetryStore:
                     usage_source, finish_reason, generation_tokens_per_second,
                     generation_speed_source, gpu_average_percent, gpu_peak_percent,
                     gpu_peak_vram_bytes, gpu_scope, recording_mode, is_sparse,
-                    coverage_json, hardware_telemetry_json, error_message, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    coverage_json, hardware_telemetry_json, correlation_json, error_message, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(request_id) DO UPDATE SET
                     server_instance_id=COALESCE(excluded.server_instance_id, inference_requests.server_instance_id),
                     model_instance_id=COALESCE(excluded.model_instance_id, inference_requests.model_instance_id),
@@ -1153,6 +1189,7 @@ class TelemetryStore:
                     is_sparse=excluded.is_sparse,
                     coverage_json=COALESCE(excluded.coverage_json, inference_requests.coverage_json),
                     hardware_telemetry_json=COALESCE(excluded.hardware_telemetry_json, inference_requests.hardware_telemetry_json),
+                    correlation_json=COALESCE(excluded.correlation_json, inference_requests.correlation_json),
                     error_message=COALESCE(excluded.error_message, inference_requests.error_message)
                 """,
                 (
@@ -1169,7 +1206,7 @@ class TelemetryStore:
                     req_dict.get("gpu_average_percent"),
                     (hw_tel.get("gpu_peak_percent") if hw_tel else None) or req_dict.get("gpu_peak_percent"),
                     req_dict.get("gpu_peak_vram_bytes"), req_dict.get("gpu_scope"),
-                    recording_mode, is_sparse, cov_json, hw_tel_json,
+                    recording_mode, is_sparse, cov_json, hw_tel_json, correlation_json,
                     req_dict.get("error_message"), created,
                 ),
             )
@@ -1261,8 +1298,10 @@ class TelemetryStore:
             hw_tel = json.loads(data["hardware_telemetry_json"]) if data.get("hardware_telemetry_json") else {}
             data["coverage"] = cov
             data["hardware_telemetry"] = hw_tel
+            data["benchmark_correlation"] = json.loads(data["correlation_json"]) if data.get("correlation_json") else None
             del data["coverage_json"]
             del data["hardware_telemetry_json"]
+            data.pop("correlation_json", None)
 
             content_list: list[dict[str, Any]] = []
             if include_content and data.get("recording_mode") == "content" and "inference_contents" in tables:
@@ -1291,6 +1330,29 @@ class TelemetryStore:
                     hw_samples.append(hd)
             data["hardware_samples"] = hw_samples
             return data
+
+    def update_execution_correlation(self, execution_id: str, correlation: dict[str, Any]) -> int:
+        """Reconcile already-recorded request metadata after Harbor supplies its trial ID."""
+        if self.readonly:
+            raise TelemetryStoreError("database is open read-only")
+        updated = 0
+        with self._transaction() as connection:
+            rows = connection.execute(
+                "SELECT request_id, correlation_json FROM inference_requests WHERE correlation_json IS NOT NULL"
+            ).fetchall()
+            for row in rows:
+                try:
+                    existing = json.loads(row["correlation_json"])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if existing.get("execution_id") != execution_id:
+                    continue
+                connection.execute(
+                    "UPDATE inference_requests SET correlation_json=? WHERE request_id=?",
+                    (_json(correlation), row["request_id"]),
+                )
+                updated += 1
+        return updated
 
     def list_inference_requests(
         self,

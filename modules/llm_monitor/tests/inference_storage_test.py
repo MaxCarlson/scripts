@@ -5,11 +5,14 @@ from llm_monitor.inference_models import HardwareSample, ContentSegment, Inferen
 from llm_monitor.storage import TelemetryStore
 
 
-def test_schema_v3_fresh_database_has_inference_tables(tmp_path: Path):
-    db_path = tmp_path / "test_v3.sqlite3"
+def test_schema_v4_fresh_database_has_inference_tables(tmp_path: Path):
+    db_path = tmp_path / "test_v4.sqlite3"
     with TelemetryStore(db_path) as store:
         info = store.database_info()
-        assert info["schema_version"] == 3
+        assert info["schema_version"] == 4
+        with sqlite3.connect(db_path) as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(inference_requests)")}
+        assert "correlation_json" in columns
         assert "inference_requests" in info["counts"]
         assert "inference_contents" in info["counts"]
         assert "inference_hardware_samples" in info["counts"]
@@ -34,7 +37,7 @@ def test_migration_v2_to_v3_preserves_existing_data(tmp_path: Path):
     # Now open with TelemetryStore which triggers v2 -> v3 migration
     with TelemetryStore(db_path) as store:
         info = store.database_info()
-        assert info["schema_version"] == 3
+        assert info["schema_version"] == 4
         alerts = store.list_alert_states()
         assert len(alerts) == 1
         assert alerts[0]["alert_id"] == "a1"
