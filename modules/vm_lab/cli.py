@@ -9,6 +9,7 @@ from typing import Sequence
 
 from vm_lab import __version__
 from vm_lab.backend import BackendAdapter
+from vm_lab.commands import register_commands
 from vm_lab.exceptions import EXIT_INPUT_ERROR, EXIT_SUCCESS, VmLabError
 
 
@@ -28,14 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ver = sub.add_parser("version", help="Show vm_lab version and backend path.")
     p_ver.add_argument("-j", "--json", action="store_true", help="Emit JSON output.")
 
-    p_list = sub.add_parser("list", help="List Hyper-V VMs.")
-    p_list.add_argument("-oo", "--owned-only", action="store_true", help="Show only vm_lab-owned VMs.")
-    p_list.add_argument("-mr", "--manifest-root", help="Override vm_lab ownership manifest root.")
-    p_list.add_argument("-j", "--json", action="store_true", help="Emit JSON output.")
-
-    p_doc = sub.add_parser("doctor", help="Check host Hyper-V and stale lock health.")
-    p_doc.add_argument("-j", "--json", action="store_true", help="Emit JSON output.")
-
+    register_commands(sub)
     return parser
 
 
@@ -60,8 +54,19 @@ def main(argv: Sequence[str] | None = None, *, adapter: BackendAdapter | None = 
             print(f"vm_lab error: {exc}", file=sys.stderr)
             return exc.exit_code
 
+    tail_args: list[str] = []
+    if "--" in raw_args:
+        split_idx = raw_args.index("--")
+        parse_args_list = raw_args[:split_idx]
+        tail_args = raw_args[split_idx + 1 :]
+    else:
+        parse_args_list = raw_args
+
     parser = build_parser()
-    ns = parser.parse_args(raw_args)
+    ns = parser.parse_args(parse_args_list)
+    if tail_args:
+        existing = list(getattr(ns, "exec_args", []) or [])
+        ns.exec_args = existing + tail_args
 
     if ns.version:
         print(f"vm_lab {__version__}")
@@ -84,26 +89,16 @@ def main(argv: Sequence[str] | None = None, *, adapter: BackendAdapter | None = 
             print(f"vm_lab {__version__} (backend: {backend_path or 'unavailable'})")
         return EXIT_SUCCESS
 
+    builder = getattr(ns, "_builder", None)
+    if builder is None:
+        parser.print_help()
+        return EXIT_INPUT_ERROR
+
     be = adapter or BackendAdapter()
     try:
-        if ns.command == "list":
-            ps_args = ["-o", "list"]
-            if ns.owned_only:
-                ps_args.append("-OwnedOnly")
-            if ns.manifest_root:
-                ps_args.extend(["-ManifestRoot", ns.manifest_root])
-            if ns.json:
-                ps_args.append("-Json")
-            res = be.invoke(ps_args, json_mode=ns.json)
-        elif ns.command == "doctor":
-            ps_args = ["-o", "doctor"]
-            if ns.json:
-                ps_args.append("-Json")
-            res = be.invoke(ps_args, json_mode=ns.json)
-        else:
-            parser.print_help()
-            return EXIT_INPUT_ERROR
-
+        ps_args, interactive = builder(ns)
+        json_mode = bool(getattr(ns, "json", False))
+        res = be.invoke(ps_args, json_mode=json_mode, interactive=interactive)
         if res.stdout:
             sys.stdout.write(res.stdout)
             if not res.stdout.endswith("\n"):
