@@ -284,6 +284,17 @@ def task_path_reasons(test_root: Path) -> list:
     return reasons
 
 
+def _exception_chain(exc: BaseException, *, limit: int = 8) -> list[str]:
+    chain: list[str] = []
+    cur: Optional[BaseException] = exc
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen and len(chain) < limit:
+        seen.add(id(cur))
+        chain.append(type(cur).__name__)
+        cur = cur.__cause__ or cur.__context__
+    return chain
+
+
 class GuestLifecycleError(RuntimeError):
     """Sanitized lifecycle failure carrying bounded stage and guard diagnostics."""
 
@@ -294,11 +305,13 @@ class GuestLifecycleError(RuntimeError):
         stage: str = "lifecycle",
         reason_code: str = "RuntimeError",
         guard_reasons: Sequence[str] = (),
+        exception_chain: Sequence[str] = (),
     ):
         super().__init__(message)
         self.stage = stage
         self.reason_code = reason_code
         self.guard_reasons = tuple(str(r) for r in guard_reasons)
+        self.exception_chain = tuple(str(t) for t in exception_chain) or (type(self).__name__,)
 
 
 class GuestMutationGate:
@@ -563,6 +576,7 @@ def _isolated_service_config(template: Path, root: Path, port: int) -> None:
     service["upstream_url"] = "http://127.0.0.1:1"
     service["state_persistence_path"] = str(root / "coordinator_state.json")
     value["processes"] = {}
+    value["policies"] = []
     root.mkdir(parents=True, exist_ok=True)
     config = root / "config.yaml"
     if config.exists():
@@ -1044,9 +1058,10 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
                   f"H4 {args.profile} profile: passed; results={test_root / 'test-results.json'}")
             return 0
         except Exception as exc:
-            diag_stage = getattr(exc, "stage", "preflight")
+            diag_stage = getattr(exc, "stage", "lifecycle")
             diag_reason = getattr(exc, "reason_code", type(exc).__name__)
             diag_guards = list(getattr(exc, "guard_reasons", ()))
+            diag_chain = list(getattr(exc, "exception_chain", ())) or _exception_chain(exc)
             outcome = {
                 "schema_version": 1,
                 "profile": args.profile,
@@ -1055,6 +1070,7 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
                 "stage": diag_stage,
                 "reason_code": diag_reason,
                 "guard_reasons": diag_guards,
+                "exception_chain": diag_chain,
                 "completed_at": _now(),
             }
             _write_json(test_root / "test-results.json", outcome)
@@ -1072,6 +1088,7 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
                 "stage": diag_stage,
                 "reason_code": diag_reason,
                 "guard_reasons": diag_guards,
+                "exception_chain": diag_chain,
             })
             print(json.dumps(outcome, sort_keys=True) if args.json else
                   f"H4 {args.profile} profile: failed safely ({type(exc).__name__}); inspect {test_root / 'test-results.json'}",

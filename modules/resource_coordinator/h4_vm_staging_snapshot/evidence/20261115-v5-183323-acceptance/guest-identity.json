@@ -1,0 +1,17 @@
+{
+  "hostname": "DESKTOP-1ITSJV0",
+  "user": "DESKTOP-1ITSJV0\\mcarls",
+  "is_admin": true,
+  "manufacturer": "Microsoft Corporation",
+  "model": "Virtual Machine",
+  "os_caption": "Microsoft Windows 11 Pro",
+  "os_version": "10.0.26300",
+  "os_build": "26300",
+  "os_arch": "64-bit",
+  "rc_task_count": 0,
+  "rc_service_count": 0,
+  "rc_proc_count": 0,
+  "PSComputerName": "RC-H4-Windows-Acceptance",
+  "RunspaceId": "4fc8c1dc-7d08-4701-847d-13696b75875a",
+  "PSShowComputerName": true
+}

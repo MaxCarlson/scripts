@@ -1,0 +1,72 @@
+[
+  {
+    "phase": "offline",
+    "test_root": "C:\\H4-Guest-Work\\runs\\h4-rc-offline-v5-20261115-183323-d69fe0",
+    "exit_code": 0,
+    "status": "PASS",
+    "evidence_transfer_status": "COMPLETE",
+    "evidence_transfer_error": null,
+    "guest_evidence_path": "C:\\H4-Guest-Work\\runs\\h4-rc-offline-v5-20261115-183323-d69fe0",
+    "retry_hint": null,
+    "parsed": {
+      "completed_at": "2026-11-15T18:34:06.974709-08:00",
+      "counts": {
+        "errors": 0,
+        "failures": 0,
+        "skipped": 1,
+        "tests": 112
+      },
+      "exit_code": 0,
+      "junit": "C:\\H4-Guest-Work\\runs\\h4-rc-offline-v5-20261115-183323-d69fe0\\junit-20261116T023356198444Z.xml",
+      "log": "C:\\H4-Guest-Work\\runs\\h4-rc-offline-v5-20261115-183323-d69fe0\\pytest-output.log",
+      "profile": "offline",
+      "schema_version": 1,
+      "status": "passed"
+    }
+  },
+  {
+    "phase": "task",
+    "test_root": "C:\\H4-Guest-Work\\runs\\h4-rc-task-v5-20261115-183323-d69fe0",
+    "exit_code": 0,
+    "status": "PASS",
+    "evidence_transfer_status": "COMPLETE",
+    "evidence_transfer_error": null,
+    "guest_evidence_path": "C:\\H4-Guest-Work\\runs\\h4-rc-task-v5-20261115-183323-d69fe0",
+    "retry_hint": null,
+    "parsed": {
+      "completed_at": "2026-11-15T18:34:24.303119-08:00",
+      "counts": {
+        "errors": 0,
+        "failures": 0,
+        "skipped": 0,
+        "tests": 1
+      },
+      "exit_code": 0,
+      "junit": "C:\\H4-Guest-Work\\runs\\h4-rc-task-v5-20261115-183323-d69fe0\\junit-20261116T023416888483Z.xml",
+      "log": "C:\\H4-Guest-Work\\runs\\h4-rc-task-v5-20261115-183323-d69fe0\\pytest-output.log",
+      "profile": "task",
+      "schema_version": 1,
+      "status": "passed"
+    }
+  },
+  {
+    "phase": "full",
+    "test_root": "C:\\H4-Guest-Work\\runs\\h4-rc-full-v5-20261115-183323-d69fe0",
+    "exit_code": 4,
+    "status": "FAIL",
+    "evidence_transfer_status": "COMPLETE",
+    "evidence_transfer_error": null,
+    "guest_evidence_path": "C:\\H4-Guest-Work\\runs\\h4-rc-full-v5-20261115-183323-d69fe0",
+    "retry_hint": null,
+    "parsed": {
+      "completed_at": "2026-11-15T18:34:30.089754-08:00",
+      "exit_code": 4,
+      "guard_reasons": [],
+      "profile": "full",
+      "reason_code": "InstallationError",
+      "schema_version": 1,
+      "stage": "preflight",
+      "status": "failed"
+    }
+  }
+]

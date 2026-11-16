@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "task_name": "RC-Disposable-4f401369206bc31bf6f11cb7",
+  "cleanup_scope": "this_exact_task_name_only",
+  "cleanup_status": "verified_absent"
+}

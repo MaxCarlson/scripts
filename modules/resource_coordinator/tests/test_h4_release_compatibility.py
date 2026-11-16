@@ -484,3 +484,18 @@ def test_lifecycle_guard_failure_emits_structured_sanitized_diagnostics(tmp_path
     assert cleanup["stage"] == "guard"
     assert cleanup["reason_code"] == "guest_mutation_guard_refused"
     assert cleanup["guard_reasons"] == ["listener_inventory_unavailable"]
+    assert "GuestLifecycleError" in results["exception_chain"]
+
+
+def test_isolated_service_config_clears_policies_and_validates_with_load_config(tmp_path):
+    from resource_coordinator.config import load_config
+
+    windows_acceptance._isolated_service_config(
+        MODULE_ROOT / "config.production-template.yaml",
+        tmp_path,
+        49679,
+    )
+    cfg = load_config(tmp_path / "config.yaml")
+    assert cfg.service.listen_port == 49679
+    assert dict(cfg.processes) == {}
+    assert list(cfg.policies) == []

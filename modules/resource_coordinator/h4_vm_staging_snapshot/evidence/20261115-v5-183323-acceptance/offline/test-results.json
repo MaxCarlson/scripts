@@ -1,0 +1,15 @@
+{
+  "completed_at": "2026-11-16T02:34:06.974709+00:00",
+  "counts": {
+    "errors": 0,
+    "failures": 0,
+    "skipped": 1,
+    "tests": 112
+  },
+  "exit_code": 0,
+  "junit": "C:\\H4-Guest-Work\\runs\\h4-rc-offline-v5-20261115-183323-d69fe0\\junit-20261116T023356198444Z.xml",
+  "log": "C:\\H4-Guest-Work\\runs\\h4-rc-offline-v5-20261115-183323-d69fe0\\pytest-output.log",
+  "profile": "offline",
+  "schema_version": 1,
+  "status": "passed"
+}

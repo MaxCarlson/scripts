@@ -1,0 +1,33 @@
+version: '1.0'
+service:
+  listen_host: 127.0.0.1
+  listen_port: 49679
+  upstream_url: http://127.0.0.1:1
+  model_load_timeout_seconds: 1800.0
+  state_persistence_path: C:\H4-Guest-Work\runs\h4-rc-full-v5-20261115-183323-d69fe0\runs\753370c193-install\coordinator_state.json
+resources:
+  gpu.inference:
+    type: shared
+    cooldown_seconds: 10.0
+processes: {}
+policies:
+- name: pause_krig_for_inference
+  trigger_event: lmstudio.inference_requested
+  target_process: krig_miner
+  stop_process: true
+  stop_timeout_seconds: 10.0
+  resource: gpu.inference
+  lease_type: shared
+  cooldown_seconds: 10.0
+  restart_process: true
+  only_if_stopped_by_coordinator: true
+- name: pause_krig_for_model_load
+  trigger_event: lmstudio.model_load_requested
+  target_process: krig_miner
+  stop_process: true
+  stop_timeout_seconds: 10.0
+  resource: gpu.inference
+  lease_type: exclusive
+  cooldown_seconds: 10.0
+  restart_process: true
+  only_if_stopped_by_coordinator: true

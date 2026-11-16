@@ -1,0 +1,13 @@
+{
+  "automatic_cleanup_claimed": false,
+  "exact_task_names": [
+    "ResourceCoordinator-H4-753370c193-install-boot",
+    "ResourceCoordinator-H4-753370c193-install-logon",
+    "ResourceCoordinator-H4-753370c193-install-viewer"
+  ],
+  "guard_reasons": [],
+  "reason_code": "InstallationError",
+  "schema_version": 1,
+  "stage": "preflight",
+  "status": "requires_review"
+}

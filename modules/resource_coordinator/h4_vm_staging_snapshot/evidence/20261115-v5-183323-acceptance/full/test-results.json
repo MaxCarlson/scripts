@@ -1,0 +1,10 @@
+{
+  "completed_at": "2026-11-16T02:34:30.089754+00:00",
+  "exit_code": 4,
+  "guard_reasons": [],
+  "profile": "full",
+  "reason_code": "InstallationError",
+  "schema_version": 1,
+  "stage": "preflight",
+  "status": "failed"
+}
