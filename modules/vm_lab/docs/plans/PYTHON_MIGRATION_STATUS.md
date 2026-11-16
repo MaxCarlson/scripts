@@ -28,7 +28,7 @@
 | 4 — Guest Execution & Lifecycle | COMPLETED | pending commit | `Get-VmLabGuestInventory`, `Invoke-VmLabGuestScript` (`3010` -> `REBOOT_REQUIRED`), `Restart-VmLabGuest`, `Get-VmLabCheckpointDetail` + `vm guest`, `vm restart`, `vm checkpoint inspect` |
 | 5 — Workflow & Acceptance Semantics | COMPLETED | pending commit | Honored `on_failure`, `timeout_seconds`, `idempotency_class`, `guest_identity`, `vm.connect` in `Contracts.ps1` & `WorkflowEngine.ps1` + `vm approval`, `vm workflow validate/results`, `vm evidence inspect` |
 | 6 — Windows Setup & OOBE | COMPLETED | pending commit | `vm setup plan/status/guide/answer-media` wired to `Get-VmLabSetupProgressReport` & `New-VmLabAnswerMediaStaging` (live OOBE `NOT_TESTED`) |
-| 7 — Final Validation & Docs | COMPLETED | pending commit | P0/P1 CLI migration corrections (`Resolve-VmLabGuestPowerShellPath`, interactive stdout classification in `backend.py`, `classify_vm_launcher` legacy migration, disposable bootstrap & real PS `-File` tests); live Hyper-V `NOT_TESTED` |
+| 7 — Final Validation & Docs | COMPLETED | pending commit | Artifact CLI `--source` + `--manifest`/`--destination` contract, internal `-Json` exit classification + human output without `-j`, `bootstrap_latest.run()` migration test; 101 `vm_lab` pytest, 63 Pester, 147 toolkit pytest; live Hyper-V `NOT_TESTED` |
 
 ## Compatibility Inventory (`Invoke-VmLab.ps1` Operations)
 

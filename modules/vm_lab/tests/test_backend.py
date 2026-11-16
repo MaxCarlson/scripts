@@ -78,10 +78,15 @@ def test_backend_adapter_preserves_unicode_and_spaces_with_shell_false(
 
 def test_exit_code_classification_taxonomy() -> None:
     assert classify_exit_code({"status": "SUCCEEDED"}, 0) == EXIT_SUCCESS
+    assert classify_exit_code({"status": "SUCCEEDED"}, 1) == 1
+    assert classify_exit_code({"status": "PLANNED"}, 2) == 2
     assert classify_exit_code({"status": "AWAITING_INTERACTION"}, 0) == EXIT_INTERACTION_REQUIRED
-    assert classify_exit_code({"status": "BLOCKED", "reason_code": "capability_required_vm_lifecycle"}, 1) == EXIT_AUTH_REQUIRED
-    assert classify_exit_code({"status": "PARTIAL"}, 1) == EXIT_INCOMPLETE
-    assert classify_exit_code({"status": "FAILED"}, 1) == EXIT_ERROR
+    assert classify_exit_code({"status": "AWAITING_AUTHORIZATION"}, 0) == EXIT_AUTH_REQUIRED
+    assert classify_exit_code({"status": "BLOCKED", "reason_code": "capability_required_vm_lifecycle"}, 0) == EXIT_AUTH_REQUIRED
+    assert classify_exit_code({"status": "PARTIAL"}, 0) == EXIT_INCOMPLETE
+    assert classify_exit_code({"status": "REBOOT_REQUIRED"}, 0) == EXIT_INCOMPLETE
+    assert classify_exit_code({"status": "FAILED"}, 0) == EXIT_ERROR
+    assert classify_exit_code({"status": "INVALIDATED"}, 0) == EXIT_ERROR
 
 
 def test_cli_help_and_version_work_without_hyperv(capsys: pytest.CaptureFixture[str]) -> None:

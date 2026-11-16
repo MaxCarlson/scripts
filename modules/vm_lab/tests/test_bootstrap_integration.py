@@ -203,3 +203,71 @@ def test_disposable_bootstrap_migration_and_real_windows_cli_resolution(tmp_path
             check=False,
         )
         assert res.returncode == 0, f"Command {cli_cmd} failed ({res.returncode}): {res.stderr}\n{res.stdout}"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows bootstrap_latest.run() integration test")
+def test_actual_bootstrap_latest_run_migrates_legacy_and_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if str(WORKTREE_ROOT) not in sys.path:
+        sys.path.insert(0, str(WORKTREE_ROOT))
+    import bootstrap_latest
+    from scripts_setup.launcher_generator import classify_vm_launcher
+
+    disp_root = tmp_path / "boot_repo"
+    (disp_root / "modules" / "vm_lab").mkdir(parents=True)
+    shutil.copytree(WORKTREE_ROOT / "scripts_setup", disp_root / "scripts_setup")
+    shutil.copy2(MODULE_ROOT / "pyproject.toml", disp_root / "modules" / "vm_lab" / "pyproject.toml")
+    shutil.copy2(MODULE_ROOT / "Invoke-VmLab.ps1", disp_root / "modules" / "vm_lab" / "Invoke-VmLab.ps1")
+
+    bin_dir = disp_root / "bin"
+    bin_dir.mkdir()
+    venv_dir = disp_root / ".venv"
+    (venv_dir / "Scripts").mkdir(parents=True)
+    for exe_name in ("vm.exe", "vm-lab.exe"):
+        (venv_dir / "Scripts" / exe_name).write_bytes(b"stub")
+
+    legacy_vm = bin_dir / "vm.cmd"
+    legacy_vmlab = bin_dir / "vm-lab.cmd"
+    for p in (legacy_vm, legacy_vmlab):
+        p.write_text(
+            f'@echo off\npwsh -NoProfile -File "{disp_root}\\modules\\vm_lab\\Invoke-VmLab.ps1" %*\nexit /b %ERRORLEVEL%\n',
+            encoding="utf-8",
+        )
+        assert classify_vm_launcher(p) == "legacy_vm_lab_powershell"
+
+    monkeypatch.setattr(bootstrap_latest, "ensure_pscripts", lambda _r, _d: True)
+    monkeypatch.setattr(bootstrap_latest, "package_sources", lambda _r: ([("vm_lab", disp_root / "modules" / "vm_lab")], []))
+    monkeypatch.setattr(bootstrap_latest, "installed_names", lambda: {"vm_lab"})
+    monkeypatch.setattr(bootstrap_latest, "console_scripts", lambda _pkgs: [("vm", "vm_lab"), ("vm-lab", "vm_lab")])
+
+    # Run 1: migrates both legacy PowerShell wrappers and generates manifest
+    rc1 = bootstrap_latest.run(disp_root, dry_run=False, verbose=False)
+    assert rc1 == 0
+    assert classify_vm_launcher(legacy_vm) == "managed_current"
+    assert classify_vm_launcher(legacy_vmlab) == "managed_current"
+    manifest = json.loads((disp_root / "scripts_manifest.json").read_text(encoding="utf-8"))
+    assert "vm" in manifest["commands"]
+    assert "vm-lab" in manifest["commands"]
+
+    # Run 2: repeat bootstrap is idempotent
+    rc2 = bootstrap_latest.run(disp_root, dry_run=False, verbose=False)
+    assert rc2 == 0
+    assert classify_vm_launcher(legacy_vm) == "managed_current"
+
+    # Separate root with unmanaged custom vm.cmd -> preserved untouched by bootstrap_latest.run()
+    unm_root = tmp_path / "unmanaged_repo"
+    (unm_root / "modules" / "vm_lab").mkdir(parents=True)
+    shutil.copytree(WORKTREE_ROOT / "scripts_setup", unm_root / "scripts_setup")
+    shutil.copy2(MODULE_ROOT / "pyproject.toml", unm_root / "modules" / "vm_lab" / "pyproject.toml")
+    (unm_root / "bin").mkdir()
+    (unm_root / ".venv" / "Scripts").mkdir(parents=True)
+    (unm_root / ".venv" / "Scripts" / "vm.exe").write_bytes(b"stub")
+    (unm_root / ".venv" / "Scripts" / "vm-lab.exe").write_bytes(b"stub")
+    custom_vm = unm_root / "bin" / "vm.cmd"
+    custom_vm.write_text("@echo off\necho custom user vm\n", encoding="utf-8")
+    monkeypatch.setattr(bootstrap_latest, "package_sources", lambda _r: ([("vm_lab", unm_root / "modules" / "vm_lab")], []))
+    rc3 = bootstrap_latest.run(unm_root, dry_run=False, verbose=False)
+    assert rc3 == 0
+    assert classify_vm_launcher(custom_vm) == "unmanaged"
+    assert "custom user vm" in custom_vm.read_text(encoding="utf-8")

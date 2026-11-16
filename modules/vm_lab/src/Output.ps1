@@ -186,7 +186,18 @@ function Invoke-VmLab {
                 $manifestObj = New-VmLabArtifactManifest -SourceRoot $SourcePath -DestinationRoot $DestinationPath
             }
             $applyDeploy = ($Operation -eq 'artifact-deploy') -and $Apply
-            Publish-VmLabArtifactBundle -Name $Name -SourceRoot $SourcePath -Manifest $manifestObj -Credential $Credential -PromptCredential:$PromptCredential -Apply:$applyDeploy -AuthorizeGuestMutation:$AuthorizeGuestMutation -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+            $artArgs = @{
+                Name                   = $Name
+                SourceRoot             = $SourcePath
+                Manifest               = $manifestObj
+                PromptCredential       = [bool]$PromptCredential
+                Apply                  = $applyDeploy
+                AuthorizeGuestMutation = [bool]$AuthorizeGuestMutation
+                ManifestRoot           = $ManifestRoot
+            }
+            if ($null -ne $Credential) { $artArgs.Credential = $Credential }
+            if (-not [string]::IsNullOrWhiteSpace($OperationId)) { $artArgs.OperationId = $OperationId }
+            Publish-VmLabArtifactBundle @artArgs -WhatIf:$WhatIfPreference
         }
         { $_ -in @('evidence-plan', 'evidence-collect') } {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw "-Name (-n) is required for $Operation." }

@@ -157,7 +157,13 @@ def _build_guest_exec(op: str) -> Callable[[argparse.Namespace], tuple[list[str]
 
 def _build_artifact(op: str) -> Callable[[argparse.Namespace], tuple[list[str], bool]]:
     def _builder(ns: argparse.Namespace) -> tuple[list[str], bool]:
-        ps = ["-o", op, "-Name", ns.name, "-ArtifactManifestPath", ns.manifest]
+        if not getattr(ns, "manifest", None) and not getattr(ns, "destination", None):
+            raise ValueError("Either --manifest or --destination is required for artifact operations.")
+        ps = ["-o", op, "-Name", ns.name, "-SourcePath", ns.source]
+        if getattr(ns, "manifest", None):
+            ps.extend(["-ArtifactManifestPath", ns.manifest])
+        if getattr(ns, "destination", None):
+            ps.extend(["-DestinationPath", ns.destination])
         if getattr(ns, "operation_id", None):
             ps.extend(["-OperationId", ns.operation_id])
         if getattr(ns, "authorize_guest_mutation", False):
@@ -400,7 +406,9 @@ def register_commands(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
     for sub_name, op in (("plan", "artifact-plan"), ("deploy", "artifact-deploy")):
         p_a = sub_art.add_parser(sub_name, help=f"Run {op}.")
         p_a.add_argument("name", help="VM name.")
-        p_a.add_argument("--manifest", required=True, help="Artifact manifest JSON path.")
+        p_a.add_argument("--source", required=True, help="Host source directory containing artifacts.")
+        p_a.add_argument("--manifest", help="Trusted artifact manifest JSON path.")
+        p_a.add_argument("--destination", help="Guest destination directory (used when --manifest is omitted).")
         if op == "artifact-deploy":
             p_a.add_argument("-op", "--operation-id")
             p_a.add_argument("--authorize-guest-mutation", action="store_true")

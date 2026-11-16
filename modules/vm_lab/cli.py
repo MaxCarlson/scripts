@@ -11,6 +11,7 @@ from vm_lab import __version__
 from vm_lab.backend import BackendAdapter
 from vm_lab.commands import register_commands
 from vm_lab.exceptions import EXIT_INPUT_ERROR, EXIT_SUCCESS, VmLabError
+from vm_lab.results import format_human_output
 
 
 def _emit_json(data: object) -> None:
@@ -96,14 +97,46 @@ def main(argv: Sequence[str] | None = None, *, adapter: BackendAdapter | None = 
 
     be = adapter or BackendAdapter()
     try:
-        ps_args, interactive = builder(ns)
+        try:
+            ps_args, interactive = builder(ns)
+        except ValueError as exc:
+            if getattr(ns, "json", False):
+                _emit_json({"status": "ERROR", "reason_code": "invalid_arguments", "error": str(exc)})
+            else:
+                print(f"vm_lab error: {exc}", file=sys.stderr)
+            return EXIT_INPUT_ERROR
+
         script_name = getattr(ns, "_script_name", "Invoke-VmLab.ps1")
-        json_mode = bool(getattr(ns, "json", False)) or script_name == "Invoke-VmLabApprovedPlan.ps1"
-        res = be.invoke(ps_args, script_name=script_name, json_mode=json_mode, interactive=interactive)
-        if res.stdout:
-            sys.stdout.write(res.stdout)
-            if not res.stdout.endswith("\n"):
-                sys.stdout.write("\n")
+        user_json = bool(getattr(ns, "json", False))
+        is_wizard = getattr(ns, "command", None) == "wizard"
+
+        if is_wizard:
+            res = be.invoke(ps_args, script_name=script_name, json_mode=False, interactive=True)
+            if res.stdout:
+                sys.stdout.write(res.stdout)
+                if not res.stdout.endswith("\n"):
+                    sys.stdout.write("\n")
+            if res.stderr:
+                sys.stderr.write(res.stderr)
+            return res.exit_code
+
+        # Request structured JSON internally for all non-wizard subcommands so status & exit codes are classified accurately
+        invoke_args = list(ps_args)
+        if script_name == "Invoke-VmLab.ps1" and not any(a in {"-j", "-Json"} for a in invoke_args):
+            invoke_args.append("-Json")
+
+        res = be.invoke(invoke_args, script_name=script_name, json_mode=True, interactive=interactive)
+        if user_json:
+            if res.stdout.strip():
+                sys.stdout.write(res.stdout)
+                if not res.stdout.endswith("\n"):
+                    sys.stdout.write("\n")
+            elif res.data is not None:
+                _emit_json(res.data)
+        else:
+            rendered = format_human_output(res.data) if res.data is not None else res.stdout.rstrip("\r\n")
+            if rendered:
+                print(rendered)
         if res.stderr:
             sys.stderr.write(res.stderr)
         return res.exit_code

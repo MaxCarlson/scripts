@@ -31,7 +31,8 @@ def _mock_adapter(exit_code: int = EXIT_SUCCESS) -> MagicMock:
         (["guest", "status", "TestVM"], ["-o", "guest-status", "-Name", "TestVM"]),
         (["guest", "bootstrap", "TestVM", "--profile", "python-dev", "-a"], ["-o", "guest-bootstrap", "-Name", "TestVM", "-GuestProfile", "python-dev"]),
         (["guest", "exec", "TestVM", "--executable", r"C:\App\run.exe", "--", "--flag", "val"], ["-o", "guest-exec", "-Name", "TestVM", "-ExecutablePath", r"C:\App\run.exe", "-WorkingDirectory", r"C:\Windows\Temp", "-ArgumentList", "--flag", "val"]),
-        (["artifact", "deploy", "TestVM", "--manifest", "m.json", "--authorize-guest-mutation", "-a"], ["-o", "artifact-deploy", "-Name", "TestVM", "-ArtifactManifestPath", "m.json", "-AuthorizeGuestMutation", "-Apply"]),
+        (["artifact", "plan", "TestVM", "--source", r"C:\Assets", "--destination", r"C:\GuestAssets"], ["-o", "artifact-plan", "-Name", "TestVM", "-SourcePath", r"C:\Assets", "-DestinationPath", r"C:\GuestAssets"]),
+        (["artifact", "deploy", "TestVM", "--source", r"C:\Assets", "--manifest", "m.json", "--authorize-guest-mutation", "-a"], ["-o", "artifact-deploy", "-Name", "TestVM", "-SourcePath", r"C:\Assets", "-ArtifactManifestPath", "m.json", "-AuthorizeGuestMutation", "-Apply"]),
         (["evidence", "collect", "TestVM", "--guest-roots", r"C:\Ev", "--evidence-root", r"C:\HostEv", "-a"], ["-o", "evidence-collect", "-Name", "TestVM", "-GuestRoots", r"C:\Ev", "-EvidenceRoot", r"C:\HostEv", "-Apply"]),
         (["checkpoint", "list", "TestVM"], ["-o", "checkpoints", "-Name", "TestVM"]),
         (["checkpoint", "create", "TestVM", "cp1", "-a"], ["-o", "checkpoint", "-Name", "TestVM", "-CheckpointName", "cp1", "-Apply"]),
@@ -156,3 +157,115 @@ def test_real_powershell_end_to_end_cli_dispatch(tmp_path: "Path", capsys: pytes
     iso_res = json.loads(capsys.readouterr().out)
     assert iso_res["status"] == "FAILED"
     assert iso_res["reason_code"] == "iso_too_small"
+
+
+def test_artifact_cli_validation_and_real_powershell_errors(tmp_path: "Path", capsys: pytest.CaptureFixture[str]) -> None:
+    import json
+    import sys
+
+    from vm_lab.exceptions import EXIT_INPUT_ERROR
+
+    # Missing --source fails argparse with exit 2
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["artifact", "deploy", "TestVM", "--manifest", "m.json"])
+    assert exc.value.code == 2
+
+    # Missing both --manifest and --destination fails cleanly with EXIT_INPUT_ERROR
+    rc_missing = cli.main(["artifact", "plan", "TestVM", "--source", str(tmp_path)])
+    assert rc_missing == EXIT_INPUT_ERROR
+
+    if sys.platform != "win32":
+        pytest.skip("PowerShell backend requires Windows")
+
+    # Missing source directory fails in real Invoke-VmLab.ps1
+    missing_src = tmp_path / "does not exist"
+    rc_ms = cli.main(["artifact", "plan", "TestVM", "--source", str(missing_src), "--destination", r"C:\GuestAssets"])
+    assert rc_ms == EXIT_ERROR
+
+    # Missing manifest file fails in real Invoke-VmLab.ps1
+    src_dir = tmp_path / "src with spaces"
+    src_dir.mkdir()
+    (src_dir / "app.txt").write_text("hello", encoding="utf-8")
+    rc_mm = cli.main(["artifact", "deploy", "TestVM", "--source", str(src_dir), "--manifest", str(tmp_path / "missing.json")])
+    assert rc_mm == EXIT_ERROR
+
+    # Manifest / file digest mismatch fails in real Invoke-VmLab.ps1
+    bad_man = tmp_path / "bad_manifest.json"
+    bad_man.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "manifest_id": "m-bad",
+                "destination_root": r"C:\GuestAssets",
+                "artifacts": [{"relative_path": "app.txt", "sha256": "0" * 64, "length": 5}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rc_dm = cli.main(["artifact", "deploy", "TestVM", "--source", str(src_dir), "--manifest", str(bad_man), "-a", "--authorize-guest-mutation"])
+    assert rc_dm == EXIT_ERROR
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("use_json", [False, True])
+@pytest.mark.parametrize(
+    ("status", "reason_code", "backend_rc", "expected_exit"),
+    [
+        ("PLANNED", "workflow_plan_valid", 0, EXIT_SUCCESS),
+        ("SUCCEEDED", "workflow_completed", 0, EXIT_SUCCESS),
+        ("SUCCEEDED", "workflow_completed", 1, 1),
+        ("BLOCKED", "capability_required_host_mutation", 0, 3),
+        ("FAILED", "stage_exception", 0, EXIT_ERROR),
+        ("PARTIAL", "shutdown_not_confirmed", 0, 5),
+        ("AWAITING_INTERACTION", "windows_install_handoff", 0, 4),
+        ("AWAITING_AUTHORIZATION", "operator_consent_required", 0, 3),
+        ("REBOOT_REQUIRED", "installer_reboot_required_3010", 0, 5),
+        ("INVALIDATED", "journal_corrupt", 0, EXIT_ERROR),
+    ],
+)
+def test_cli_classifies_all_statuses_with_and_without_json(
+    use_json: bool,
+    status: str,
+    reason_code: str,
+    backend_rc: int,
+    expected_exit: int,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json
+    from vm_lab.backend import BackendAdapter
+    from vm_lab.results import classify_exit_code
+
+    payload = {"status": status, "reason_code": reason_code, "vm_name": "Disp-01"}
+    be = MagicMock(spec=BackendAdapter)
+    be.invoke.return_value = MagicMock(
+        stdout=json.dumps(payload) + "\n",
+        stderr="",
+        data=payload,
+        returncode=backend_rc,
+        exit_code=classify_exit_code(payload, backend_rc),
+    )
+
+    argv = ["workflow", "run", "wf.json", "-a"] + (["-j"] if use_json else [])
+    rc = cli.main(argv, adapter=be)
+    assert rc == expected_exit
+    # Modern subcommands ALWAYS pass -Json internally to Invoke-VmLab.ps1
+    assert "-Json" in be.invoke.call_args.args[0]
+
+    out = capsys.readouterr().out
+    if use_json:
+        assert json.loads(out)["status"] == status
+    else:
+        assert f"status: {status}" in out
+
+
+def test_real_workflow_run_without_json_returns_nonzero_on_failure(tmp_path: "Path", capsys: pytest.CaptureFixture[str]) -> None:
+    import sys
+
+    if sys.platform != "win32":
+        pytest.skip("PowerShell backend requires Windows")
+
+    bad_wf = tmp_path / "bad.workflow.json"
+    bad_wf.write_text('{"schema_version": 99}', encoding="utf-8")
+    rc = cli.main(["workflow", "run", str(bad_wf), "-a"])
+    assert rc != 0
+    capsys.readouterr()
