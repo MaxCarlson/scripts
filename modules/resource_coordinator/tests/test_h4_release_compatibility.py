@@ -520,3 +520,65 @@ def test_guest_credential_provider_provisions_and_verifies_isolated_acl(tmp_path
     assert provider.load(token_path) == provider.token
     with pytest.raises(RuntimeError):
         provider._check_path(tmp_path / "outside.token")
+
+
+def test_managed_root_launcher_relationship_is_enforced_in_lifecycle_and_cleanup(tmp_path):
+    import inspect
+
+    phase_root = tmp_path / "phase"
+    phase_root.mkdir()
+    launcher = phase_root / "start-coordinator-managed.ps1"
+
+    with pytest.raises(windows_acceptance.GuestLifecycleError) as exc_info:
+        windows_acceptance._assert_managed_root_contains_launcher(phase_root / "task-helper", launcher)
+    assert exc_info.value.reason_code == "managed_root_launcher_mismatch"
+
+    windows_acceptance._assert_managed_root_contains_launcher(phase_root, launcher)
+
+    lifecycle_src = inspect.getsource(windows_acceptance._run_guest_lifecycle)
+    cleanup_src = inspect.getsource(windows_acceptance._run_guest_cleanup)
+    assert 'phase_root / "task-helper"' not in lifecycle_src
+    assert 'phase_root / "task-helper"' not in cleanup_src
+    assert "managed_root=phase_root" in lifecycle_src
+    assert "managed_root=phase_root" in cleanup_src
+
+
+def test_cleanup_profile_preserves_prior_failure_test_results_and_junit(tmp_path, monkeypatch):
+    import json
+
+    run_root = tmp_path / "h4-rc-cleanup-preserve"
+    run_root.mkdir()
+    (run_root / ".h4-test-root.json").write_text('{"root_id":"1234567890"}', encoding="utf-8")
+    prior_results = '{"status":"failed","reason_code":"InstallationError"}'
+    prior_junit = '<testsuite errors="1" tests="1"/>'
+    (run_root / "test-results.json").write_text(prior_results, encoding="utf-8")
+    (run_root / "junit.xml").write_text(prior_junit, encoding="utf-8")
+
+    src_root = tmp_path / "sources" / "rc-1.0.0"
+    src_root.mkdir(parents=True)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("RC_H4_DISPOSABLE_GUEST_AUTHORIZED", windows_acceptance.AUTHORIZATION_PHRASE)
+    monkeypatch.setattr(windows_acceptance.sys, "platform", "win32")
+    monkeypatch.setattr(windows_acceptance.os, "name", "nt")
+    monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {"queries": {"system": "available"}})
+    monkeypatch.setattr(windows_acceptance, "guard_reasons", lambda *a, **kw: ())
+    monkeypatch.setattr(windows_acceptance, "task_path_reasons", lambda *a, **kw: ())
+    monkeypatch.setattr(windows_acceptance, "_repository_roots", lambda *a, **kw: (src_root, None, "a" * 64, None))
+    monkeypatch.setattr(windows_acceptance, "_run_guest_cleanup", lambda r, s: {"status": "verified", "phases": []})
+
+    rc = windows_acceptance.main([
+        "--test-root", str(run_root),
+        "--apply", "--profile", "cleanup",
+        "--authorization", windows_acceptance.AUTHORIZATION_PHRASE,
+        "--authorize-guest-mutation",
+        "--source-root", str(src_root),
+        "--source-manifest", str(manifest),
+        "--json",
+    ])
+    assert rc == 0
+    assert (run_root / "test-results.json").read_text(encoding="utf-8") == prior_results
+    assert (run_root / "junit.xml").read_text(encoding="utf-8") == prior_junit
+    cleanup = json.loads((run_root / "cleanup-result.json").read_text(encoding="utf-8"))
+    assert cleanup["status"] == "verified"

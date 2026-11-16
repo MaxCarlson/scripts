@@ -586,6 +586,17 @@ def _isolated_service_config(template: Path, root: Path, port: int) -> None:
     config.write_text(yaml.safe_dump(value, sort_keys=False), encoding="utf-8", newline="\n")
 
 
+def _assert_managed_root_contains_launcher(managed_root: Path, launcher_path: Path) -> None:
+    root_resolved = managed_root.resolve(strict=False)
+    launcher_resolved = launcher_path.resolve(strict=False)
+    if os.path.commonpath((str(root_resolved), str(launcher_resolved))) != str(root_resolved) or launcher_resolved == root_resolved:
+        raise GuestLifecycleError(
+            "managed_root does not contain the managed launcher path",
+            stage="backend_init",
+            reason_code="managed_root_launcher_mismatch",
+        )
+
+
 def _run_guest_lifecycle(profile: str, root: Path, source_root: Path,
                          old_source_root: Optional[Path], timeout_seconds: int,
                          fault_stage: Optional[str]) -> Dict[str, Any]:
@@ -641,8 +652,9 @@ def _run_guest_lifecycle(profile: str, root: Path, source_root: Path,
         )
         paths = InstallationPaths.isolated(root=phase_root, repository=new_root, python=Path(sys.executable))
         backend = WindowsStartupTaskBackend(
-            managed_root=phase_root / "task-helper", task_names=names, guest_mutation_guard=gate,
+            managed_root=phase_root, task_names=names, guest_mutation_guard=gate,
         )
+        _assert_managed_root_contains_launcher(backend.managed_root, paths.launcher)
         current = ManagedInstallation(paths, backend, runtime=runtime)
         task_manifest = {"schema_version": 1, "run_id": run_id, "phase": phase,
                          "task_names": list(names.values()), "root": str(phase_root), "port": port,
@@ -786,8 +798,9 @@ def _run_guest_cleanup(root: Path, source_root: Path) -> Dict[str, Any]:
                                       listen_port=port, guest_mutation_guard=gate,
                                       credential_provider=GuestCredentialProvider(phase_root))
         paths = InstallationPaths.isolated(root=phase_root, repository=new_root, python=Path(sys.executable))
-        backend = WindowsStartupTaskBackend(managed_root=phase_root / "task-helper", task_names=name_map,
+        backend = WindowsStartupTaskBackend(managed_root=phase_root, task_names=name_map,
                                             guest_mutation_guard=gate)
+        _assert_managed_root_contains_launcher(backend.managed_root, paths.launcher)
         manager = ManagedInstallation(paths, backend, runtime=runtime)
         identity_path = phase_root / "process-identity.json"
         identity = json.loads(identity_path.read_text(encoding="utf-8")) if identity_path.is_file() else {}
@@ -1045,11 +1058,14 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
             lifecycle_runner = lifecycle_runner_override or _run_guest_lifecycle
             if args.profile == "cleanup":
                 outcome = _run_guest_cleanup(test_root, args.source_root)
+                outcome = {"schema_version": 1, **outcome, "exit_code": 0, "completed_at": _now()}
                 _write_json(test_root / "cleanup-result.json", outcome)
-            else:
-                gate()
-                outcome = lifecycle_runner(args.profile, test_root, args.source_root,
-                                           args.old_source_root, args.timeout_seconds, args.fault_stage)
+                print(json.dumps(outcome, sort_keys=True) if args.json else
+                      f"H4 {args.profile} profile: passed; results={test_root / 'cleanup-result.json'}")
+                return 0
+            gate()
+            outcome = lifecycle_runner(args.profile, test_root, args.source_root,
+                                       args.old_source_root, args.timeout_seconds, args.fault_stage)
             outcome = {"schema_version": 1, **outcome, "exit_code": 0,
                        "completed_at": _now()}
             _write_json(test_root / "test-results.json", outcome)

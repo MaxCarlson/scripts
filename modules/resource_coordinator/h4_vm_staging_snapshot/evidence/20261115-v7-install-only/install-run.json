@@ -1,0 +1,11 @@
+{
+  "operation_id": "v7-install-20261115-192345-438f7d",
+  "guest_run_root": "C:\\H4-Guest-Work\\runs\\h4-rc-install-v7-install-20261115-192345-438f7d",
+  "install_exit": 4,
+  "install_output": "{\"completed_at\": \"2026-11-16T03:24:40.433713+00:00\", \"exception_chain\": [\"InstallationError\", \"InstallationError\", \"InstallationError\"], \"exit_code\": 4, \"guard_reasons\": [], \"profile\": \"install\", \"reason_code\": \"InstallationError\", \"schema_version\": 1, \"stage\": \"lifecycle\", \"status\": \"failed\"}",
+  "cleanup_exit": 0,
+  "cleanup_output": "{\"completed_at\": \"2026-11-16T03:24:51.044734+00:00\", \"exit_code\": 0, \"phases\": [{\"cleanup_return_status\": \"already-stopped\", \"listener\": \"not-found\", \"phase\": \"install\", \"process_termination_verified\": true, \"remaining_tasks\": [], \"status\": \"verified\", \"task_names\": [\"ResourceCoordinator-H4-e4b3c4919a-install-boot\", \"ResourceCoordinator-H4-e4b3c4919a-install-logon\", \"ResourceCoordinator-H4-e4b3c4919a-install-viewer\"]}], \"schema_version\": 1, \"source_tree_sha256\": \"27764f44b7311072b62b0dbf8d8faa96260f3deb8a0f09bf0bef969368599989\", \"status\": \"verified\"}",
+  "PSComputerName": "RC-H4-Windows-Acceptance",
+  "RunspaceId": "28808687-cc09-4283-a2dc-1a21ea2aa983",
+  "PSShowComputerName": true
+}

@@ -1,0 +1,21 @@
+{
+  "completed_at": "2026-11-16T03:24:51.044734+00:00",
+  "phases": [
+    {
+      "cleanup_return_status": "already-stopped",
+      "listener": "not-found",
+      "phase": "install",
+      "process_termination_verified": true,
+      "remaining_tasks": [],
+      "status": "verified",
+      "task_names": [
+        "ResourceCoordinator-H4-e4b3c4919a-install-boot",
+        "ResourceCoordinator-H4-e4b3c4919a-install-logon",
+        "ResourceCoordinator-H4-e4b3c4919a-install-viewer"
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "source_tree_sha256": "27764f44b7311072b62b0dbf8d8faa96260f3deb8a0f09bf0bef969368599989",
+  "status": "verified"
+}
