@@ -602,10 +602,11 @@ try {
         (Get-Content -LiteralPath $sentinelPath -Raw) | Should Be '{"preserved":true}'
 
         $distinctEvRoot = Join-Path $testTemp 'distinct_resume_ev_root'
-        $rResume = Invoke-Qual -Extra @{ Stage = 'Acceptance'; Apply = $true; AuthorizeGuestMutation = $true; EvidenceRoot = $distinctEvRoot; OperationId = 'optest01' }
+        $rResume = Invoke-Qual -Extra @{ Stage = 'Acceptance'; Apply = $true; AuthorizeGuestMutation = $true; EvidenceRoot = $distinctEvRoot; OperationId = 'optest01'; RunSuffix = 'r2' }
         $rResume.ExitCode | Should Be 0
         (Get-Content -LiteralPath $sentinelPath -Raw) | Should Be '{"preserved":true}'
         $resumedJson = Get-Content -LiteralPath (Join-Path $distinctEvRoot 'optest01\final-summary.json') -Raw | ConvertFrom-Json
         $resumedJson.stage_results.Acceptance | Should Be 'PASS'
+        $resumedJson.profiles[1].test_root | Should Be 'C:\H4-Guest-Work\runs\h4-rc-task-optest01-r2'
     }
 }

@@ -988,7 +988,7 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
     env = os.environ.copy()
     selected_module_root = (
         args.source_root.expanduser().resolve() / "modules" / "resource_coordinator"
-        if args.profile == "offline"
+        if args.source_root is not None
         else Path(__file__).resolve().parents[2]
     )
     metrics_root = selected_module_root.parent / "resource_metrics"

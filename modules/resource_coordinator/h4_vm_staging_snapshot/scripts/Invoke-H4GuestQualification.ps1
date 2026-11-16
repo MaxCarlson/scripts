@@ -54,7 +54,9 @@ param(
     [string]$PwshInstaller = 'C:\H4-VM-Staging\guest-deps\installers\PowerShell-7.6.10-win-x64.msi',
     [string]$ExpectedPwshSha256 = '7D8DAEA48B450D4D62FCD1AC4D6FAA7AC2DB5E11ABA5061EE81B7496ADCA8C07',
     [string]$EvidenceRoot = 'C:\H4-VM-Staging\evidence',
-    [string]$CheckpointName = ''
+    [string]$CheckpointName = '',
+    [ValidatePattern('^[a-zA-Z0-9_-]*$')]
+    [string]$RunSuffix = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -639,12 +641,13 @@ try {
         $guestSrcOld = "$guestBundleRoot\sources\rc-0.14.0"
         $guestRunner = "$guestBundleRoot\harness\windows_acceptance.py"
 
+        $suffixPart = if ([string]::IsNullOrWhiteSpace($RunSuffix)) { '' } else { "-$RunSuffix" }
         $phaseSpecs = [System.Collections.Generic.List[object]]::new()
-        $phaseSpecs.Add([pscustomobject]@{ name = 'offline'; run_name = "h4-rc-offline-$OperationId"; args = @('--apply', '--profile', 'offline', '--source-root', $guestSrcNew, '--json') })
-        $phaseSpecs.Add([pscustomobject]@{ name = 'task'; run_name = "h4-rc-task-$OperationId"; args = @('--apply', '--profile', 'task', '--authorization', $H4AuthorizationPhrase, '--authorize-guest-mutation', '--source-root', $guestSrcNew, '--source-manifest', $guestManifest, '--json') })
-        $phaseSpecs.Add([pscustomobject]@{ name = 'full'; run_name = "h4-rc-full-$OperationId"; args = @('--apply', '--profile', 'full', '--authorization', $H4AuthorizationPhrase, '--authorize-guest-mutation', '--source-root', $guestSrcNew, '--old-source-root', $guestSrcOld, '--source-manifest', $guestManifest, '--timeout-seconds', '900', '--json') })
+        $phaseSpecs.Add([pscustomobject]@{ name = 'offline'; run_name = "h4-rc-offline-$OperationId$suffixPart"; args = @('--apply', '--profile', 'offline', '--source-root', $guestSrcNew, '--json') })
+        $phaseSpecs.Add([pscustomobject]@{ name = 'task'; run_name = "h4-rc-task-$OperationId$suffixPart"; args = @('--apply', '--profile', 'task', '--authorization', $H4AuthorizationPhrase, '--authorize-guest-mutation', '--source-root', $guestSrcNew, '--source-manifest', $guestManifest, '--json') })
+        $phaseSpecs.Add([pscustomobject]@{ name = 'full'; run_name = "h4-rc-full-$OperationId$suffixPart"; args = @('--apply', '--profile', 'full', '--authorization', $H4AuthorizationPhrase, '--authorize-guest-mutation', '--source-root', $guestSrcNew, '--old-source-root', $guestSrcOld, '--source-manifest', $guestManifest, '--timeout-seconds', '900', '--json') })
         foreach ($rStage in $RollbackStages) {
-            $phaseSpecs.Add([pscustomobject]@{ name = "rollback-$rStage"; run_name = "h4-rc-rb-$rStage-$OperationId"; args = @('--apply', '--profile', 'rollback', '--fault-stage', $rStage, '--authorization', $H4AuthorizationPhrase, '--authorize-guest-mutation', '--source-root', $guestSrcNew, '--old-source-root', $guestSrcOld, '--source-manifest', $guestManifest, '--timeout-seconds', '900', '--json') })
+            $phaseSpecs.Add([pscustomobject]@{ name = "rollback-$rStage"; run_name = "h4-rc-rb-$rStage-$OperationId$suffixPart"; args = @('--apply', '--profile', 'rollback', '--fault-stage', $rStage, '--authorization', $H4AuthorizationPhrase, '--authorize-guest-mutation', '--source-root', $guestSrcNew, '--old-source-root', $guestSrcOld, '--source-manifest', $guestManifest, '--timeout-seconds', '900', '--json') })
         }
 
         $profileOutcomes = [System.Collections.Generic.List[object]]::new()

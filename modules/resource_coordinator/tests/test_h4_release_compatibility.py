@@ -261,3 +261,99 @@ def test_cleanup_allowlist_accepts_lifecycle_runs_and_junit_xml(tmp_path):
     assert not any("unrecognized" in r or "not_empty" in r for r in reasons), reasons
     rc = windows_acceptance.main(["--test-root", str(run_root), "--profile", "cleanup", "--json"])
     assert rc == 3
+
+
+def test_task_profile_uses_verified_source_root_from_extracted_bundle_layout(tmp_path, monkeypatch):
+    bundle_root = tmp_path / "extracted_bundle"
+    harness_dir = bundle_root / "harness"
+    harness_dir.mkdir(parents=True)
+    bundle_runner = harness_dir / "windows_acceptance.py"
+    bundle_runner.write_text("# extracted runner copy\n", encoding="utf-8")
+
+    src_root = bundle_root / "sources" / "rc-1.0.0"
+    mod_root = src_root / "modules" / "resource_coordinator"
+    tests_dir = mod_root / "tests"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "test_windows_task_transport_integration.py").write_text(
+        "def test_windows_disposable_task_registration_snapshot_restore_and_verification():\n    pass\n",
+        encoding="utf-8",
+    )
+    manifest = bundle_root / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    run_root = tmp_path / "h4-rc-task-bundle-layout"
+    run_root.mkdir()
+
+    monkeypatch.setenv("RC_H4_DISPOSABLE_GUEST_AUTHORIZED", windows_acceptance.AUTHORIZATION_PHRASE)
+    monkeypatch.setattr(windows_acceptance, "__file__", str(bundle_runner))
+    monkeypatch.setattr(windows_acceptance.sys, "platform", "win32")
+    monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {"queries": {"system": "ok"}})
+    monkeypatch.setattr(windows_acceptance, "guard_reasons", lambda *a, **kw: ())
+    monkeypatch.setattr(windows_acceptance, "task_path_reasons", lambda *a, **kw: ())
+    monkeypatch.setattr(
+        windows_acceptance,
+        "_repository_roots",
+        lambda *a, **kw: (src_root, None, "deadbeef" * 8, None),
+    )
+
+    captured = {}
+
+    class _FakeCompleted:
+        returncode = 0
+        stdout = "1 passed"
+        stderr = ""
+
+    def _fake_run(command, cwd=None, env=None, **kwargs):
+        captured["command"] = list(command)
+        captured["cwd"] = Path(cwd)
+        captured["pythonpath"] = env.get("PYTHONPATH", "")
+        captured["flag"] = env.get("RC_WINDOWS_TASK_INTEGRATION")
+        junit_idx = command.index("--junitxml") + 1
+        Path(command[junit_idx]).write_text(
+            '<testsuite tests="1" failures="0" errors="0" skipped="0"></testsuite>',
+            encoding="utf-8",
+        )
+        return _FakeCompleted()
+
+    monkeypatch.setattr(windows_acceptance.subprocess, "run", _fake_run)
+
+    rc = windows_acceptance.main(
+        [
+            "--test-root",
+            str(run_root),
+            "--apply",
+            "--profile",
+            "task",
+            "--authorization",
+            windows_acceptance.AUTHORIZATION_PHRASE,
+            "--authorize-guest-mutation",
+            "--source-root",
+            str(src_root),
+            "--source-manifest",
+            str(manifest),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    assert captured["cwd"] == mod_root.resolve()
+    assert str(mod_root.resolve()) in captured["pythonpath"]
+    assert captured["flag"] == "1"
+    assert (
+        "tests/test_windows_task_transport_integration.py::test_windows_disposable_task_registration_snapshot_restore_and_verification"
+        in captured["command"]
+    )
+
+
+def test_task_profile_target_collects_from_module_root():
+    import subprocess
+    import sys
+
+    target = "tests/test_windows_task_transport_integration.py::test_windows_disposable_task_registration_snapshot_restore_and_verification"
+    res = subprocess.run(
+        [sys.executable, "-B", "-m", "pytest", "--collect-only", target],
+        cwd=MODULE_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "test_windows_disposable_task_registration_snapshot_restore_and_verification" in res.stdout
