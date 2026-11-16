@@ -123,41 +123,50 @@ try {
 } catch { $result.queries.processes = 'error'; $result.errors += "process_query:$($_.Exception.GetType().Name)" }
 try {
   $result.current_user = [string]"$env:USERDOMAIN\$env:USERNAME"
-  $prevEap = $ErrorActionPreference
-  $ErrorActionPreference = 'Continue'
-  $quserOut = @(quser 2>&1)
-  $quserExit = $LASTEXITCODE
-  $ErrorActionPreference = $prevEap
-  $quserText = ($quserOut | ForEach-Object { [string]$_ }) -join "`n"
-  $sessions = @()
-  if ($quserExit -eq 0) {
-    foreach ($line in ($quserOut | Select-Object -Skip 1)) {
-      $text = [string]$line
-      if ([string]::IsNullOrWhiteSpace($text)) { continue }
-      $clean = $text.TrimStart(' ', '>')
-      $parts = @($clean -split '\s{2,}')
-      if ($parts.Count -ge 4) {
-        $hasName = ($parts.Count -ge 5 -and $parts[1] -notmatch '^\d+$')
-        $sessName = if ($hasName) { $parts[1] } else { '' }
-        $sessIdRaw = if ($hasName) { $parts[2] } else { $parts[1] }
-        $sessState = if ($hasName) { $parts[3] } else { $parts[2] }
-        $sessId = 0
-        if ([int]::TryParse($sessIdRaw, [ref]$sessId)) {
-          $sessions += @{username=$parts[0]; session_name=$sessName; session_id=$sessId; state=$sessState}
-        }
-      }
+  if (-not ('H4WtsProbe' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class H4WtsProbe {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct WTS_SESSION_INFO {
+        public int SessionID;
+        public IntPtr pWinStationName;
+        public int State;
     }
-    $result.interactive_sessions = $sessions
-    $result.queries.sessions = 'available'
-  } elseif ($quserText -match 'No User exists') {
-    $result.interactive_sessions = @()
-    $result.queries.sessions = 'available'
-  } else {
-    $result.interactive_sessions = @()
-    $result.queries.sessions = 'error'
-    $result.errors += "session_query:exit_$quserExit"
+    [DllImport("wtsapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool WTSEnumerateSessionsW(IntPtr hServer, int Reserved, int Version, out IntPtr ppSessionInfo, out int pCount);
+    [DllImport("wtsapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool WTSQuerySessionInformationW(IntPtr hServer, int SessionId, int WTSInfoClass, out IntPtr ppBuffer, out int pBytesReturned);
+    [DllImport("wtsapi32.dll")]
+    public static extern void WTSFreeMemory(IntPtr pMemory);
+}
+"@ -ErrorAction Stop
   }
-} catch { $result.queries.sessions = 'error'; $result.errors += "session_query:$($_.Exception.GetType().Name)" }
+  $ptr = [IntPtr]::Zero; $cnt = 0
+  if (-not [H4WtsProbe]::WTSEnumerateSessionsW([IntPtr]::Zero, 0, 1, [ref]$ptr, [ref]$cnt)) {
+    throw "WTSEnumerateSessionsW failed"
+  }
+  $sessions = @()
+  try {
+    $sz = [Runtime.InteropServices.Marshal]::SizeOf([type][H4WtsProbe+WTS_SESSION_INFO])
+    $stateNames = @{0='Active';1='Connected';2='ConnectQuery';3='Shadow';4='Disc';5='Idle';6='Listen';7='Reset';8='Down';9='Init'}
+    for ($i = 0; $i -lt $cnt; $i++) {
+      $item = [Runtime.InteropServices.Marshal]::PtrToStructure([IntPtr]::Add($ptr, $i * $sz), [type][H4WtsProbe+WTS_SESSION_INFO])
+      $ws = [string][Runtime.InteropServices.Marshal]::PtrToStringUni($item.pWinStationName)
+      $uPtr = [IntPtr]::Zero; $uB = 0; $dPtr = [IntPtr]::Zero; $dB = 0; $pPtr = [IntPtr]::Zero; $pB = 0
+      $u = if ([H4WtsProbe]::WTSQuerySessionInformationW([IntPtr]::Zero, $item.SessionID, 5, [ref]$uPtr, [ref]$uB)) { try { [string][Runtime.InteropServices.Marshal]::PtrToStringUni($uPtr) } finally { [H4WtsProbe]::WTSFreeMemory($uPtr) } } else { '' }
+      $d = if ([H4WtsProbe]::WTSQuerySessionInformationW([IntPtr]::Zero, $item.SessionID, 7, [ref]$dPtr, [ref]$dB)) { try { [string][Runtime.InteropServices.Marshal]::PtrToStringUni($dPtr) } finally { [H4WtsProbe]::WTSFreeMemory($dPtr) } } else { '' }
+      $proto = if ([H4WtsProbe]::WTSQuerySessionInformationW([IntPtr]::Zero, $item.SessionID, 16, [ref]$pPtr, [ref]$pB)) { try { [int][Runtime.InteropServices.Marshal]::ReadInt16($pPtr) } finally { [H4WtsProbe]::WTSFreeMemory($pPtr) } } else { -1 }
+      $stName = if ($stateNames.ContainsKey([int]$item.State)) { $stateNames[[int]$item.State] } else { [string]$item.State }
+      $sessions += @{username=$u; domain=$d; session_name=$ws; session_id=[int]$item.SessionID; state=$stName; state_code=[int]$item.State; protocol_type=$proto}
+    }
+  } finally {
+    if ($ptr -ne [IntPtr]::Zero) { [H4WtsProbe]::WTSFreeMemory($ptr) }
+  }
+  $result.interactive_sessions = $sessions
+  $result.queries.sessions = 'available'
+} catch { $result.interactive_sessions = @(); $result.queries.sessions = 'error'; $result.errors += "session_query:$($_.Exception.GetType().Name)" }
 $result | ConvertTo-Json -Depth 6 -Compress
 """
     env = os.environ.copy()
@@ -225,7 +234,7 @@ def guest_identity(evidence: Dict[str, Any]) -> bool:
 
 
 def has_eligible_interactive_session(evidence: Dict[str, Any]) -> bool:
-    """Return True only when an Active interactive desktop session (>0) matches current_user."""
+    """Return True only when an Active WTS interactive session (>0) matches current_user."""
     if evidence.get("queries", {}).get("sessions") != "available":
         return False
     current_user = str(evidence.get("current_user") or "").strip()
@@ -237,16 +246,28 @@ def has_eligible_interactive_session(evidence: Dict[str, Any]) -> bool:
         sess_id = sess.get("session_id")
         if type(sess_id) is not int or sess_id <= 0:
             continue
-        if str(sess.get("state", "")).casefold() != "active":
+        state_code = sess.get("state_code")
+        if state_code is not None:
+            if state_code != 0:
+                continue
+        elif str(sess.get("state", "")).casefold() != "active":
             continue
-        sess_name = str(sess.get("session_name", "")).casefold()
-        if not (sess_name == "console" or sess_name.startswith("rdp-tcp")):
+        proto = sess.get("protocol_type")
+        if proto is not None and proto not in (0, 2):
             continue
-        sess_user = str(sess.get("username", "")).strip().casefold()
-        if short_user and sess_user != short_user:
+        sess_name = str(sess.get("session_name", "")).strip().casefold()
+        if sess_name in {"", "services", "listener"}:
             continue
-        if sess_user:
-            return True
+        sess_user = str(sess.get("username", "")).strip()
+        sess_domain = str(sess.get("domain", "")).strip()
+        if not sess_user:
+            continue
+        if current_user and "\\" in current_user and sess_domain:
+            if f"{sess_domain}\\{sess_user}".casefold() != current_user.casefold():
+                continue
+        elif short_user and sess_user.casefold() != short_user:
+            continue
+        return True
     return False
 
 

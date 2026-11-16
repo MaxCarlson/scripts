@@ -603,11 +603,31 @@ def test_interactive_session_eligibility_and_guard_rejection(tmp_path, monkeypat
     assert windows_acceptance.has_eligible_interactive_session(base_ev) is True
     assert windows_acceptance.guard_reasons(base_ev, h4_root, is_windows=True, require_interactive_session=True) == []
 
-    # Disconnected session, session 0, wrong user, or unavailable query must block
+    # Hyper-V VMConnect Enhanced Session uses a GUID WinStation name (e.g. 31c5ce94259d...) with protocol_type=2 (RDP)
+    vmconnect_ev = {
+        **base_ev,
+        "interactive_sessions": [
+            {
+                "username": "mcarls",
+                "domain": "DESKTOP-1ITSJV0",
+                "session_name": "31c5ce94259d4a009911223344556677",
+                "session_id": 2,
+                "state": "Active",
+                "state_code": 0,
+                "protocol_type": 2,
+            },
+        ],
+    }
+    assert windows_acceptance.has_eligible_interactive_session(vmconnect_ev) is True
+    assert windows_acceptance.guard_reasons(vmconnect_ev, h4_root, is_windows=True, require_interactive_session=True) == []
+
+    # Disconnected session, session 0, wrong user/domain, non-interactive protocol, or unavailable query must block
     for bad_sessions, q_state in [
-        ([{"username": "mcarls", "session_name": "", "session_id": 1, "state": "Disc"}], "available"),
-        ([{"username": "mcarls", "session_name": "services", "session_id": 0, "state": "Active"}], "available"),
-        ([{"username": "other", "session_name": "console", "session_id": 2, "state": "Active"}], "available"),
+        ([{"username": "mcarls", "domain": "DESKTOP-1ITSJV0", "session_name": "", "session_id": 1, "state": "Disc", "state_code": 4, "protocol_type": 2}], "available"),
+        ([{"username": "mcarls", "session_name": "services", "session_id": 0, "state": "Active", "state_code": 0, "protocol_type": 0}], "available"),
+        ([{"username": "other", "domain": "DESKTOP-1ITSJV0", "session_name": "console", "session_id": 2, "state": "Active", "state_code": 0, "protocol_type": 0}], "available"),
+        ([{"username": "mcarls", "domain": "OTHERHOST", "session_name": "console", "session_id": 2, "state": "Active", "state_code": 0, "protocol_type": 0}], "available"),
+        ([{"username": "mcarls", "domain": "DESKTOP-1ITSJV0", "session_name": "console", "session_id": 2, "state": "Active", "state_code": 0, "protocol_type": 1}], "available"),
         ([], "available"),
         ([], "error"),
     ]:
