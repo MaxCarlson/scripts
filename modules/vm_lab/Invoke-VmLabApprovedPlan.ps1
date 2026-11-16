@@ -44,11 +44,41 @@ if (-not $OperatorConsent -or $DryRun -or $WhatIfPreference -or -not $PSCmdlet.S
     if ($OperatorConsent) { exit 0 } else { exit 1 }
 }
 
+if (-not (Test-Path -LiteralPath $opDir -PathType Container)) {
+    New-Item -ItemType Directory -Path $opDir -Force | Out-Null
+}
+
+# Atomically claim the single-use receipt before executing to eliminate TOCTOU replay races
+$claimReceipt = [ordered]@{
+    schema_version  = 1
+    request_id      = $req.request_id
+    request_digest  = $verified.request_digest
+    operation_id    = $req.operation_id
+    workflow_digest = $req.workflow_digest
+    executed_by     = "$env:USERDOMAIN\$env:USERNAME"
+    started_at      = [DateTimeOffset]::UtcNow.ToString('o')
+    result_status   = 'IN_PROGRESS'
+    reason_code     = 'approval_claimed'
+    vm_id           = [string]$req.expected_vm_id
+}
+try {
+    $claimFs = [System.IO.File]::Open($receiptPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    try {
+        $claimBytes = [System.Text.Encoding]::UTF8.GetBytes(($claimReceipt | ConvertTo-Json -Depth 10))
+        $claimFs.Write($claimBytes, 0, $claimBytes.Length)
+    } finally {
+        $claimFs.Dispose()
+    }
+} catch [System.IO.IOException] {
+    throw "approval_already_consumed: Request '$($req.request_id)' was already claimed or executed at '$receiptPath'."
+}
+
 $caps = @($req.allowed_capabilities)
 $wfArgs = @{
     WorkflowPath           = [string]$req.workflow_path
     OperationId            = [string]$req.operation_id
     OperationRoot          = [string]$req.operation_root
+    ExpectedWorkflowDigest = [string]$req.workflow_digest
     Apply                  = $true
     AuthorizeHostMutation  = ($caps -contains 'host_mutation')
     AuthorizeVmLifecycle   = ($caps -contains 'vm_lifecycle')
@@ -56,9 +86,18 @@ $wfArgs = @{
     AuthorizeGuestExec     = ($caps -contains 'guest_exec')
     AuthorizeElevation     = $true
 }
+if (-not [string]::IsNullOrWhiteSpace([string]$req.expected_vm_id)) {
+    $wfArgs.ExpectedVmId = [string]$req.expected_vm_id
+}
 if ($null -ne $Credential) { $wfArgs.Credential = $Credential }
 
-$wfResult = Invoke-VmLabWorkflow @wfArgs
+$wfResult = $null
+$execError = $null
+try {
+    $wfResult = Invoke-VmLabWorkflow @wfArgs
+} catch {
+    $execError = $_.Exception.Message
+}
 
 $receipt = [ordered]@{
     schema_version  = 1
@@ -67,17 +106,20 @@ $receipt = [ordered]@{
     operation_id    = $req.operation_id
     workflow_digest = $req.workflow_digest
     executed_by     = "$env:USERDOMAIN\$env:USERNAME"
+    started_at      = $claimReceipt.started_at
     executed_at     = [DateTimeOffset]::UtcNow.ToString('o')
-    result_status   = $wfResult.status
-    reason_code     = $wfResult.reason_code
-    vm_id           = $wfResult.vm_id
-}
-if (-not (Test-Path -LiteralPath $opDir -PathType Container)) {
-    New-Item -ItemType Directory -Path $opDir -Force | Out-Null
+    result_status   = if ($null -ne $execError) { 'FAIL' } else { $wfResult.status }
+    reason_code     = if ($null -ne $execError) { 'approved_plan_execution_exception' } else { $wfResult.reason_code }
+    vm_id           = if ($null -ne $wfResult) { $wfResult.vm_id } else { [string]$req.expected_vm_id }
+    error           = $execError
 }
 $tmp = "$receiptPath.tmp.$PID"
 [System.IO.File]::WriteAllText($tmp, ($receipt | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
 [System.IO.File]::Move($tmp, $receiptPath, $true)
+
+if ($null -ne $execError) {
+    throw "Approved plan execution failed: $execError"
+}
 
 $wfResult | ConvertTo-Json -Depth 10
 if ($wfResult.status -in @('SUCCEEDED', 'AWAITING_INTERACTION')) { exit 0 } else { exit 1 }

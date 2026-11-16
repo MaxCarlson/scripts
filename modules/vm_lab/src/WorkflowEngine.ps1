@@ -26,7 +26,7 @@ function Write-VmLabJsonAtomic {
 function Enter-VmLabOperationLock {
     param([Parameter(Mandatory)][string]$OpDir, [Parameter(Mandatory)][string]$OperationId)
     $lockPath = Test-VmLabSafePath -Path (Join-Path $OpDir 'operation.lock') -Label 'operation.lock' -WithinRoot $OpDir -CheckReparsePoints
-    if (Test-Path -LiteralPath $lockPath -PathType Leaf) {
+    $throwLockError = {
         $existing = $null
         try { $existing = Get-Content -LiteralPath $lockPath -Raw -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop } catch {}
         $pidAlive = $false
@@ -36,13 +36,20 @@ function Enter-VmLabOperationLock {
         $kind = if ($pidAlive) { 'active_operation_lock' } else { 'stale_operation_lock' }
         throw "${kind}: Operation lock exists at '$lockPath' (pid=$($existing.pid), host=$($existing.host)). Inspect with workflow-doctor; do not auto-delete."
     }
+    if (Test-Path -LiteralPath $lockPath -PathType Leaf) {
+        & $throwLockError
+    }
     $lockObj = [ordered]@{
         operation_id = $OperationId
         pid          = $PID
         host         = $env:COMPUTERNAME
         acquired_at  = [DateTimeOffset]::UtcNow.ToString('o')
     }
-    $fs = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    try {
+        $fs = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    } catch [System.IO.IOException] {
+        & $throwLockError
+    }
     try {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes(($lockObj | ConvertTo-Json -Depth 5))
         $fs.Write($bytes, 0, $bytes.Length)
@@ -157,6 +164,8 @@ function Invoke-VmLabWorkflow {
         [string]$WorkflowPath,
         [string]$OperationId,
         [string]$OperationRoot = 'C:\VM-Lab-Operations',
+        [string]$ExpectedWorkflowDigest,
+        [string]$ExpectedVmId,
         [pscredential]$Credential,
         [switch]$PromptCredential,
         [switch]$Apply,
@@ -195,11 +204,18 @@ function Invoke-VmLabWorkflow {
         $def = Get-Content -LiteralPath $wfSavedPath -Raw -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedWorkflowDigest) -and $planCheck.workflow_digest -ne $ExpectedWorkflowDigest.ToLowerInvariant()) {
+        throw "workflow_digest_mismatch: Expected workflow digest '$ExpectedWorkflowDigest', actual '$($planCheck.workflow_digest)'."
+    }
+
     if (-not $Apply -or $WhatIfPreference -or -not $PSCmdlet.ShouldProcess($def.vm.name, "Execute workflow '$($def.workflow_id)'")) {
         return $planCheck
     }
 
     $opDir = Test-VmLabSafePath -Path (Join-Path $opRootFull $OperationId) -Label 'OperationDir' -WithinRoot $opRootFull -CheckReparsePoints
+    if (-not $Resume -and (Test-Path -LiteralPath (Join-Path $opDir 'operation.json') -PathType Leaf)) {
+        throw "operation_id_collision: Operation '$OperationId' already exists at '$opDir'. Use -Resume (workflow-resume) to continue it."
+    }
     if (-not (Test-Path -LiteralPath $opDir -PathType Container)) {
         New-Item -ItemType Directory -Path $opDir -Force | Out-Null
     }
@@ -219,6 +235,9 @@ function Invoke-VmLabWorkflow {
         if (Test-Path -LiteralPath $journalPath -PathType Leaf) {
             $journal = Get-Content -LiteralPath $journalPath -Raw -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
             $null = Test-VmLabOperationJournalSchema -Journal $journal -ExpectedOperationId $OperationId -ExpectedWorkflowDigest $planCheck.workflow_digest
+            if (-not [string]::IsNullOrWhiteSpace($ExpectedVmId) -and -not [string]::IsNullOrWhiteSpace([string]$journal.vm_id) -and ([string]$journal.vm_id).ToLowerInvariant() -ne $ExpectedVmId.ToLowerInvariant()) {
+                throw "vm_id_mismatch: Journal vm_id '$($journal.vm_id)' does not match ExpectedVmId '$ExpectedVmId'."
+            }
         } else {
             Write-VmLabJsonAtomic -Path $wfDest -Data $def
             $stageStatesInit = [ordered]@{}
@@ -308,14 +327,35 @@ function Invoke-VmLabWorkflow {
                         $stageReason = 'preflight_ok'
                     }
                     'vm.create' {
-                        $cfg = Get-VmLabTemplate -TemplateName ([string]$def.vm.template)
-                        $cfg.vm_name = [string]$def.vm.name
-                        $cfg.vm_root = [string]$def.vm.root
-                        if ($def.vm.iso) { $cfg.iso_path = [string]$def.vm.iso }
-                        $stageOut = New-VmLabMachine -Config $cfg -Apply -ManifestRoot $ManifestRoot
-                        if ($stageOut.vm_id) { $journal.vm_id = [string]$stageOut.vm_id }
-                        $stageStatus = if ($stageOut.status -eq 'created') { 'SUCCEEDED' } else { 'FAILED' }
-                        $stageReason = [string]$stageOut.status
+                        $existingVm = Get-VM -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq [string]$def.vm.name } | Select-Object -First 1
+                        if ($existingVm) {
+                            Assert-VmLabTargetNotProtected -VmName $existingVm.Name -VmId ([string]$existingVm.Id)
+                            $own = Test-VmLabOwnership -Vm $existingVm -ManifestRoot $ManifestRoot
+                            if (-not $own.owned) {
+                                throw "vm_create_unmanaged_collision: VM '$($def.vm.name)' already exists and is not owned by vm_lab ($($own.reason))."
+                            }
+                            if (-not [string]::IsNullOrWhiteSpace($ExpectedVmId) -and ([string]$existingVm.Id).ToLowerInvariant() -ne $ExpectedVmId.ToLowerInvariant()) {
+                                throw "vm_id_mismatch: Existing VM '$($def.vm.name)' has id '$($existingVm.Id)', expected '$ExpectedVmId'."
+                            }
+                            $journal.vm_id = [string]$existingVm.Id
+                            $stageOut = [pscustomobject]@{ status = 'reconciled_existing'; vm_id = [string]$existingVm.Id; vm_name = $existingVm.Name }
+                            $stageStatus = 'SUCCEEDED'
+                            $stageReason = 'vm_create_reconciled_existing'
+                        } else {
+                            $cfg = Get-VmLabTemplate -TemplateName ([string]$def.vm.template)
+                            $cfg.vm_name = [string]$def.vm.name
+                            $cfg.vm_root = [string]$def.vm.root
+                            if ($def.vm.iso) { $cfg.iso_path = [string]$def.vm.iso }
+                            $stageOut = New-VmLabMachine -Config $cfg -Apply -ManifestRoot $ManifestRoot
+                            if ($stageOut.vm_id) {
+                                if (-not [string]::IsNullOrWhiteSpace($ExpectedVmId) -and ([string]$stageOut.vm_id).ToLowerInvariant() -ne $ExpectedVmId.ToLowerInvariant()) {
+                                    throw "vm_id_mismatch: Created VM has id '$($stageOut.vm_id)', expected '$ExpectedVmId'."
+                                }
+                                $journal.vm_id = [string]$stageOut.vm_id
+                            }
+                            $stageStatus = if ($stageOut.status -eq 'created') { 'SUCCEEDED' } else { 'FAILED' }
+                            $stageReason = [string]$stageOut.status
+                        }
                     }
                     'vm.start' {
                         $stageOut = Start-VmLabMachine -Name ([string]$def.vm.name) -Apply -ManifestRoot $ManifestRoot
@@ -379,18 +419,54 @@ function Invoke-VmLabWorkflow {
                         if ($stageOut.stderr) { [System.IO.File]::WriteAllText((Join-Path $logsDir "$sid-$attempt.stderr.log"), [string]$stageOut.stderr) }
                         $stageStatus = [string]$stageOut.status
                         $stageReason = [string]$stageOut.reason_code
-                        if ($stageStatus -eq 'SUCCEEDED' -and $s.expected_status -and $stageOut.parsed_json -and [string]$stageOut.parsed_json.status -ne [string]$s.expected_status) {
-                            $stageStatus = 'FAILED'
-                            $stageReason = 'expected_json_status_mismatch'
+                        if ($stageStatus -eq 'SUCCEEDED' -and $s.expected_status) {
+                            if (-not $stageOut.parsed_json -or [string]$stageOut.parsed_json.status -ne [string]$s.expected_status) {
+                                $stageStatus = 'FAILED'
+                                $stageReason = 'expected_json_status_missing_or_mismatch'
+                            }
                         }
                     }
                     'vm.checkpoint_transaction' {
                         $cpName = if ($s.checkpoint_name) { [string]$s.checkpoint_name } else { "$OperationId-$sid" }
                         $reqOff = if ($null -ne $s.require_off) { [bool]$s.require_off } else { $true }
                         $rest = if ($null -ne $s.restart_after) { [bool]$s.restart_after } else { $false }
-                        $stageOut = Invoke-VmLabCheckpointTransaction -Name ([string]$def.vm.name) -CheckpointName $cpName -RequireOff:$reqOff -RestartAfter:$rest -Credential $Credential -Apply -AuthorizeVmLifecycle -ManifestRoot $ManifestRoot
-                        $stageStatus = [string]$stageOut.status
-                        $stageReason = [string]$stageOut.reason_code
+                        $matchedCp = $null
+                        if ($Resume) {
+                            try {
+                                $existingCps = @(Get-VmLabCheckpoint -Name ([string]$def.vm.name) -ManifestRoot $ManifestRoot)
+                                $matchedCp = $existingCps | Where-Object { $_.checkpoint_name -eq $cpName } | Select-Object -First 1
+                            } catch {
+                                $matchedCp = $null
+                            }
+                        }
+                        if ($matchedCp) {
+                            if ([string]$matchedCp.checkpoint_type -ne 'Standard') {
+                                throw "checkpoint_reconcile_invalid_type: Existing checkpoint '$cpName' has type '$($matchedCp.checkpoint_type)', expected 'Standard'."
+                            }
+                            $startRes = $null
+                            $readyRes = $null
+                            if ($rest) {
+                                $startRes = Start-VmLabMachine -Name ([string]$def.vm.name) -Apply -ManifestRoot $ManifestRoot
+                                if ($startRes.status -notin @('started', 'already_running')) {
+                                    $stageOut = [pscustomobject]@{ status = 'PARTIAL'; reason_code = 'restart_failed_after_reconciled_checkpoint'; checkpoint = $matchedCp; start = $startRes }
+                                    $stageStatus = 'PARTIAL'
+                                    $stageReason = 'restart_failed_after_reconciled_checkpoint'
+                                } else {
+                                    $readyRes = Wait-VmLabGuestReady -Name ([string]$def.vm.name) -Credential $Credential -PromptCredential:$PromptCredential -ManifestRoot $ManifestRoot
+                                    $stageOut = [pscustomobject]@{ status = $readyRes.status; reason_code = 'checkpoint_reconciled_existing'; checkpoint = $matchedCp; start = $startRes; readiness = $readyRes }
+                                    $stageStatus = [string]$readyRes.status
+                                    $stageReason = if ($stageStatus -eq 'SUCCEEDED') { 'checkpoint_reconciled_existing' } else { [string]$readyRes.reason_code }
+                                }
+                            } else {
+                                $stageOut = [pscustomobject]@{ status = 'SUCCEEDED'; reason_code = 'checkpoint_reconciled_existing'; checkpoint = $matchedCp }
+                                $stageStatus = 'SUCCEEDED'
+                                $stageReason = 'checkpoint_reconciled_existing'
+                            }
+                        } else {
+                            $stageOut = Invoke-VmLabCheckpointTransaction -Name ([string]$def.vm.name) -CheckpointName $cpName -RequireOff:$reqOff -RestartAfter:$rest -Credential $Credential -Apply -AuthorizeVmLifecycle -ManifestRoot $ManifestRoot
+                            $stageStatus = [string]$stageOut.status
+                            $stageReason = [string]$stageOut.reason_code
+                        }
                     }
                     'evidence.collect' {
                         $stageEvDir = Join-Path $evDir $sid
@@ -401,9 +477,22 @@ function Invoke-VmLabWorkflow {
                         $journal.evidence_index += $stageEvDir
                     }
                     'workflow.assert' {
-                        $stageOut = [pscustomobject]@{ status = 'SUCCEEDED'; checked = @($s.assertions) }
-                        $stageStatus = 'SUCCEEDED'
-                        $stageReason = 'assertions_passed'
+                        $failedPrior = @()
+                        foreach ($priorSid in $planCheck.stage_order) {
+                            if ($priorSid -eq $sid) { break }
+                            if ([string]$journal.stage_states.$priorSid -ne 'SUCCEEDED') {
+                                $failedPrior += "$priorSid=$([string]$journal.stage_states.$priorSid)"
+                            }
+                        }
+                        if ($failedPrior.Count -gt 0) {
+                            $stageOut = [pscustomobject]@{ status = 'FAILED'; failed_prior_stages = @($failedPrior) }
+                            $stageStatus = 'FAILED'
+                            $stageReason = 'prior_stage_not_succeeded'
+                        } else {
+                            $stageOut = [pscustomobject]@{ status = 'SUCCEEDED'; checked = @($s.assertions) }
+                            $stageStatus = 'SUCCEEDED'
+                            $stageReason = 'assertions_passed'
+                        }
                     }
                 }
             } catch {

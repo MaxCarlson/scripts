@@ -145,4 +145,92 @@ Describe 'vm_lab Phase 3 durable workflow engine, receipts, and resumable execut
         $doc.reason_code | Should Be 'journal_corrupt'
         $doc.findings.Count | Should Be 2
     }
+
+    It 'rejects operation_id collision, digest/vm_id mismatch, missing expected_json status, and reconciles crash-before-receipt on resume' {
+        $opRoot = Join-Path $tmpRoot 'ops_crash_reconcile'
+        $wfPath = Join-Path $tmpRoot 'crash_reconcile.workflow.json'
+        $wfDef = [ordered]@{
+            schema_version = 1
+            workflow_id    = 'crash-reconcile-test'
+            operation_root = $opRoot
+            vm             = [ordered]@{
+                name     = 'Disp-Reconcile-01'
+                template = 'windows11-dev'
+                root     = (Join-Path $tmpRoot 'vm_reconcile')
+            }
+            stages         = @(
+                [ordered]@{ id = 's_create'; type = 'vm.create'; depends_on = @(); capability = 'host_mutation' },
+                [ordered]@{ id = 's_cp'; type = 'vm.checkpoint_transaction'; depends_on = @('s_create'); capability = 'vm_lifecycle'; checkpoint_name = 'cp-baseline'; require_off = $true; restart_after = $false },
+                [ordered]@{ id = 's_verify'; type = 'workflow.assert'; depends_on = @('s_cp'); capability = 'none'; assertions = @('all_prior_stages_succeeded') }
+            )
+        }
+        [System.IO.File]::WriteAllText($wfPath, ($wfDef | ConvertTo-Json -Depth 10))
+        $plan = Test-VmLabWorkflowPlan -WorkflowPath $wfPath
+
+        # ExpectedWorkflowDigest mismatch fails closed
+        $threwDigest = $false
+        try {
+            Invoke-VmLabWorkflow -WorkflowPath $wfPath -OperationId 'op-digest-bad' -OperationRoot $opRoot -ExpectedWorkflowDigest ('0' * 64) -Apply -AuthorizeHostMutation
+        } catch {
+            $threwDigest = $_.Exception.Message -match 'workflow_digest_mismatch'
+        }
+        $threwDigest | Should Be $true
+
+        # Pre-seed journal as if host crashed AFTER vm.create and cp-baseline were created, BEFORE receipts/journal were marked SUCCEEDED
+        $opDir = Join-Path $opRoot 'op-crash-01'
+        New-Item -ItemType Directory -Path $opDir -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $opDir 'workflow.json'), ($wfDef | ConvertTo-Json -Depth 10))
+        $seedJournal = [ordered]@{
+            schema_version  = 1
+            operation_id    = 'op-crash-01'
+            workflow_id     = 'crash-reconcile-test'
+            workflow_digest = $plan.workflow_digest
+            host_identity   = $env:COMPUTERNAME
+            vm_id           = 'aaaaaaaa-1111-2222-3333-444444444444'
+            vm_name         = 'Disp-Reconcile-01'
+            vm_config_path  = $wfDef.vm.root
+            created_at      = [DateTimeOffset]::UtcNow.ToString('o')
+            updated_at      = [DateTimeOffset]::UtcNow.ToString('o')
+            overall_state   = 'RUNNING'
+            stage_states    = [ordered]@{ s_create = 'PLANNED'; s_cp = 'PLANNED'; s_verify = 'PLANNED' }
+            evidence_index  = @()
+            last_error      = $null
+        }
+        [System.IO.File]::WriteAllText((Join-Path $opDir 'operation.json'), ($seedJournal | ConvertTo-Json -Depth 10))
+
+        # Non-resume apply with colliding OperationId must fail
+        $threwCollision = $false
+        try {
+            Invoke-VmLabWorkflow -WorkflowPath $wfPath -OperationId 'op-crash-01' -OperationRoot $opRoot -Apply -AuthorizeHostMutation
+        } catch {
+            $threwCollision = $_.Exception.Message -match 'operation_id_collision'
+        }
+        $threwCollision | Should Be $true
+
+        # ExpectedVmId mismatch on resume fails closed
+        $threwVmId = $false
+        try {
+            Invoke-VmLabWorkflow -OperationId 'op-crash-01' -OperationRoot $opRoot -ExpectedVmId 'bbbbbbbb-1111-2222-3333-444444444444' -Resume -Apply -AuthorizeHostMutation -AuthorizeVmLifecycle
+        } catch {
+            $threwVmId = $_.Exception.Message -match 'vm_id_mismatch'
+        }
+        $threwVmId | Should Be $true
+
+        # Resume with mocked existing owned VM + existing Standard checkpoint reconciles without creating duplicates
+        $env:VMLAB_TEST_ROOT = $tmpRoot
+        InModuleScope vm_lab {
+            Mock Get-VM { return @([pscustomobject]@{ Name = 'Disp-Reconcile-01'; Id = 'aaaaaaaa-1111-2222-3333-444444444444'; State = 'Off'; CheckpointType = 'Standard' }) }
+            Mock Test-VmLabOwnership { return [pscustomobject]@{ owned = $true; reason = 'ok' } }
+            Mock New-VmLabMachine { throw 'New-VmLabMachine should not be called during reconciliation' }
+            Mock Get-VmLabCheckpoint { return @([pscustomobject]@{ checkpoint_name = 'cp-baseline'; checkpoint_id = 'cp-1111'; checkpoint_type = 'Standard' }) }
+            Mock Invoke-VmLabCheckpointTransaction { throw 'Invoke-VmLabCheckpointTransaction should not be called during reconciliation' }
+
+            $res = Invoke-VmLabWorkflow -OperationId 'op-crash-01' -OperationRoot (Join-Path $env:VMLAB_TEST_ROOT 'ops_crash_reconcile') -ExpectedVmId 'aaaaaaaa-1111-2222-3333-444444444444' -Resume -Apply -AuthorizeHostMutation -AuthorizeVmLifecycle
+            $res.status | Should Be 'SUCCEEDED'
+            $res.stage_states.s_create | Should Be 'SUCCEEDED'
+            $res.stage_states.s_cp | Should Be 'SUCCEEDED'
+            $res.stage_states.s_verify | Should Be 'SUCCEEDED'
+        }
+        Remove-Item Env:VMLAB_TEST_ROOT -ErrorAction SilentlyContinue
+    }
 }

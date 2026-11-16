@@ -99,7 +99,7 @@ Inspect any reported `.lock` files or preserved VHDX/config directories before r
 - **Transactional Lifecycle**: `lifecycle-transaction` closes active PS Direct sessions, gracefully stops the VM with bounded polling, enforces `Standard` checkpoints, and optionally restarts and waits for PowerShell Direct readiness.
 - **Durable Workflows**: `workflow-plan`, `workflow-apply`, `workflow-status`, `workflow-resume`, and `workflow-doctor` maintain an atomic operation journal (`journal.json`), stage receipts, and single-owner operation locks across host restarts. See [examples/h4-like-acceptance.workflow.json](examples/h4-like-acceptance.workflow.json).
 - **Bounded Elevated Runner**: `New-VmLabApprovedPlanRequest` writes a SHA-256-sealed, expiring, capability-bounded plan request; an operator executes it in an elevated console via `Invoke-VmLabApprovedPlan.ps1 -RequestPath <path> -ExpectedRequestDigest <sha256> -AuthorizeElevation`, which enforces single-use replay protection and records an execution receipt.
-- **Windows Setup Assistance**: `New-VmLabUnattendMedia`, `Get-VmLabSetupGuidance`, `Get-VmLabInstallReadiness`, and `Assert-VmLabImagePrepPolicy` provide password-free offline OOBE answer media, VMConnect boot guidance, and Sysprep policy checks.
+- **Windows Setup Assistance**: `New-VmLabAnswerMediaStaging`, `Get-VmLabSetupProgressReport`, and `Test-VmLabPreparedImagePolicy` provide password-free offline OOBE answer media, VMConnect boot guidance, and Sysprep policy checks.
 - **Live Operational Acceptance**: End-to-end Hyper-V qualification against a disposable VM is **not** executed automatically during source validation; it requires separate explicit elevated authorization against a non-protected VM.
 
 ## Known Limitations & Deferred Features

@@ -112,4 +112,57 @@ Describe 'vm_lab Phase 4 elevated runner and Phase 5 Windows setup assistance' {
         $pol = Test-VmLabPreparedImagePolicy -VhdxPath 'C:\Images\win11-base.vhdx' -SysprepGeneralized -LicensingAcknowledged
         $pol.valid | Should Be $true
     }
+
+    It 'records durable FAIL receipt on execution exception and blocks replay' {
+        $wfPath = Join-Path $tmpRoot 'fail_elev.workflow.json'
+        $opRoot = Join-Path $tmpRoot 'ops_fail_elev'
+        $reqPath = Join-Path $tmpRoot 'fail_req.json'
+        $wfDef = [ordered]@{
+            schema_version = 1
+            workflow_id    = 'fail-elev-test'
+            operation_root = $opRoot
+            vm             = [ordered]@{ name = 'Disp-Elev-Fail-01'; template = 'windows11-dev'; root = (Join-Path $tmpRoot 'vm_elev_fail') }
+            stages         = @([ordered]@{ id = 's1'; type = 'host.preflight'; depends_on = @(); capability = 'none' })
+        }
+        [System.IO.File]::WriteAllText($wfPath, ($wfDef | ConvertTo-Json -Depth 10))
+        $req = New-VmLabApprovedPlanRequest -WorkflowPath $wfPath -OutputPath $reqPath -AllowedCapabilities @('host_mutation') -OperationId 'op-elev-fail-01' -ExpectedVmId 'cccccccc-1111-2222-3333-444444444444'
+
+        # Pre-seed journal with a DIFFERENT vm_id so Invoke-VmLabWorkflow throws vm_id_mismatch
+        $opDir = Join-Path $opRoot 'op-elev-fail-01'
+        New-Item -ItemType Directory -Path $opDir -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $opDir 'workflow.json'), ($wfDef | ConvertTo-Json -Depth 10))
+        $plan = Test-VmLabWorkflowPlan -WorkflowPath $wfPath
+        $badJournal = [ordered]@{
+            schema_version  = 1
+            operation_id    = 'op-elev-fail-01'
+            workflow_id     = 'fail-elev-test'
+            workflow_digest = $plan.workflow_digest
+            host_identity   = $env:COMPUTERNAME
+            vm_id           = 'dddddddd-1111-2222-3333-444444444444'
+            vm_name         = 'Disp-Elev-Fail-01'
+            vm_config_path  = $wfDef.vm.root
+            created_at      = [DateTimeOffset]::UtcNow.ToString('o')
+            updated_at      = [DateTimeOffset]::UtcNow.ToString('o')
+            overall_state   = 'RUNNING'
+            stage_states    = [ordered]@{ s1 = 'PLANNED' }
+            evidence_index  = @()
+            last_error      = $null
+        }
+        [System.IO.File]::WriteAllText((Join-Path $opDir 'operation.json'), ($badJournal | ConvertTo-Json -Depth 10))
+
+        $runner = Join-Path $moduleRoot 'Invoke-VmLabApprovedPlan.ps1'
+        $null = & pwsh -NoProfile -File $runner -RequestPath $reqPath -ExpectedRequestDigest $req.request_digest -OperatorConsent 2>&1
+        $LASTEXITCODE | Should Not Be 0
+
+        $receiptPath = Join-Path $opDir "approved-plan-receipt-$($req.request_id).json"
+        (Test-Path -LiteralPath $receiptPath -PathType Leaf) | Should Be $true
+        $recObj = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+        $recObj.result_status | Should Be 'FAIL'
+        $recObj.reason_code | Should Be 'approved_plan_execution_exception'
+
+        # Replay must be blocked
+        $replayOut = & pwsh -NoProfile -File $runner -RequestPath $reqPath -ExpectedRequestDigest $req.request_digest -OperatorConsent 2>&1 | Out-String
+        $LASTEXITCODE | Should Not Be 0
+        ($replayOut -match 'approval_already_consumed') | Should Be $true
+    }
 }
