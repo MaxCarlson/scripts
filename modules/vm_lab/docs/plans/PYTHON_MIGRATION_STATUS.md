@@ -21,9 +21,9 @@
 
 | Phase | State | Validated Commit | Summary |
 |---|---|---|---|
-| 0 — Baseline & Design | COMPLETED | pending commit | Baseline 60 Pester passed; package layout & compatibility inventory recorded |
-| 1 — Real Python Package | IN_PROGRESS | — | `pyproject.toml`, `__init__.py`, `__main__.py`, `backend.py`, `results.py`, `exceptions.py`, `cli.py` |
-| 2 — Bootstrap & CLI Migration | NOT_STARTED | — | Full subcommands, legacy `-o` compat, `bootstrap_latest.py` / `launcher_generator.py` cleanup |
+| 0 — Baseline & Design | COMPLETED | `3a231cb6` | Baseline 60 Pester passed; package layout & compatibility inventory recorded |
+| 1 — Real Python Package | COMPLETED | pending commit | `pyproject.toml`, `__init__.py`, `__main__.py`, `backend.py`, `results.py`, `exceptions.py`, `cli.py`; 11 pytest passed (including wheel build & isolated venv install) |
+| 2 — Bootstrap & CLI Migration | IN_PROGRESS | — | Full subcommands, legacy `-o` compat, `bootstrap_latest` / `launcher_generator.py` migration |
 | 3 — Host, Identity, Media & Boot | NOT_STARTED | — | H01–H03 (VM ID lookup, ISO SHA-256, media attach/detach, boot diagnostics/recovery) |
 | 4 — Guest Execution & Lifecycle | NOT_STARTED | — | H05–H10 (guest inventory, trusted script exec, 3010 reboot, graceful reboot, checkpoint inspect) |
 | 5 — Workflow & Acceptance Semantics | NOT_STARTED | — | H11–H14 (`on_failure`, `timeout_seconds`, `idempotency_class`, `guest_identity`, `vm.connect`, approval CLI) |

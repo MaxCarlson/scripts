@@ -42,7 +42,7 @@
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [Parameter(Mandatory, Position = 0)]
+    [Parameter(Position = 0)]
     [Alias('o')]
     [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'guest-command-plan', 'guest-exec', 'artifact-plan', 'artifact-deploy', 'evidence-plan', 'evidence-collect', 'lifecycle-transaction', 'workflow-plan', 'workflow-status', 'workflow-apply', 'workflow-resume', 'workflow-doctor', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
     [string]$Operation,
@@ -99,10 +99,17 @@ param(
     [switch]$RestartAfter,
     [Alias('f')][string]$WorkflowPath,
     [Alias('or')][string]$OperationRoot = 'C:\VM-Lab-Operations',
-    [switch]$AuthorizeElevation
+    [switch]$AuthorizeElevation,
+    [Alias('h')][switch]$Help
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($Help -or [string]::IsNullOrWhiteSpace($Operation)) {
+    Get-Help $PSCommandPath -Detailed
+    if ($Help) { exit 0 }
+    exit 1
+}
 
 try {
     if (-not (Get-Module -Name vm_lab)) {

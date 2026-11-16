@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vm_lab"
+version = "0.2.0"
+description = "Reusable Hyper-V disposable Windows VM lab manager and workflow automation CLI."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Max" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+vm = "vm_lab.cli:main"
+vm-lab = "vm_lab.cli:main"
+
+[tool.setuptools]
+packages = ["vm_lab"]
+include-package-data = false
+
+[tool.setuptools.package-dir]
+vm_lab = "."
+
+[tool.setuptools.package-data]
+vm_lab = [
+    "Invoke-VmLab.ps1",
+    "Invoke-VmLabApprovedPlan.ps1",
+    "vm_lab.psd1",
+    "vm_lab.psm1",
+    "src/*.ps1",
+    "templates/*.json",
+    "examples/*.json",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --basetemp=.pytest_tmp_root"
