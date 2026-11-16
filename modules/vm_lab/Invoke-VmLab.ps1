@@ -44,7 +44,7 @@
 param(
     [Parameter(Position = 0)]
     [Alias('o')]
-    [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'guest-command-plan', 'guest-exec', 'artifact-plan', 'artifact-deploy', 'evidence-plan', 'evidence-collect', 'lifecycle-transaction', 'workflow-plan', 'workflow-status', 'workflow-apply', 'workflow-resume', 'workflow-doctor', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
+    [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'boot-prepare', 'boot-troubleshoot', 'iso-verify', 'iso-attach', 'iso-detach', 'host-resources', 'guest-status', 'guest-wait', 'guest-identity', 'guest-inventory', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'guest-command-plan', 'guest-exec', 'guest-run-script', 'guest-reboot', 'artifact-plan', 'artifact-deploy', 'evidence-plan', 'evidence-collect', 'evidence-inspect', 'lifecycle-transaction', 'workflow-plan', 'workflow-status', 'workflow-apply', 'workflow-resume', 'workflow-doctor', 'workflow-results', 'setup-report', 'setup-answer-media', 'approval-request', 'approval-inspect', 'checkpoint', 'baseline', 'checkpoints', 'checkpoint-inspect', 'recovery-plan', 'doctor', 'unattend-xml')]
     [string]$Operation,
 
     [Alias('n')][string]$Name,
@@ -100,6 +100,17 @@ param(
     [Alias('f')][string]$WorkflowPath,
     [Alias('or')][string]$OperationRoot = 'C:\VM-Lab-Operations',
     [switch]$AuthorizeElevation,
+    [string]$ScriptPath,
+    [string]$CheckpointId,
+    [switch]$PreferDvd,
+    [switch]$IncludeProcesses,
+    [switch]$IncludeServices,
+    [switch]$IncludeTasks,
+    [int]$TimeoutSeconds = 300,
+    [string]$RequestPath,
+    [string]$ExpectedRequestDigest,
+    [string[]]$AllowedCapabilities,
+    [string]$ExpectedVmId,
     [Alias('h')][switch]$Help
 )
 

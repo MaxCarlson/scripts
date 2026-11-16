@@ -5,6 +5,7 @@ $srcFiles = @(
     'Contracts.ps1',
     'Config.ps1',
     'Host.ps1',
+    'HostBoot.ps1',
     'Inventory.ps1',
     'Provisioning.ps1',
     'Lifecycle.ps1',
@@ -89,5 +90,14 @@ Export-ModuleMember -Function @(
     'New-VmLabAnswerMediaStaging',
     'Get-VmLabSetupProgressReport',
     'Test-VmLabPreparedImagePolicy',
+    'Resolve-VmLabTargetVm',
+    'Test-VmLabIsoMedia',
+    'Set-VmLabBootMedia',
+    'Set-VmLabFirmwareBootOrder',
+    'Get-VmLabBootRecovery',
+    'Get-VmLabGuestInventory',
+    'Invoke-VmLabGuestScript',
+    'Restart-VmLabGuest',
+    'Get-VmLabCheckpointDetail',
     'Invoke-VmLab'
 ) -Alias @('vm-lab')

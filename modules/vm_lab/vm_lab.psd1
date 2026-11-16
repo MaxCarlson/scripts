@@ -63,6 +63,15 @@
         'New-VmLabAnswerMediaStaging',
         'Get-VmLabSetupProgressReport',
         'Test-VmLabPreparedImagePolicy',
+        'Resolve-VmLabTargetVm',
+        'Test-VmLabIsoMedia',
+        'Set-VmLabBootMedia',
+        'Set-VmLabFirmwareBootOrder',
+        'Get-VmLabBootRecovery',
+        'Get-VmLabGuestInventory',
+        'Invoke-VmLabGuestScript',
+        'Restart-VmLabGuest',
+        'Get-VmLabCheckpointDetail',
         'Invoke-VmLab'
     )
     AliasesToExport   = @('vm-lab')

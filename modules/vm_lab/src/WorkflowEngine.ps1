@@ -296,12 +296,34 @@ function Invoke-VmLabWorkflow {
         $stageMap = @{}
         foreach ($s in @($def.stages)) { $stageMap[[string]$s.id] = $s }
 
+        $guestIdPolicy = $null
+        if ($def.vm.guest_identity) {
+            $guestIdPolicy = @{}
+            if ($null -ne $def.vm.guest_identity.require_local_admin) { $guestIdPolicy.require_local_admin = [bool]$def.vm.guest_identity.require_local_admin }
+            if ($def.vm.guest_identity.os) { $guestIdPolicy.os_caption_match = [string]$def.vm.guest_identity.os }
+            if ($def.vm.guest_identity.architecture) { $guestIdPolicy.architecture = [string]$def.vm.guest_identity.architecture }
+            if ($def.vm.guest_identity.expected_hostname) { $guestIdPolicy.expected_hostname = [string]$def.vm.guest_identity.expected_hostname }
+            if ($def.vm.guest_identity.forbidden_processes) { $guestIdPolicy.forbidden_processes = @($def.vm.guest_identity.forbidden_processes) }
+        }
+
         $finalStatus = 'SUCCEEDED'
         $finalReason = 'workflow_completed'
+        $deferredCleanupStages = [System.Collections.Generic.HashSet[string]]::new()
 
         foreach ($sid in $planCheck.stage_order) {
+            if ($deferredCleanupStages.Contains($sid)) { continue }
             $s = $stageMap[$sid]
             $curState = [string]$journal.stage_states.$sid
+
+            if ($Resume -and $curState -eq 'PARTIAL' -and [string]$s.idempotency_class -eq 'non_repeatable') {
+                $journal.overall_state = 'PARTIAL'
+                $journal.last_error = "Stage '$sid' is non_repeatable and previously ended in PARTIAL; manual reconciliation required."
+                $journal.updated_at = [DateTimeOffset]::UtcNow.ToString('o')
+                Write-VmLabJsonAtomic -Path $journalPath -Data $journal
+                $finalStatus = 'PARTIAL'
+                $finalReason = 'non_repeatable_requires_reconciliation'
+                break
+            }
 
             # Reconcile completed stages before skipping
             if ($curState -eq 'SUCCEEDED') {
@@ -395,8 +417,15 @@ function Invoke-VmLabWorkflow {
                         $stageStatus = if ($stageOut.status -in @('started', 'already_running')) { 'SUCCEEDED' } else { 'FAILED' }
                         $stageReason = [string]$stageOut.status
                     }
+                    'vm.connect' {
+                        $stageOut = Open-VmLabConnect -Name ([string]$def.vm.name) -Apply -ManifestRoot $ManifestRoot
+                        $stageStatus = if ($stageOut.status -in @('connected', 'started_and_connected')) { 'SUCCEEDED' } else { 'FAILED' }
+                        $stageReason = [string]$stageOut.status
+                    }
                     'vm.shutdown' {
-                        $stageOut = Stop-VmLabMachine -Name ([string]$def.vm.name) -Apply -ManifestRoot $ManifestRoot
+                        $sdArgs = @{ Name = [string]$def.vm.name; Apply = $true; ManifestRoot = $ManifestRoot }
+                        if ($null -ne $s.timeout_seconds) { $sdArgs.ShutdownTimeoutSeconds = [int]$s.timeout_seconds }
+                        $stageOut = Stop-VmLabMachine @sdArgs
                         $stageStatus = if ($stageOut.status -in @('stopped', 'already_stopped')) { 'SUCCEEDED' } else { 'PARTIAL' }
                         $stageReason = [string]$stageOut.status
                     }
@@ -420,7 +449,10 @@ function Invoke-VmLabWorkflow {
                         }
                     }
                     'guest.wait' {
-                        $stageOut = Wait-VmLabGuestReady -Name ([string]$def.vm.name) -Credential $Credential -PromptCredential:$PromptCredential -ManifestRoot $ManifestRoot
+                        $gwArgs = @{ Name = [string]$def.vm.name; Credential = $Credential; PromptCredential = [bool]$PromptCredential; ManifestRoot = $ManifestRoot }
+                        if ($null -ne $s.timeout_seconds) { $gwArgs.TimeoutSeconds = [int]$s.timeout_seconds }
+                        if ($guestIdPolicy) { $gwArgs.IdentityPolicy = $guestIdPolicy }
+                        $stageOut = Wait-VmLabGuestReady @gwArgs
                         $stageStatus = [string]$stageOut.status
                         $stageReason = [string]$stageOut.reason_code
                     }
@@ -446,7 +478,9 @@ function Invoke-VmLabWorkflow {
                         if ($s.environment) {
                             foreach ($p in $s.environment.PSObject.Properties) { $envHt[$p.Name] = [string]$p.Value }
                         }
-                        $stageOut = Invoke-VmLabGuestCommand -Name ([string]$def.vm.name) -ExecutablePath ([string]$cmdSpec.executable) -ArgumentList $argsArr -WorkingDirectory $cwd -Environment $envHt -ExpectedSha256 ([string]$cmdSpec.sha256) -OperationId $OperationId -StageId $sid -Credential $Credential -Apply -AuthorizeGuestExec -ManifestRoot $ManifestRoot
+                        $geTimeout = if ($null -ne $s.timeout_seconds) { [int]$s.timeout_seconds } else { 300 }
+                        $geIdem = if ($s.idempotency_class) { [string]$s.idempotency_class } else { 'replayable' }
+                        $stageOut = Invoke-VmLabGuestCommand -Name ([string]$def.vm.name) -ExecutablePath ([string]$cmdSpec.executable) -ArgumentList $argsArr -WorkingDirectory $cwd -Environment $envHt -ExpectedSha256 ([string]$cmdSpec.sha256) -IdempotencyClass $geIdem -TimeoutSeconds $geTimeout -OperationId $OperationId -StageId $sid -Credential $Credential -Apply -AuthorizeGuestExec -ManifestRoot $ManifestRoot
                         $exitCodeVal = $stageOut.exit_code
                         if ($stageOut.stdout) { [System.IO.File]::WriteAllText((Join-Path $logsDir "$sid-$attempt.stdout.log"), [string]$stageOut.stdout) }
                         if ($stageOut.stderr) { [System.IO.File]::WriteAllText((Join-Path $logsDir "$sid-$attempt.stderr.log"), [string]$stageOut.stderr) }
@@ -584,6 +618,26 @@ function Invoke-VmLabWorkflow {
             $journal.stage_states.$sid = $stageStatus
             $journal.updated_at = [DateTimeOffset]::UtcNow.ToString('o')
             if ($stageStatus -ne 'SUCCEEDED') {
+                if ($stageStatus -eq 'FAILED' -and $s.on_failure -and ([string]$s.on_failure).StartsWith('cleanup_stage:')) {
+                    $cleanupId = ([string]$s.on_failure).Substring('cleanup_stage:'.Length)
+                    $null = $deferredCleanupStages.Add($cleanupId)
+                    $cs = $stageMap[$cleanupId]
+                    $cCap = [string]$capPolicy[[string]$cs.type]
+                    $cCapOk = Test-VmLabCapabilityAuthorized -Capability $cCap -Apply:$Apply -AuthorizeHostMutation:$AuthorizeHostMutation -AuthorizeVmLifecycle:$AuthorizeVmLifecycle -AuthorizeGuestMutation:$AuthorizeGuestMutation -AuthorizeGuestExec:$AuthorizeGuestExec -AuthorizeElevation:$AuthorizeElevation
+                    if ($cCapOk -and $cs.type -eq 'guest.exec') {
+                        $cSpec = $def.commands.($cs.command_ref)
+                        $cArgs = if ($cs.args) { @($cs.args) } elseif ($cSpec.args) { @($cSpec.args) } else { @() }
+                        $cCwd = if ($cs.working_directory) { [string]$cs.working_directory } elseif ($cSpec.working_directory) { [string]$cSpec.working_directory } else { 'C:\Windows\Temp' }
+                        $cOut = Invoke-VmLabGuestCommand -Name ([string]$def.vm.name) -ExecutablePath ([string]$cSpec.executable) -ArgumentList $cArgs -WorkingDirectory $cCwd -OperationId $OperationId -StageId $cleanupId -Credential $Credential -Apply -AuthorizeGuestExec -ManifestRoot $ManifestRoot
+                        $journal.stage_states.$cleanupId = [string]$cOut.status
+                    } elseif (-not $cCapOk) {
+                        $journal.stage_states.$cleanupId = 'BLOCKED'
+                    }
+                }
+                if ($stageStatus -eq 'FAILED' -and [string]$s.on_failure -eq 'continue') {
+                    Write-VmLabJsonAtomic -Path $journalPath -Data $journal
+                    continue
+                }
                 $journal.overall_state = $stageStatus
                 Write-VmLabJsonAtomic -Path $journalPath -Data $journal
                 $finalStatus = $stageStatus

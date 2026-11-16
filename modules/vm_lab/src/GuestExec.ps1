@@ -309,3 +309,113 @@ function Invoke-VmLabGuestCommand {
         }
     }
 }
+
+function Get-VmLabGuestInventory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [pscredential]$Credential,
+        [switch]$PromptCredential,
+        [switch]$IncludeProcesses,
+        [switch]$IncludeServices,
+        [switch]$IncludeTasks,
+        [int]$MaxConnectAttempts = 1,
+        [string]$ManifestRoot = (Get-VmLabDefaultManifestRoot)
+    )
+    $resolved = Resolve-VmLabTargetVm -NameOrId $Name -ManifestRoot $ManifestRoot
+    if (-not $resolved.ownership.owned) { throw "VM '$($resolved.vm.Name)' is not owned by vm_lab: $($resolved.ownership.reason)" }
+    $vm = $resolved.vm
+    if ([string]$vm.State -ne 'Running') {
+        return [pscustomobject]@{ status = 'BLOCKED'; reason_code = 'vm_not_running'; vm_name = $vm.Name; vm_id = [string]$vm.Id }
+    }
+    $cred = Resolve-VmLabGuestCredential -Credential $Credential -PromptCredential:$PromptCredential
+    if ($null -eq $cred) {
+        return [pscustomobject]@{ status = 'AWAITING_INTERACTION'; reason_code = 'guest_credentials_required'; vm_name = $vm.Name; vm_id = [string]$vm.Id }
+    }
+    $inv = Invoke-VmLabGuestSession -VmId $vm.Id -VmName $vm.Name -Credential $cred -MaxConnectAttempts $MaxConnectAttempts -ScriptBlock {
+        param($session)
+        Invoke-VmLabPSSessionCommand -Session $session -ArgumentList @([bool]$IncludeProcesses, [bool]$IncludeServices, [bool]$IncludeTasks) -ScriptBlock {
+            param($incProc, $incSvc, $incTask)
+            $res = [ordered]@{ hostname = $env:COMPUTERNAME }
+            if ($incProc) {
+                $res.processes = @(Get-Process -ErrorAction SilentlyContinue | Select-Object -First 200 Name, Id)
+            }
+            if ($incSvc) {
+                $res.services = @(Get-Service -ErrorAction SilentlyContinue | Select-Object -First 200 Name, Status, StartType | ForEach-Object { [pscustomobject]@{ name = $_.Name; status = [string]$_.Status; start_type = [string]$_.StartType } })
+            }
+            if ($incTask) {
+                $res.scheduled_tasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Select-Object -First 200 TaskName, TaskPath, State | ForEach-Object { [pscustomobject]@{ task_name = $_.TaskName; task_path = $_.TaskPath; state = [string]$_.State } })
+            }
+            return [pscustomobject]$res
+        }
+    }
+    return [pscustomobject]@{
+        status      = 'SUCCEEDED'
+        reason_code = 'guest_inventory_collected'
+        vm_name     = $vm.Name
+        vm_id       = [string]$vm.Id
+        inventory   = $inv
+    }
+}
+
+function Invoke-VmLabGuestScript {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$ScriptPath,
+        [string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory = 'C:\Windows\Temp',
+        [hashtable]$Environment = @{},
+        [string]$ExpectedSha256,
+        [int]$TimeoutSeconds = 300,
+        [string]$OperationId,
+        [string]$StageId,
+        [switch]$Reboot3010AsRebootRequired,
+        [pscredential]$Credential,
+        [switch]$PromptCredential,
+        [switch]$Apply,
+        [switch]$AuthorizeGuestExec,
+        [string]$ManifestRoot = (Get-VmLabDefaultManifestRoot)
+    )
+    $scriptFull = Test-VmLabSafePath -Path $ScriptPath -Label 'ScriptPath' -CheckReparsePoints
+    if (-not (Test-Path -LiteralPath $scriptFull -PathType Leaf)) {
+        throw "Guest script not found: '$scriptFull'."
+    }
+    $actualSha = (Get-FileHash -LiteralPath $scriptFull -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256) -and $actualSha -ne $ExpectedSha256.ToLowerInvariant()) {
+        throw "Script SHA-256 mismatch for '$scriptFull': expected '$ExpectedSha256', actual '$actualSha'."
+    }
+    $resolved = Resolve-VmLabTargetVm -NameOrId $Name -ManifestRoot $ManifestRoot
+    if (-not $resolved.ownership.owned) { throw "VM '$($resolved.vm.Name)' is not owned by vm_lab: $($resolved.ownership.reason)" }
+    $vm = $resolved.vm
+
+    $authorized = Test-VmLabCapabilityAuthorized -Capability 'guest_exec' -Apply:$Apply -AuthorizeGuestExec:$AuthorizeGuestExec
+    if (-not $authorized -or $WhatIfPreference -or -not $PSCmdlet.ShouldProcess($vm.Name, "Execute trusted script '$scriptFull'")) {
+        $reason = if (-not $Apply -or $WhatIfPreference) { 'dry_run_not_applied' } else { 'guest_exec_authorization_required' }
+        return [pscustomobject]@{
+            status        = if ($reason -eq 'dry_run_not_applied') { 'PLANNED' } else { 'BLOCKED' }
+            reason_code   = $reason
+            vm_name       = $vm.Name
+            vm_id         = [string]$vm.Id
+            script_path   = $scriptFull
+            script_sha256 = $actualSha
+        }
+    }
+    $cred = Resolve-VmLabGuestCredential -Credential $Credential -PromptCredential:$PromptCredential
+    if ($null -eq $cred) {
+        return [pscustomobject]@{ status = 'AWAITING_INTERACTION'; reason_code = 'guest_credentials_required'; vm_name = $vm.Name; vm_id = [string]$vm.Id }
+    }
+    $guestDest = "C:\Windows\Temp\vm_lab_script_$($actualSha.Substring(0, 12)).ps1"
+    $copyRes = Copy-VmLabGuestItem -Name $vm.Name -SourcePath $scriptFull -DestinationPath $guestDest -Direction ToGuest -Overwrite -Credential $cred -Apply -ManifestRoot $ManifestRoot
+    if ($copyRes.status -ne 'copied') {
+        return [pscustomobject]@{ status = 'FAILED'; reason_code = 'script_stage_failed'; vm_name = $vm.Name; vm_id = [string]$vm.Id; copy = $copyRes }
+    }
+    $psArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $guestDest) + @($ArgumentList)
+    $execRes = Invoke-VmLabGuestCommand -Name $vm.Name -ExecutablePath 'pwsh.exe' -ArgumentList $psArgs -WorkingDirectory $WorkingDirectory -Environment $Environment -TimeoutSeconds $TimeoutSeconds -OperationId $OperationId -StageId $StageId -Credential $cred -Apply -AuthorizeGuestExec -ManifestRoot $ManifestRoot
+    if ($Reboot3010AsRebootRequired -and $execRes.exit_code -eq 3010) {
+        $execRes.status = 'REBOOT_REQUIRED'
+        $execRes.reason_code = 'installer_reboot_required_3010'
+    }
+    $execRes | Add-Member -NotePropertyName 'script_sha256' -NotePropertyValue $actualSha -Force
+    return $execRes
+}

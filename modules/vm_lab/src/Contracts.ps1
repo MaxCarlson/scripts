@@ -325,6 +325,29 @@ function Test-VmLabWorkflowSchema {
                 throw "Stage '$sid' references undefined command_ref '$($s.command_ref)'."
             }
         }
+        if ($null -ne $s.timeout_seconds) {
+            if ([int]$s.timeout_seconds -lt 1) {
+                throw "Stage '$sid' timeout_seconds must be >= 1."
+            }
+        }
+        if ($null -ne $s.idempotency_class -and @('read_only', 'replayable', 'non_repeatable') -notcontains [string]$s.idempotency_class) {
+            throw "Stage '$sid' invalid idempotency_class '$($s.idempotency_class)'."
+        }
+        if ($null -ne $s.on_failure) {
+            $of = [string]$s.on_failure
+            if ($of -notin @('stop', 'continue') -and $of -notmatch '^cleanup_stage:[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$') {
+                throw "Stage '$sid' invalid on_failure policy '$of'."
+            }
+        }
+    }
+
+    foreach ($s in $stages) {
+        if ($null -ne $s.on_failure -and ([string]$s.on_failure).StartsWith('cleanup_stage:')) {
+            $targetCleanup = ([string]$s.on_failure).Substring('cleanup_stage:'.Length)
+            if (-not $seenIds.ContainsKey($targetCleanup)) {
+                throw "Stage '$($s.id)' on_failure references unknown cleanup stage '$targetCleanup'."
+            }
+        }
     }
 
     $order = Get-VmLabTopologicalStageOrder -Stages $stages

@@ -336,9 +336,11 @@ def test_launcher_generator_discovers_vm_lab() -> None:
     from scripts_setup.launcher_generator import scan_repository_programs
 
     commands = scan_repository_programs(repo_root)
+    assert "vm" in commands
     assert "vm-lab" in commands
-    entry = commands["vm-lab"]
-    assert entry.kind == "powershell_script"
-    assert entry.program_id == "module:vm_lab"
-    assert entry.target == "modules/vm_lab/Invoke-VmLab.ps1"
+    for cmd_name in ("vm", "vm-lab"):
+        entry = commands[cmd_name]
+        assert entry.kind == "console_script"
+        assert entry.program_id == "module:vm_lab"
+        assert entry.entry_point == "vm_lab.cli:main"
 

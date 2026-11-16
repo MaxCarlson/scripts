@@ -126,3 +126,29 @@ function New-VmLabBaselineCheckpoint {
     $res.operation = 'baseline'
     return $res
 }
+
+function Get-VmLabCheckpointDetail {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [string]$CheckpointName,
+        [string]$CheckpointId,
+        [string]$ManifestRoot = (Get-VmLabDefaultManifestRoot)
+    )
+    $resolved = Resolve-VmLabTargetVm -NameOrId $Name -ManifestRoot $ManifestRoot
+    $vm = $resolved.vm
+    $all = @(Get-VmLabCheckpoint -Name $vm.Name -ManifestRoot $ManifestRoot)
+    $matches = @($all | Where-Object {
+        ($CheckpointName -and $_.name -eq $CheckpointName) -or
+        ($CheckpointId -and $_.id -ieq $CheckpointId) -or
+        (-not $CheckpointName -and -not $CheckpointId)
+    })
+    return [pscustomobject]@{
+        status      = if ($matches.Count -gt 0) { 'SUCCEEDED' } else { 'FAILED' }
+        reason_code = if ($matches.Count -gt 0) { 'checkpoint_found' } else { 'checkpoint_not_found' }
+        vm_name     = $vm.Name
+        vm_id       = [string]$vm.Id
+        count       = $matches.Count
+        checkpoints = @($matches)
+    }
+}

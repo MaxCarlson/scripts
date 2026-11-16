@@ -19,7 +19,7 @@ function Invoke-VmLab {
     param(
         [Parameter(Mandatory, Position = 0)]
         [Alias('o')]
-        [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'guest-command-plan', 'guest-exec', 'artifact-plan', 'artifact-deploy', 'evidence-plan', 'evidence-collect', 'lifecycle-transaction', 'workflow-plan', 'workflow-status', 'workflow-apply', 'workflow-resume', 'workflow-doctor', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
+        [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'boot-prepare', 'boot-troubleshoot', 'iso-verify', 'iso-attach', 'iso-detach', 'host-resources', 'guest-status', 'guest-wait', 'guest-identity', 'guest-inventory', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'guest-command-plan', 'guest-exec', 'guest-run-script', 'guest-reboot', 'artifact-plan', 'artifact-deploy', 'evidence-plan', 'evidence-collect', 'evidence-inspect', 'lifecycle-transaction', 'workflow-plan', 'workflow-status', 'workflow-apply', 'workflow-resume', 'workflow-doctor', 'workflow-results', 'setup-report', 'setup-answer-media', 'approval-request', 'approval-inspect', 'checkpoint', 'baseline', 'checkpoints', 'checkpoint-inspect', 'recovery-plan', 'doctor', 'unattend-xml')]
         [string]$Operation,
 
         [Alias('n')][string]$Name,
@@ -74,7 +74,18 @@ function Invoke-VmLab {
         [switch]$RestartAfter,
         [Alias('f')][string]$WorkflowPath,
         [Alias('or')][string]$OperationRoot = 'C:\VM-Lab-Operations',
-        [switch]$AuthorizeElevation
+        [switch]$AuthorizeElevation,
+        [string]$ScriptPath,
+        [string]$CheckpointId,
+        [switch]$PreferDvd,
+        [switch]$IncludeProcesses,
+        [switch]$IncludeServices,
+        [switch]$IncludeTasks,
+        [int]$TimeoutSeconds = 300,
+        [string]$RequestPath,
+        [string]$ExpectedRequestDigest,
+        [string[]]$AllowedCapabilities,
+        [string]$ExpectedVmId
     )
 
     $result = switch ($Operation) {
@@ -227,6 +238,82 @@ function Invoke-VmLab {
         }
         'unattend-xml' {
             New-VmLabUnattendXml -OutputPath $OutputPath -Locale $Locale -KeyboardLayout $KeyboardLayout -ImageEdition $ImageEdition -Overwrite:$Overwrite -Apply:$Apply -WhatIf:$WhatIfPreference
+        }
+        'iso-verify' {
+            if ([string]::IsNullOrWhiteSpace($IsoPath)) { throw '-IsoPath (-i) is required for iso-verify.' }
+            Test-VmLabIsoMedia -IsoPath $IsoPath -ExpectedSha256 $ExpectedSha256
+        }
+        'iso-attach' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for iso-attach.' }
+            if ([string]::IsNullOrWhiteSpace($IsoPath)) { throw '-IsoPath (-i) is required for iso-attach.' }
+            Set-VmLabBootMedia -Name $Name -IsoPath $IsoPath -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+        }
+        'iso-detach' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for iso-detach.' }
+            Set-VmLabBootMedia -Name $Name -Detach -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+        }
+        'boot-prepare' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for boot-prepare.' }
+            Set-VmLabFirmwareBootOrder -Name $Name -PreferDvd:$PreferDvd -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+        }
+        'boot-troubleshoot' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for boot-troubleshoot.' }
+            Get-VmLabBootRecovery -Name $Name -ManifestRoot $ManifestRoot
+        }
+        'host-resources' {
+            Get-VmLabHostResources -MinReserveBytes $MinReserveBytes
+        }
+        'guest-wait' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for guest-wait.' }
+            Wait-VmLabGuestReady -Name $Name -Credential $Credential -PromptCredential:$PromptCredential -TimeoutSeconds $TimeoutSeconds -ManifestRoot $ManifestRoot
+        }
+        'guest-identity' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for guest-identity.' }
+            $cred = Resolve-VmLabGuestCredential -Credential $Credential -PromptCredential:$PromptCredential
+            if ($null -eq $cred) { [pscustomobject]@{ status = 'AWAITING_INTERACTION'; reason_code = 'guest_credentials_required'; vm_name = $Name } }
+            else { Test-VmLabGuestIdentityPolicy -Name $Name -Credential $cred -ManifestRoot $ManifestRoot }
+        }
+        'guest-inventory' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for guest-inventory.' }
+            Get-VmLabGuestInventory -Name $Name -Credential $Credential -PromptCredential:$PromptCredential -IncludeProcesses:$IncludeProcesses -IncludeServices:$IncludeServices -IncludeTasks:$IncludeTasks -ManifestRoot $ManifestRoot
+        }
+        'guest-run-script' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for guest-run-script.' }
+            if ([string]::IsNullOrWhiteSpace($ScriptPath)) { throw '-ScriptPath is required for guest-run-script.' }
+            Invoke-VmLabGuestScript -Name $Name -ScriptPath $ScriptPath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -ExpectedSha256 $ExpectedSha256 -TimeoutSeconds $TimeoutSeconds -OperationId $OperationId -Credential $Credential -PromptCredential:$PromptCredential -Apply:$Apply -AuthorizeGuestExec:$AuthorizeGuestExec -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+        }
+        'guest-reboot' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for guest-reboot.' }
+            Restart-VmLabGuest -Name $Name -Credential $Credential -PromptCredential:$PromptCredential -ShutdownTimeoutSeconds $ShutdownTimeoutSeconds -ReadinessTimeoutSeconds $TimeoutSeconds -MinHostReserveBytes $MinReserveBytes -Apply:$Apply -AuthorizeVmLifecycle:$AuthorizeVmLifecycle -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+        }
+        'checkpoint-inspect' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for checkpoint-inspect.' }
+            Get-VmLabCheckpointDetail -Name $Name -CheckpointName $CheckpointName -CheckpointId $CheckpointId -ManifestRoot $ManifestRoot
+        }
+        'setup-report' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for setup-report.' }
+            Get-VmLabSetupProgressReport -Name $Name -Credential $Credential -ManifestRoot $ManifestRoot
+        }
+        'setup-answer-media' {
+            if ([string]::IsNullOrWhiteSpace($OutputPath)) { throw '-OutputPath is required for setup-answer-media.' }
+            New-VmLabAnswerMediaStaging -StagingDirectory $OutputPath -Locale $Locale -KeyboardLayout $KeyboardLayout -ImageEdition $ImageEdition -Overwrite:$Overwrite -Apply:$Apply -WhatIf:$WhatIfPreference
+        }
+        'approval-request' {
+            if ([string]::IsNullOrWhiteSpace($WorkflowPath)) { throw '-WorkflowPath (-f) is required for approval-request.' }
+            if ([string]::IsNullOrWhiteSpace($OutputPath)) { throw '-OutputPath is required for approval-request.' }
+            $caps = if ($AllowedCapabilities -and $AllowedCapabilities.Count -gt 0) { $AllowedCapabilities } else { @('host_mutation', 'vm_lifecycle', 'guest_mutation', 'guest_exec') }
+            $reqArgs = @{ WorkflowPath = $WorkflowPath; OutputPath = $OutputPath; AllowedCapabilities = $caps }
+            if (-not [string]::IsNullOrWhiteSpace($OperationId)) { $reqArgs.OperationId = $OperationId }
+            if (-not [string]::IsNullOrWhiteSpace($ExpectedVmId)) { $reqArgs.ExpectedVmId = $ExpectedVmId }
+            New-VmLabApprovedPlanRequest @reqArgs
+        }
+        'approval-inspect' {
+            if ([string]::IsNullOrWhiteSpace($RequestPath)) { throw '-RequestPath is required for approval-inspect.' }
+            Test-VmLabApprovedPlanRequest -RequestPath $RequestPath -ExpectedRequestDigest $ExpectedRequestDigest
+        }
+        { $_ -in @('workflow-results', 'evidence-inspect') } {
+            if ([string]::IsNullOrWhiteSpace($OperationId)) { throw "-OperationId (-op) is required for $Operation." }
+            Get-VmLabWorkflowStatus -OperationId $OperationId -OperationRoot $OperationRoot
         }
     }
 

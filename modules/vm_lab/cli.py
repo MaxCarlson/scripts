@@ -97,8 +97,9 @@ def main(argv: Sequence[str] | None = None, *, adapter: BackendAdapter | None = 
     be = adapter or BackendAdapter()
     try:
         ps_args, interactive = builder(ns)
-        json_mode = bool(getattr(ns, "json", False))
-        res = be.invoke(ps_args, json_mode=json_mode, interactive=interactive)
+        script_name = getattr(ns, "_script_name", "Invoke-VmLab.ps1")
+        json_mode = bool(getattr(ns, "json", False)) or script_name == "Invoke-VmLabApprovedPlan.ps1"
+        res = be.invoke(ps_args, script_name=script_name, json_mode=json_mode, interactive=interactive)
         if res.stdout:
             sys.stdout.write(res.stdout)
             if not res.stdout.endswith("\n"):

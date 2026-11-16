@@ -22,13 +22,13 @@
 | Phase | State | Validated Commit | Summary |
 |---|---|---|---|
 | 0 — Baseline & Design | COMPLETED | `3a231cb6` | Baseline 60 Pester passed; package layout & compatibility inventory recorded |
-| 1 — Real Python Package | COMPLETED | pending commit | `pyproject.toml`, `__init__.py`, `__main__.py`, `backend.py`, `results.py`, `exceptions.py`, `cli.py`; 11 pytest passed (including wheel build & isolated venv install) |
-| 2 — Bootstrap & CLI Migration | IN_PROGRESS | — | Full subcommands, legacy `-o` compat, `bootstrap_latest` / `launcher_generator.py` migration |
-| 3 — Host, Identity, Media & Boot | NOT_STARTED | — | H01–H03 (VM ID lookup, ISO SHA-256, media attach/detach, boot diagnostics/recovery) |
-| 4 — Guest Execution & Lifecycle | NOT_STARTED | — | H05–H10 (guest inventory, trusted script exec, 3010 reboot, graceful reboot, checkpoint inspect) |
-| 5 — Workflow & Acceptance Semantics | NOT_STARTED | — | H11–H14 (`on_failure`, `timeout_seconds`, `idempotency_class`, `guest_identity`, `vm.connect`, approval CLI) |
-| 6 — Windows Setup & OOBE | NOT_STARTED | — | H04 (answer-media workflow, attachment, readiness) |
-| 7 — Final Validation & Docs | NOT_STARTED | — | Full Python + Pester + wheel/editable + bootstrap + security tests |
+| 1 — Real Python Package | COMPLETED | `749cc258` | `pyproject.toml`, `__init__.py`, `__main__.py`, `backend.py`, `results.py`, `exceptions.py`, `cli.py`; 11 pytest passed (including wheel build & isolated venv install) |
+| 2 — Bootstrap & CLI Migration | COMPLETED | `07f1a9fa` | Full subcommands (`commands.py`), legacy `-o` compat, removed `launcher_generator.py` special case (`vm` & `vm-lab` discovered via `pyproject.toml`); 44 pytest passed |
+| 3 — Host, Identity, Media & Boot | COMPLETED | pending commit | `src/HostBoot.ps1` (`Resolve-VmLabTargetVm`, `Test-VmLabIsoMedia`, `Set-VmLabBootMedia`, `Set-VmLabFirmwareBootOrder`, `Get-VmLabBootRecovery`) + `vm media iso`, `vm boot`, `vm host` |
+| 4 — Guest Execution & Lifecycle | COMPLETED | pending commit | `Get-VmLabGuestInventory`, `Invoke-VmLabGuestScript` (`3010` -> `REBOOT_REQUIRED`), `Restart-VmLabGuest`, `Get-VmLabCheckpointDetail` + `vm guest`, `vm restart`, `vm checkpoint inspect` |
+| 5 — Workflow & Acceptance Semantics | COMPLETED | pending commit | Honored `on_failure`, `timeout_seconds`, `idempotency_class`, `guest_identity`, `vm.connect` in `Contracts.ps1` & `WorkflowEngine.ps1` + `vm approval`, `vm workflow validate/results`, `vm evidence inspect` |
+| 6 — Windows Setup & OOBE | COMPLETED | pending commit | `vm setup plan/status/guide/answer-media` wired to `Get-VmLabSetupProgressReport` & `New-VmLabAnswerMediaStaging` (live OOBE `NOT_TESTED`) |
+| 7 — Final Validation & Docs | COMPLETED | pending commit | Full `vm_lab` pytest (68), Pester (62), Python toolkit (147), AST/import, wheel install; live Hyper-V `NOT_TESTED` |
 
 ## Compatibility Inventory (`Invoke-VmLab.ps1` Operations)
 

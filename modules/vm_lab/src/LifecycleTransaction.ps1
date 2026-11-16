@@ -236,3 +236,61 @@ function Invoke-VmLabCheckpointTransaction {
         readiness       = $readyRes
     }
 }
+
+function Restart-VmLabGuest {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [pscredential]$Credential,
+        [switch]$PromptCredential,
+        [switch]$WaitReady = $true,
+        [int]$ShutdownTimeoutSeconds = 60,
+        [int]$ReadinessTimeoutSeconds = 120,
+        [int64]$MinHostReserveBytes = 4GB,
+        [switch]$Apply,
+        [switch]$AuthorizeVmLifecycle,
+        [string]$ManifestRoot = (Get-VmLabDefaultManifestRoot)
+    )
+    $resolved = Resolve-VmLabTargetVm -NameOrId $Name -ManifestRoot $ManifestRoot
+    if (-not $resolved.ownership.owned) { throw "VM '$($resolved.vm.Name)' is not owned by vm_lab: $($resolved.ownership.reason)" }
+    $vm = $resolved.vm
+
+    $authorized = Test-VmLabCapabilityAuthorized -Capability 'vm_lifecycle' -Apply:$Apply -AuthorizeVmLifecycle:$AuthorizeVmLifecycle
+    if (-not $authorized -or $WhatIfPreference -or -not $PSCmdlet.ShouldProcess($vm.Name, 'Gracefully restart VM')) {
+        $reason = if (-not $Apply -or $WhatIfPreference) { 'dry_run_not_applied' } else { 'vm_lifecycle_authorization_required' }
+        return [pscustomobject]@{
+            status      = if ($reason -eq 'dry_run_not_applied') { 'PLANNED' } else { 'BLOCKED' }
+            reason_code = $reason
+            vm_name     = $vm.Name
+            vm_id       = [string]$vm.Id
+        }
+    }
+    try {
+        Get-PSSession -ErrorAction SilentlyContinue | Where-Object { $_.ComputerName -eq $vm.Name } | Remove-PSSession -ErrorAction SilentlyContinue
+    } catch {}
+    if ([string]$vm.State -ne 'Off') {
+        $stopRes = Stop-VmLabMachine -Name $vm.Name -ShutdownTimeoutSeconds $ShutdownTimeoutSeconds -Apply -ManifestRoot $ManifestRoot
+        if ($stopRes.status -notin @('stopped', 'already_stopped')) {
+            return [pscustomobject]@{ status = 'PARTIAL'; reason_code = 'shutdown_not_confirmed'; vm_name = $vm.Name; vm_id = [string]$vm.Id; stop = $stopRes }
+        }
+    }
+    $startRes = Start-VmLabMachine -Name $vm.Name -MinHostReserveBytes $MinHostReserveBytes -Apply -ManifestRoot $ManifestRoot
+    if ($startRes.status -notin @('started', 'already_running')) {
+        return [pscustomobject]@{ status = 'PARTIAL'; reason_code = 'restart_start_failed'; vm_name = $vm.Name; vm_id = [string]$vm.Id; start = $startRes }
+    }
+    $readyRes = $null
+    if ($WaitReady) {
+        $readyRes = Wait-VmLabGuestReady -Name $vm.Name -Credential $Credential -PromptCredential:$PromptCredential -TimeoutSeconds $ReadinessTimeoutSeconds -ManifestRoot $ManifestRoot
+        if ($readyRes.status -ne 'SUCCEEDED') {
+            return [pscustomobject]@{ status = $readyRes.status; reason_code = $readyRes.reason_code; vm_name = $vm.Name; vm_id = [string]$vm.Id; start = $startRes; readiness = $readyRes }
+        }
+    }
+    return [pscustomobject]@{
+        status      = 'SUCCEEDED'
+        reason_code = 'guest_restarted'
+        vm_name     = $vm.Name
+        vm_id       = [string]$vm.Id
+        start       = $startRes
+        readiness   = $readyRes
+    }
+}
