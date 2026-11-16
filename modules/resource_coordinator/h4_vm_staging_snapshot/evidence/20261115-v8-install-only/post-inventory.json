@@ -1,0 +1,50 @@
+{
+  "hostname": "DESKTOP-1ITSJV0",
+  "tasks": [
+    {
+      "TaskName": "ResourceCoordinator-H4-9ea7312c8c-install-logon",
+      "TaskPath": "\\",
+      "State": {
+        "value": 3,
+        "Value": "Ready"
+      }
+    }
+  ],
+  "services": [],
+  "processes": [],
+  "phase_files": [
+    {
+      "relative_path": "9ea7312c8c-install",
+      "directory": true,
+      "size_bytes": null
+    },
+    {
+      "relative_path": "9ea7312c8c-install\\logs",
+      "directory": true,
+      "size_bytes": null
+    },
+    {
+      "relative_path": "9ea7312c8c-install\\config.yaml",
+      "directory": false,
+      "size_bytes": 384
+    },
+    {
+      "relative_path": "9ea7312c8c-install\\coordinator_state.lock",
+      "directory": false,
+      "size_bytes": 12
+    },
+    {
+      "relative_path": "9ea7312c8c-install\\operator.token",
+      "directory": false,
+      "size_bytes": 44
+    },
+    {
+      "relative_path": "9ea7312c8c-install\\start-coordinator-managed.ps1",
+      "directory": false,
+      "size_bytes": 2506
+    }
+  ],
+  "PSComputerName": "RC-H4-Windows-Acceptance",
+  "RunspaceId": "292bda77-8eda-4908-ba02-303391487498",
+  "PSShowComputerName": true
+}

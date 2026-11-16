@@ -1,0 +1,11 @@
+{
+  "operation_id": "v8-install-20261115-194217-a283bd",
+  "test_root": "C:\\H4-Guest-Work\\runs\\h4-rc-install-v8-install-20261115-194217-a283bd",
+  "install_exit": 4,
+  "install_output": "{\"completed_at\": \"2026-11-16T03:43:51.334192+00:00\", \"exception_chain\": [\"RuntimeError\"], \"exit_code\": 4, \"guard_reasons\": [], \"profile\": \"install\", \"reason_code\": \"RuntimeError\", \"schema_version\": 1, \"stage\": \"lifecycle\", \"status\": \"failed\"}",
+  "cleanup_exit": 4,
+  "cleanup_output": "{\"completed_at\": \"2026-11-16T03:44:01.180406+00:00\", \"exception_chain\": [\"InstallationError\", \"FileNotFoundError\"], \"exit_code\": 4, \"guard_reasons\": [], \"profile\": \"cleanup\", \"reason_code\": \"InstallationError\", \"schema_version\": 1, \"stage\": \"lifecycle\", \"status\": \"failed\"}",
+  "PSComputerName": "RC-H4-Windows-Acceptance",
+  "RunspaceId": "292bda77-8eda-4908-ba02-303391487498",
+  "PSShowComputerName": true
+}

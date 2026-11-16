@@ -121,6 +121,43 @@ try {
   $result.rc_processes = $matches
   $result.queries.processes = 'available'
 } catch { $result.queries.processes = 'error'; $result.errors += "process_query:$($_.Exception.GetType().Name)" }
+try {
+  $result.current_user = [string]"$env:USERDOMAIN\$env:USERNAME"
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  $quserOut = @(quser 2>&1)
+  $quserExit = $LASTEXITCODE
+  $ErrorActionPreference = $prevEap
+  $quserText = ($quserOut | ForEach-Object { [string]$_ }) -join "`n"
+  $sessions = @()
+  if ($quserExit -eq 0) {
+    foreach ($line in ($quserOut | Select-Object -Skip 1)) {
+      $text = [string]$line
+      if ([string]::IsNullOrWhiteSpace($text)) { continue }
+      $clean = $text.TrimStart(' ', '>')
+      $parts = @($clean -split '\s{2,}')
+      if ($parts.Count -ge 4) {
+        $hasName = ($parts.Count -ge 5 -and $parts[1] -notmatch '^\d+$')
+        $sessName = if ($hasName) { $parts[1] } else { '' }
+        $sessIdRaw = if ($hasName) { $parts[2] } else { $parts[1] }
+        $sessState = if ($hasName) { $parts[3] } else { $parts[2] }
+        $sessId = 0
+        if ([int]::TryParse($sessIdRaw, [ref]$sessId)) {
+          $sessions += @{username=$parts[0]; session_name=$sessName; session_id=$sessId; state=$sessState}
+        }
+      }
+    }
+    $result.interactive_sessions = $sessions
+    $result.queries.sessions = 'available'
+  } elseif ($quserText -match 'No User exists') {
+    $result.interactive_sessions = @()
+    $result.queries.sessions = 'available'
+  } else {
+    $result.interactive_sessions = @()
+    $result.queries.sessions = 'error'
+    $result.errors += "session_query:exit_$quserExit"
+  }
+} catch { $result.queries.sessions = 'error'; $result.errors += "session_query:$($_.Exception.GetType().Name)" }
 $result | ConvertTo-Json -Depth 6 -Compress
 """
     env = os.environ.copy()
@@ -187,9 +224,36 @@ def guest_identity(evidence: Dict[str, Any]) -> bool:
     ))
 
 
+def has_eligible_interactive_session(evidence: Dict[str, Any]) -> bool:
+    """Return True only when an Active interactive desktop session (>0) matches current_user."""
+    if evidence.get("queries", {}).get("sessions") != "available":
+        return False
+    current_user = str(evidence.get("current_user") or "").strip()
+    short_user = current_user.rsplit("\\", 1)[-1].casefold() if current_user else ""
+    sessions = evidence.get("interactive_sessions") or []
+    for sess in sessions:
+        if not isinstance(sess, dict):
+            continue
+        sess_id = sess.get("session_id")
+        if type(sess_id) is not int or sess_id <= 0:
+            continue
+        if str(sess.get("state", "")).casefold() != "active":
+            continue
+        sess_name = str(sess.get("session_name", "")).casefold()
+        if not (sess_name == "console" or sess_name.startswith("rdp-tcp")):
+            continue
+        sess_user = str(sess.get("username", "")).strip().casefold()
+        if short_user and sess_user != short_user:
+            continue
+        if sess_user:
+            return True
+    return False
+
+
 def guard_reasons(evidence: Dict[str, Any], test_root: Path, *, is_windows: bool,
                   owned_task_names: Sequence[str] = (),
-                  owned_processes: Sequence[Dict[str, Any]] = ()) -> list:
+                  owned_processes: Sequence[Dict[str, Any]] = (),
+                  require_interactive_session: bool = False) -> list:
     reasons = []
     if not is_windows:
         reasons.append("not_windows")
@@ -247,6 +311,8 @@ def guard_reasons(evidence: Dict[str, Any], test_root: Path, *, is_windows: bool
         reasons.append("test_root_must_be_absolute_and_h4_scoped")
     if test_root.exists() and _is_reparse_point(test_root):
         reasons.append("test_root_is_reparse_or_symbolic_link")
+    if require_interactive_session and is_windows and not has_eligible_interactive_session(evidence):
+        reasons.append("interactive_logon_session_unavailable")
     return reasons
 
 
@@ -270,7 +336,8 @@ def task_path_reasons(test_root: Path) -> list:
     ALLOWED_TOP_LEVEL_ARTIFACTS = frozenset({
         ".h4-test-root.json", "environment.json", "preflight.json", "test-results.json",
         "process-identity.json", "rollback-result.json", "cleanup-result.json", "cleanup-manifest.json",
-        "pytest-output.log", "upgrade-receipts", "task-snapshots",
+        "cleanup-error.json", "lifecycle-diagnostics.json", "recovery-result.json", "recovery-error.json",
+        "pytest-output.log", "upgrade-receipts", "task-snapshots", "recovery-task-snapshots",
         "runs", "junit.xml",
     })
     children = list(test_root.iterdir())
@@ -317,10 +384,13 @@ class GuestLifecycleError(RuntimeError):
 class GuestMutationGate:
     """Recheck guest identity and inventories before each actual installer mutation."""
 
-    def __init__(self, test_root: Path, task_names: Sequence[str], *, listener_port: Optional[int] = None):
+    def __init__(self, test_root: Path, task_names: Sequence[str], *,
+                 listener_port: Optional[int] = None,
+                 require_interactive_session: bool = False):
         self.test_root = test_root.resolve()
         self.task_names = tuple(task_names)
         self.listener_port = listener_port
+        self.require_interactive_session = require_interactive_session
         self.owned_processes: list = []
 
     def allow_process(self, *, pid: int, creation_time: float, executable_path: Path) -> None:
@@ -342,6 +412,7 @@ class GuestMutationGate:
         reasons = guard_reasons(
             evidence, self.test_root, is_windows=True,
             owned_task_names=self.task_names, owned_processes=self.owned_processes,
+            require_interactive_session=self.require_interactive_session,
         )
         reasons.extend(task_path_reasons(self.test_root))
         if reasons:
@@ -597,6 +668,50 @@ def _assert_managed_root_contains_launcher(managed_root: Path, launcher_path: Pa
         )
 
 
+def _probe_scheduled_task_info(task_name: str) -> Dict[str, Any]:
+    shell = next((candidate for candidate in ("pwsh.exe", "powershell.exe") if _which(candidate)), None)
+    if shell is None:
+        return {"registered": False, "query_error": "powershell_unavailable"}
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$name = [string]$env:RC_H4_PROBE_TASK
+$t = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+if (-not $t) { ConvertTo-Json -Compress -InputObject @{registered=$false}; exit 0 }
+$info = Get-ScheduledTaskInfo -TaskName $name -ErrorAction Stop
+$lastRun = if ($info.LastRunTime -and $info.LastRunTime.Year -gt 1999) { $info.LastRunTime.ToString('o') } else { $null }
+ConvertTo-Json -Compress -InputObject @{
+  registered=$true; enabled=[bool]$t.Settings.Enabled; state=[string]$t.State;
+  last_run_time=$lastRun; last_task_result=[int]$info.LastTaskResult; missed_runs=[int]$info.NumberOfMissedRuns
+}
+"""
+    env = os.environ.copy()
+    env["RC_H4_PROBE_TASK"] = task_name
+    try:
+        res = subprocess.run([shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+                             env=env, capture_output=True, text=True, timeout=15, check=False)
+        if res.returncode != 0 or not res.stdout.strip():
+            return {"registered": False, "query_error": f"exit_{res.returncode}"}
+        return json.loads(res.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError) as exc:
+        return {"registered": False, "query_error": type(exc).__name__}
+
+
+def _classify_install_readiness_failure(task_info: Dict[str, Any], service: Optional[Dict[str, Any]],
+                                        source_verified: bool) -> tuple[str, str]:
+    if not task_info.get("registered"):
+        return ("install:task_registration", "task_not_registered")
+    last_result = task_info.get("last_task_result")
+    if task_info.get("last_run_time") is None or last_result == 267011:
+        return ("install:task_execution", "task_registered_never_executed")
+    if type(last_result) is int and last_result != 0:
+        return ("install:task_launcher", "task_launcher_failed")
+    if not service or service.get("service_state") != "ready":
+        return ("install:coordinator_readiness", "coordinator_readiness_timeout")
+    if not source_verified:
+        return ("install:runtime_verification", "runtime_source_mismatch")
+    return ("install:lifecycle", "install_verification_failed")
+
+
 def _run_guest_lifecycle(profile: str, root: Path, source_root: Path,
                          old_source_root: Optional[Path], timeout_seconds: int,
                          fault_stage: Optional[str]) -> Dict[str, Any]:
@@ -641,7 +756,7 @@ def _run_guest_lifecycle(profile: str, root: Path, source_root: Path,
             "logon": f"ResourceCoordinator-H4-{run_id}-{phase}-logon",
             "viewer": f"ResourceCoordinator-H4-{run_id}-{phase}-viewer",
         }
-        gate = GuestMutationGate(root, tuple(names.values()), listener_port=port)
+        gate = GuestMutationGate(root, tuple(names.values()), listener_port=port, require_interactive_session=True)
         credentials = GuestCredentialProvider(phase_root)
         stage_failure = (fault_stage or "after_task_replacement") if phase == "rollback" else None
         runtime = InstallationRuntime(
@@ -666,9 +781,33 @@ def _run_guest_lifecycle(profile: str, root: Path, source_root: Path,
             service = current._service_status()
             identity = ((service or {}).get("runtime") or {})
             expected_package = new_root / "modules" / "resource_coordinator" / "resource_coordinator"
-            if (not service or service.get("service_state") != "ready" or
-                    Path(str(identity.get("source_path", ""))).resolve() != expected_package.resolve()):
-                raise RuntimeError("fresh install did not start the selected v1.0.0 source as a ready Coordinator")
+            source_ok = bool(
+                identity.get("source_path") and
+                Path(str(identity.get("source_path", ""))).resolve() == expected_package.resolve()
+            )
+            ready_ok = bool(service and service.get("service_state") == "ready")
+            task_info = _probe_scheduled_task_info(names["logon"])
+            diag = {
+                "schema_version": 1,
+                "phase": phase,
+                "task_name": names["logon"],
+                "task_registered": bool(task_info.get("registered")),
+                "task_enabled": task_info.get("enabled"),
+                "task_start_requested": True,
+                "task_executed": bool(task_info.get("last_run_time") is not None and task_info.get("last_task_result") != 267011),
+                "task_last_result": task_info.get("last_task_result"),
+                "coordinator_ready": ready_ok,
+                "runtime_source_verified": source_ok,
+                "observed_at": _now(),
+            }
+            _write_json(root / "lifecycle-diagnostics.json", diag)
+            if not (ready_ok and source_ok):
+                fail_stage, fail_reason = _classify_install_readiness_failure(task_info, service, source_ok)
+                raise GuestLifecycleError(
+                    f"fresh install failed at {fail_stage} ({fail_reason})",
+                    stage=fail_stage,
+                    reason_code=fail_reason,
+                )
         else:
             if old_root is None:
                 raise RuntimeError("old source root disappeared after preflight")
@@ -837,6 +976,119 @@ def _run_guest_cleanup(root: Path, source_root: Path) -> Dict[str, Any]:
             "source_tree_sha256": source_digest, "completed_at": _now()}
 
 
+def _recover_failed_guest_install(root: Path, source_root: Path, *, apply: bool = False) -> Dict[str, Any]:
+    """Safely inspect and clean up a disposable H4 install whose Coordinator never initialized."""
+    manifests = _load_cleanup_manifests(root)
+    if not manifests:
+        raise GuestLifecycleError(
+            "cleanup manifest is missing; refusing recovery",
+            stage="recover",
+            reason_code="recovery_manifest_missing",
+        )
+    new_root, _, source_digest, _ = _repository_roots(source_root, None)
+    module_root = new_root / "modules" / "resource_coordinator"
+    sys.path.insert(0, str(module_root))
+    from resource_coordinator.installation import (
+        InstallationPaths, InstallationRuntime, ManagedInstallation, TASK_MARKER, WindowsStartupTaskBackend,
+    )
+    if Path(sys.modules["resource_coordinator.installation"].__file__).resolve() != (
+            module_root / "resource_coordinator" / "installation.py").resolve():
+        raise GuestLifecycleError(
+            "recovery imported installer source differs from the pinned test source",
+            stage="recover",
+            reason_code="recovery_source_mismatch",
+        )
+    snapshots_dir = root / "recovery-task-snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    results = []
+    for manifest in reversed(manifests):
+        _validate_cleanup_manifest(root, manifest)
+        if manifest.get("source_tree_sha256") != source_digest:
+            raise GuestLifecycleError(
+                "recovery source bundle differs from the source recorded before mutation",
+                stage="recover",
+                reason_code="recovery_source_mismatch",
+            )
+        phase_root = Path(manifest["root"]).resolve(strict=True)
+        names = manifest["task_names"]
+        name_map = {"boot": names[0], "logon": names[1], "viewer": names[2]}
+        port = manifest["port"]
+        live_ev = _run_powershell(test_root=root, listener_port=port)
+        if live_ev.get("rc_processes") or live_ev.get("listener_rows"):
+            raise GuestLifecycleError(
+                "live coordinator process or listener detected; refusing offline recovery",
+                stage="recover",
+                reason_code="recovery_refused_live_process_or_listener",
+            )
+        gate = GuestMutationGate(root, names, listener_port=port)
+        runtime = InstallationRuntime(
+            task_names=name_map, coordinator_url=f"http://127.0.0.1:{port}",
+            listen_port=port, guest_mutation_guard=gate,
+            credential_provider=GuestCredentialProvider(phase_root),
+        )
+        paths = InstallationPaths.isolated(root=phase_root, repository=new_root, python=Path(sys.executable))
+        backend = WindowsStartupTaskBackend(managed_root=phase_root, task_names=name_map, guest_mutation_guard=gate)
+        _assert_managed_root_contains_launcher(backend.managed_root, paths.launcher)
+        manager = ManagedInstallation(paths, backend, runtime=runtime)
+        if manager._service_status() is not None:
+            raise GuestLifecycleError(
+                "coordinator service is still responding; use normal teardown instead",
+                stage="recover",
+                reason_code="recovery_refused_live_process_or_listener",
+            )
+        observed_tasks = backend.status()
+        for task in observed_tasks:
+            if not task.owned:
+                raise GuestLifecycleError(
+                    f"refusing to recover unowned task {task.name}",
+                    stage="recover",
+                    reason_code="recovery_refused_unowned_task",
+                )
+            snap = backend.snapshot(task)
+            _write_json(snapshots_dir / f"{task.name}.json", snap)
+        removed_launchers = []
+        removed_tasks = []
+        if apply:
+            for task in observed_tasks:
+                if task.enabled:
+                    backend.set_enabled(task, False, non_interactive=True)
+                backend.uninstall(task, non_interactive=True)
+                removed_tasks.append(task.name)
+            for lpath in (paths.launcher, paths.viewer):
+                if lpath.is_file() and TASK_MARKER in lpath.read_text(encoding="utf-8", errors="replace"):
+                    lpath.unlink()
+                    removed_launchers.append(str(lpath))
+            remaining = [t.name for t in backend.status()]
+            if remaining:
+                raise GuestLifecycleError(
+                    "test-owned tasks remain after recovery",
+                    stage="recover",
+                    reason_code="recovery_tasks_remain",
+                )
+            post_ev = _run_powershell(test_root=root, listener_port=port)
+            if post_ev.get("rc_services") or post_ev.get("rc_processes") or post_ev.get("listener_rows"):
+                raise GuestLifecycleError(
+                    "residual service/process/listener detected after recovery",
+                    stage="recover",
+                    reason_code="recovery_residual_inventory",
+                )
+        results.append({
+            "phase": manifest["phase"],
+            "status": "applied" if apply else "planned",
+            "tasks_observed": [t.name for t in observed_tasks],
+            "tasks_removed": removed_tasks,
+            "launchers_removed": removed_launchers,
+        })
+    return {
+        "schema_version": 1,
+        "profile": "recover",
+        "status": "applied" if apply else "planned",
+        "phases": results,
+        "source_tree_sha256": source_digest,
+        "completed_at": _now(),
+    }
+
+
 def _raise_injected(stage: str) -> None:
     raise RuntimeError("H4 test-only injected upgrade failure at " + stage)
 
@@ -846,7 +1098,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-r", "--test-root", required=True, type=Path,
                         help="Absolute, guest-local directory beginning h4-rc-")
     parser.add_argument("-a", "--apply", action="store_true", help="Run the selected explicitly gated integration profile")
-    parser.add_argument("-p", "--profile", choices=("preflight", "offline", "task", "install", "upgrade", "rollback", "full", "cleanup"), default="preflight",
+    parser.add_argument("-p", "--profile", choices=("preflight", "offline", "task", "install", "upgrade", "rollback", "full", "cleanup", "recover"), default="preflight",
                         help="preflight is read-only; install/upgrade/rollback/full mutate only a separately authorized guest")
     parser.add_argument("-A", "--authorization", help="Must exactly equal the H4 disposable-test authorization phrase")
     parser.add_argument("-G", "--authorize-guest-mutation", action="store_true",
@@ -876,7 +1128,7 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
         print(json.dumps(payload, sort_keys=True) if args.json else str(exc), file=sys.stderr)
         return 2
     is_windows = os.name == "nt" if is_windows is None else is_windows
-    guest_profiles = {"task", "install", "upgrade", "rollback", "full", "cleanup"}
+    guest_profiles = {"task", "install", "upgrade", "rollback", "full", "cleanup", "recover"}
     lifecycle_profiles = {"install", "upgrade", "rollback", "full"}
     if args.profile == "preflight" and args.apply:
         print("preflight is read-only; select a mutation profile explicitly", file=sys.stderr)
@@ -904,7 +1156,7 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
         evidence = {"queries": {"system": "error"}, "errors": [type(exc).__name__]}
     cleanup_tasks: Sequence[str] = ()
     cleanup_processes: Sequence[Dict[str, Any]] = ()
-    if args.profile == "cleanup":
+    if args.profile in {"cleanup", "recover"}:
         try:
             manifests = _load_cleanup_manifests(test_root)
             cleanup_tasks = [name for manifest in manifests for name in manifest.get("task_names", [])
@@ -927,7 +1179,8 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
             pass
     observed_reasons = guard_reasons(evidence, test_root, is_windows=is_windows,
                                      owned_task_names=cleanup_tasks,
-                                     owned_processes=cleanup_processes)
+                                     owned_processes=cleanup_processes,
+                                     require_interactive_session=(args.profile in lifecycle_profiles))
     reasons = list(observed_reasons)
     if not unresolved_root.is_absolute():
         reasons.append("test_root_must_be_absolute")
@@ -941,7 +1194,8 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
     if any(item.name not in {
         ".h4-test-root.json", "environment.json", "preflight.json", "test-results.json",
         "process-identity.json", "rollback-result.json", "cleanup-result.json", "cleanup-manifest.json",
-        "pytest-output.log", "upgrade-receipts", "task-snapshots",
+        "cleanup-error.json", "lifecycle-diagnostics.json", "recovery-result.json", "recovery-error.json",
+        "pytest-output.log", "upgrade-receipts", "task-snapshots", "recovery-task-snapshots",
         "runs", "junit.xml",
     } and not item.name.startswith(("pytest-temp-", "junit-")) for item in test_root.iterdir()):
         print("test root contains unrecognized artifacts; refusing to write or run", file=sys.stderr)
@@ -1052,8 +1306,11 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
         env[env_name] = "1"
         env["RC_H4_TEST_ROOT"] = str(test_root)
         env["RC_H4_AUTHORIZATION"] = AUTHORIZATION_PHRASE
-    if args.profile in lifecycle_profiles | {"cleanup"}:
-        gate = GuestMutationGate(test_root, ())
+    if args.profile in lifecycle_profiles | {"cleanup", "recover"}:
+        gate = GuestMutationGate(
+            test_root, (),
+            require_interactive_session=(args.profile in lifecycle_profiles),
+        )
         try:
             lifecycle_runner = lifecycle_runner_override or _run_guest_lifecycle
             if args.profile == "cleanup":
@@ -1062,6 +1319,13 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
                 _write_json(test_root / "cleanup-result.json", outcome)
                 print(json.dumps(outcome, sort_keys=True) if args.json else
                       f"H4 {args.profile} profile: passed; results={test_root / 'cleanup-result.json'}")
+                return 0
+            if args.profile == "recover":
+                outcome = _recover_failed_guest_install(test_root, args.source_root, apply=bool(args.apply))
+                outcome = {"schema_version": 1, **outcome, "exit_code": 0, "completed_at": _now()}
+                _write_json(test_root / "recovery-result.json", outcome)
+                print(json.dumps(outcome, sort_keys=True) if args.json else
+                      f"H4 {args.profile} profile: {outcome['status']}; results={test_root / 'recovery-result.json'}")
                 return 0
             gate()
             outcome = lifecycle_runner(args.profile, test_root, args.source_root,
@@ -1091,6 +1355,26 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
                 "exception_chain": diag_chain,
                 "completed_at": _now(),
             }
+            if args.profile in {"cleanup", "recover"}:
+                err_name = "cleanup-error.json" if args.profile == "cleanup" else "recovery-error.json"
+                res_name = "cleanup-result.json" if args.profile == "cleanup" else "recovery-result.json"
+                _write_json(test_root / err_name, outcome)
+                _write_json(test_root / res_name, {
+                    "schema_version": 1,
+                    "profile": args.profile,
+                    "status": "failed",
+                    "automatic_cleanup_claimed": False,
+                    "exact_task_names": _manifest_task_names(test_root),
+                    "stage": diag_stage,
+                    "reason_code": diag_reason,
+                    "guard_reasons": diag_guards,
+                    "exception_chain": diag_chain,
+                    "completed_at": _now(),
+                })
+                print(json.dumps(outcome, sort_keys=True) if args.json else
+                      f"H4 {args.profile} profile: failed safely ({diag_reason}); inspect {test_root / err_name}",
+                      file=sys.stderr)
+                return 4
             _write_json(test_root / "test-results.json", outcome)
             suite = ET.Element("testsuite", {"name": "h4_guest_lifecycle", "tests": "1",
                                                "failures": "0", "errors": "1", "skipped": "0"})

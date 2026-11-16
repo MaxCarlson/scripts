@@ -1,0 +1,17 @@
+{
+  "automatic_cleanup_claimed": false,
+  "exact_task_names": [
+    "ResourceCoordinator-H4-9ea7312c8c-install-boot",
+    "ResourceCoordinator-H4-9ea7312c8c-install-logon",
+    "ResourceCoordinator-H4-9ea7312c8c-install-viewer"
+  ],
+  "exception_chain": [
+    "InstallationError",
+    "FileNotFoundError"
+  ],
+  "guard_reasons": [],
+  "reason_code": "InstallationError",
+  "schema_version": 1,
+  "stage": "lifecycle",
+  "status": "requires_review"
+}

@@ -442,8 +442,10 @@ def test_lifecycle_guard_failure_emits_structured_sanitized_diagnostics(tmp_path
     monkeypatch.setattr(windows_acceptance.sys, "platform", "win32")
     monkeypatch.setattr(windows_acceptance.os, "name", "nt")
     monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {
-        "queries": {"system": "available", "tasks": "available", "services": "available", "processes": "available", "listener": "error"},
+        "queries": {"system": "available", "tasks": "available", "services": "available", "processes": "available", "sessions": "available", "listener": "error"},
         "computer": {"manufacturer": "Microsoft Corporation", "model": "Virtual Machine", "hypervisor_present": True},
+        "current_user": "DESKTOP-1ITSJV0\\mcarls",
+        "interactive_sessions": [{"username": "mcarls", "session_name": "console", "session_id": 1, "state": "Active"}],
     })
     monkeypatch.setattr(windows_acceptance, "guest_identity", lambda ev: True)
     monkeypatch.setattr(windows_acceptance, "task_path_reasons", lambda *a, **kw: [])
@@ -582,3 +584,204 @@ def test_cleanup_profile_preserves_prior_failure_test_results_and_junit(tmp_path
     assert (run_root / "junit.xml").read_text(encoding="utf-8") == prior_junit
     cleanup = json.loads((run_root / "cleanup-result.json").read_text(encoding="utf-8"))
     assert cleanup["status"] == "verified"
+
+
+def test_interactive_session_eligibility_and_guard_rejection(tmp_path, monkeypatch):
+    monkeypatch.setattr(windows_acceptance, "guest_identity", lambda ev: True)
+    h4_root = tmp_path / "h4-rc-session-test"
+    h4_root.mkdir()
+    base_ev = {
+        "queries": {"system": "available", "tasks": "available", "services": "available", "processes": "available", "sessions": "available"},
+        "rc_tasks": [],
+        "rc_services": [],
+        "rc_processes": [],
+        "current_user": "DESKTOP-1ITSJV0\\mcarls",
+        "interactive_sessions": [
+            {"username": "mcarls", "session_name": "console", "session_id": 1, "state": "Active"},
+        ],
+    }
+    assert windows_acceptance.has_eligible_interactive_session(base_ev) is True
+    assert windows_acceptance.guard_reasons(base_ev, h4_root, is_windows=True, require_interactive_session=True) == []
+
+    # Disconnected session, session 0, wrong user, or unavailable query must block
+    for bad_sessions, q_state in [
+        ([{"username": "mcarls", "session_name": "", "session_id": 1, "state": "Disc"}], "available"),
+        ([{"username": "mcarls", "session_name": "services", "session_id": 0, "state": "Active"}], "available"),
+        ([{"username": "other", "session_name": "console", "session_id": 2, "state": "Active"}], "available"),
+        ([], "available"),
+        ([], "error"),
+    ]:
+        bad_ev = {
+            **base_ev,
+            "queries": {**base_ev["queries"], "sessions": q_state},
+            "interactive_sessions": bad_sessions,
+        }
+        assert windows_acceptance.has_eligible_interactive_session(bad_ev) is False
+        reasons = windows_acceptance.guard_reasons(bad_ev, h4_root, is_windows=True, require_interactive_session=True)
+        assert "interactive_logon_session_unavailable" in reasons
+
+
+def test_install_readiness_failure_classification():
+    assert windows_acceptance._classify_install_readiness_failure({"registered": False}, None, False) == (
+        "install:task_registration", "task_not_registered"
+    )
+    assert windows_acceptance._classify_install_readiness_failure(
+        {"registered": True, "last_run_time": None, "last_task_result": 267011}, None, False
+    ) == ("install:task_execution", "task_registered_never_executed")
+    assert windows_acceptance._classify_install_readiness_failure(
+        {"registered": True, "last_run_time": "2026-11-16T00:00:00Z", "last_task_result": 1}, None, False
+    ) == ("install:task_launcher", "task_launcher_failed")
+    assert windows_acceptance._classify_install_readiness_failure(
+        {"registered": True, "last_run_time": "2026-11-16T00:00:00Z", "last_task_result": 0}, None, False
+    ) == ("install:coordinator_readiness", "coordinator_readiness_timeout")
+    assert windows_acceptance._classify_install_readiness_failure(
+        {"registered": True, "last_run_time": "2026-11-16T00:00:00Z", "last_task_result": 0},
+        {"service_state": "ready"},
+        False,
+    ) == ("install:runtime_verification", "runtime_source_mismatch")
+
+
+def test_cleanup_failure_preserves_prior_test_results_and_junit(tmp_path, monkeypatch):
+    import json
+
+    run_root = tmp_path / "h4-rc-cleanup-fail-preserve"
+    run_root.mkdir()
+    (run_root / ".h4-test-root.json").write_text('{"root_id":"1234567890"}', encoding="utf-8")
+    prior_results = '{"status":"failed","reason_code":"task_registered_never_executed"}'
+    prior_junit = '<testsuite errors="1" tests="1"/>'
+    (run_root / "test-results.json").write_text(prior_results, encoding="utf-8")
+    (run_root / "junit.xml").write_text(prior_junit, encoding="utf-8")
+
+    src_root = tmp_path / "sources" / "rc-1.0.0"
+    src_root.mkdir(parents=True)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("RC_H4_DISPOSABLE_GUEST_AUTHORIZED", windows_acceptance.AUTHORIZATION_PHRASE)
+    monkeypatch.setattr(windows_acceptance.sys, "platform", "win32")
+    monkeypatch.setattr(windows_acceptance.os, "name", "nt")
+    monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {"queries": {"system": "available"}})
+    monkeypatch.setattr(windows_acceptance, "guard_reasons", lambda *a, **kw: ())
+    monkeypatch.setattr(windows_acceptance, "task_path_reasons", lambda *a, **kw: ())
+    monkeypatch.setattr(windows_acceptance, "_repository_roots", lambda *a, **kw: (src_root, None, "a" * 64, None))
+
+    def _boom_cleanup(r, s):
+        raise RuntimeError("missing durable journal")
+
+    monkeypatch.setattr(windows_acceptance, "_run_guest_cleanup", _boom_cleanup)
+
+    rc = windows_acceptance.main([
+        "--test-root", str(run_root),
+        "--apply", "--profile", "cleanup",
+        "--authorization", windows_acceptance.AUTHORIZATION_PHRASE,
+        "--authorize-guest-mutation",
+        "--source-root", str(src_root),
+        "--source-manifest", str(manifest),
+        "--json",
+    ])
+    assert rc == 4
+    assert (run_root / "test-results.json").read_text(encoding="utf-8") == prior_results
+    assert (run_root / "junit.xml").read_text(encoding="utf-8") == prior_junit
+    assert json.loads((run_root / "cleanup-error.json").read_text(encoding="utf-8"))["status"] == "failed"
+    assert json.loads((run_root / "cleanup-result.json").read_text(encoding="utf-8"))["status"] == "failed"
+
+
+def test_recover_failed_guest_install_dry_run_apply_idempotent_and_guards(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    import resource_coordinator.installation as inst_mod
+
+    run_root = tmp_path / "h4-rc-recover-test"
+    phase_root = run_root / "runs" / "1234567890-install"
+    phase_root.mkdir(parents=True)
+    launcher = phase_root / "start-coordinator-managed.ps1"
+    launcher.write_text(f"# {inst_mod.TASK_MARKER}\n", encoding="utf-8")
+
+    task_names = [
+        "ResourceCoordinator-H4-1234567890-install-boot",
+        "ResourceCoordinator-H4-1234567890-install-logon",
+        "ResourceCoordinator-H4-1234567890-install-viewer",
+    ]
+    manifest = {
+        "schema_version": 1,
+        "phases": [{
+            "schema_version": 1,
+            "run_id": "1234567890",
+            "phase": "install",
+            "port": 49694,
+            "root": str(phase_root),
+            "source_tree_sha256": "a" * 64,
+            "task_names": task_names,
+        }],
+    }
+    (run_root / "cleanup-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    fake_tasks = [SimpleNamespace(name=task_names[1], owned=True, enabled=True)]
+    events = []
+
+    class _FakeBackend:
+        def __init__(self, *, managed_root, task_names, guest_mutation_guard):
+            self.managed_root = managed_root
+        def status(self):
+            return list(fake_tasks)
+        def snapshot(self, task):
+            return {"definition": "<Task/>", "enabled": task.enabled}
+        def set_enabled(self, task, enabled, *, non_interactive=False):
+            events.append(("set_enabled", task.name, enabled))
+            task.enabled = enabled
+        def uninstall(self, task, *, non_interactive=False):
+            events.append(("uninstall", task.name))
+            fake_tasks[:] = [t for t in fake_tasks if t.name != task.name]
+
+    class _FakeManager:
+        def __init__(self, paths, backend, runtime=None):
+            pass
+        def _service_status(self):
+            return None
+
+    monkeypatch.setattr(inst_mod, "WindowsStartupTaskBackend", _FakeBackend)
+    monkeypatch.setattr(inst_mod, "ManagedInstallation", _FakeManager)
+    monkeypatch.setattr(windows_acceptance, "_repository_roots", lambda *a, **kw: (MODULE_ROOT.parents[1], None, "a" * 64, None))
+    monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {"rc_services": [], "rc_processes": [], "listener_rows": []})
+
+    # 1. Dry-run preserves tasks and launcher while snapshotting XML
+    plan = windows_acceptance._recover_failed_guest_install(run_root, MODULE_ROOT.parents[1], apply=False)
+    assert plan["status"] == "planned"
+    assert len(fake_tasks) == 1
+    assert launcher.is_file()
+    assert (run_root / "recovery-task-snapshots" / f"{task_names[1]}.json").is_file()
+
+    # 2. Live process/listener refuses recovery
+    monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {"rc_services": [], "rc_processes": [{"pid": 1}], "listener_rows": []})
+    with pytest.raises(windows_acceptance.GuestLifecycleError) as exc_live:
+        windows_acceptance._recover_failed_guest_install(run_root, MODULE_ROOT.parents[1], apply=True)
+    assert exc_live.value.reason_code == "recovery_refused_live_process_or_listener"
+
+    # 3. Unowned task refuses recovery
+    monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {"rc_services": [], "rc_processes": [], "listener_rows": []})
+    fake_tasks[0].owned = False
+    with pytest.raises(windows_acceptance.GuestLifecycleError) as exc_unowned:
+        windows_acceptance._recover_failed_guest_install(run_root, MODULE_ROOT.parents[1], apply=True)
+    assert exc_unowned.value.reason_code == "recovery_refused_unowned_task"
+
+    # 4. Apply disables first, uninstalls, removes launcher, and is idempotent
+    fake_tasks[0].owned = True
+    applied = windows_acceptance._recover_failed_guest_install(run_root, MODULE_ROOT.parents[1], apply=True)
+    assert applied["status"] == "applied"
+    assert events == [("set_enabled", task_names[1], False), ("uninstall", task_names[1])]
+    assert not launcher.is_file()
+    again = windows_acceptance._recover_failed_guest_install(run_root, MODULE_ROOT.parents[1], apply=True)
+    assert again["status"] == "applied"
+    assert again["phases"][0]["tasks_observed"] == []
+
+
+def test_windows_live_session_and_missing_task_probe():
+    import os
+
+    if os.name != "nt":
+        pytest.skip("Windows-specific live session/task probe")
+    ev = windows_acceptance._run_powershell()
+    assert ev["queries"]["sessions"] == "available"
+    assert isinstance(ev["interactive_sessions"], list)
+    probe = windows_acceptance._probe_scheduled_task_info("ResourceCoordinator-H4-NonExistent-Probe-0000")
+    assert probe["registered"] is False

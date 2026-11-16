@@ -143,7 +143,39 @@ if (-not (Get-Command -Name Copy-H4ToGuest -ErrorAction SilentlyContinue)) {
 if (-not (Get-Command -Name Copy-H4FromGuest -ErrorAction SilentlyContinue)) {
     function Copy-H4FromGuest {
         param($Session, [Parameter(Mandatory)][string]$SourcePath, [Parameter(Mandatory)][string]$DestinationPath)
-        Copy-Item -FromSession $Session -Path $SourcePath -Destination $DestinationPath -Recurse -Force -ErrorAction Stop
+        if ($SourcePath -match '^(.*)\\\*$') {
+            $baseDir = $Matches[1]
+            $stagedDir = Invoke-Command -Session $Session -ArgumentList @($baseDir) -ScriptBlock {
+                param($srcRoot)
+                $ErrorActionPreference = 'Stop'
+                $tmp = Join-Path $env:TEMP ('h4-ev-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+                New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+                $allowExt = @('.json', '.xml', '.log', '.yaml', '.txt')
+                $files = @(Get-ChildItem -LiteralPath $srcRoot -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+                    ($allowExt -contains $_.Extension.ToLowerInvariant()) -and
+                    ($_.Name -ne 'request.json') -and
+                    ($_.Extension.ToLowerInvariant() -ne '.token')
+                })
+                foreach ($f in $files) {
+                    $rel = $f.FullName.Substring($srcRoot.TrimEnd('\').Length).TrimStart('\')
+                    $dst = Join-Path $tmp $rel
+                    $parent = Split-Path -Parent $dst
+                    if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+                    Copy-Item -LiteralPath $f.FullName -Destination $dst -Force
+                }
+                return $tmp
+            } -ErrorAction Stop
+            try {
+                Copy-Item -FromSession $Session -Path "$stagedDir\*" -Destination $DestinationPath -Recurse -Force -ErrorAction Stop
+            } finally {
+                Invoke-Command -Session $Session -ArgumentList @($stagedDir) -ScriptBlock {
+                    param($tmp)
+                    if ($tmp -and (Test-Path -LiteralPath $tmp)) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+                } -ErrorAction SilentlyContinue
+            }
+        } else {
+            Copy-Item -FromSession $Session -Path $SourcePath -Destination $DestinationPath -Recurse -Force -ErrorAction Stop
+        }
     }
 }
 if (-not (Get-Command -Name Request-H4GuestCredential -ErrorAction SilentlyContinue)) {

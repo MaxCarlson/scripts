@@ -1,0 +1,19 @@
+{
+  "phases": [
+    {
+      "old_source_tree_sha256": null,
+      "phase": "install",
+      "port": 49694,
+      "root": "C:\\H4-Guest-Work\\runs\\h4-rc-install-v8-install-20261115-194217-a283bd\\runs\\9ea7312c8c-install",
+      "run_id": "9ea7312c8c",
+      "schema_version": 1,
+      "source_tree_sha256": "27764f44b7311072b62b0dbf8d8faa96260f3deb8a0f09bf0bef969368599989",
+      "task_names": [
+        "ResourceCoordinator-H4-9ea7312c8c-install-boot",
+        "ResourceCoordinator-H4-9ea7312c8c-install-logon",
+        "ResourceCoordinator-H4-9ea7312c8c-install-viewer"
+      ]
+    }
+  ],
+  "schema_version": 1
+}
