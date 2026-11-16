@@ -72,6 +72,7 @@
         'Invoke-VmLabGuestScript',
         'Restart-VmLabGuest',
         'Get-VmLabCheckpointDetail',
+        'Get-VmLabHostResources',
         'Invoke-VmLab'
     )
     AliasesToExport   = @('vm-lab')

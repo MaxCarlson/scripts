@@ -48,6 +48,33 @@ def redact_sensitive(text: str) -> str:
     return _SECRET_PATTERN.sub(r"\1=[REDACTED]", text)
 
 
+def redact_payload(payload: Any) -> Any:
+    """Recursively redact credential-like patterns from structured JSON payloads."""
+    if isinstance(payload, str):
+        return redact_sensitive(payload)
+    if isinstance(payload, list):
+        return [redact_payload(item) for item in payload]
+    if isinstance(payload, dict):
+        return {k: redact_payload(v) for k, v in payload.items()}
+    return payload
+
+
+def classify_stderr_reason(stderr_text: str) -> str:
+    """Classify non-JSON backend stderr text into a diagnostic reason_code."""
+    low = stderr_text.lower()
+    if (
+        "do not have the required permission" in low
+        or "authorization policy" in low
+        or "access is denied" in low
+    ):
+        return "hyperv_permission_denied"
+    if "is not recognized" in low:
+        return "missing_backend_function"
+    if "hyper-v" in low and any(tok in low for tok in ("service", "vmms", "not running", "unavailable")):
+        return "hyperv_service_unavailable"
+    return "backend_error"
+
+
 def classify_exit_code(payload: Any, backend_returncode: int) -> int:
     """Map backend JSON status/reason_code and process returncode to vm_lab exit taxonomy."""
     nonzero_rc = backend_returncode if backend_returncode > 0 else EXIT_ERROR
@@ -101,6 +128,15 @@ def format_human_output(data: Any) -> str:
             "workflow_digest",
             "vm_name",
             "vm_id",
+            "hostname",
+            "logical_cpu_count",
+            "total_physical_bytes",
+            "available_physical_bytes",
+            "used_physical_bytes",
+            "min_reserve_bytes",
+            "reserve_satisfied",
+            "storage_path",
+            "storage_available_bytes",
             "checkpoint_name",
             "checkpoint_id",
             "exit_code",
@@ -126,3 +162,4 @@ class BackendResult:
     stderr: str
     data: Any = None
     command: tuple[str, ...] = ()
+    data_source: str | None = None

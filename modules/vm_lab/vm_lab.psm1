@@ -99,5 +99,6 @@ Export-ModuleMember -Function @(
     'Invoke-VmLabGuestScript',
     'Restart-VmLabGuest',
     'Get-VmLabCheckpointDetail',
+    'Get-VmLabHostResources',
     'Invoke-VmLab'
 ) -Alias @('vm-lab')

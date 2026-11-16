@@ -57,3 +57,115 @@ function Start-VmLabProcess {
     )
     return (Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru -ErrorAction Stop)
 }
+
+function Get-VmLabHostResources {
+    [CmdletBinding()]
+    param(
+        [int64]$MinReserveBytes = 4GB,
+        [string]$TargetPath
+    )
+
+    $diagnostics = [System.Collections.Generic.List[string]]::new()
+
+    $hostname = $env:COMPUTERNAME
+    if ([string]::IsNullOrWhiteSpace($hostname)) {
+        try {
+            $hostname = [System.Net.Dns]::GetHostName()
+        } catch {
+            $hostname = $null
+            $diagnostics.Add("Hostname collection failed: $($_.Exception.Message)")
+        }
+    }
+
+    $logicalCpuCount = $null
+    try {
+        $cpu = [Environment]::ProcessorCount
+        if ($cpu -gt 0) {
+            $logicalCpuCount = [int]$cpu
+        } else {
+            $diagnostics.Add('Logical CPU count was not positive.')
+        }
+    } catch {
+        $diagnostics.Add("Logical CPU count collection failed: $($_.Exception.Message)")
+    }
+
+    $totalBytes = $null
+    $availableBytes = $null
+    $usedBytes = $null
+    $memoryCollected = $false
+    try {
+        $memInfo = Get-VmLabHostMemoryInfo
+        if ($null -eq $memInfo -or $null -eq $memInfo.TotalPhysicalBytes -or $null -eq $memInfo.FreePhysicalBytes -or [int64]$memInfo.TotalPhysicalBytes -le 0) {
+            $diagnostics.Add('Host memory counters returned missing or non-positive values.')
+        } else {
+            $totalBytes = [int64]$memInfo.TotalPhysicalBytes
+            $availableBytes = [int64]$memInfo.FreePhysicalBytes
+            if ($availableBytes -lt 0) {
+                $diagnostics.Add("Available physical memory counter was negative ($availableBytes).")
+                $availableBytes = $null
+            } else {
+                $usedBytes = [int64][Math]::Max(0L, ($totalBytes - $availableBytes))
+                $memoryCollected = $true
+            }
+        }
+    } catch {
+        $diagnostics.Add("Host memory collection failed: $($_.Exception.Message)")
+    }
+
+    $effectiveStoragePath = if (-not [string]::IsNullOrWhiteSpace($TargetPath)) {
+        $TargetPath
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:SystemDrive)) {
+        "$($env:SystemDrive)\"
+    } else {
+        'C:\'
+    }
+
+    $storageRoot = $null
+    $storageAvailableBytes = $null
+    try {
+        $storageRoot = [System.IO.Path]::GetPathRoot($effectiveStoragePath)
+        $storageAvailableBytes = [int64](Get-VmLabDriveFreeBytes -TargetPath $effectiveStoragePath)
+    } catch {
+        $diagnostics.Add("Storage free-space collection failed for '$effectiveStoragePath': $($_.Exception.Message)")
+    }
+
+    $reserveSatisfied = $null
+    if ($memoryCollected) {
+        $reserveSatisfied = ($availableBytes -ge $MinReserveBytes)
+    }
+
+    $status = 'OK'
+    $reasonCode = 'host_resources_ok'
+    $errorMessage = $null
+    if (-not $memoryCollected) {
+        $status = 'ERROR'
+        $reasonCode = 'host_resource_collection_failed'
+        $errorMessage = if ($diagnostics.Count -gt 0) { $diagnostics -join ' ' } else { 'Failed to collect required host memory metrics.' }
+    } elseif (-not $reserveSatisfied) {
+        $status = 'OK'
+        $reasonCode = 'host_memory_below_reserve'
+    } elseif ($diagnostics.Count -gt 0) {
+        $reasonCode = 'host_resources_partial'
+    }
+
+    $payload = [ordered]@{
+        status                   = $status
+        reason_code              = $reasonCode
+        operation                = 'host-resources'
+        hostname                 = $hostname
+        logical_cpu_count        = $logicalCpuCount
+        total_physical_bytes     = $totalBytes
+        available_physical_bytes = $availableBytes
+        used_physical_bytes      = $usedBytes
+        min_reserve_bytes        = [int64]$MinReserveBytes
+        reserve_satisfied        = $reserveSatisfied
+        storage_path             = $effectiveStoragePath
+        storage_root             = $storageRoot
+        storage_available_bytes  = $storageAvailableBytes
+        diagnostics              = @($diagnostics)
+    }
+    if ($null -ne $errorMessage) {
+        $payload.error = $errorMessage
+    }
+    return [pscustomobject]$payload
+}

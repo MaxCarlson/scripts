@@ -16,7 +16,13 @@ from vm_lab.exceptions import (
     PowerShellNotFoundError,
     UnsupportedPlatformError,
 )
-from vm_lab.results import BackendResult, classify_exit_code, redact_sensitive
+from vm_lab.results import (
+    BackendResult,
+    classify_exit_code,
+    classify_stderr_reason,
+    redact_payload,
+    redact_sensitive,
+)
 
 
 def resolve_backend_root() -> Path:
@@ -128,34 +134,68 @@ class BackendAdapter:
             run_kwargs["capture_output"] = True
 
         proc = subprocess.run(cmd, **run_kwargs)  # type: ignore[call-overload]
-        stdout = proc.stdout or ""
+        raw_stdout = proc.stdout or ""
         stderr = redact_sensitive(proc.stderr or "")
         parsed = None
-        stripped = stdout.strip()
+        data_source: str | None = None
+        stripped = raw_stdout.strip()
+        remaining_stderr = stderr
         if json_mode and stripped:
             try:
-                parsed = json.loads(stdout)
+                parsed = redact_payload(json.loads(raw_stdout))
+                data_source = "stdout"
             except json.JSONDecodeError as exc:
                 raise BackendExecutionError(
-                    f"Backend returned invalid JSON (exit={proc.returncode}): {exc}. stderr={stderr.strip()}"
+                    redact_sensitive(
+                        f"Backend returned invalid JSON (exit={proc.returncode}): {exc}. stderr={stderr.strip()}"
+                    )
                 ) from exc
-        elif json_mode and stderr.strip() and not stripped:
-            try:
-                parsed = json.loads(stderr.strip().splitlines()[-1])
-            except Exception:
-                parsed = None
+        elif json_mode and not stripped:
+            stderr_stripped = stderr.strip()
+            if stderr_stripped:
+                lines = stderr_stripped.splitlines()
+                last_line = lines[-1].strip()
+                try:
+                    parsed = redact_payload(json.loads(last_line))
+                    data_source = "stderr"
+                    leftover = "\n".join(lines[:-1]).strip()
+                    remaining_stderr = (leftover + "\n") if leftover else ""
+                except Exception:
+                    looks_like_json = last_line.startswith("{") or last_line.startswith("[")
+                    reason = (
+                        "malformed_backend_json"
+                        if looks_like_json
+                        else classify_stderr_reason(stderr_stripped)
+                    )
+                    parsed = {
+                        "status": "ERROR",
+                        "reason_code": reason,
+                        "error": stderr_stripped,
+                    }
+                    data_source = "synthetic"
+                    remaining_stderr = ""
+            elif proc.returncode != 0:
+                parsed = {
+                    "status": "ERROR",
+                    "reason_code": "empty_backend_output",
+                    "error": f"Backend exited with code {proc.returncode} and produced no output.",
+                }
+                data_source = "synthetic"
         elif not json_mode and (stripped.startswith("{") or stripped.startswith("[")):
             try:
-                parsed = json.loads(stdout)
+                parsed = redact_payload(json.loads(raw_stdout))
+                data_source = "stdout"
             except Exception:
                 parsed = None
 
+        stdout_out = json.dumps(parsed, indent=2) + "\n" if data_source == "stdout" else redact_sensitive(raw_stdout)
         exit_code = classify_exit_code(parsed, proc.returncode)
         return BackendResult(
             returncode=proc.returncode,
             exit_code=exit_code,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=stdout_out,
+            stderr=remaining_stderr,
             data=parsed,
             command=tuple(cmd),
+            data_source=data_source,
         )

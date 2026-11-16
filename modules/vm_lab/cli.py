@@ -11,7 +11,7 @@ from vm_lab import __version__
 from vm_lab.backend import BackendAdapter
 from vm_lab.commands import register_commands
 from vm_lab.exceptions import EXIT_INPUT_ERROR, EXIT_SUCCESS, VmLabError
-from vm_lab.results import format_human_output
+from vm_lab.results import format_human_output, redact_sensitive
 
 
 def _emit_json(data: object) -> None:
@@ -48,6 +48,8 @@ def main(argv: Sequence[str] | None = None, *, adapter: BackendAdapter | None = 
                 sys.stdout.write(res.stdout)
                 if not res.stdout.endswith("\n"):
                     sys.stdout.write("\n")
+            elif json_mode and res.data is not None:
+                _emit_json(res.data)
             if res.stderr:
                 sys.stderr.write(res.stderr)
             return res.exit_code
@@ -116,6 +118,8 @@ def main(argv: Sequence[str] | None = None, *, adapter: BackendAdapter | None = 
                 sys.stdout.write(res.stdout)
                 if not res.stdout.endswith("\n"):
                     sys.stdout.write("\n")
+            elif json_mode and res.data is not None:
+                _emit_json(res.data)
             if res.stderr:
                 sys.stderr.write(res.stderr)
             return res.exit_code
@@ -141,8 +145,9 @@ def main(argv: Sequence[str] | None = None, *, adapter: BackendAdapter | None = 
             sys.stderr.write(res.stderr)
         return res.exit_code
     except VmLabError as exc:
+        msg = redact_sensitive(str(exc))
         if getattr(ns, "json", False):
-            _emit_json({"status": "error", "error": str(exc)})
+            _emit_json({"status": "ERROR", "reason_code": "backend_execution_error", "error": msg})
         else:
-            print(f"vm_lab error: {exc}", file=sys.stderr)
+            print(f"vm_lab error: {msg}", file=sys.stderr)
         return exc.exit_code

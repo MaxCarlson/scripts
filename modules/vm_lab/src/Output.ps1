@@ -272,7 +272,11 @@ function Invoke-VmLab {
             Get-VmLabBootRecovery -Name $Name -ManifestRoot $ManifestRoot
         }
         'host-resources' {
-            Get-VmLabHostResources -MinReserveBytes $MinReserveBytes
+            $hrArgs = @{ MinReserveBytes = $MinReserveBytes }
+            if (-not [string]::IsNullOrWhiteSpace($VmRoot)) {
+                $hrArgs.TargetPath = $VmRoot
+            }
+            Get-VmLabHostResources @hrArgs
         }
         'guest-wait' {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for guest-wait.' }
