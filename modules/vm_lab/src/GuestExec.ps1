@@ -358,6 +358,36 @@ function Get-VmLabGuestInventory {
     }
 }
 
+function Resolve-VmLabGuestPowerShellPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][guid]$VmId,
+        [Parameter(Mandatory)][string]$VmName,
+        [Parameter(Mandatory)][pscredential]$Credential,
+        [int]$MaxConnectAttempts = 1
+    )
+    return Invoke-VmLabGuestSession -VmId $VmId -VmName $VmName -Credential $Credential -MaxConnectAttempts $MaxConnectAttempts -ScriptBlock {
+        param($session)
+        Invoke-VmLabPSSessionCommand -Session $session -ScriptBlock {
+            $cmd = Get-Command -Name 'pwsh.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($cmd -and $cmd.Source -and (Test-Path -LiteralPath $cmd.Source -PathType Leaf)) {
+                return [string]$cmd.Source
+            }
+            $candidates = @(
+                'C:\Program Files\PowerShell\7\pwsh.exe',
+                'C:\Program Files\PowerShell\7-preview\pwsh.exe',
+                'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+            )
+            foreach ($cand in $candidates) {
+                if (Test-Path -LiteralPath $cand -PathType Leaf) {
+                    return $cand
+                }
+            }
+            return $null
+        }
+    }
+}
+
 function Invoke-VmLabGuestScript {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
@@ -405,13 +435,23 @@ function Invoke-VmLabGuestScript {
     if ($null -eq $cred) {
         return [pscustomobject]@{ status = 'AWAITING_INTERACTION'; reason_code = 'guest_credentials_required'; vm_name = $vm.Name; vm_id = [string]$vm.Id }
     }
+    $guestPwsh = Resolve-VmLabGuestPowerShellPath -VmId $vm.Id -VmName $vm.Name -Credential $cred
+    if ([string]::IsNullOrWhiteSpace($guestPwsh)) {
+        return [pscustomobject]@{
+            status        = 'FAILED'
+            reason_code   = 'guest_powershell_not_found'
+            vm_name       = $vm.Name
+            vm_id         = [string]$vm.Id
+            script_sha256 = $actualSha
+        }
+    }
     $guestDest = "C:\Windows\Temp\vm_lab_script_$($actualSha.Substring(0, 12)).ps1"
     $copyRes = Copy-VmLabGuestItem -Name $vm.Name -SourcePath $scriptFull -DestinationPath $guestDest -Direction ToGuest -Overwrite -Credential $cred -Apply -ManifestRoot $ManifestRoot
     if ($copyRes.status -ne 'copied') {
         return [pscustomobject]@{ status = 'FAILED'; reason_code = 'script_stage_failed'; vm_name = $vm.Name; vm_id = [string]$vm.Id; copy = $copyRes }
     }
     $psArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $guestDest) + @($ArgumentList)
-    $execRes = Invoke-VmLabGuestCommand -Name $vm.Name -ExecutablePath 'pwsh.exe' -ArgumentList $psArgs -WorkingDirectory $WorkingDirectory -Environment $Environment -TimeoutSeconds $TimeoutSeconds -OperationId $OperationId -StageId $StageId -Credential $cred -Apply -AuthorizeGuestExec -ManifestRoot $ManifestRoot
+    $execRes = Invoke-VmLabGuestCommand -Name $vm.Name -ExecutablePath $guestPwsh -ArgumentList $psArgs -WorkingDirectory $WorkingDirectory -Environment $Environment -TimeoutSeconds $TimeoutSeconds -OperationId $OperationId -StageId $StageId -Credential $cred -Apply -AuthorizeGuestExec -ManifestRoot $ManifestRoot
     if ($Reboot3010AsRebootRequired -and $execRes.exit_code -eq 3010) {
         $execRes.status = 'REBOOT_REQUIRED'
         $execRes.reason_code = 'installer_reboot_required_3010'

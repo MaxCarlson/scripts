@@ -103,3 +103,40 @@ def test_cli_legacy_passthrough_propagates_nonzero_exit() -> None:
     mock_be.invoke.return_value = MagicMock(stdout='{"status":"FAILED"}\n', stderr="", exit_code=EXIT_ERROR)
     rc = cli.main(["-o", "guest-verify", "-n", "TestVM", "-j"], adapter=mock_be)
     assert rc == EXIT_ERROR
+
+
+@pytest.mark.parametrize(
+    ("status", "reason_code", "expected_exit"),
+    [
+        ("BLOCKED", "capability_required_vm_lifecycle", EXIT_AUTH_REQUIRED),
+        ("FAILED", "guest_identity_mismatch", EXIT_ERROR),
+        ("PARTIAL", "shutdown_not_confirmed", EXIT_INCOMPLETE),
+        ("AWAITING_INTERACTION", "guest_credentials_required", EXIT_INTERACTION_REQUIRED),
+        ("REBOOT_REQUIRED", "installer_reboot_required_3010", EXIT_INCOMPLETE),
+        ("SUCCEEDED", "guest_ready", EXIT_SUCCESS),
+    ],
+)
+def test_interactive_credential_prompting_captures_and_classifies_status(
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    reason_code: str,
+    expected_exit: int,
+) -> None:
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):
+        captured_kwargs.update(kwargs)
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout=json.dumps({"status": status, "reason_code": reason_code}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("vm_lab.backend.subprocess.run", fake_run)
+    be = BackendAdapter(pwsh_exe="pwsh.exe")
+    res = be.invoke(["-o", "guest-status", "-Name", "TestVM", "-PromptCredential", "-Json"], json_mode=True, interactive=True)
+    assert captured_kwargs.get("stdout") is subprocess.PIPE
+    assert "capture_output" not in captured_kwargs
+    assert res.data["status"] == status
+    assert res.exit_code == expected_exit

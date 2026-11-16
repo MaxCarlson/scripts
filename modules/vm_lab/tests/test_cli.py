@@ -115,3 +115,44 @@ def test_approval_execute_dispatches_to_approved_plan_script() -> None:
     assert "-RequestPath" in actual_args
     assert "-ExpectedRequestDigest" in actual_args
     assert "-OperatorConsent" in actual_args
+
+
+def test_real_powershell_end_to_end_cli_dispatch(tmp_path: "Path", capsys: pytest.CaptureFixture[str]) -> None:
+    """Exercise real BackendAdapter -> Invoke-VmLab.ps1 PowerShell -File binding without mocking BackendAdapter."""
+    import json
+    import sys
+    from pathlib import Path
+
+    if sys.platform != "win32":
+        pytest.skip("PowerShell backend requires Windows")
+
+    # 1. templates -j
+    rc_tpl = cli.main(["templates", "-j"])
+    assert rc_tpl == EXIT_SUCCESS
+    tpls = json.loads(capsys.readouterr().out)
+    assert any(t["template_id"] == "windows11-dev" for t in tpls)
+
+    # 2. Legacy -o templates -j compatibility
+    rc_leg = cli.main(["-o", "templates", "-j"])
+    assert rc_leg == EXIT_SUCCESS
+    leg_tpls = json.loads(capsys.readouterr().out)
+    assert len(leg_tpls) == len(tpls)
+
+    # 3. Path with spaces: setup answer-media (dry-run)
+    space_dir = tmp_path / "dir with spaces"
+    space_dir.mkdir()
+    xml_out = space_dir / "Autounattend.xml"
+    rc_xml = cli.main(["setup", "answer-media", str(xml_out), "-j"])
+    assert rc_xml == EXIT_SUCCESS
+    xml_res = json.loads(capsys.readouterr().out)
+    assert xml_res["status"] == "planned"
+    assert not xml_out.exists()
+
+    # 4. media iso verify with invalid file returns nonzero exit
+    bad_iso = space_dir / "tiny.iso"
+    bad_iso.write_bytes(b"tiny")
+    rc_iso = cli.main(["media", "iso", "verify", str(bad_iso), "-j"])
+    assert rc_iso == EXIT_ERROR
+    iso_res = json.loads(capsys.readouterr().out)
+    assert iso_res["status"] == "FAILED"
+    assert iso_res["reason_code"] == "iso_too_small"

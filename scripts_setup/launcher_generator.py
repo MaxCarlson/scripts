@@ -277,6 +277,33 @@ def is_managed_wrapper(path: Path) -> bool:
     return cls.status in ("managed_current", "managed_legacy")
 
 
+def classify_vm_launcher(path: Path) -> str:
+    """Classify an existing vm/vm-lab launcher as missing, managed_current, legacy_vm_lab_powershell, ambiguous, or unmanaged."""
+    if not path.exists() and not path.is_symlink():
+        return "missing"
+    if path.is_symlink():
+        return "ambiguous"
+    if not path.is_file():
+        return "ambiguous"
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "ambiguous"
+
+    if MANAGED_SIGNATURE_WINDOWS in content or MANAGED_SIGNATURE_POSIX in content:
+        return "managed_current"
+
+    low = content.lower()
+    if "invoke-vmlab.ps1" in low and ("pwsh" in low or "powershell" in low):
+        lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+        allowed_prefixes = ("@echo off", "#!/", "pwsh", "powershell", "exec pwsh", "exit /b")
+        if all(any(ln.lower().startswith(p) for p in allowed_prefixes) for ln in lines):
+            return "legacy_vm_lab_powershell"
+        return "ambiguous"
+
+    return "unmanaged"
+
+
 def generate_windows_wrapper(command_name: str) -> str:
     """Generate portable, high-fidelity Windows .cmd wrapper."""
     return (

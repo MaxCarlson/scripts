@@ -101,7 +101,8 @@ class BackendAdapter:
         script_path = self.get_script_path(script_name)
 
         cmd = [pwsh, "-NoProfile", "-File", str(script_path), *[str(a) for a in args]]
-        if interactive:
+        is_wizard = any(str(a).lower() == "wizard" for a in args)
+        if interactive and is_wizard:
             proc = subprocess.run(cmd, shell=False, check=False, timeout=timeout_seconds)
             return BackendResult(
                 returncode=proc.returncode,
@@ -112,29 +113,40 @@ class BackendAdapter:
                 command=tuple(cmd),
             )
 
-        proc = subprocess.run(
-            cmd,
-            shell=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=timeout_seconds,
-        )
+        run_kwargs: dict[str, object] = {
+            "shell": False,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "check": False,
+            "timeout": timeout_seconds,
+        }
+        if interactive:
+            # Inherit stdin/stderr for interactive credential prompting while capturing structured stdout
+            run_kwargs["stdout"] = subprocess.PIPE
+        else:
+            run_kwargs["capture_output"] = True
+
+        proc = subprocess.run(cmd, **run_kwargs)  # type: ignore[call-overload]
         stdout = proc.stdout or ""
         stderr = redact_sensitive(proc.stderr or "")
         parsed = None
-        if json_mode and stdout.strip():
+        stripped = stdout.strip()
+        if json_mode and stripped:
             try:
                 parsed = json.loads(stdout)
             except json.JSONDecodeError as exc:
                 raise BackendExecutionError(
                     f"Backend returned invalid JSON (exit={proc.returncode}): {exc}. stderr={stderr.strip()}"
                 ) from exc
-        elif json_mode and stderr.strip() and not stdout.strip():
+        elif json_mode and stderr.strip() and not stripped:
             try:
                 parsed = json.loads(stderr.strip().splitlines()[-1])
+            except Exception:
+                parsed = None
+        elif not json_mode and (stripped.startswith("{") or stripped.startswith("[")):
+            try:
+                parsed = json.loads(stdout)
             except Exception:
                 parsed = None
 

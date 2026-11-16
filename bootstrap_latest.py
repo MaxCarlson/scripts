@@ -183,8 +183,15 @@ def source_kind(path: Path, root: Path) -> str:
     return "Python script"
 
 
-def write_console_proxy(destination: Path, name: str, windows: bool, venv_dir: Path) -> None:
-    if destination.exists() or destination.is_symlink():
+def write_console_proxy(
+    destination: Path,
+    name: str,
+    windows: bool,
+    venv_dir: Path,
+    *,
+    overwrite_legacy: bool = False,
+) -> None:
+    if (destination.exists() or destination.is_symlink()) and not overwrite_legacy:
         raise FileExistsError(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     target = venv_dir / ("Scripts" if windows else "bin") / (name + ".exe" if windows else name)
@@ -296,8 +303,15 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
     # absent distributions cannot be inspected, so their future proxies are unknown.
     local_sources = {normalized(name): path for name, path in sources}
     console_inventory: dict[str, tuple[str, list[str]]] = {}
-    missing_console: list[tuple[str, str, Path | None, Path]] = []
+    missing_console: list[tuple[str, str, Path | None, Path, bool]] = []
     console_count = 0
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from scripts_setup.launcher_generator import classify_vm_launcher
+    except ImportError:
+        classify_vm_launcher = None  # type: ignore[assignment]
+
     for name, owner in console_scripts([name for name, _ in sources]):
         console_count += 1
         owner_key = normalized(owner)
@@ -308,28 +322,40 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
             else f"package {owner}"
         )
         destination = launcher_path(bin_dir, name, windows)
-        missing_proxy = not destination.exists() and not destination.is_symlink()
+        exists = destination.exists() or destination.is_symlink()
+        migrate_legacy = False
+        if exists and name in {"vm", "vm-lab"} and classify_vm_launcher is not None:
+            cls = classify_vm_launcher(destination)
+            if cls == "legacy_vm_lab_powershell":
+                migrate_legacy = True
+            elif cls in {"unmanaged", "ambiguous"}:
+                print(f"[WARN] Preserving {cls} launcher at {destination}; not overwriting.")
+        missing_proxy = (not exists) or migrate_legacy
         group = console_inventory.setdefault(owner_key, (owner_description, []))[1]
-        group.append(name + (" [missing proxy]" if missing_proxy else ""))
+        tag = " [migrate legacy]" if migrate_legacy else (" [missing proxy]" if not exists else "")
+        group.append(name + tag)
         if missing_proxy:
-            missing_console.append((name, owner, owner_path, destination))
+            missing_console.append((name, owner, owner_path, destination, migrate_legacy))
         else:
             existing += 1
     print(f"Console commands: {console_count} found, {len(missing_console)} missing proxies")
     for owner_description, commands in sorted(console_inventory.values(), key=lambda item: item[0].lower()):
         print(f"  {owner_description}: {', '.join(sorted(commands))}")
 
-    for name, owner, owner_path, destination in missing_console:
+    for name, owner, owner_path, destination, migrate_legacy in missing_console:
         owner_description = (
             f"{package_kind(owner_path, root)} {owner} ({owner_path.relative_to(root)})"
             if owner_path is not None
             else f"package {owner}"
         )
-        verb = "Would create" if dry_run else "Creating"
+        if migrate_legacy:
+            verb = "Would migrate legacy launcher" if dry_run else "Migrating legacy launcher"
+        else:
+            verb = "Would create" if dry_run else "Creating"
         print(f"{verb} console command '{name}' from {owner_description}: {destination}")
         if not dry_run:
             try:
-                write_console_proxy(destination, name, windows, venv_dir)
+                write_console_proxy(destination, name, windows, venv_dir, overwrite_legacy=migrate_legacy)
             except OSError as exc:
                 failures += 1
                 print(f"[ERROR] {destination}: {exc}", file=sys.stderr)
