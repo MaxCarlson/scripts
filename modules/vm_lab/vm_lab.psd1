@@ -32,6 +32,19 @@
         'Get-VmLabCheckpoint',
         'Get-VmLabRecoveryPlan',
         'New-VmLabUnattendXml',
+        'Get-VmLabProtectedVmRegistry',
+        'Assert-VmLabTargetNotProtected',
+        'Test-VmLabSafePath',
+        'ConvertTo-VmLabCanonicalJson',
+        'Get-VmLabCanonicalSha256',
+        'Get-VmLabWorkflowAllowedOperations',
+        'Get-VmLabWorkflowCapabilities',
+        'Get-VmLabOperationStates',
+        'Test-VmLabWorkflowSchema',
+        'Test-VmLabArtifactManifestSchema',
+        'Test-VmLabOperationJournalSchema',
+        'Test-VmLabStageReceiptSchema',
+        'Test-VmLabCapabilityAuthorized',
         'Invoke-VmLab'
     )
     AliasesToExport   = @('vm-lab')

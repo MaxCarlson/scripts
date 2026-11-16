@@ -2,6 +2,7 @@
 $ErrorActionPreference = 'Stop'
 
 $srcFiles = @(
+    'Contracts.ps1',
     'Config.ps1',
     'Host.ps1',
     'Inventory.ps1',
@@ -50,5 +51,18 @@ Export-ModuleMember -Function @(
     'Get-VmLabCheckpoint',
     'Get-VmLabRecoveryPlan',
     'New-VmLabUnattendXml',
+    'Get-VmLabProtectedVmRegistry',
+    'Assert-VmLabTargetNotProtected',
+    'Test-VmLabSafePath',
+    'ConvertTo-VmLabCanonicalJson',
+    'Get-VmLabCanonicalSha256',
+    'Get-VmLabWorkflowAllowedOperations',
+    'Get-VmLabWorkflowCapabilities',
+    'Get-VmLabOperationStates',
+    'Test-VmLabWorkflowSchema',
+    'Test-VmLabArtifactManifestSchema',
+    'Test-VmLabOperationJournalSchema',
+    'Test-VmLabStageReceiptSchema',
+    'Test-VmLabCapabilityAuthorized',
     'Invoke-VmLab'
 ) -Alias @('vm-lab')
