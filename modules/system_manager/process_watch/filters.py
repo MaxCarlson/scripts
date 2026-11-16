@@ -123,12 +123,18 @@ def expand_pid_scope(
     return allowed
 
 
+def _normalize_glob(pattern: str) -> str:
+    if not any(ch in pattern for ch in "*?[]"):
+        return f"*{pattern}*"
+    return pattern
+
+
 def _matches_any_glob(sample: ProcessSample, globs: Sequence[str], *, match_cmdline: bool) -> bool:
     name_l = (sample.name or "").lower()
     exe_l = (sample.exe or "").lower()
     cmd_l = (sample.cmdline_raw or "").lower() if match_cmdline else ""
     for pattern in globs:
-        pat_l = pattern.lower()
+        pat_l = _normalize_glob(pattern).lower()
         if fnmatch.fnmatch(name_l, pat_l):
             return True
         if exe_l and fnmatch.fnmatch(exe_l, pat_l):

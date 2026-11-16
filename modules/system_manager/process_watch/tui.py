@@ -112,6 +112,18 @@ Screen.theme-light #quick-details {
     border-top: solid #d0d7de;
     color: #57606a;
 }
+Screen.theme-light #pinned-summary,
+Screen.theme-light #history-summary,
+Screen.theme-light #filter-bar {
+    background: #eaeef2;
+    border-bottom: solid #d0d7de;
+    color: #1f2328;
+}
+Screen.theme-light DataTable,
+Screen.theme-light Tree {
+    background: #ffffff;
+    color: #1f2328;
+}
 #pinned-summary, #history-summary {
     height: auto;
     padding: 0 1;
@@ -165,7 +177,7 @@ class HelpModal(ModalScreen[None]):
                     "Navigation:  Up/Down or j/k = move | PgUp/PgDn/Home/End = jump | Click header = sort\n"
                     "Inspect:     Enter = full process inspector | d = descendants | p = parent\n"
                     "Selection:   Space = pin/unpin | f = freeze/unfreeze snapshot\n"
-                    "Filtering:   / = live filter | Esc = clear filter / close dialog\n"
+                    "Filtering:   / = live filter | x / Esc = clear all filters (-g/-e/-p//)\n"
                     "Views:       s = sort menu | S = reverse sort | a = subtree aggregation\n"
                     "             c = columns/presets | g = group mode | h = history tab\n"
                     "Rows/Theme:  +/= and - = adjust visible rows | r = exact row count | t = theme\n"
@@ -372,6 +384,7 @@ class ProcessWatchApp(App[None]):
         Binding("r", "set_row_count", "Rows"),
         Binding("t", "cycle_theme", "Theme", show=False),
         Binding("?", "show_help", "Help"),
+        Binding("x", "clear_filters", "ClearFilter"),
         Binding("escape", "handle_escape", "Back", show=False),
     ]
 
@@ -436,15 +449,19 @@ class ProcessWatchApp(App[None]):
 
     def on_mount(self) -> None:
         self._configure_tables()
-        # Prime initial snapshot synchronously so first render has data immediately
+        self.query_one("#proc-table", DataTable).focus()
+        if self.enable_background_worker:
+            self.query_one("#host-header", Static).update(
+                "Host CPU: sampling... | RAM: ... | GPU: ...\nSampling processes in background..."
+            )
+            self._start_sampling_worker()
+            return
+        # Synchronous initial sample for deterministic headless tests
         snap = self.sampler.sample(
             focus_identities={self.selected_identity} if self.selected_identity else set(),
             pinned_identities=set(self.pinned_identities),
         )
         self.apply_snapshot(snap)
-        self.query_one("#proc-table", DataTable).focus()
-        if self.enable_background_worker:
-            self._start_sampling_worker()
 
     def on_unmount(self) -> None:
         self._stop_event.set()
@@ -465,7 +482,9 @@ class ProcessWatchApp(App[None]):
 
     @work(thread=True, exclusive=True)
     def _start_sampling_worker(self) -> None:
-        while not self._stop_event.wait(self.interval_seconds):
+        first = True
+        while first or not self._stop_event.wait(self.interval_seconds):
+            first = False
             if self.frozen:
                 continue
             focus = {self.selected_identity} if self.selected_identity else set()
@@ -549,6 +568,10 @@ class ProcessWatchApp(App[None]):
             flags.append(f"[GRP:{self.group_mode}]")
         if self.proc_filter.search_text:
             flags.append(f"[/{self.proc_filter.search_text}]")
+        if self.proc_filter.include_globs:
+            flags.append(f"[g:{','.join(self.proc_filter.include_globs)}]")
+        if self.proc_filter.exclude_globs:
+            flags.append(f"[e:{','.join(self.proc_filter.exclude_globs)}]")
         if self.proc_filter.pids:
             flags.append(f"[PIDs:{','.join(str(p) for p in self.proc_filter.pids)}]")
 
@@ -911,6 +934,21 @@ class ProcessWatchApp(App[None]):
         inp = self.query_one("#filter-input", Input)
         inp.focus()
 
+    def action_clear_filters(self) -> None:
+        if self._input_has_focus():
+            return
+        if not self.proc_filter.has_selectors():
+            return
+        self.proc_filter.search_text = ""
+        self.proc_filter.include_globs = []
+        self.proc_filter.exclude_globs = []
+        self.proc_filter.pids = []
+        self.proc_filter.recursive = False
+        self.query_one("#filter-input", Input).value = ""
+        self.query_one("#filter-bar").remove_class("visible")
+        self._refresh_views()
+        self.notify("Cleared all active filters.", severity="information")
+
     def action_handle_escape(self) -> None:
         bar = self.query_one("#filter-bar")
         if self._input_has_focus() or bar.has_class("visible"):
@@ -920,10 +958,12 @@ class ProcessWatchApp(App[None]):
             self.query_one("#proc-table", DataTable).focus()
             self._refresh_views()
             return
-        if self.proc_filter.pids:
-            self.proc_filter.pids = []
-            self.proc_filter.recursive = False
+        if self.proc_filter.search_text:
+            self.proc_filter.search_text = ""
             self._refresh_views()
+            return
+        if self.proc_filter.has_selectors():
+            self.action_clear_filters()
 
     def action_toggle_pin(self) -> None:
         if self._input_has_focus() or self.selected_identity is None:
@@ -1063,6 +1103,7 @@ class ProcessWatchApp(App[None]):
             screen.add_class("theme-light")
         elif theme == "high-contrast":
             screen.add_class("theme-high-contrast")
+        self.notify(f"Theme: {theme} (press t to cycle)", severity="information")
 
     def action_show_help(self) -> None:
         if self._input_has_focus():

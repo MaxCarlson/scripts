@@ -232,7 +232,9 @@ def test_filtering_sorting_and_grouping():
     sampler = ProcessSampler(psutil_module=fps, monotonic_clock=lambda: clock[0])
     snap = sampler.sample()
 
-    # Include OR + exclude
+    # Include OR + exclude (including bare glob without wildcards)
+    flt_bare = ProcessFilter(include_globs=["python"])
+    assert [p.pid for p in filter_processes(snap.processes, flt_bare, snap.children_map)] == [10, 30]
     flt = ProcessFilter(include_globs=["*python*", "node*"], exclude_globs=["*node*"])
     filtered = filter_processes(snap.processes, flt, snap.children_map)
     assert [p.pid for p in filtered] == [10, 30]
