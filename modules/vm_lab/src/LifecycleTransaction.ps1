@@ -137,7 +137,7 @@ function Invoke-VmLabCheckpointTransaction {
     }
 
     $existingSnaps = @(Get-VmLabCheckpoint -Name $vm.Name -ManifestRoot $ManifestRoot)
-    if ($existingSnaps | Where-Object { $_.checkpoint_name -eq $CheckpointName }) {
+    if ($existingSnaps | Where-Object { $_.name -eq $CheckpointName }) {
         return [pscustomobject]@{
             status          = 'FAILED'
             reason_code     = 'duplicate_checkpoint_name'
@@ -178,7 +178,7 @@ function Invoke-VmLabCheckpointTransaction {
         }
     }
     $cpRes = New-VmLabCheckpoint -Name $vmRe.Name -CheckpointName $CheckpointName -Apply -ManifestRoot $ManifestRoot
-    if ($cpRes.status -ne 'created') {
+    if ($cpRes.status -ne 'checkpoint_created') {
         return [pscustomobject]@{
             status      = 'FAILED'
             reason_code = 'checkpoint_creation_failed'
@@ -229,7 +229,7 @@ function Invoke-VmLabCheckpointTransaction {
         vm_id           = [string]$vmRe.Id
         checkpoint_id   = $cpRes.checkpoint_id
         checkpoint_name = $CheckpointName
-        checkpoint_type = $cpRes.checkpoint_type
+        checkpoint_type = $cpRes.snapshot_type
         shutdown        = $shutdownRes
         checkpoint      = $cpRes
         start           = $startRes

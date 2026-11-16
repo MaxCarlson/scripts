@@ -44,6 +44,10 @@ if (-not $OperatorConsent -or $DryRun -or $WhatIfPreference -or -not $PSCmdlet.S
     if ($OperatorConsent) { exit 0 } else { exit 1 }
 }
 
+if ([string]::IsNullOrWhiteSpace($ExpectedRequestDigest)) {
+    throw 'expected_request_digest_required: Execution with -OperatorConsent requires -ExpectedRequestDigest to bind operator approval to the reviewed request.'
+}
+
 if (-not (Test-Path -LiteralPath $opDir -PathType Container)) {
     New-Item -ItemType Directory -Path $opDir -Force | Out-Null
 }

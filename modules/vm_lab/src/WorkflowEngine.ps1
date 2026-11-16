@@ -66,6 +66,22 @@ function Exit-VmLabOperationLock {
     }
 }
 
+function ConvertTo-VmLabNormalizedCheckpoint {
+    param([Parameter(Mandatory)][object]$Checkpoint)
+    if ([string]::IsNullOrWhiteSpace([string]$Checkpoint.name) -or
+        [string]::IsNullOrWhiteSpace([string]$Checkpoint.id) -or
+        [string]::IsNullOrWhiteSpace([string]$Checkpoint.snapshot_type)) {
+        throw "checkpoint_contract_invalid: Get-VmLabCheckpoint entry missing required fields (name, id, snapshot_type)."
+    }
+    return [pscustomobject]@{
+        vm_name       = [string]$Checkpoint.vm_name
+        name          = [string]$Checkpoint.name
+        id            = [string]$Checkpoint.id
+        snapshot_type = [string]$Checkpoint.snapshot_type
+        created_at    = $Checkpoint.created_at
+    }
+}
+
 function Test-VmLabWorkflowPlan {
     [CmdletBinding()]
     param(
@@ -77,7 +93,8 @@ function Test-VmLabWorkflowPlan {
     }
     $def = Get-Content -LiteralPath $wfFile -Raw -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
     $schema = Test-VmLabWorkflowSchema -Definition $def
-    $caps = @($def.stages | ForEach-Object { if ($_.capability) { [string]$_.capability } else { 'none' } } | Select-Object -Unique)
+    $capPolicy = Get-VmLabOperationCapabilityPolicy
+    $caps = @($def.stages | ForEach-Object { [string]$capPolicy[[string]$_.type] } | Select-Object -Unique)
     return [pscustomobject]@{
         status                = 'PLANNED'
         reason_code           = 'workflow_plan_valid'
@@ -293,7 +310,8 @@ function Invoke-VmLabWorkflow {
                 continue
             }
 
-            $cap = if ($s.capability) { [string]$s.capability } else { 'none' }
+            $capPolicy = Get-VmLabOperationCapabilityPolicy
+            $cap = [string]$capPolicy[[string]$s.type]
             $capOk = Test-VmLabCapabilityAuthorized -Capability $cap -Apply:$Apply -AuthorizeHostMutation:$AuthorizeHostMutation -AuthorizeVmLifecycle:$AuthorizeVmLifecycle -AuthorizeGuestMutation:$AuthorizeGuestMutation -AuthorizeGuestExec:$AuthorizeGuestExec -AuthorizeElevation:$AuthorizeElevation
             if (-not $capOk) {
                 $journal.stage_states.$sid = 'BLOCKED'
@@ -430,35 +448,63 @@ function Invoke-VmLabWorkflow {
                         $cpName = if ($s.checkpoint_name) { [string]$s.checkpoint_name } else { "$OperationId-$sid" }
                         $reqOff = if ($null -ne $s.require_off) { [bool]$s.require_off } else { $true }
                         $rest = if ($null -ne $s.restart_after) { [bool]$s.restart_after } else { $false }
-                        $matchedCp = $null
+                        $matchedRaw = @()
+                        $vmObj = $null
                         if ($Resume) {
-                            try {
-                                $existingCps = @(Get-VmLabCheckpoint -Name ([string]$def.vm.name) -ManifestRoot $ManifestRoot)
-                                $matchedCp = $existingCps | Where-Object { $_.checkpoint_name -eq $cpName } | Select-Object -First 1
-                            } catch {
-                                $matchedCp = $null
+                            $vmObj = Get-VM -ErrorAction Stop | Where-Object { $_.Name -eq [string]$def.vm.name } | Select-Object -First 1
+                            if (-not $vmObj) {
+                                throw "vm_not_found: VM '$($def.vm.name)' not found during checkpoint resume."
                             }
+                            Assert-VmLabTargetNotProtected -VmName $vmObj.Name -VmId ([string]$vmObj.Id)
+                            $own = Test-VmLabOwnership -Vm $vmObj -ManifestRoot $ManifestRoot
+                            if (-not $own.owned) {
+                                throw "vm_not_owned: VM '$($def.vm.name)' is not owned by vm_lab ($($own.reason))."
+                            }
+                            if (-not [string]::IsNullOrWhiteSpace([string]$journal.vm_id) -and ([string]$vmObj.Id).ToLowerInvariant() -ne ([string]$journal.vm_id).ToLowerInvariant()) {
+                                throw "vm_id_mismatch: Live VM id '$($vmObj.Id)' does not match journal vm_id '$($journal.vm_id)'."
+                            }
+                            if (-not [string]::IsNullOrWhiteSpace($ExpectedVmId) -and ([string]$vmObj.Id).ToLowerInvariant() -ne $ExpectedVmId.ToLowerInvariant()) {
+                                throw "vm_id_mismatch: Live VM id '$($vmObj.Id)' does not match ExpectedVmId '$ExpectedVmId'."
+                            }
+                            $existingCps = @(Get-VmLabCheckpoint -Name ([string]$def.vm.name) -ManifestRoot $ManifestRoot)
+                            $matchedRaw = @($existingCps | Where-Object { [string]$_.name -eq $cpName })
                         }
-                        if ($matchedCp) {
-                            if ([string]$matchedCp.checkpoint_type -ne 'Standard') {
-                                throw "checkpoint_reconcile_invalid_type: Existing checkpoint '$cpName' has type '$($matchedCp.checkpoint_type)', expected 'Standard'."
+                        if ($matchedRaw.Count -gt 1) {
+                            throw "duplicate_checkpoint_matches: Found $($matchedRaw.Count) checkpoints named '$cpName' on VM '$($def.vm.name)'."
+                        } elseif ($matchedRaw.Count -eq 1) {
+                            $normCp = ConvertTo-VmLabNormalizedCheckpoint -Checkpoint $matchedRaw[0]
+                            if (-not [string]::IsNullOrWhiteSpace($normCp.vm_name) -and $normCp.vm_name -ne [string]$def.vm.name) {
+                                throw "checkpoint_vm_mismatch: Checkpoint '$($normCp.name)' belongs to '$($normCp.vm_name)', expected '$($def.vm.name)'."
                             }
-                            $startRes = $null
-                            $readyRes = $null
+                            if ($normCp.snapshot_type -ne 'Standard') {
+                                throw "checkpoint_reconcile_invalid_type: Existing checkpoint '$cpName' has snapshot_type '$($normCp.snapshot_type)', expected 'Standard'."
+                            }
+                            $priorRecs = @(Get-ChildItem -LiteralPath $stageRecDir -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+                            foreach ($pr in $priorRecs) {
+                                $prObj = Get-Content -LiteralPath $pr.FullName -Raw -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+                                $recCpId = if ($prObj.detail.checkpoint_id) { [string]$prObj.detail.checkpoint_id } elseif ($prObj.detail.checkpoint.id) { [string]$prObj.detail.checkpoint.id } else { '' }
+                                if (-not [string]::IsNullOrWhiteSpace($recCpId) -and $recCpId -ne $normCp.id) {
+                                    throw "checkpoint_id_conflict: Prior receipt recorded checkpoint id '$recCpId', live checkpoint '$cpName' has id '$($normCp.id)'."
+                                }
+                            }
                             if ($rest) {
                                 $startRes = Start-VmLabMachine -Name ([string]$def.vm.name) -Apply -ManifestRoot $ManifestRoot
                                 if ($startRes.status -notin @('started', 'already_running')) {
-                                    $stageOut = [pscustomobject]@{ status = 'PARTIAL'; reason_code = 'restart_failed_after_reconciled_checkpoint'; checkpoint = $matchedCp; start = $startRes }
+                                    $stageOut = [pscustomobject]@{ status = 'PARTIAL'; reason_code = 'restart_failed_after_reconciled_checkpoint'; checkpoint_id = $normCp.id; checkpoint_name = $normCp.name; snapshot_type = $normCp.snapshot_type; checkpoint = $normCp; start = $startRes }
                                     $stageStatus = 'PARTIAL'
                                     $stageReason = 'restart_failed_after_reconciled_checkpoint'
                                 } else {
                                     $readyRes = Wait-VmLabGuestReady -Name ([string]$def.vm.name) -Credential $Credential -PromptCredential:$PromptCredential -ManifestRoot $ManifestRoot
-                                    $stageOut = [pscustomobject]@{ status = $readyRes.status; reason_code = 'checkpoint_reconciled_existing'; checkpoint = $matchedCp; start = $startRes; readiness = $readyRes }
+                                    $stageOut = [pscustomobject]@{ status = $readyRes.status; reason_code = if ($readyRes.status -eq 'SUCCEEDED') { 'checkpoint_reconciled_existing' } else { [string]$readyRes.reason_code }; checkpoint_id = $normCp.id; checkpoint_name = $normCp.name; snapshot_type = $normCp.snapshot_type; checkpoint = $normCp; start = $startRes; readiness = $readyRes }
                                     $stageStatus = [string]$readyRes.status
                                     $stageReason = if ($stageStatus -eq 'SUCCEEDED') { 'checkpoint_reconciled_existing' } else { [string]$readyRes.reason_code }
                                 }
+                            } elseif ($reqOff -and [string]$vmObj.State -ne 'Off') {
+                                $stageOut = [pscustomobject]@{ status = 'PARTIAL'; reason_code = 'vm_not_off_for_reconciled_checkpoint'; vm_state = [string]$vmObj.State; checkpoint_id = $normCp.id; checkpoint_name = $normCp.name; snapshot_type = $normCp.snapshot_type; checkpoint = $normCp }
+                                $stageStatus = 'PARTIAL'
+                                $stageReason = 'vm_not_off_for_reconciled_checkpoint'
                             } else {
-                                $stageOut = [pscustomobject]@{ status = 'SUCCEEDED'; reason_code = 'checkpoint_reconciled_existing'; checkpoint = $matchedCp }
+                                $stageOut = [pscustomobject]@{ status = 'SUCCEEDED'; reason_code = 'checkpoint_reconciled_existing'; checkpoint_id = $normCp.id; checkpoint_name = $normCp.name; snapshot_type = $normCp.snapshot_type; checkpoint = $normCp }
                                 $stageStatus = 'SUCCEEDED'
                                 $stageReason = 'checkpoint_reconciled_existing'
                             }

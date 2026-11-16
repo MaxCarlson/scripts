@@ -156,6 +156,26 @@ function Get-VmLabWorkflowCapabilities {
     return @('none', 'host_mutation', 'vm_lifecycle', 'guest_mutation', 'guest_exec', 'elevation')
 }
 
+function Get-VmLabOperationCapabilityPolicy {
+    [CmdletBinding()]
+    param()
+    return @{
+        'host.preflight'            = 'none'
+        'vm.create'                 = 'host_mutation'
+        'vm.connect'                = 'vm_lifecycle'
+        'windows.install_handoff'   = 'none'
+        'guest.wait'                = 'none'
+        'artifact.deploy'           = 'guest_mutation'
+        'guest.bootstrap'           = 'guest_mutation'
+        'guest.exec'                = 'guest_exec'
+        'vm.shutdown'               = 'vm_lifecycle'
+        'vm.checkpoint_transaction' = 'vm_lifecycle'
+        'vm.start'                  = 'vm_lifecycle'
+        'evidence.collect'          = 'host_mutation'
+        'workflow.assert'           = 'none'
+    }
+}
+
 function Get-VmLabOperationStates {
     return @('PLANNED', 'AWAITING_AUTHORIZATION', 'RUNNING', 'AWAITING_INTERACTION', 'BLOCKED', 'PARTIAL', 'FAILED', 'SUCCEEDED', 'INVALIDATED')
 }
@@ -282,8 +302,17 @@ function Test-VmLabWorkflowSchema {
         if ($allowedOps -notcontains $stype) {
             throw "Unknown workflow stage type '$stype' in stage '$sid'."
         }
-        if ($null -ne $s.capability -and ($allowedCaps -notcontains [string]$s.capability)) {
+        $capPolicy = Get-VmLabOperationCapabilityPolicy
+        $requiredCap = [string]$capPolicy[$stype]
+        $hasDeclaredCap = ($null -ne $s.capability -and -not [string]::IsNullOrWhiteSpace([string]$s.capability))
+        if ($hasDeclaredCap -and ($allowedCaps -notcontains [string]$s.capability)) {
             throw "Unknown capability '$($s.capability)' in stage '$sid'."
+        }
+        if ($requiredCap -ne 'none' -and -not $hasDeclaredCap) {
+            throw "Stage '$sid' of type '$stype' requires explicit capability '$requiredCap'."
+        }
+        if ($hasDeclaredCap -and [string]$s.capability -ne $requiredCap) {
+            throw "Stage '$sid' of type '$stype' declares capability '$($s.capability)', which does not match required capability '$requiredCap'."
         }
         if ($stype -eq 'artifact.deploy' -and [string]::IsNullOrWhiteSpace([string]$s.manifest)) {
             throw "Stage '$sid' of type 'artifact.deploy' requires 'manifest'."

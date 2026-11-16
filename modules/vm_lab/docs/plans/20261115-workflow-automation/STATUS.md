@@ -26,7 +26,14 @@
 | 3 — Durable workflows | COMPLETED | `47c925a5` | 3 WorkflowEngine Pester (`WorkflowEngine.Tests.ps1`) | none (live VM `NOT_TESTED`) |
 | 4 — Elevated runner | COMPLETED | `8e2f036d` | 2 ElevationAndSetup Pester (`ElevationAndSetup.Tests.ps1`) | live elevation `NOT_TESTED` (requires explicit authorization) |
 | 5 — Windows setup | COMPLETED | `8e2f036d` | 2 ElevationAndSetup Pester (`ElevationAndSetup.Tests.ps1`) | live OOBE/VM `NOT_TESTED` (requires separate authorization) |
-| 6 — Acceptance/integration | PREPARED_BLOCKED_ON_LIVE_AUTH | pending commit | Full Pester + AST/import + Python toolkit + CLI checks | live Hyper-V qualification `NOT_TESTED` (requires separate elevated authorization on a disposable VM) |
+| 6 — Acceptance/integration | PREPARED_BLOCKED_ON_LIVE_AUTH | `0667ea62` -> P0/P1 fix pending commit | Full Pester (59 tests) + AST/import + Python toolkit (147) + CLI checks | live Hyper-V qualification `NOT_TESTED` (requires separate elevated authorization on a disposable VM) |
+
+## Post-review security & contract corrections
+
+- **P0 Mandatory Operation Capabilities (`Contracts.ps1`, `WorkflowEngine.ps1`, `Elevation.ps1`)**: Added `Get-VmLabOperationCapabilityPolicy`; `Test-VmLabWorkflowSchema` rejects missing/mismatched/downgraded capabilities on mutating stages (including `evidence.collect` -> `host_mutation` and `vm.connect` -> `vm_lifecycle`); `Test-VmLabWorkflowPlan` and `Invoke-VmLabWorkflow` derive required capabilities from the central policy; `New-VmLabApprovedPlanRequest` and `Test-VmLabApprovedPlanRequest` reject under-authorized capability sets.
+- **P1 Checkpoint Resume Compatibility (`WorkflowEngine.ps1`, `LifecycleTransaction.ps1`)**: Added `ConvertTo-VmLabNormalizedCheckpoint` and aligned both `WorkflowEngine.ps1` and `LifecycleTransaction.ps1` with the actual `Get-VmLabCheckpoint` (`vm_name`, `name`, `id`, `snapshot_type`, `created_at`) and `New-VmLabCheckpoint` (`status = 'checkpoint_created'`, `snapshot_type`) contracts; resume reconciliation enforces VM identity/ownership, exact unique match, `Standard` type, prior receipt ID consistency, and expected VM power/readiness state.
+- **Approved-Runner Binding (`Invoke-VmLabApprovedPlan.ps1`)**: `-OperatorConsent` execution now requires `-ExpectedRequestDigest` in addition to atomic single-use `FileMode::CreateNew` receipt claiming, durable `FAIL` exception receipts, `-ExpectedWorkflowDigest`, and `-ExpectedVmId`.
+- **Remaining Live Gate**: Real Hyper-V VM provisioning, `Standard` checkpointing, PowerShell Direct guest execution, and Windows 11 OOBE remain `NOT_TESTED` pending separate explicit elevated authorization on a disposable VM.
 
 ## First agent actions
 

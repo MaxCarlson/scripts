@@ -112,6 +112,8 @@ The implementer must maintain a machine-readable or markdown status column (`SUP
 
 **Historical guard:** the H4 operation ID, guest paths and protected VM ID listed here are examples/context, **not credentials, deployment defaults or targets for new tests**. The underlying Worker-ResourceCoordinator conversation may have progressed; consult latest evidence before mentioning live state.
 
+**Post-review contract note:** `Get-VmLabOperationCapabilityPolicy` enforces mandatory per-operation capabilities (including `evidence.collect` -> `host_mutation` and `vm.connect` -> `vm_lifecycle`), and checkpoint reconciliation (`C03`, `C07`, `C08`, `E08`) is aligned with the actual `Get-VmLabCheckpoint` (`name`, `id`, `snapshot_type`, `vm_name`, `created_at`) and `New-VmLabCheckpoint` (`checkpoint_created`, `snapshot_type`) contracts. Real Hyper-V VM lifecycle rows remain `NOT_TESTED_REAL_VM` until separately authorized live qualification.
+
 ## Source anchors
 
 - H4 host qualification: `modules/resource_coordinator/tools/h4_qualification/Invoke-H4GuestQualification.ps1` inspected at `a1b9a3a4de5260e3614e42118a30c4a648bfb98d` (notably stages ~276–765).

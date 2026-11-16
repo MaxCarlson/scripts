@@ -165,4 +165,37 @@ Describe 'vm_lab Phase 4 elevated runner and Phase 5 Windows setup assistance' {
         $LASTEXITCODE | Should Not Be 0
         ($replayOut -match 'approval_already_consumed') | Should Be $true
     }
+
+    It 'rejects under-authorized approved-plan capability sets and requires -ExpectedRequestDigest for OperatorConsent execution' {
+        $wfPath = Join-Path $tmpRoot 'cap_elev.workflow.json'
+        $opRoot = Join-Path $tmpRoot 'ops_cap_elev'
+        $reqPath = Join-Path $tmpRoot 'cap_req.json'
+        $wfDef = [ordered]@{
+            schema_version = 1
+            workflow_id    = 'cap-elev-test'
+            operation_root = $opRoot
+            vm             = [ordered]@{ name = 'Disp-Elev-Cap-01'; template = 'windows11-dev'; root = (Join-Path $tmpRoot 'vm_elev_cap') }
+            stages         = @(
+                [ordered]@{ id = 's1'; type = 'vm.create'; depends_on = @(); capability = 'host_mutation' },
+                [ordered]@{ id = 's2'; type = 'vm.start'; depends_on = @('s1'); capability = 'vm_lifecycle' }
+            )
+        }
+        [System.IO.File]::WriteAllText($wfPath, ($wfDef | ConvertTo-Json -Depth 10))
+
+        # Request with missing vm_lifecycle must be rejected at creation
+        $threwUnder = $false
+        try {
+            New-VmLabApprovedPlanRequest -WorkflowPath $wfPath -OutputPath $reqPath -AllowedCapabilities @('host_mutation') -OperationId 'op-elev-cap-01'
+        } catch {
+            $threwUnder = $_.Exception.Message -match 'does not authorize required workflow capability'
+        }
+        $threwUnder | Should Be $true
+
+        # Valid request with both capabilities, but OperatorConsent without -ExpectedRequestDigest must fail closed
+        $reqOk = New-VmLabApprovedPlanRequest -WorkflowPath $wfPath -OutputPath $reqPath -AllowedCapabilities @('host_mutation', 'vm_lifecycle') -OperationId 'op-elev-cap-01'
+        $runner = Join-Path $moduleRoot 'Invoke-VmLabApprovedPlan.ps1'
+        $noDigestOut = & pwsh -NoProfile -File $runner -RequestPath $reqPath -OperatorConsent 2>&1 | Out-String
+        $LASTEXITCODE | Should Not Be 0
+        ($noDigestOut -match 'expected_request_digest_required') | Should Be $true
+    }
 }

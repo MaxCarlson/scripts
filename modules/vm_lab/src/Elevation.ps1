@@ -20,6 +20,11 @@ function New-VmLabApprovedPlanRequest {
             throw "Unknown capability '$c' in AllowedCapabilities."
         }
     }
+    foreach ($rc in @($plan.required_capabilities)) {
+        if ($rc -ne 'none' -and ($AllowedCapabilities -notcontains $rc)) {
+            throw "Approved plan request does not authorize required workflow capability '$rc'."
+        }
+    }
 
     $reqBody = [ordered]@{
         schema_version       = 1
@@ -108,6 +113,11 @@ function Test-VmLabApprovedPlanRequest {
     $plan = Test-VmLabWorkflowPlan -WorkflowPath ([string]$req.workflow_path)
     if ($plan.workflow_digest -ne [string]$req.workflow_digest) {
         throw "Workflow file digest changed since request creation (expected '$($req.workflow_digest)', actual '$($plan.workflow_digest)')."
+    }
+    foreach ($rc in @($plan.required_capabilities)) {
+        if ($rc -ne 'none' -and (@($req.allowed_capabilities) -notcontains $rc)) {
+            throw "Approved plan request does not authorize required workflow capability '$rc'."
+        }
     }
 
     return [pscustomobject]@{

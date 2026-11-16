@@ -62,7 +62,7 @@ Describe 'vm_lab Phase 0 contracts and schema validation' {
                 [pscustomobject]@{ id = 'cp'; type = 'vm.checkpoint_transaction'; depends_on = @('deploy'); require_off = $true; restart_after = $true; capability = 'vm_lifecycle' },
                 [pscustomobject]@{ id = 'wait2'; type = 'guest.wait'; depends_on = @('cp') },
                 [pscustomobject]@{ id = 'exec'; type = 'guest.exec'; depends_on = @('wait2'); command_ref = 'accept'; capability = 'guest_exec' },
-                [pscustomobject]@{ id = 'ev'; type = 'evidence.collect'; depends_on = @('exec') }
+                [pscustomobject]@{ id = 'ev'; type = 'evidence.collect'; depends_on = @('exec'); capability = 'host_mutation' }
             )
         }
         $res1 = Test-VmLabWorkflowSchema -Definition $wf
@@ -120,11 +120,58 @@ Describe 'vm_lab Phase 0 contracts and schema validation' {
             vm             = [pscustomobject]@{ name = 'Disp-01'; root = 'C:\VMs\Disp-01' }
             commands       = [pscustomobject]@{ run = [pscustomobject]@{ executable = 'C:\Test\app.exe' } }
             stages         = @(
-                [pscustomobject]@{ id = 'create'; type = 'vm.create'; depends_on = @() },
-                [pscustomobject]@{ id = 'exec'; type = 'guest.exec'; depends_on = @('create'); command_ref = 'run' }
+                [pscustomobject]@{ id = 'create'; type = 'vm.create'; depends_on = @(); capability = 'host_mutation' },
+                [pscustomobject]@{ id = 'exec'; type = 'guest.exec'; depends_on = @('create'); command_ref = 'run'; capability = 'guest_exec' }
             )
         }
         Assert-ThrowsMatch { Test-VmLabWorkflowSchema -Definition $badPower } 'Invalid power-state edge'
+    }
+
+    It 'enforces mandatory operation capability policy and rejects missing, downgraded, or mismatched capabilities' {
+        $expectedPolicy = @{
+            'host.preflight'            = 'none'
+            'vm.create'                 = 'host_mutation'
+            'vm.connect'                = 'vm_lifecycle'
+            'windows.install_handoff'   = 'none'
+            'guest.wait'                = 'none'
+            'artifact.deploy'           = 'guest_mutation'
+            'guest.bootstrap'           = 'guest_mutation'
+            'guest.exec'                = 'guest_exec'
+            'vm.shutdown'               = 'vm_lifecycle'
+            'vm.checkpoint_transaction' = 'vm_lifecycle'
+            'vm.start'                  = 'vm_lifecycle'
+            'evidence.collect'          = 'host_mutation'
+            'workflow.assert'           = 'none'
+        }
+        $actualPolicy = InModuleScope vm_lab { Get-VmLabOperationCapabilityPolicy }
+        foreach ($op in $expectedPolicy.Keys) {
+            $actualPolicy[$op] | Should Be $expectedPolicy[$op]
+            if ($expectedPolicy[$op] -ne 'none') {
+                $missingCap = [pscustomobject]@{
+                    schema_version = 1
+                    workflow_id    = 'missing-cap'
+                    operation_root = 'C:\VM-Lab-Operations'
+                    vm             = [pscustomobject]@{ name = 'Disp-01'; root = 'C:\VMs\Disp-01' }
+                    commands       = [pscustomobject]@{ run = [pscustomobject]@{ executable = 'C:\Test\app.exe' } }
+                    stages         = @(
+                        [pscustomobject]@{ id = 's1'; type = $op; depends_on = @(); manifest = 'm.json'; command_ref = 'run' }
+                    )
+                }
+                Assert-ThrowsMatch { Test-VmLabWorkflowSchema -Definition $missingCap } 'requires explicit capability'
+
+                $downgradedCap = [pscustomobject]@{
+                    schema_version = 1
+                    workflow_id    = 'downgraded-cap'
+                    operation_root = 'C:\VM-Lab-Operations'
+                    vm             = [pscustomobject]@{ name = 'Disp-01'; root = 'C:\VMs\Disp-01' }
+                    commands       = [pscustomobject]@{ run = [pscustomobject]@{ executable = 'C:\Test\app.exe' } }
+                    stages         = @(
+                        [pscustomobject]@{ id = 's1'; type = $op; depends_on = @(); manifest = 'm.json'; command_ref = 'run'; capability = 'none' }
+                    )
+                }
+                Assert-ThrowsMatch { Test-VmLabWorkflowSchema -Definition $downgradedCap } 'does not match required capability'
+            }
+        }
     }
 
     It 'validates artifact manifests, operation journals, stage receipts, and capability boundaries' {

@@ -35,7 +35,7 @@ Describe 'vm_lab Phase 2 transactional lifecycle and checkpoints' {
             $nonStd.reason_code | Should Be 'checkpoint_type_not_standard'
             $script:p2Vm.CheckpointType = 'Standard'
 
-            Mock Get-VmLabCheckpoint { return @([pscustomobject]@{ checkpoint_name = 'cp-tx-1' }) }
+            Mock Get-VmLabCheckpoint { return @([pscustomobject]@{ vm_name = 'Disp-Phase2-VM'; name = 'cp-tx-1'; id = 'cp-0'; snapshot_type = 'Standard'; created_at = [datetime]::UtcNow }) }
             $dup = Invoke-VmLabCheckpointTransaction -Name 'Disp-Phase2-VM' -CheckpointName 'cp-tx-1' -Apply -AuthorizeVmLifecycle
             $dup.status | Should Be 'FAILED'
             $dup.reason_code | Should Be 'duplicate_checkpoint_name'
@@ -58,7 +58,7 @@ Describe 'vm_lab Phase 2 transactional lifecycle and checkpoints' {
         InModuleScope vm_lab {
             Mock Get-VmLabCheckpoint { return @() }
             Mock Stop-VmLabMachine { return [pscustomobject]@{ status = 'stopped'; state = 'Off' } }
-            Mock New-VmLabCheckpoint { return [pscustomobject]@{ status = 'created'; checkpoint_id = 'cp-guid-1'; checkpoint_name = 'cp-tx-3'; checkpoint_type = 'Standard' } }
+            Mock New-VmLabCheckpoint { return [pscustomobject]@{ status = 'checkpoint_created'; operation = 'checkpoint'; vm_name = 'Disp-Phase2-VM'; vm_id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'; checkpoint_id = 'cp-guid-1'; checkpoint_name = 'cp-tx-3'; snapshot_type = 'Standard'; created_at = [datetime]::UtcNow } }
             Mock Start-VmLabMachine { return [pscustomobject]@{ status = 'started'; state = 'Running' } }
             Mock Get-VmLabGuestStatus { return [pscustomobject]@{ guest_state = 'guest_ready'; ps_direct_available = $true } }
 

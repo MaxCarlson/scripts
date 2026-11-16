@@ -32,7 +32,7 @@
     { "id": "baseline_cp", "type": "vm.checkpoint_transaction", "depends_on": ["deploy_bundle"], "checkpoint_name": "clean-baseline", "require_off": true, "restart_after": true, "capability": "vm_lifecycle" },
     { "id": "wait_after_cp", "type": "guest.wait", "depends_on": ["baseline_cp"] },
     { "id": "run_acceptance", "type": "guest.exec", "depends_on": ["wait_after_cp"], "command_ref": "project_acceptance", "expected_status": "passed", "capability": "guest_exec" },
-    { "id": "collect_evidence", "type": "evidence.collect", "depends_on": ["run_acceptance"], "sources": ["C:\\GuestWork\\evidence"] },
+    { "id": "collect_evidence", "type": "evidence.collect", "depends_on": ["run_acceptance"], "sources": ["C:\\GuestWork\\evidence"], "capability": "host_mutation" },
     { "id": "verify_all", "type": "workflow.assert", "depends_on": ["collect_evidence"], "assertions": ["all_required_stages_succeeded"] }
   ]
 }
