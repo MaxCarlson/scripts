@@ -54,6 +54,10 @@
         'Receive-VmLabGuestEvidence',
         'Wait-VmLabGuestReady',
         'Invoke-VmLabCheckpointTransaction',
+        'Test-VmLabWorkflowPlan',
+        'Get-VmLabWorkflowStatus',
+        'Get-VmLabWorkflowDoctor',
+        'Invoke-VmLabWorkflow',
         'Invoke-VmLab'
     )
     AliasesToExport   = @('vm-lab')

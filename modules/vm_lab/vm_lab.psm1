@@ -9,6 +9,7 @@ $srcFiles = @(
     'Provisioning.ps1',
     'Lifecycle.ps1',
     'LifecycleTransaction.ps1',
+    'WorkflowEngine.ps1',
     'Checkpoints.ps1',
     'Guest.ps1',
     'GuestExec.ps1',
@@ -77,5 +78,9 @@ Export-ModuleMember -Function @(
     'Receive-VmLabGuestEvidence',
     'Wait-VmLabGuestReady',
     'Invoke-VmLabCheckpointTransaction',
+    'Test-VmLabWorkflowPlan',
+    'Get-VmLabWorkflowStatus',
+    'Get-VmLabWorkflowDoctor',
+    'Invoke-VmLabWorkflow',
     'Invoke-VmLab'
 ) -Alias @('vm-lab')

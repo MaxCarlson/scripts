@@ -19,7 +19,7 @@ function Invoke-VmLab {
     param(
         [Parameter(Mandatory, Position = 0)]
         [Alias('o')]
-        [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'guest-command-plan', 'guest-exec', 'artifact-plan', 'artifact-deploy', 'evidence-plan', 'evidence-collect', 'lifecycle-transaction', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
+        [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'guest-command-plan', 'guest-exec', 'artifact-plan', 'artifact-deploy', 'evidence-plan', 'evidence-collect', 'lifecycle-transaction', 'workflow-plan', 'workflow-status', 'workflow-apply', 'workflow-resume', 'workflow-doctor', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
         [string]$Operation,
 
         [Alias('n')][string]$Name,
@@ -71,7 +71,10 @@ function Invoke-VmLab {
         [switch]$AuthorizeVmLifecycle,
         [switch]$AuthorizeGuestMutation,
         [switch]$AuthorizeGuestExec,
-        [switch]$RestartAfter
+        [switch]$RestartAfter,
+        [Alias('f')][string]$WorkflowPath,
+        [Alias('or')][string]$OperationRoot = 'C:\VM-Lab-Operations',
+        [switch]$AuthorizeElevation
     )
 
     $result = switch ($Operation) {
@@ -188,6 +191,22 @@ function Invoke-VmLab {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for lifecycle-transaction.' }
             $cpName = if ([string]::IsNullOrWhiteSpace($CheckpointName)) { 'tx-checkpoint' } else { $CheckpointName }
             Invoke-VmLabCheckpointTransaction -Name $Name -CheckpointName $cpName -RestartAfter:$RestartAfter -ShutdownTimeoutSeconds $ShutdownTimeoutSeconds -MinHostReserveBytes $MinReserveBytes -Credential $Credential -PromptCredential:$PromptCredential -Apply:$Apply -AuthorizeVmLifecycle:$AuthorizeVmLifecycle -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+        }
+        'workflow-plan' {
+            if ([string]::IsNullOrWhiteSpace($WorkflowPath)) { throw '-WorkflowPath (-f) is required for workflow-plan.' }
+            Test-VmLabWorkflowPlan -WorkflowPath $WorkflowPath
+        }
+        'workflow-status' {
+            if ([string]::IsNullOrWhiteSpace($OperationId)) { throw '-OperationId (-op) is required for workflow-status.' }
+            Get-VmLabWorkflowStatus -OperationId $OperationId -OperationRoot $OperationRoot
+        }
+        'workflow-doctor' {
+            if ([string]::IsNullOrWhiteSpace($OperationId)) { throw '-OperationId (-op) is required for workflow-doctor.' }
+            Get-VmLabWorkflowDoctor -OperationId $OperationId -OperationRoot $OperationRoot
+        }
+        { $_ -in @('workflow-apply', 'workflow-resume') } {
+            $isResume = ($Operation -eq 'workflow-resume')
+            Invoke-VmLabWorkflow -WorkflowPath $WorkflowPath -OperationId $OperationId -OperationRoot $OperationRoot -Credential $Credential -PromptCredential:$PromptCredential -Apply:$Apply -AuthorizeHostMutation:$AuthorizeHostMutation -AuthorizeVmLifecycle:$AuthorizeVmLifecycle -AuthorizeGuestMutation:$AuthorizeGuestMutation -AuthorizeGuestExec:$AuthorizeGuestExec -AuthorizeElevation:$AuthorizeElevation -Resume:$isResume -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
         }
         'checkpoint' {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for checkpoint.' }
