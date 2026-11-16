@@ -91,6 +91,17 @@ Inspect any reported `.lock` files or preserved VHDX/config directories before r
 - **Credential Safety**: PowerShell Direct operations (`guest-status`, `guest-copy`, `guest-bootstrap`, `guest-verify`) accept `-Credential` or `-PromptCredential`, never log or persist passwords, and always close sessions in `finally` blocks.
 - **Toolkit Integration**: `scripts_setup/launcher_generator.py` discovers `modules/vm_lab/Invoke-VmLab.ps1` as `vm-lab` (`kind: "powershell_script"`), `modules/script_logging/script_logging/launcher.py` executes it via `pwsh -NoProfile -File` with invocation history, and `modules/scripts_help/scripts_help/registry/registry.py` registers `vm_lab (module)`.
 
+## Workflow Automation, Guest Execution & Bounded Elevation
+
+`vm_lab` supports declarative, resumable host-and-guest automation via `Invoke-VmLab.ps1`:
+
+- **Generic Guest Operations**: `guest-command-plan`, `guest-exec` (allowlisted env, stdout/stderr/exit capture, optional JSON result validation, `REBOOT_REQUIRED` on exit `3010`), `artifact-plan`, `artifact-deploy` (pinned SHA-256 staging + optional immutable ZIP extraction), `evidence-plan`, and `evidence-collect` (recursive download with per-file manifests and `INCOMPLETE` failure state).
+- **Transactional Lifecycle**: `lifecycle-transaction` closes active PS Direct sessions, gracefully stops the VM with bounded polling, enforces `Standard` checkpoints, and optionally restarts and waits for PowerShell Direct readiness.
+- **Durable Workflows**: `workflow-plan`, `workflow-apply`, `workflow-status`, `workflow-resume`, and `workflow-doctor` maintain an atomic operation journal (`journal.json`), stage receipts, and single-owner operation locks across host restarts. See [examples/h4-like-acceptance.workflow.json](examples/h4-like-acceptance.workflow.json).
+- **Bounded Elevated Runner**: `New-VmLabApprovedPlanRequest` writes a SHA-256-sealed, expiring, capability-bounded plan request; an operator executes it in an elevated console via `Invoke-VmLabApprovedPlan.ps1 -RequestPath <path> -ExpectedRequestDigest <sha256> -AuthorizeElevation`, which enforces single-use replay protection and records an execution receipt.
+- **Windows Setup Assistance**: `New-VmLabUnattendMedia`, `Get-VmLabSetupGuidance`, `Get-VmLabInstallReadiness`, and `Assert-VmLabImagePrepPolicy` provide password-free offline OOBE answer media, VMConnect boot guidance, and Sysprep policy checks.
+- **Live Operational Acceptance**: End-to-end Hyper-V qualification against a disposable VM is **not** executed automatically during source validation; it requires separate explicit elevated authorization against a non-protected VM.
+
 ## Known Limitations & Deferred Features
 
 - **Known limitations**: Real Hyper-V execution requires an elevated Administrator or `Hyper-V Administrators` session; current tests validate behavior against mocked Hyper-V and PowerShell Direct cmdlets. Real end-to-end Hyper-V lifecycle acceptance remains pending until a separately authorized disposable test environment is available.

@@ -1,6 +1,6 @@
 # Implementation Status — vm-lab Workflow Automation
 
-**Initialized:** 2026-11-15. **State:** PHASE_5_COMPLETED / PHASE_6_IN_PROGRESS.  
+**Initialized:** 2026-11-15. **State:** SOURCE_PHASES_0_TO_6_COMPLETED / LIVE_HYPERV_NOT_TESTED.  
 **Owner:** Antigravity (`agent/vm-lab-workflows-20261115`).  
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\agent-vm-lab-workflows-20261115` (branched from `origin/main` `2def44c9`).  
 **Source Plan Provenance:** `C:\Users\mcarls\Downloads\vm_lab_workflow_master_plan_20261115\modules\vm_lab\docs\plans\20261115-workflow-automation` (`MANIFEST.sha256` verified: 13 files matched).
@@ -24,9 +24,9 @@
 | 1 — Guest operations | COMPLETED | `7803eab1` | 5 GuestOperations Pester (`GuestOperations.Tests.ps1`) | none (live VM `NOT_TESTED`) |
 | 2 — Lifecycle transaction | COMPLETED | `ec0fbdbb` | 3 LifecycleTransaction Pester (`LifecycleTransaction.Tests.ps1`) | none (live VM `NOT_TESTED`) |
 | 3 — Durable workflows | COMPLETED | `47c925a5` | 3 WorkflowEngine Pester (`WorkflowEngine.Tests.ps1`) | none (live VM `NOT_TESTED`) |
-| 4 — Elevated runner | COMPLETED | pending commit | 2 ElevationAndSetup Pester (`ElevationAndSetup.Tests.ps1`) | live elevation `NOT_TESTED` (requires explicit authorization) |
-| 5 — Windows setup | COMPLETED | pending commit | 2 ElevationAndSetup Pester (`ElevationAndSetup.Tests.ps1`) | live OOBE/VM `NOT_TESTED` (requires separate authorization) |
-| 6 — Acceptance/integration | IN_PROGRESS | — | — | disposable test VM (`NOT_TESTED` until live authorized) |
+| 4 — Elevated runner | COMPLETED | `8e2f036d` | 2 ElevationAndSetup Pester (`ElevationAndSetup.Tests.ps1`) | live elevation `NOT_TESTED` (requires explicit authorization) |
+| 5 — Windows setup | COMPLETED | `8e2f036d` | 2 ElevationAndSetup Pester (`ElevationAndSetup.Tests.ps1`) | live OOBE/VM `NOT_TESTED` (requires separate authorization) |
+| 6 — Acceptance/integration | PREPARED_BLOCKED_ON_LIVE_AUTH | pending commit | Full Pester + AST/import + Python toolkit + CLI checks | live Hyper-V qualification `NOT_TESTED` (requires separate elevated authorization on a disposable VM) |
 
 ## First agent actions
 
