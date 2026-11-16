@@ -342,3 +342,77 @@ foreach ($fn in $calledFuncs) {{
                 assert param_name in valid_params, (
                     f"Command {path} emitted unknown PowerShell parameter '{token}' for {script_name}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Wizard interactive completion contract
+# ---------------------------------------------------------------------------
+
+
+def test_wizard_interactive_success_empty_stdout(capsys: pytest.CaptureFixture[str]) -> None:
+    """1. Successful interactive wizard with empty captured stdout exits 0 without UnboundLocalError."""
+    adapter = BackendAdapter(backend_root=VM_LAB_ROOT, pwsh_exe="pwsh")
+    with patch("vm_lab.backend.subprocess.run", return_value=subprocess.CompletedProcess(args=["pwsh"], returncode=0)):
+        rc = cli.main(["wizard"], adapter=adapter)
+
+    captured = capsys.readouterr()
+    assert rc == EXIT_SUCCESS
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_wizard_interactive_failure_empty_stdout(capsys: pytest.CaptureFixture[str]) -> None:
+    """2. Failed interactive wizard with empty captured stdout returns nonzero exit."""
+    adapter = BackendAdapter(backend_root=VM_LAB_ROOT, pwsh_exe="pwsh")
+    with patch("vm_lab.backend.subprocess.run", return_value=subprocess.CompletedProcess(args=["pwsh"], returncode=1)):
+        rc = cli.main(["wizard"], adapter=adapter)
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_wizard_interactive_cancelled_nonzero_exit(capsys: pytest.CaptureFixture[str]) -> None:
+    """3. Cancelled interactive wizard (e.g., Ctrl+C / exit 130) preserves nonzero exit code."""
+    adapter = BackendAdapter(backend_root=VM_LAB_ROOT, pwsh_exe="pwsh")
+    with patch("vm_lab.backend.subprocess.run", return_value=subprocess.CompletedProcess(args=["pwsh"], returncode=130)):
+        rc = cli.main(["wizard"], adapter=adapter)
+
+    captured = capsys.readouterr()
+    assert rc == 130
+    assert captured.out == ""
+
+
+def test_wizard_interactive_stdout_no_json_fallback(capsys: pytest.CaptureFixture[str]) -> None:
+    """4. Interactive wizard writes non-empty stdout once and never emits JSON fallback."""
+    mock_be = SimpleNamespace(
+        invoke=lambda *a, **kw: SimpleNamespace(
+            stdout="Wizard completed.",
+            stderr="",
+            data={"unexpected": True},
+            exit_code=0,
+        )
+    )
+    rc = cli.main(["wizard"], adapter=mock_be)  # type: ignore[arg-type]
+
+    captured = capsys.readouterr()
+    assert rc == EXIT_SUCCESS
+    assert captured.out == "Wizard completed.\n"
+    assert "unexpected" not in captured.out
+    assert captured.err == ""
+
+
+def test_noninteractive_json_operation_still_works_alongside_wizard_fix(capsys: pytest.CaptureFixture[str]) -> None:
+    """5. Existing noninteractive CLI operations and JSON output remain intact."""
+    adapter = BackendAdapter(backend_root=VM_LAB_ROOT, pwsh_exe="pwsh")
+    with patch(
+        "vm_lab.backend.subprocess.run",
+        return_value=_completed(stdout='{"status":"PLANNED","operation":"plan"}\n', stderr="", returncode=0),
+    ):
+        rc = cli.main(["plan", "Test-VM", "-t", "windows11-dev", "-r", "C:\\VMs\\Test-VM", "-j"], adapter=adapter)
+
+    captured = capsys.readouterr()
+    assert rc == EXIT_SUCCESS
+    payload = json.loads(captured.out)
+    assert payload["status"] == "PLANNED"

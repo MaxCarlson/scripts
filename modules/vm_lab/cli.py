@@ -118,8 +118,6 @@ def main(argv: Sequence[str] | None = None, *, adapter: BackendAdapter | None = 
                 sys.stdout.write(res.stdout)
                 if not res.stdout.endswith("\n"):
                     sys.stdout.write("\n")
-            elif json_mode and res.data is not None:
-                _emit_json(res.data)
             if res.stderr:
                 sys.stderr.write(res.stderr)
             return res.exit_code
