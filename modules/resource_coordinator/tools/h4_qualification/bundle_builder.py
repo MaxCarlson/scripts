@@ -410,11 +410,13 @@ def build_bundle(
     output_dir: Path,
     new_ref: str = "HEAD",
     old_ref: str = DEFAULT_OLD_COMMIT,
+    tooling_ref: Optional[str] = None,
     apply: bool = False,
 ) -> Dict[str, Any]:
     repo = repo_root.expanduser().resolve(strict=True)
     new_commit = _resolve_commit(repo, new_ref)
     old_commit = _resolve_commit(repo, old_ref)
+    tooling_commit = _resolve_commit(repo, tooling_ref) if tooling_ref else new_commit
     epoch = _source_date_epoch(repo, new_commit)
     out = output_dir.expanduser().absolute()
     if (out.exists() and is_reparse_point(out)) or any(is_reparse_point(p) for p in out.parents if p.exists()):
@@ -433,6 +435,8 @@ def build_bundle(
         "output_dir": str(out),
         "new_commit": new_commit,
         "old_commit": old_commit,
+        "tooling_commit": tooling_commit,
+        "tooling_ref_explicit": bool(tooling_ref),
         "source_date_epoch": epoch,
         "hash_algorithm": HASH_ALGORITHM,
         "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
@@ -453,9 +457,26 @@ def build_bundle(
     harness_dir.mkdir(parents=True, exist_ok=True)
     src_h4 = new_dest / "modules" / "resource_coordinator" / "tools" / "h4_qualification"
     local_h4 = Path(__file__).resolve().parent
-    for name in ("python_compat.py", "windows_acceptance.py", "source_integrity.py", "wddm_probe.py"):
-        candidate = src_h4 / name if (src_h4 / name).is_file() else local_h4 / name
-        shutil.copy2(candidate, harness_dir / name)
+    harness_files = ("python_compat.py", "windows_acceptance.py", "source_integrity.py", "wddm_probe.py")
+    if tooling_ref:
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="h4-tooling-") as tmp_dir:
+            tooling_stage = Path(tmp_dir)
+            _export_git_paths(repo, tooling_commit, tooling_stage, ("modules/resource_coordinator/tools/h4_qualification",))
+            tooling_h4 = tooling_stage / "modules" / "resource_coordinator" / "tools" / "h4_qualification"
+            for name in harness_files:
+                candidate = tooling_h4 / name
+                if not candidate.is_file():
+                    raise SourceIntegrityError(
+                        "bundle_tooling_file_missing",
+                        f"Tooling file '{name}' missing in commit {tooling_commit}",
+                    )
+                shutil.copy2(candidate, harness_dir / name)
+    else:
+        for name in harness_files:
+            candidate = src_h4 / name if (src_h4 / name).is_file() else local_h4 / name
+            shutil.copy2(candidate, harness_dir / name)
 
     config_dir = bundle_root / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -507,6 +528,10 @@ def build_bundle(
         "rc_package_python_requires": RC_PACKAGE_PYTHON_REQUIRES,
         "tool_python_requires": H4_TOOLING_PYTHON_REQUIRES,
         "tool_python_version": plan["python_version"],
+        "tooling_source": {
+            "commit_sha": tooling_commit,
+            "explicit_tooling_ref": bool(tooling_ref),
+        },
         "sources": [
             {
                 "source_role": "new_1_0_0",
@@ -560,6 +585,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--output", type=Path, help="Empty destination directory for the bundle")
     parser.add_argument("-n", "--new-ref", default="HEAD", help="Git ref/commit for RC 1.0.0 (default: HEAD)")
     parser.add_argument("-l", "--old-ref", default=DEFAULT_OLD_COMMIT, help="Git ref/commit for RC 0.14.0")
+    parser.add_argument("-t", "--tooling-ref", default=None,
+                        help="Optional explicit Git ref/commit for harness tooling (defaults to --new-ref)")
     parser.add_argument("-r", "--repo-root", type=Path, default=Path(__file__).resolve().parents[4],
                         help="Git repository root")
     parser.add_argument("-a", "--apply", action="store_true", help="Write the bundle and verify the archive")
@@ -587,6 +614,7 @@ def main(
                 output_dir=args.output,
                 new_ref=args.new_ref,
                 old_ref=args.old_ref,
+                tooling_ref=args.tooling_ref,
                 apply=args.apply,
             )
     except (SourceIntegrityError, PythonCompatibilityError) as exc:

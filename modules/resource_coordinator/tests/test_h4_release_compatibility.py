@@ -357,3 +357,36 @@ def test_task_profile_target_collects_from_module_root():
     )
     assert res.returncode == 0, res.stdout + res.stderr
     assert "test_windows_disposable_task_registration_snapshot_restore_and_verification" in res.stdout
+
+
+def test_build_bundle_supports_explicit_tooling_ref_preserving_release_sources(tmp_path):
+    import json
+
+    repo_root = MODULE_ROOT.parents[1]
+    out_dir = tmp_path / "bundle_tooling_ref"
+    pinned_new = "0a93d5251142b5526329521252cb9a360ad94460"
+    pinned_old = "873a49382a5e03da47f793608d3519f7e69da646"
+    tooling_ref = "70de4853664f44ec3feb652a9aa8bac8135739af"
+
+    receipt = bundle_builder.build_bundle(
+        repo_root=repo_root,
+        output_dir=out_dir,
+        new_ref=pinned_new,
+        old_ref=pinned_old,
+        tooling_ref=tooling_ref,
+        apply=True,
+    )
+    assert receipt["archive_verified"] is True
+    assert receipt["new_commit"] == pinned_new
+    assert receipt["old_commit"] == pinned_old
+    assert receipt["tooling_commit"] == tooling_ref
+    assert receipt["tooling_ref_explicit"] is True
+    assert receipt["new_source_tree_sha256"] == "27764f44b7311072b62b0dbf8d8faa96260f3deb8a0f09bf0bef969368599989"
+    assert receipt["old_source_tree_sha256"] == "4fa9978efc5c0045594a6fa115e803de7da837ccb80863e51324b69c85718dc0"
+
+    manifest = json.loads(Path(receipt["manifest_path"]).read_text(encoding="utf-8"))
+    assert manifest["tooling_source"]["commit_sha"] == tooling_ref
+    assert manifest["tooling_source"]["explicit_tooling_ref"] is True
+
+    harness_runner = (out_dir / "h4-windows-acceptance" / "harness" / "windows_acceptance.py").read_text(encoding="utf-8")
+    assert "if args.source_root is not None" in harness_runner
