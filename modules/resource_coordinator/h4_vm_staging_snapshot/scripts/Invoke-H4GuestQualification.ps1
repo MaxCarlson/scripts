@@ -43,8 +43,8 @@ param(
     [string]$VmName = 'RC-H4-Windows-Acceptance',
     [string]$ExpectedGuestHost = 'DESKTOP-1ITSJV0',
     [pscredential]$Credential,
-    [string]$BundleZip = 'C:\H4-VM-Staging\bundle-rc1-v4\h4-windows-acceptance.zip',
-    [string]$ExpectedBundleSha256 = '3a7849155245e62bc954e4b8474fc9fb77197f070259af67f3f7fa35edc5d3c3',
+    [string]$BundleZip = 'C:\H4-VM-Staging\bundle-rc1-v5\h4-windows-acceptance.zip',
+    [string]$ExpectedBundleSha256 = '72053cf6e5cdcc60bb81fb6bd7283df0412fd88a9771d3a7c2c8468dd1ab7219',
     [string]$BootstrapScript = (Join-Path $PSScriptRoot 'Bootstrap-H4GuestBundle.ps1'),
     [string]$ExpectedBootstrapSha256 = '5EFACFAFCECC45DF5459D53B75A999B21574C83D0A2F5339F0A4AB1AB5D01DE9',
     [string]$WheelsDir = 'C:\H4-VM-Staging\guest-deps\wheels',
@@ -510,8 +510,12 @@ try {
             $env:PYTHONPATH = $mod
             $env:PYTHONDONTWRITEBYTECODE = '1'
             Set-Location $mod
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
             $stdout = & $py -B $runner --test-root $runDir --source-root $srcNew --old-source-root $srcOld --source-manifest $manifest --json 2>&1
-            [pscustomobject]@{ exit_code = $LASTEXITCODE; output = ($stdout -join "`n") }
+            $exitCode = $LASTEXITCODE
+            $ErrorActionPreference = $prevEap
+            [pscustomobject]@{ exit_code = $exitCode; output = ($stdout -join "`n") }
         }
         Save-H4JsonArtifact -Dir $hostEvidenceDir -FileName 'guest-preflight-raw.json' -Data $preflightOut
         $pfParsed = $preflightOut.output | ConvertFrom-Json -ErrorAction Stop
@@ -651,6 +655,7 @@ try {
         }
 
         $profileOutcomes = [System.Collections.Generic.List[object]]::new()
+        $summary['profiles'] = $profileOutcomes
         $matrixFailed = $false
         $evidenceIncomplete = $false
         foreach ($spec in $phaseSpecs) {
@@ -666,8 +671,12 @@ try {
                 $env:RC_H4_DISPOSABLE_GUEST_AUTHORIZED = $authPhrase
                 Set-Location $mod
                 $argList = @($runner, '--test-root', $rDir) + @($argsJson | ConvertFrom-Json)
+                $prevEap = $ErrorActionPreference
+                $ErrorActionPreference = 'Continue'
                 $stdout = & $py -B @argList 2>&1
-                [pscustomobject]@{ exit_code = $LASTEXITCODE; output = ($stdout -join "`n") }
+                $exitCode = $LASTEXITCODE
+                $ErrorActionPreference = $prevEap
+                [pscustomobject]@{ exit_code = $exitCode; output = ($stdout -join "`n") }
             }
 
             $hostPhaseDir = Join-Path $hostEvidenceDir $spec.name
@@ -733,7 +742,16 @@ try {
             $stageResults['Acceptance'] = 'FAIL'
             $summary['error_category'] = 'acceptance_test_failure'
             $failedPhase = ($profileOutcomes | Where-Object { $_.status -eq 'FAIL' } | Select-Object -First 1)
-            $summary['error'] = "Acceptance matrix stopped at failed phase '$($failedPhase.phase)' (exit=$($failedPhase.exit_code))."
+            $diagParts = [System.Collections.Generic.List[string]]::new()
+            if ($failedPhase.parsed) {
+                if ($failedPhase.parsed.stage) { $diagParts.Add("stage=$($failedPhase.parsed.stage)") }
+                if ($failedPhase.parsed.reason_code) { $diagParts.Add("reason=$($failedPhase.parsed.reason_code)") }
+                if ($failedPhase.parsed.guard_reasons -and @($failedPhase.parsed.guard_reasons).Count -gt 0) {
+                    $diagParts.Add("guards=$($failedPhase.parsed.guard_reasons -join ',')")
+                }
+            }
+            $diagSuffix = if ($diagParts.Count -gt 0) { " [$($diagParts -join '; ')]" } else { '' }
+            $summary['error'] = "Acceptance matrix stopped at failed phase '$($failedPhase.phase)' (exit=$($failedPhase.exit_code))$diagSuffix."
             $overallExit = 1
             throw $summary['error']
         }
