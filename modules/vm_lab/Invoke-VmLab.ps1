@@ -44,7 +44,7 @@
 param(
     [Parameter(Mandatory, Position = 0)]
     [Alias('o')]
-    [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'guest-command-plan', 'guest-exec', 'artifact-plan', 'artifact-deploy', 'evidence-plan', 'evidence-collect', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
+    [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'guest-command-plan', 'guest-exec', 'artifact-plan', 'artifact-deploy', 'evidence-plan', 'evidence-collect', 'lifecycle-transaction', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
     [string]$Operation,
 
     [Alias('n')][string]$Name,
@@ -95,7 +95,8 @@ param(
     [switch]$AuthorizeHostMutation,
     [switch]$AuthorizeVmLifecycle,
     [switch]$AuthorizeGuestMutation,
-    [switch]$AuthorizeGuestExec
+    [switch]$AuthorizeGuestExec,
+    [switch]$RestartAfter
 )
 
 $ErrorActionPreference = 'Stop'

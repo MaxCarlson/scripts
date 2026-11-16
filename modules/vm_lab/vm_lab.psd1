@@ -52,6 +52,8 @@
         'Expand-VmLabGuestArchive',
         'Get-VmLabEvidencePlan',
         'Receive-VmLabGuestEvidence',
+        'Wait-VmLabGuestReady',
+        'Invoke-VmLabCheckpointTransaction',
         'Invoke-VmLab'
     )
     AliasesToExport   = @('vm-lab')

@@ -19,7 +19,7 @@ function Invoke-VmLab {
     param(
         [Parameter(Mandatory, Position = 0)]
         [Alias('o')]
-        [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'guest-command-plan', 'guest-exec', 'artifact-plan', 'artifact-deploy', 'evidence-plan', 'evidence-collect', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
+        [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'guest-command-plan', 'guest-exec', 'artifact-plan', 'artifact-deploy', 'evidence-plan', 'evidence-collect', 'lifecycle-transaction', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
         [string]$Operation,
 
         [Alias('n')][string]$Name,
@@ -70,7 +70,8 @@ function Invoke-VmLab {
         [switch]$AuthorizeHostMutation,
         [switch]$AuthorizeVmLifecycle,
         [switch]$AuthorizeGuestMutation,
-        [switch]$AuthorizeGuestExec
+        [switch]$AuthorizeGuestExec,
+        [switch]$RestartAfter
     )
 
     $result = switch ($Operation) {
@@ -182,6 +183,11 @@ function Invoke-VmLab {
             } else {
                 Receive-VmLabGuestEvidence -Name $Name -GuestRoots $roots -HostDestination $destEv -Credential $Credential -PromptCredential:$PromptCredential -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
             }
+        }
+        'lifecycle-transaction' {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for lifecycle-transaction.' }
+            $cpName = if ([string]::IsNullOrWhiteSpace($CheckpointName)) { 'tx-checkpoint' } else { $CheckpointName }
+            Invoke-VmLabCheckpointTransaction -Name $Name -CheckpointName $cpName -RestartAfter:$RestartAfter -ShutdownTimeoutSeconds $ShutdownTimeoutSeconds -MinHostReserveBytes $MinReserveBytes -Credential $Credential -PromptCredential:$PromptCredential -Apply:$Apply -AuthorizeVmLifecycle:$AuthorizeVmLifecycle -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
         }
         'checkpoint' {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for checkpoint.' }
