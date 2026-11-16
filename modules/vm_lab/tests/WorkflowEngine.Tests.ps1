@@ -445,4 +445,46 @@ Describe 'vm_lab Phase 3 durable workflow engine, receipts, and resumable execut
         }
         Remove-Item Env:VMLAB_P1_ROOT -ErrorAction SilentlyContinue
     }
+
+    It 'rejects workflow file altered between validation and execution without invoking mutating operations' {
+        $env:VMLAB_TOCTOU_ROOT = Join-Path $tmpRoot 'ops_toctou_wf'
+        New-Item -ItemType Directory -Path $env:VMLAB_TOCTOU_ROOT -Force | Out-Null
+
+        InModuleScope vm_lab {
+            $opRoot = $env:VMLAB_TOCTOU_ROOT
+            $wfPath = Join-Path $opRoot 'toctou.workflow.json'
+            $wfOrig = [ordered]@{
+                schema_version = 1
+                workflow_id    = 'toctou-orig'
+                operation_root = $opRoot
+                vm             = [ordered]@{ name = 'Disp-Toctou-01'; template = 'windows11-dev'; root = (Join-Path $opRoot 'vm1') }
+                stages         = @([ordered]@{ id = 's1'; type = 'vm.create'; depends_on = @(); capability = 'host_mutation' })
+            }
+            [System.IO.File]::WriteAllText($wfPath, ($wfOrig | ConvertTo-Json -Depth 10))
+            $validated = Test-VmLabWorkflowPlan -WorkflowPath $wfPath
+
+            # Mutate the workflow file on disk AFTER validation and BEFORE execution
+            $wfAltered = [ordered]@{
+                schema_version = 1
+                workflow_id    = 'toctou-orig'
+                operation_root = $opRoot
+                vm             = [ordered]@{ name = 'Disp-Toctou-EVIL'; template = 'windows11-dev'; root = (Join-Path $opRoot 'vm2') }
+                stages         = @([ordered]@{ id = 's1'; type = 'vm.create'; depends_on = @(); capability = 'host_mutation' })
+            }
+            [System.IO.File]::WriteAllText($wfPath, ($wfAltered | ConvertTo-Json -Depth 10))
+
+            Mock New-VmLabMachine { throw 'MUST_NOT_EXECUTE_ALTERED_WORKFLOW' }
+            $threw = $false
+            $errMsg = ''
+            try {
+                Invoke-VmLabWorkflow -WorkflowPath $wfPath -OperationId 'op-toctou-01' -OperationRoot $opRoot -ExpectedWorkflowDigest $validated.workflow_digest -Apply -AuthorizeHostMutation
+            } catch {
+                $threw = $true
+                $errMsg = $_.Exception.Message
+            }
+            $threw | Should Be $true
+            ($errMsg -match 'workflow_digest_mismatch') | Should Be $true
+        }
+        Remove-Item Env:VMLAB_TOCTOU_ROOT -ErrorAction SilentlyContinue
+    }
 }

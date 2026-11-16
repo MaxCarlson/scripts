@@ -82,7 +82,7 @@ function ConvertTo-VmLabNormalizedCheckpoint {
     }
 }
 
-function Test-VmLabWorkflowPlan {
+function Read-VmLabValidatedWorkflowPlan {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$WorkflowPath
@@ -91,11 +91,12 @@ function Test-VmLabWorkflowPlan {
     if (-not (Test-Path -LiteralPath $wfFile -PathType Leaf)) {
         throw "Workflow definition file not found: '$wfFile'."
     }
-    $def = Get-Content -LiteralPath $wfFile -Raw -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+    $raw = [System.IO.File]::ReadAllText($wfFile, [System.Text.UTF8Encoding]::new($false))
+    $def = $raw | ConvertFrom-Json -ErrorAction Stop
     $schema = Test-VmLabWorkflowSchema -Definition $def
     $capPolicy = Get-VmLabOperationCapabilityPolicy
     $caps = @($def.stages | ForEach-Object { [string]$capPolicy[[string]$_.type] } | Select-Object -Unique)
-    return [pscustomobject]@{
+    $plan = [pscustomobject]@{
         status                = 'PLANNED'
         reason_code           = 'workflow_plan_valid'
         workflow_id           = $schema.workflow_id
@@ -107,6 +108,18 @@ function Test-VmLabWorkflowPlan {
         stage_order           = @($schema.stage_order)
         required_capabilities = @($caps)
     }
+    return [pscustomobject]@{
+        plan       = $plan
+        definition = $def
+    }
+}
+
+function Test-VmLabWorkflowPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$WorkflowPath
+    )
+    return (Read-VmLabValidatedWorkflowPlan -WorkflowPath $WorkflowPath).plan
 }
 
 function Get-VmLabWorkflowStatus {
@@ -203,8 +216,9 @@ function Invoke-VmLabWorkflow {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($WorkflowPath)) {
-        $planCheck = Test-VmLabWorkflowPlan -WorkflowPath $WorkflowPath
-        $def = Get-Content -LiteralPath $planCheck.workflow_path -Raw -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+        $loaded = Read-VmLabValidatedWorkflowPlan -WorkflowPath $WorkflowPath
+        $planCheck = $loaded.plan
+        $def = $loaded.definition
         $opRoot = if ($PSBoundParameters.ContainsKey('OperationRoot')) { $OperationRoot } else { [string]$def.operation_root }
         $opRootFull = Test-VmLabSafePath -Path $opRoot -Label 'OperationRoot' -CheckReparsePoints
         if ([string]::IsNullOrWhiteSpace($OperationId)) {
@@ -217,8 +231,9 @@ function Invoke-VmLabWorkflow {
         if (-not (Test-Path -LiteralPath $wfSavedPath -PathType Leaf)) {
             throw "Saved workflow.json not found for operation '$OperationId' at '$wfSavedPath'."
         }
-        $planCheck = Test-VmLabWorkflowPlan -WorkflowPath $wfSavedPath
-        $def = Get-Content -LiteralPath $wfSavedPath -Raw -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+        $loaded = Read-VmLabValidatedWorkflowPlan -WorkflowPath $wfSavedPath
+        $planCheck = $loaded.plan
+        $def = $loaded.definition
     }
 
     if (-not [string]::IsNullOrWhiteSpace($ExpectedWorkflowDigest) -and $planCheck.workflow_digest -ne $ExpectedWorkflowDigest.ToLowerInvariant()) {
