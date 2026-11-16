@@ -45,6 +45,13 @@
         'Test-VmLabOperationJournalSchema',
         'Test-VmLabStageReceiptSchema',
         'Test-VmLabCapabilityAuthorized',
+        'Test-VmLabGuestIdentityPolicy',
+        'Invoke-VmLabGuestCommand',
+        'New-VmLabArtifactManifest',
+        'Publish-VmLabArtifactBundle',
+        'Expand-VmLabGuestArchive',
+        'Get-VmLabEvidencePlan',
+        'Receive-VmLabGuestEvidence',
         'Invoke-VmLab'
     )
     AliasesToExport   = @('vm-lab')

@@ -10,6 +10,9 @@ $srcFiles = @(
     'Lifecycle.ps1',
     'Checkpoints.ps1',
     'Guest.ps1',
+    'GuestExec.ps1',
+    'Artifacts.ps1',
+    'Evidence.ps1',
     'Bootstrap.ps1',
     'Recovery.ps1',
     'Wizard.ps1',
@@ -64,5 +67,12 @@ Export-ModuleMember -Function @(
     'Test-VmLabOperationJournalSchema',
     'Test-VmLabStageReceiptSchema',
     'Test-VmLabCapabilityAuthorized',
+    'Test-VmLabGuestIdentityPolicy',
+    'Invoke-VmLabGuestCommand',
+    'New-VmLabArtifactManifest',
+    'Publish-VmLabArtifactBundle',
+    'Expand-VmLabGuestArchive',
+    'Get-VmLabEvidencePlan',
+    'Receive-VmLabGuestEvidence',
     'Invoke-VmLab'
 ) -Alias @('vm-lab')

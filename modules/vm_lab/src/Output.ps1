@@ -19,7 +19,7 @@ function Invoke-VmLab {
     param(
         [Parameter(Mandatory, Position = 0)]
         [Alias('o')]
-        [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
+        [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'guest-command-plan', 'guest-exec', 'artifact-plan', 'artifact-deploy', 'evidence-plan', 'evidence-collect', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
         [string]$Operation,
 
         [Alias('n')][string]$Name,
@@ -58,7 +58,19 @@ function Invoke-VmLab {
         [string]$OutputPath,
         [string]$Locale = 'en-US',
         [string]$KeyboardLayout = 'en-US',
-        [string]$ImageEdition
+        [string]$ImageEdition,
+        [string]$ExecutablePath,
+        [string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory = 'C:\Windows\Temp',
+        [string]$ExpectedSha256,
+        [Alias('am')][string]$ArtifactManifestPath,
+        [string[]]$GuestRoots,
+        [Alias('er')][string]$EvidenceRoot,
+        [Alias('op')][string]$OperationId,
+        [switch]$AuthorizeHostMutation,
+        [switch]$AuthorizeVmLifecycle,
+        [switch]$AuthorizeGuestMutation,
+        [switch]$AuthorizeGuestExec
     )
 
     $result = switch ($Operation) {
@@ -142,6 +154,34 @@ function Invoke-VmLab {
         'guest-verify' {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for guest-verify.' }
             Test-VmLabGuestVerify -Name $Name -Profile $GuestProfile -VenvPath $VenvPath -Packages $Packages -RequirementsPath $RequirementsPath -MaxConnectAttempts $MaxConnectAttempts -Credential $Credential -PromptCredential:$PromptCredential -ManifestRoot $ManifestRoot
+        }
+        { $_ -in @('guest-command-plan', 'guest-exec') } {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw "-Name (-n) is required for $Operation." }
+            if ([string]::IsNullOrWhiteSpace($ExecutablePath)) { throw "-ExecutablePath is required for $Operation." }
+            $applyExec = ($Operation -eq 'guest-exec') -and $Apply
+            Invoke-VmLabGuestCommand -Name $Name -ExecutablePath $ExecutablePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -ExpectedSha256 $ExpectedSha256 -OperationId $OperationId -Credential $Credential -PromptCredential:$PromptCredential -Apply:$applyExec -AuthorizeGuestExec:$AuthorizeGuestExec -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+        }
+        { $_ -in @('artifact-plan', 'artifact-deploy') } {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw "-Name (-n) is required for $Operation." }
+            if ([string]::IsNullOrWhiteSpace($SourcePath)) { throw "-SourcePath is required for $Operation." }
+            if (-not [string]::IsNullOrWhiteSpace($ArtifactManifestPath)) {
+                $manifestObj = Get-Content -LiteralPath $ArtifactManifestPath -Raw -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop
+            } else {
+                if ([string]::IsNullOrWhiteSpace($DestinationPath)) { throw "-DestinationPath or -ArtifactManifestPath is required for $Operation." }
+                $manifestObj = New-VmLabArtifactManifest -SourceRoot $SourcePath -DestinationRoot $DestinationPath
+            }
+            $applyDeploy = ($Operation -eq 'artifact-deploy') -and $Apply
+            Publish-VmLabArtifactBundle -Name $Name -SourceRoot $SourcePath -Manifest $manifestObj -Credential $Credential -PromptCredential:$PromptCredential -Apply:$applyDeploy -AuthorizeGuestMutation:$AuthorizeGuestMutation -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+        }
+        { $_ -in @('evidence-plan', 'evidence-collect') } {
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw "-Name (-n) is required for $Operation." }
+            $roots = if ($GuestRoots -and $GuestRoots.Count -gt 0) { $GuestRoots } elseif (-not [string]::IsNullOrWhiteSpace($SourcePath)) { @($SourcePath) } else { throw "-GuestRoots or -SourcePath is required for $Operation." }
+            $destEv = if (-not [string]::IsNullOrWhiteSpace($EvidenceRoot)) { $EvidenceRoot } elseif (-not [string]::IsNullOrWhiteSpace($DestinationPath)) { $DestinationPath } else { throw "-EvidenceRoot or -DestinationPath is required for $Operation." }
+            if ($Operation -eq 'evidence-plan') {
+                Get-VmLabEvidencePlan -Name $Name -GuestRoots $roots -HostDestination $destEv -ManifestRoot $ManifestRoot
+            } else {
+                Receive-VmLabGuestEvidence -Name $Name -GuestRoots $roots -HostDestination $destEv -Credential $Credential -PromptCredential:$PromptCredential -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+            }
         }
         'checkpoint' {
             if ([string]::IsNullOrWhiteSpace($Name)) { throw '-Name (-n) is required for checkpoint.' }

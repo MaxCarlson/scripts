@@ -44,7 +44,7 @@
 param(
     [Parameter(Mandatory, Position = 0)]
     [Alias('o')]
-    [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
+    [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'guest-status', 'guest-copy', 'guest-bootstrap', 'guest-verify', 'guest-command-plan', 'guest-exec', 'artifact-plan', 'artifact-deploy', 'evidence-plan', 'evidence-collect', 'checkpoint', 'baseline', 'checkpoints', 'recovery-plan', 'doctor', 'unattend-xml')]
     [string]$Operation,
 
     [Alias('n')][string]$Name,
@@ -83,7 +83,19 @@ param(
     [string]$OutputPath,
     [string]$Locale = 'en-US',
     [string]$KeyboardLayout = 'en-US',
-    [string]$ImageEdition
+    [string]$ImageEdition,
+    [string]$ExecutablePath,
+    [string[]]$ArgumentList = @(),
+    [string]$WorkingDirectory = 'C:\Windows\Temp',
+    [string]$ExpectedSha256,
+    [Alias('am')][string]$ArtifactManifestPath,
+    [string[]]$GuestRoots,
+    [Alias('er')][string]$EvidenceRoot,
+    [Alias('op')][string]$OperationId,
+    [switch]$AuthorizeHostMutation,
+    [switch]$AuthorizeVmLifecycle,
+    [switch]$AuthorizeGuestMutation,
+    [switch]$AuthorizeGuestExec
 )
 
 $ErrorActionPreference = 'Stop'
