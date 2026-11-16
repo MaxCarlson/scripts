@@ -58,6 +58,11 @@
         'Get-VmLabWorkflowStatus',
         'Get-VmLabWorkflowDoctor',
         'Invoke-VmLabWorkflow',
+        'New-VmLabApprovedPlanRequest',
+        'Test-VmLabApprovedPlanRequest',
+        'New-VmLabAnswerMediaStaging',
+        'Get-VmLabSetupProgressReport',
+        'Test-VmLabPreparedImagePolicy',
         'Invoke-VmLab'
     )
     AliasesToExport   = @('vm-lab')

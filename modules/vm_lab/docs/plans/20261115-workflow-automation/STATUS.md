@@ -1,6 +1,6 @@
 # Implementation Status — vm-lab Workflow Automation
 
-**Initialized:** 2026-11-15. **State:** PHASE_3_COMPLETED / PHASE_4_IN_PROGRESS.  
+**Initialized:** 2026-11-15. **State:** PHASE_5_COMPLETED / PHASE_6_IN_PROGRESS.  
 **Owner:** Antigravity (`agent/vm-lab-workflows-20261115`).  
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\agent-vm-lab-workflows-20261115` (branched from `origin/main` `2def44c9`).  
 **Source Plan Provenance:** `C:\Users\mcarls\Downloads\vm_lab_workflow_master_plan_20261115\modules\vm_lab\docs\plans\20261115-workflow-automation` (`MANIFEST.sha256` verified: 13 files matched).
@@ -23,10 +23,10 @@
 | 0 — Baseline/design | COMPLETED | `61010661` | 36 baseline Pester + 4 Contracts Pester + 147 Python | none |
 | 1 — Guest operations | COMPLETED | `7803eab1` | 5 GuestOperations Pester (`GuestOperations.Tests.ps1`) | none (live VM `NOT_TESTED`) |
 | 2 — Lifecycle transaction | COMPLETED | `ec0fbdbb` | 3 LifecycleTransaction Pester (`LifecycleTransaction.Tests.ps1`) | none (live VM `NOT_TESTED`) |
-| 3 — Durable workflows | COMPLETED | pending commit | 3 WorkflowEngine Pester (`WorkflowEngine.Tests.ps1`) | none (live VM `NOT_TESTED`) |
-| 4 — Elevated runner | IN_PROGRESS | — | — | explicit runtime authorization for live execution |
-| 5 — Windows setup | NOT_STARTED | — | — | Phase 0, separate OOBE/VM authorization |
-| 6 — Acceptance/integration | NOT_STARTED | — | — | prior phases, disposable test VM |
+| 3 — Durable workflows | COMPLETED | `47c925a5` | 3 WorkflowEngine Pester (`WorkflowEngine.Tests.ps1`) | none (live VM `NOT_TESTED`) |
+| 4 — Elevated runner | COMPLETED | pending commit | 2 ElevationAndSetup Pester (`ElevationAndSetup.Tests.ps1`) | live elevation `NOT_TESTED` (requires explicit authorization) |
+| 5 — Windows setup | COMPLETED | pending commit | 2 ElevationAndSetup Pester (`ElevationAndSetup.Tests.ps1`) | live OOBE/VM `NOT_TESTED` (requires separate authorization) |
+| 6 — Acceptance/integration | IN_PROGRESS | — | — | disposable test VM (`NOT_TESTED` until live authorized) |
 
 ## First agent actions
 

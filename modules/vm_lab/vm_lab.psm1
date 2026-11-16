@@ -10,6 +10,8 @@ $srcFiles = @(
     'Lifecycle.ps1',
     'LifecycleTransaction.ps1',
     'WorkflowEngine.ps1',
+    'Elevation.ps1',
+    'WindowsSetup.ps1',
     'Checkpoints.ps1',
     'Guest.ps1',
     'GuestExec.ps1',
@@ -82,5 +84,10 @@ Export-ModuleMember -Function @(
     'Get-VmLabWorkflowStatus',
     'Get-VmLabWorkflowDoctor',
     'Invoke-VmLabWorkflow',
+    'New-VmLabApprovedPlanRequest',
+    'Test-VmLabApprovedPlanRequest',
+    'New-VmLabAnswerMediaStaging',
+    'Get-VmLabSetupProgressReport',
+    'Test-VmLabPreparedImagePolicy',
     'Invoke-VmLab'
 ) -Alias @('vm-lab')
