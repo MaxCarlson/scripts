@@ -39,6 +39,15 @@
 - **Focused regression suite on `main`:** `pytest modules/vm_lab/tests/test_cli.py modules/script_logging/tests/test_launcher.py` passed (`95 passed`).
 - **Real Hyper-V qualification:** `NOT_TESTED` (no VMs created, modified, started, stopped, or checkpointed; protected H4 VM untouched).
 
+## Post-Integration Maintenance & Wizard Fix (2026-11-15)
+
+- **Maintenance branch:** `fix/vm-lab-post-integration-20261115` (worktree `C:\Users\mcarls\src\scripts\.worktrees\vm-lab-post-integration-20261115`), fast-forward merged into `main` (`2e471cd2..18d4036d`) and pushed to `origin/main`.
+- **Host resources & JSON contract fixes (`67329083`):** Implemented and exported `Get-VmLabHostResources`; fixed duplicate stderr JSON emission in `backend.py`/`cli.py`/`results.py` and added post-parse JSON redaction; added deterministic PowerShell AST + `Import-Module` CLI/backend registration audit.
+- **Wizard fix (`18d4036d`):** Removed undefined `json_mode` fallback in `cli.py`'s interactive `wizard` branch so inherited console I/O exits cleanly without `UnboundLocalError`; added 5 wizard/CLI regression tests.
+- **Validation:** `vm_lab` + `script_logging` + `scripts_help` pytest (`264 passed`, 0 failed); full `vm_lab` Pester (`68 passed`, 0 failed); PowerShell AST parse (`23` files, `0` errors) and export parity (`68` functions, `0` diff).
+- **Installed CLI activation:** Verified `.venv` editable install points to `C:\Users\mcarls\src\scripts\modules\vm_lab`; `vm -h`, `vm-lab -h`, `vm version -j`, `vm host resources -j` (`status: "OK"`), `vm doctor -j` (`status: "attention_required"` in non-elevated shell) exited `0`, and `vm list -j` exited `1` with a single valid JSON error in the non-elevated agent shell.
+- **Real Hyper-V / Windows OOBE qualification:** `NOT_TESTED` (disposable-VM provisioning and Windows OOBE remain to be qualified in an elevated session; protected H4 VM `RC-H4-Windows-Acceptance` / `d8483f98-8884-4758-abd1-cd6107c83c03` untouched).
+
 ## Compatibility Inventory (`Invoke-VmLab.ps1` Operations)
 
 | Operation | Authority / Class | Notes |
