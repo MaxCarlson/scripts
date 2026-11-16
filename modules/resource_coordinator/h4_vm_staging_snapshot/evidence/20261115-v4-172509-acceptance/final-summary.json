@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "operation_id": "20261115-v4-172509",
+  "stage_requested": "Acceptance",
+  "apply_requested": true,
+  "whatif": false,
+  "guest_authorized": true,
+  "vm_id": "d8483f98-8884-4758-abd1-cd6107c83c03",
+  "vm_name": "RC-H4-Windows-Acceptance",
+  "expected_guest": "DESKTOP-1ITSJV0",
+  "evidence_dir": "C:\\H4-VM-Staging\\evidence-v4-acceptance\\20261115-v4-172509",
+  "stage_results": {
+    "Preflight": "PASS",
+    "Setup": "NOT_RUN",
+    "Checkpoint": "NOT_RUN",
+    "Acceptance": "FAIL"
+  },
+  "profiles": [],
+  "checkpoint": null,
+  "error": "{\"completed_at\": \"2026-11-16T01:26:10.639259+00:00\", \"exit_code\": 4, \"profile\": \"full\", \"reason_code\": \"RuntimeError\", \"schema_version\": 1, \"status\": \"failed\"}",
+  "error_category": "execution_error",
+  "guest_os": "Microsoft Windows 11 Pro Build 26300 (64-bit)"
+}

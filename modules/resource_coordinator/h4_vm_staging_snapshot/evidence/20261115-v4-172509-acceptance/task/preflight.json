@@ -1,0 +1,19 @@
+{
+  "apply_requested": true,
+  "guest_verified": true,
+  "mutation_ready": true,
+  "observed_at": "2026-11-16T01:25:56.384431+00:00",
+  "observed_guard_reasons": [],
+  "profile": "task",
+  "profile_blockers": [],
+  "profile_ready": true,
+  "schema_version": 1,
+  "source_integrity": {
+    "hash_algorithm": "rc-h4-tree-sha256-v2",
+    "old_source_root": null,
+    "old_source_tree_sha256": null,
+    "source_root": "C:\\H4-Guest-Work\\bundles\\20261115-v4-172509\\sources\\rc-1.0.0",
+    "source_tree_sha256": "27764f44b7311072b62b0dbf8d8faa96260f3deb8a0f09bf0bef969368599989",
+    "verified": true
+  }
+}

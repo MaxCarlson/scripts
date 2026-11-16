@@ -135,7 +135,7 @@ $result | ConvertTo-Json -Depth 6 -Compress
             r"""
 try {
   $port=[int]$env:RC_H4_LISTENER_PORT
-  $listeners=@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction Stop | ForEach-Object {
+  $listeners=@(Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetTCPConnection -Filter ("State = 2 AND LocalPort = " + $port) -ErrorAction Stop | ForEach-Object {
     $owner=Get-CimInstance Win32_Process -Filter ("ProcessId=" + [int]$_.OwningProcess) -ErrorAction Stop
     $created=if ($owner.CreationDate) { [Management.ManagementDateTimeConverter]::ToDateTime([string]$owner.CreationDate).ToUniversalTime().ToFileTimeUtc() / 10000000 - 11644473600 } else { 0 }
     @{port=$port;local_address=[string]$_.LocalAddress;pid=[int]$_.OwningProcess;creation_time=[double]$created;executable_path=[string]$owner.ExecutablePath}
@@ -284,6 +284,23 @@ def task_path_reasons(test_root: Path) -> list:
     return reasons
 
 
+class GuestLifecycleError(RuntimeError):
+    """Sanitized lifecycle failure carrying bounded stage and guard diagnostics."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str = "lifecycle",
+        reason_code: str = "RuntimeError",
+        guard_reasons: Sequence[str] = (),
+    ):
+        super().__init__(message)
+        self.stage = stage
+        self.reason_code = reason_code
+        self.guard_reasons = tuple(str(r) for r in guard_reasons)
+
+
 class GuestMutationGate:
     """Recheck guest identity and inventories before each actual installer mutation."""
 
@@ -315,7 +332,13 @@ class GuestMutationGate:
         )
         reasons.extend(task_path_reasons(self.test_root))
         if reasons:
-            raise RuntimeError("guest mutation guard refused the operation: " + ",".join(sorted(set(reasons))))
+            unique = sorted(set(reasons))
+            raise GuestLifecycleError(
+                "guest mutation guard refused the operation: " + ",".join(unique),
+                stage="guard",
+                reason_code="guest_mutation_guard_refused",
+                guard_reasons=unique,
+            )
 
 
 class GuestCredentialProvider:
@@ -1021,21 +1044,34 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
                   f"H4 {args.profile} profile: passed; results={test_root / 'test-results.json'}")
             return 0
         except Exception as exc:
-            outcome = {"schema_version": 1, "profile": args.profile, "status": "failed",
-                       "exit_code": 4, "reason_code": type(exc).__name__, "completed_at": _now()}
+            diag_stage = getattr(exc, "stage", "preflight")
+            diag_reason = getattr(exc, "reason_code", type(exc).__name__)
+            diag_guards = list(getattr(exc, "guard_reasons", ()))
+            outcome = {
+                "schema_version": 1,
+                "profile": args.profile,
+                "status": "failed",
+                "exit_code": 4,
+                "stage": diag_stage,
+                "reason_code": diag_reason,
+                "guard_reasons": diag_guards,
+                "completed_at": _now(),
+            }
             _write_json(test_root / "test-results.json", outcome)
             suite = ET.Element("testsuite", {"name": "h4_guest_lifecycle", "tests": "1",
                                                "failures": "0", "errors": "1", "skipped": "0"})
             case = ET.SubElement(suite, "testcase", {"classname": "h4_guest_lifecycle",
                                                       "name": str(args.profile)})
-            error = ET.SubElement(case, "error", {"type": type(exc).__name__,
+            error = ET.SubElement(case, "error", {"type": diag_reason,
                                                    "message": "guest lifecycle failed; inspect bounded JSON evidence"})
             error.text = "No exception text is stored because it may contain host-specific arguments or paths."
             ET.ElementTree(suite).write(test_root / "junit.xml", encoding="utf-8", xml_declaration=True)
             _write_json(test_root / "cleanup-result.json", {
                 "schema_version": 1, "status": "requires_review", "automatic_cleanup_claimed": False,
                 "exact_task_names": _manifest_task_names(test_root),
-                "reason_code": type(exc).__name__,
+                "stage": diag_stage,
+                "reason_code": diag_reason,
+                "guard_reasons": diag_guards,
             })
             print(json.dumps(outcome, sort_keys=True) if args.json else
                   f"H4 {args.profile} profile: failed safely ({type(exc).__name__}); inspect {test_root / 'test-results.json'}",

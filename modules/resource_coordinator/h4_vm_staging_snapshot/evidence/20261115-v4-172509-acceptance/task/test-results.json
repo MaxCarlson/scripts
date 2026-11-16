@@ -1,0 +1,15 @@
+{
+  "completed_at": "2026-11-16T01:26:03.889838+00:00",
+  "counts": {
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0,
+    "tests": 1
+  },
+  "exit_code": 0,
+  "junit": "C:\\H4-Guest-Work\\runs\\h4-rc-task-20261115-v4-172509\\junit-20261116T012556388473Z.xml",
+  "log": "C:\\H4-Guest-Work\\runs\\h4-rc-task-20261115-v4-172509\\pytest-output.log",
+  "profile": "task",
+  "schema_version": 1,
+  "status": "passed"
+}

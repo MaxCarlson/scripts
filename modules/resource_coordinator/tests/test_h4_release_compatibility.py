@@ -390,3 +390,97 @@ def test_build_bundle_supports_explicit_tooling_ref_preserving_release_sources(t
 
     harness_runner = (out_dir / "h4-windows-acceptance" / "harness" / "windows_acceptance.py").read_text(encoding="utf-8")
     assert "if args.source_root is not None" in harness_runner
+
+
+def test_listener_inventory_distinguishes_empty_occupied_and_unavailable(tmp_path, monkeypatch):
+    import inspect
+
+    ps_src = inspect.getsource(windows_acceptance._run_powershell)
+    assert "MSFT_NetTCPConnection" in ps_src
+    assert "Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetTCPConnection" in ps_src
+    assert "Get-NetTCPConnection -State Listen -LocalPort" not in ps_src
+
+    monkeypatch.setattr(windows_acceptance, "guest_identity", lambda ev: True)
+    h4_root = tmp_path / "h4-rc-listener-test"
+    h4_root.mkdir()
+    base_ev = {
+        "queries": {"system": "available", "tasks": "available", "services": "available", "processes": "available", "listener": "available"},
+        "rc_tasks": [],
+        "rc_services": [],
+        "rc_processes": [],
+        "listener_port": 49676,
+        "listener_rows": [],
+    }
+    assert windows_acceptance.guard_reasons(base_ev, h4_root, is_windows=True) == []
+
+    occupied_ev = {
+        **base_ev,
+        "listener_rows": [{"port": 49676, "pid": 9999, "creation_time": 1.0, "executable_path": "c:\\other.exe"}],
+    }
+    assert "listener_port_owner_unverified" in windows_acceptance.guard_reasons(occupied_ev, h4_root, is_windows=True)
+
+    unavailable_ev = {
+        **base_ev,
+        "queries": {**base_ev["queries"], "listener": "error"},
+    }
+    assert "listener_inventory_unavailable" in windows_acceptance.guard_reasons(unavailable_ev, h4_root, is_windows=True)
+
+
+def test_lifecycle_guard_failure_emits_structured_sanitized_diagnostics(tmp_path, monkeypatch):
+    import json
+
+    src_root = tmp_path / "sources" / "rc-1.0.0"
+    old_root = tmp_path / "sources" / "rc-0.14.0"
+    src_root.mkdir(parents=True)
+    old_root.mkdir(parents=True)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    run_root = tmp_path / "h4-rc-full-diag"
+    run_root.mkdir()
+
+    monkeypatch.setenv("RC_H4_DISPOSABLE_GUEST_AUTHORIZED", windows_acceptance.AUTHORIZATION_PHRASE)
+    monkeypatch.setattr(windows_acceptance.sys, "platform", "win32")
+    monkeypatch.setattr(windows_acceptance.os, "name", "nt")
+    monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {
+        "queries": {"system": "available", "tasks": "available", "services": "available", "processes": "available", "listener": "error"},
+        "computer": {"manufacturer": "Microsoft Corporation", "model": "Virtual Machine", "hypervisor_present": True},
+    })
+    monkeypatch.setattr(windows_acceptance, "guest_identity", lambda ev: True)
+    monkeypatch.setattr(windows_acceptance, "task_path_reasons", lambda *a, **kw: [])
+    monkeypatch.setattr(
+        windows_acceptance,
+        "_repository_roots",
+        lambda *a, **kw: (src_root, old_root, "a" * 64, "b" * 64),
+    )
+
+    def _lifecycle_with_port_gate(profile, root, s_root, o_root, timeout, fault):
+        gate = windows_acceptance.GuestMutationGate(
+            root,
+            ("ResourceCoordinator-H4-1234567890-install-boot",),
+            listener_port=49676,
+        )
+        gate()
+        return {}
+
+    rc = windows_acceptance.main(
+        [
+            "--test-root", str(run_root),
+            "--apply", "--profile", "full",
+            "--authorization", windows_acceptance.AUTHORIZATION_PHRASE,
+            "--authorize-guest-mutation",
+            "--source-root", str(src_root),
+            "--old-source-root", str(old_root),
+            "--source-manifest", str(manifest),
+            "--json",
+        ],
+        lifecycle_runner_override=_lifecycle_with_port_gate,
+    )
+    assert rc == 4
+    results = json.loads((run_root / "test-results.json").read_text(encoding="utf-8"))
+    assert results["stage"] == "guard"
+    assert results["reason_code"] == "guest_mutation_guard_refused"
+    assert results["guard_reasons"] == ["listener_inventory_unavailable"]
+    cleanup = json.loads((run_root / "cleanup-result.json").read_text(encoding="utf-8"))
+    assert cleanup["stage"] == "guard"
+    assert cleanup["reason_code"] == "guest_mutation_guard_refused"
+    assert cleanup["guard_reasons"] == ["listener_inventory_unavailable"]

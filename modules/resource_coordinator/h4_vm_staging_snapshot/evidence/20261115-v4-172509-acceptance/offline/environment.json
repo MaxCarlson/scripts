@@ -1,0 +1,22 @@
+{
+  "computer": {
+    "hypervisor_present": true,
+    "manufacturer": "Microsoft Corporation",
+    "model": "Virtual Machine"
+  },
+  "os": {
+    "build": "26300",
+    "caption": "Microsoft Windows 11 Pro",
+    "version": "10.0.26300"
+  },
+  "queries": {
+    "processes": "available",
+    "services": "available",
+    "system": "available",
+    "tasks": "available"
+  },
+  "rc_processes": [],
+  "rc_services": [],
+  "rc_tasks": [],
+  "schema_version": 1
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "operation_id": "20261115-v4-172509",
+  "stage_requested": "Setup",
+  "apply_requested": true,
+  "whatif": false,
+  "guest_authorized": false,
+  "vm_id": "d8483f98-8884-4758-abd1-cd6107c83c03",
+  "vm_name": "RC-H4-Windows-Acceptance",
+  "expected_guest": "DESKTOP-1ITSJV0",
+  "evidence_dir": "C:\\H4-VM-Staging\\evidence-v4-setup\\20261115-v4-172509",
+  "stage_results": {
+    "Preflight": "PASS",
+    "Setup": "PASS",
+    "Checkpoint": "NOT_RUN",
+    "Acceptance": "NOT_RUN"
+  },
+  "profiles": [],
+  "checkpoint": null,
+  "error": null,
+  "error_category": null,
+  "guest_os": "Microsoft Windows 11 Pro Build 26300 (64-bit)"
+}

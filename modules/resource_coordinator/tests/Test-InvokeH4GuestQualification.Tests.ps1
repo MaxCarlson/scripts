@@ -609,4 +609,50 @@ try {
         $resumedJson.stage_results.Acceptance | Should Be 'PASS'
         $resumedJson.profiles[1].test_root | Should Be 'C:\H4-Guest-Work\runs\h4-rc-task-optest01-r2'
     }
+
+    It 'preserves completed profile results and structured diagnostics when a later lifecycle phase fails with stderr' {
+        Initialize-QualMocks -FailAtPhase '--profile full'
+        Mock Invoke-H4GuestScript {
+            param($Session, $ScriptBlock, $ArgumentList)
+            $text = $ScriptBlock.ToString()
+            if ($text -match 'Win32_ComputerSystem') {
+                return [pscustomobject]@{
+                    hostname = 'DESKTOP-1ITSJV0'; user = 'DESKTOP-1ITSJV0\mcarls'; is_admin = $true
+                    manufacturer = 'Microsoft Corporation'; model = 'Virtual Machine'
+                    os_caption = 'Microsoft Windows 11 Pro'; os_version = '10.0.26300'; os_build = '26300'; os_arch = '64-bit'
+                    rc_task_count = 0; rc_service_count = 0; rc_proc_count = 0
+                }
+            }
+            if ($text -match 'Verify-H4GuestBundle\.ps1') { return "C:\H4-Guest-Work\bundles\$($ArgumentList[0])" }
+            if ($text -match '--profile cleanup') { return [pscustomobject]@{ exit_code = 0; output = '{"status":"verified"}' } }
+            if ($text -match 'RC_H4_DISPOSABLE_GUEST_AUTHORIZED') {
+                $argsArr = @($ArgumentList[5] | ConvertFrom-Json)
+                if ($argsArr -contains 'full') {
+                    return [pscustomobject]@{
+                        exit_code = 4
+                        output    = '{"status":"failed","exit_code":4,"stage":"install:guard","reason_code":"guest_mutation_guard_refused","guard_reasons":["listener_inventory_unavailable"]}'
+                    }
+                }
+                return [pscustomobject]@{ exit_code = 0; output = '{"status":"passed","counts":{"tests":1,"skipped":0}}' }
+            }
+            return $null
+        }
+
+        $rPartial = Invoke-Qual -Extra @{ Stage = 'Acceptance'; Apply = $true; AuthorizeGuestMutation = $true }
+        $rPartial.ExitCode | Should Be 1
+        $saved = Get-Content -LiteralPath (Join-Path $rPartial.EvidenceDir 'final-summary.json') -Raw | ConvertFrom-Json
+        $saved.profiles.Count | Should Be 3
+        $saved.profiles[0].phase | Should Be 'offline'
+        $saved.profiles[0].status | Should Be 'PASS'
+        $saved.profiles[1].phase | Should Be 'task'
+        $saved.profiles[1].status | Should Be 'PASS'
+        $saved.profiles[2].phase | Should Be 'full'
+        $saved.profiles[2].status | Should Be 'FAIL'
+        $saved.error | Should Match 'reason=guest_mutation_guard_refused'
+        $saved.error | Should Match 'guards=listener_inventory_unavailable'
+
+        # Verify remote runner scriptblock uses Continue around native python call so stderr does not throw NativeCommandError
+        $rawScript = Get-Content -LiteralPath $scriptPath -Raw
+        $rawScript | Should Match "\`$ErrorActionPreference = 'Continue'"
+    }
 }
