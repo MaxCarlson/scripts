@@ -744,12 +744,12 @@ def test_recover_failed_guest_install_dry_run_apply_idempotent_and_guards(tmp_pa
     monkeypatch.setattr(windows_acceptance, "_repository_roots", lambda *a, **kw: (MODULE_ROOT.parents[1], None, "a" * 64, None))
     monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {"rc_services": [], "rc_processes": [], "listener_rows": []})
 
-    # 1. Dry-run preserves tasks and launcher while snapshotting XML
+    # 1. Dry-run preserves tasks, launcher, and writes no recovery snapshots
     plan = windows_acceptance._recover_failed_guest_install(run_root, MODULE_ROOT.parents[1], apply=False)
     assert plan["status"] == "planned"
     assert len(fake_tasks) == 1
     assert launcher.is_file()
-    assert (run_root / "recovery-task-snapshots" / f"{task_names[1]}.json").is_file()
+    assert not (run_root / "recovery-task-snapshots").exists()
 
     # 2. Live process/listener refuses recovery
     monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {"rc_services": [], "rc_processes": [{"pid": 1}], "listener_rows": []})
@@ -773,6 +773,72 @@ def test_recover_failed_guest_install_dry_run_apply_idempotent_and_guards(tmp_pa
     again = windows_acceptance._recover_failed_guest_install(run_root, MODULE_ROOT.parents[1], apply=True)
     assert again["status"] == "applied"
     assert again["phases"][0]["tasks_observed"] == []
+
+
+def test_recover_cli_dry_run_and_apply_preserve_prior_evidence(tmp_path, monkeypatch, capsys):
+    import json
+
+    run_root = tmp_path / "h4-rc-recover-cli"
+    run_root.mkdir()
+    (run_root / ".h4-test-root.json").write_text('{"root_id":"1234567890"}', encoding="utf-8")
+    prior_results = '{"status":"failed","reason_code":"task_registered_never_executed"}'
+    prior_junit = '<testsuite errors="1" tests="1"/>'
+    (run_root / "test-results.json").write_text(prior_results, encoding="utf-8")
+    (run_root / "junit.xml").write_text(prior_junit, encoding="utf-8")
+
+    src_root = tmp_path / "sources" / "rc-1.0.0"
+    src_root.mkdir(parents=True)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(windows_acceptance.sys, "platform", "win32")
+    monkeypatch.setattr(windows_acceptance.os, "name", "nt")
+    monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {"queries": {"system": "available"}})
+    monkeypatch.setattr(windows_acceptance, "guard_reasons", lambda *a, **kw: ())
+    monkeypatch.setattr(windows_acceptance, "task_path_reasons", lambda *a, **kw: ())
+    monkeypatch.setattr(windows_acceptance, "_repository_roots", lambda *a, **kw: (src_root, None, "a" * 64, None))
+
+    calls = []
+
+    def _fake_recover(root, s_root, *, apply=False):
+        calls.append(apply)
+        return {"profile": "recover", "status": "applied" if apply else "planned", "phases": []}
+
+    monkeypatch.setattr(windows_acceptance, "_recover_failed_guest_install", _fake_recover)
+
+    # Dry-run CLI (no --apply): executes recovery planner with apply=False, writes no recovery files
+    rc_dry = windows_acceptance.main([
+        "--test-root", str(run_root),
+        "--profile", "recover",
+        "--source-root", str(src_root),
+        "--source-manifest", str(manifest),
+        "--json",
+    ])
+    assert rc_dry == 0
+    assert calls == [False]
+    dry_out = json.loads(capsys.readouterr().out.strip())
+    assert dry_out["status"] == "planned"
+    assert not (run_root / "recovery-result.json").exists()
+    assert not (run_root / "recovery-task-snapshots").exists()
+    assert (run_root / "test-results.json").read_text(encoding="utf-8") == prior_results
+    assert (run_root / "junit.xml").read_text(encoding="utf-8") == prior_junit
+
+    # Apply CLI: executes with apply=True, writes recovery-result.json, preserves test-results.json and junit.xml
+    monkeypatch.setenv("RC_H4_DISPOSABLE_GUEST_AUTHORIZED", windows_acceptance.AUTHORIZATION_PHRASE)
+    rc_apply = windows_acceptance.main([
+        "--test-root", str(run_root),
+        "--apply", "--profile", "recover",
+        "--authorization", windows_acceptance.AUTHORIZATION_PHRASE,
+        "--authorize-guest-mutation",
+        "--source-root", str(src_root),
+        "--source-manifest", str(manifest),
+        "--json",
+    ])
+    assert rc_apply == 0
+    assert calls == [False, True]
+    assert json.loads((run_root / "recovery-result.json").read_text(encoding="utf-8"))["status"] == "applied"
+    assert (run_root / "test-results.json").read_text(encoding="utf-8") == prior_results
+    assert (run_root / "junit.xml").read_text(encoding="utf-8") == prior_junit
 
 
 def test_windows_live_session_and_missing_task_probe():

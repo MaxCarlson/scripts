@@ -999,7 +999,6 @@ def _recover_failed_guest_install(root: Path, source_root: Path, *, apply: bool 
             reason_code="recovery_source_mismatch",
         )
     snapshots_dir = root / "recovery-task-snapshots"
-    snapshots_dir.mkdir(parents=True, exist_ok=True)
     results = []
     for manifest in reversed(manifests):
         _validate_cleanup_manifest(root, manifest)
@@ -1044,11 +1043,12 @@ def _recover_failed_guest_install(root: Path, source_root: Path, *, apply: bool 
                     stage="recover",
                     reason_code="recovery_refused_unowned_task",
                 )
-            snap = backend.snapshot(task)
-            _write_json(snapshots_dir / f"{task.name}.json", snap)
         removed_launchers = []
         removed_tasks = []
         if apply:
+            snapshots_dir.mkdir(parents=True, exist_ok=True)
+            for task in observed_tasks:
+                _write_json(snapshots_dir / f"{task.name}.json", backend.snapshot(task))
             for task in observed_tasks:
                 if task.enabled:
                     backend.set_enabled(task, False, non_interactive=True)
@@ -1272,8 +1272,9 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
         "observed_guard_reasons": observed_reasons, "profile_blockers": reasons,
         "source_integrity": source_integrity,
     }
-    _initialize_artifacts(test_root, evidence, preflight)
-    if not args.apply:
+    if not (args.profile == "recover" and not args.apply):
+        _initialize_artifacts(test_root, evidence, preflight)
+    if not args.apply and args.profile != "recover":
         value = {"status": "preflight_only", **preflight}
         print(json.dumps(value, sort_keys=True) if args.json else
               f"H4 preflight only: guest_verified={value['guest_verified']}; "
@@ -1323,9 +1324,10 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
             if args.profile == "recover":
                 outcome = _recover_failed_guest_install(test_root, args.source_root, apply=bool(args.apply))
                 outcome = {"schema_version": 1, **outcome, "exit_code": 0, "completed_at": _now()}
-                _write_json(test_root / "recovery-result.json", outcome)
+                if args.apply:
+                    _write_json(test_root / "recovery-result.json", outcome)
                 print(json.dumps(outcome, sort_keys=True) if args.json else
-                      f"H4 {args.profile} profile: {outcome['status']}; results={test_root / 'recovery-result.json'}")
+                      f"H4 {args.profile} profile: {outcome['status']}")
                 return 0
             gate()
             outcome = lifecycle_runner(args.profile, test_root, args.source_root,
