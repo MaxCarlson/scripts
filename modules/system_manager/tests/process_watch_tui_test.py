@@ -255,3 +255,86 @@ async def test_tui_tree_preserves_expansion_and_selection_across_updates():
         assert new_zeta.is_expanded is False
         assert tree.cursor_node is not None
         assert tree.cursor_node.data == beta_ident
+
+
+@pytest.mark.asyncio
+async def test_tui_clears_cli_glob_filter_and_cycles_theme():
+    from textual.widgets import DataTable, Static
+
+    procs = [
+        FakeProc(100, ppid=1, name="python.exe", cpu_user=3.0, rss=50 * 1024**2),
+        FakeProc(200, ppid=1, name="node.exe", cpu_user=2.0, rss=40 * 1024**2),
+    ]
+    fps = FakePsutil(procs)
+    sampler = ProcessSampler(psutil_module=fps, monotonic_clock=lambda: 100.0, wall_clock=lambda: 1000.0)
+    app = ProcessWatchApp(
+        sampler,
+        initial_filter=ProcessFilter(include_globs=["python"]),
+        interval_seconds=0.5,
+        visible_rows=10,
+        enable_background_worker=False,
+    )
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        table = app.query_one("#proc-table", DataTable)
+        header = str(app.query_one("#host-header", Static).renderable)
+        assert table.row_count == 1
+        assert "[g:python]" in header
+
+        # Pressing x clears CLI -g/-e/-p filters and restores all rows
+        await pilot.press("x")
+        await pilot.pause()
+        assert table.row_count == 2
+        assert not app.proc_filter.has_selectors()
+
+        # Re-apply -g filter and clear via Escape
+        app.proc_filter.include_globs = ["node"]
+        app._refresh_views()
+        assert table.row_count == 1
+        await pilot.press("escape")
+        await pilot.pause()
+        assert table.row_count == 2
+
+        # Theme cycling returns cleanly to dark
+        await pilot.press("t")
+        await pilot.pause()
+        assert app.screen.has_class("theme-light")
+        await pilot.press("t")
+        await pilot.pause()
+        assert app.screen.has_class("theme-high-contrast")
+        await pilot.press("t")
+        await pilot.pause()
+        assert not app.screen.has_class("theme-light")
+        assert not app.screen.has_class("theme-high-contrast")
+
+
+@pytest.mark.asyncio
+async def test_tui_background_startup_mounts_before_first_sample():
+    import threading
+    from textual.widgets import DataTable
+
+    gate = threading.Event()
+    procs = [FakeProc(100, ppid=1, name="python.exe", cpu_user=3.0, rss=50 * 1024**2)]
+    fps = FakePsutil(procs)
+    sampler = ProcessSampler(psutil_module=fps, monotonic_clock=lambda: 100.0, wall_clock=lambda: 1000.0)
+    orig_sample = sampler.sample
+
+    def gated_sample(**kwargs):
+        gate.wait(timeout=2.0)
+        return orig_sample(**kwargs)
+
+    sampler.sample = gated_sample  # type: ignore[method-assign]
+    app = ProcessWatchApp(sampler, interval_seconds=5.0, visible_rows=10, enable_background_worker=True)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        table = app.query_one("#proc-table", DataTable)
+        # App mounted immediately even though first sample is still blocked
+        assert app.latest_snapshot is None
+        assert table.row_count == 0
+        gate.set()
+        for _ in range(20):
+            if app.latest_snapshot is not None:
+                break
+            await pilot.pause(0.05)
+        assert app.latest_snapshot is not None
+        assert table.row_count == 1

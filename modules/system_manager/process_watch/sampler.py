@@ -78,6 +78,7 @@ class ProcessSampler:
         self._known_live: Dict[ProcessIdentity, ProcessSample] = {}
         self._exited_cache: Dict[ProcessIdentity, Tuple[float, ProcessSample]] = {}
         self._first_seen: Dict[ProcessIdentity, float] = {}
+        self._redacted_cache: Dict[ProcessIdentity, Tuple[str, str]] = {}
         self._prev_disk_io: Optional[Tuple[float, int, int]] = None
         self._events: Deque[LifecycleEvent] = deque(maxlen=200)
         self._has_primed = False
@@ -100,19 +101,30 @@ class ProcessSampler:
         gpu_proc_map: Dict[int, Dict[str, Any]] = (gpu_data or {}).get("process_memory", {})
         logical_cpus = max(1, int(self._psutil.cpu_count(logical=True) or 1))
 
+        # On Windows, psutil's per-process ppid/status/num_threads each call
+        # CreateToolhelp32Snapshot / NtQuerySystemInformation(SystemProcessInformation)
+        # once per process (O(N^2)). Batch ppid_map once and fetch status/num_threads
+        # only for focused/pinned processes unless collect_details_for_all=True.
+        ppid_map: Optional[Dict[int, int]] = None
+        cext = getattr(getattr(self._psutil, "_psplatform", None), "cext", None)
+        if cext is not None and hasattr(cext, "ppid_map"):
+            with suppress(Exception):
+                ppid_map = cext.ppid_map()
+
         attrs = [
             "pid",
-            "ppid",
             "name",
             "exe",
             "cmdline",
             "username",
-            "status",
             "create_time",
             "cpu_times",
             "memory_info",
-            "num_threads",
         ]
+        if ppid_map is None:
+            attrs.extend(["ppid", "status", "num_threads"])
+        elif self.collect_details_for_all:
+            attrs.extend(["status", "num_threads"])
         if self.collect_details_for_all:
             attrs.append("cwd")
 
@@ -137,11 +149,19 @@ class ProcessSampler:
                 ident = ProcessIdentity(pid=pid, create_time=create_time_f)
 
                 name = str(info.get("name") or f"pid-{pid}")
-                ppid = int(info.get("ppid") or 0)
+                if ppid_map is not None:
+                    ppid = int(ppid_map.get(pid, 0) or 0)
+                else:
+                    ppid = int(info.get("ppid") or 0)
                 exe = str(info.get("exe") or "")
                 cmdline_list = info.get("cmdline")
                 cmdline_raw = " ".join(str(part) for part in cmdline_list) if cmdline_list else ""
-                cmdline_redacted = redact_sensitive_text(cmdline_raw)
+                cached_redacted = self._redacted_cache.get(ident)
+                if cached_redacted is not None and cached_redacted[0] == cmdline_raw:
+                    cmdline_redacted = cached_redacted[1]
+                else:
+                    cmdline_redacted = redact_sensitive_text(cmdline_raw)
+                    self._redacted_cache[ident] = (cmdline_raw, cmdline_redacted)
                 username = str(info.get("username") or "")
                 status = str(info.get("status") or "")
                 cwd = str(info.get("cwd") or "") if self.collect_details_for_all else ""
@@ -158,6 +178,12 @@ class ProcessSampler:
 
                 num_threads = info.get("num_threads")
                 num_threads_i = int(num_threads) if num_threads is not None else None
+                if ppid_map is not None and not self.collect_details_for_all and ident in focus:
+                    with suppress(self._psutil.Error, AttributeError, OSError):
+                        if not status:
+                            status = str(proc.status() or "")
+                        if num_threads_i is None:
+                            num_threads_i = int(proc.num_threads())
                 num_handles_i = _extract_handles(proc) if (self.collect_details_for_all or ident in focus) else None
 
                 io_read_bytes: Optional[int] = None
