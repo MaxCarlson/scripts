@@ -8,6 +8,7 @@
 
 ## Resumption Notes
 
-- .NET SDK is not installed on this host; `Microsoft.NETCore.App 10.0.15` runtime and VS2022 Roslyn `csc.exe` `4.14.0` are installed. Build uses `Build-PrivExecBroker.ps1` (supports both `dotnet build` and Roslyn fallback).
-- SQLite persistence uses built-in Windows `winsqlite3.dll` via P/Invoke so zero NuGet dependencies are needed.
-- H4 source scripts live on `fix/rc-h4-task-discovery-20261115` (`ea6ad23f`) in `C:\Users\mcarls\src\scripts\.worktrees\rc-h4-task-discovery-20261115` (left untouched).
+- Phases 0, 1, 2, and 3 safe implementations and automated tests are complete.
+- Build uses `scripts/Build-PrivExecBroker.ps1` (supports both `dotnet build` and VS2022 Roslyn `csc.exe` against `.NET 10.0.15` runtime).
+- SQLite persistence uses built-in Windows `winsqlite3.dll` via P/Invoke.
+- `Install-PrivExec.ps1` and `Uninstall-PrivExec.ps1` default to dry-run; elevated installation, cross-account Windows security tests, and live H4 Hyper-V runs await explicit operator authorization (`docs/WINDOWS_VALIDATION.md`).

@@ -1,10 +1,8 @@
 # Handoff — `modules/privileged_execution`
 
 - **Active plan:** `docs/plans/20261119-privexec-session-broker/`
-- **Current stage:** Phase 2 complete; starting Phase 3 (H4 Integration, Windows Setup & Repo Registration)
+- **Current stage:** Phases 0–3 complete (safe/non-privileged scope); pending authorized Windows elevation & live H4 VM validation
 - **Branch:** `feat/privexec-session-broker-20261119`
 - **Worktree:** `C:\Users\mcarls\src\scripts-privexec`
 - **Base commit:** `e7b9f36d5296d8b8fe301ef47e9f35adc64f886b`
-- **Authorized scope:** Non-elevated implementation, local builds, synthetic tests, H4 integration adapters/mocks, dry-run installer scripts, local checkpoint commits.
-- **Not authorized:** Elevated Windows installation, Windows account changes, real Hyper-V VM mutations, push/merge, local LLM invocation.
-- **Next action:** Complete Phase 1 implementation and tests, then proceed through Phase 2 and Phase 3.
+- **Next action:** Operator review of `docs/WINDOWS_VALIDATION.md` before authorizing elevated `Install-PrivExec.ps1 -Apply`, two-account pipe ACL verification, and live H4 preflight.

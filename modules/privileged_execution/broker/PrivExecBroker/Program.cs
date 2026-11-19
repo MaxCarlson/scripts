@@ -17,6 +17,7 @@ public static class Program
         string? grantFile = null;
         int ttlSeconds = 1800;
         bool allowSameUser = false;
+        bool promptGuestCredential = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -40,9 +41,12 @@ public static class Program
                 case "--allow-same-user":
                     allowSameUser = true;
                     break;
+                case "--prompt-guest-credential":
+                    promptGuestCredential = true;
+                    break;
                 case "--help":
                 case "-h":
-                    Console.WriteLine("PrivExecBroker --pipe <name> --descriptors-dir <dir> --state-dir <dir> [--grant-file <json>] [--ttl-seconds <n>] [--allow-same-user]");
+                    Console.WriteLine("PrivExecBroker --pipe <name> --descriptors-dir <dir> --state-dir <dir> [--grant-file <json>] [--ttl-seconds <n>] [--allow-same-user] [--prompt-guest-credential]");
                     return 0;
                 default:
                     Console.Error.WriteLine($"Unknown argument: {args[i]}");
@@ -73,7 +77,12 @@ public static class Program
         {
             Console.WriteLine($"PRIVEXEC_CRASH_RECOVERY marked_outcome_unknown={recoveredUnknown}");
         }
-        var executor = new ProcessCapabilityExecutor(stateDir);
+        OperatorMemoryCredentialProvider? memCred = promptGuestCredential
+            ? OperatorMemoryCredentialProvider.PromptInConsole()
+            : null;
+        using var credCleanup = memCred;
+        IOperatorCredentialProvider credProvider = memCred ?? (IOperatorCredentialProvider)new NullCredentialProvider();
+        var executor = new ProcessCapabilityExecutor(stateDir, credProvider);
         var engine = new BrokerEngine(authorizer, descriptors, store, executor, null, () => cts.Cancel());
         var pipeSecurity = SecurityAndAcl.BuildPipeSecurity(operatorSid, grant.AllowedClientSids);
         var server = new PipeBrokerServer(pipeName, pipeSecurity, engine);

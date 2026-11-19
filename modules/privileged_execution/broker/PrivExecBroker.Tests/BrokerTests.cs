@@ -60,6 +60,7 @@ public static class Program
 
         Console.WriteLine($"All {passed}/{tests.Length} PrivExecBroker Phase 1 C# tests passed.");
         await Phase2Tests.RunAllAsync();
+        await Phase3Tests.RunAllAsync();
         return 0;
     }
 

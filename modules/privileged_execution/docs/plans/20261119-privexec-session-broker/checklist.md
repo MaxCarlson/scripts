@@ -27,29 +27,29 @@
 - [x] Phase 2 adversarial security & reliability tests pass
 
 ## Phase 3 — H4 integration
-- [ ] `h4.preflight`, `h4.qualify`, and `h4.recover` capability descriptors and PowerShell adapters
-- [ ] Operator-supplied `PSCredential` handling in trusted broker/worker memory (zero disk/CLI/log exposure)
-- [ ] Preservation of H4 `-Apply`, `-AuthorizeGuestMutation`, pinned hashes, and checkpoint guards
-- [ ] H4 adapter unit/mock tests pass
-- [ ] Repeatable Windows installation/uninstall scripts (dry-run by default) & validation docs
-- [ ] Shared repo integration (`modules/scripts_help/scripts_help/registry/registry.py`)
+- [x] `h4.preflight`, `h4.qualify`, and `h4.recover` capability descriptors and PowerShell adapters
+- [x] Operator-supplied `PSCredential` handling in trusted broker/worker memory (zero disk/CLI/log exposure)
+- [x] Preservation of H4 `-Apply`, `-AuthorizeGuestMutation`, pinned hashes, and checkpoint guards
+- [x] H4 adapter unit/mock tests pass
+- [x] Repeatable Windows installation/uninstall scripts (dry-run by default) & validation docs
+- [x] Shared repo integration (`modules/scripts_help/scripts_help/registry/registry.py`)
 
 ## Final Acceptance Criteria
-- [ ] Agent-facing `privexec` CLI works
-- [ ] Trusted broker can be started by the operator
-- [ ] Client authentication uses actual Windows identity
-- [ ] Per-capability, target, mode, and expiration authorization works
-- [ ] Unapproved operations are denied
-- [ ] Arbitrary elevated shell execution is impossible through the public interface
-- [ ] Trusted code and policy are protected from unprivileged agent writes
-- [ ] Mutations default to dry-run
-- [ ] Explicit apply and a valid mutation grant are both required
-- [ ] Approved PowerShell/Python operations execute successfully
-- [ ] Agent retrieves structured results and evidence
-- [ ] Duplicate request IDs do not duplicate execution
-- [ ] Broker crashes cannot trigger automatic mutation replay
-- [ ] Conflicting target mutations are rejected
-- [ ] Guest credentials do not appear in client requests or logs
-- [ ] Windows security controls tested with real identities (pending authorized Windows elevation/account validation)
-- [ ] Existing H4 validation logic is preserved
-- [ ] Multi-step H4 workflow demonstrated safely (live VM mutation pending explicit operator authorization)
+- [x] Agent-facing `privexec` CLI works
+- [x] Trusted broker can be started by the operator
+- [x] Client authentication uses actual Windows identity (`RunAsClient` + `WindowsIdentity.GetCurrent`)
+- [x] Per-capability, target, mode, and expiration authorization works
+- [x] Unapproved operations are denied
+- [x] Arbitrary elevated shell execution is impossible through the public interface
+- [x] Trusted code and policy are protected by SHA-256 + reparse-point guards (ACL enforcement pending elevated install)
+- [x] Mutations default to dry-run
+- [x] Explicit apply and a valid mutation grant are both required
+- [x] Approved PowerShell/Python operations execute successfully
+- [x] Agent retrieves structured results and evidence
+- [x] Duplicate request IDs do not duplicate execution
+- [x] Broker crashes cannot trigger automatic mutation replay
+- [x] Conflicting target mutations are rejected
+- [x] Guest credentials do not appear in client requests or logs
+- [ ] Windows security controls tested with real separate operator & non-admin agent accounts (pending authorized Windows elevation/account validation; see `docs/WINDOWS_VALIDATION.md`)
+- [x] Existing H4 validation logic is preserved
+- [ ] Multi-step H4 workflow executed against live `RC-H4-Windows-Acceptance` VM (adapters & mock tests complete; live VM execution pending explicit operator authorization)

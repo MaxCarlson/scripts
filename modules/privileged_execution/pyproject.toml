@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "privileged-execution"
 version = "0.1.0"
 description = "Least-privilege local Windows session broker and agent CLI for narrowly authorized administrative operations."
-readme = "docs/README.md"
+readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
