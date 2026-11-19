@@ -1,6 +1,6 @@
 # Status — `20261119-privexec-session-broker`
 
-- **Current Phase:** Diagnosed & fixed Gate 1 `$LASTEXITCODE` `$null -ne 0` false-failure / `FileSystemAclExtensions` DACL-only reconciliation / structured installer diagnostics; awaiting elevated operator rerun of `Invoke-Gate1And2Elevated.ps1`
+- **Current Phase:** Diagnosed & fixed `SqliteOperationStore.ReadRecord` `RequestId`/`ClientSid` parameter-order bug (which caused `403 unauthorized_identity` on result lookup of `op-ff6347bbd67448b0`); awaiting elevated operator rerun of `Invoke-Gate1And2Elevated.ps1`
 - **Branch:** `feat/privexec-session-broker-20261119`
 - **Worktree:** `C:\Users\mcarls\src\scripts-privexec`
 - **Base Commit:** `e7b9f36d5296d8b8fe301ef47e9f35adc64f886b`
@@ -17,14 +17,14 @@
 5. **Stale SID retention on `Install-PrivExec.ps1` reinstall:** `icacls /inheritance:r /grant:r` only updated ACEs for `SYSTEM`, `Administrators`, and `OperatorAccount`, leaving prior temporary agent SIDs on `descriptors`.
    - *Fix:* Added `Set-StrictDirectoryAcl` in `Install-PrivExec.ps1` using a fresh protected `DirectorySecurity` (`SetAccessRuleProtection($true, $false)`) and resetting child inheritance so stale ACEs are purged on every install/reinstall.
 6. **Gate 1 `Install-PrivExec.ps1 failed.` false failure (`run_id: 20261119-184515-5819f80d`) & repeated-install `SeSecurityPrivilege` hardening:**
-   - *Confirmed Root Cause:* Timestamp and ACL inspection on `C:\ProgramData\PrivExec` proved `Install-PrivExec.ps1` actually completed all stages at `18:45:17.483Z`–`18:45:17.494Z` (all 5 descriptors written, stale SIDs `-1009`/`-1011` purged, new agent SID `-1013` applied). However, after commit `84a1118a` removed `icacls.exe` calls from `Install-PrivExec.ps1` and the `-Apply` branch lacked an explicit `exit 0`, invoking `& $installScript` in-process left `$LASTEXITCODE` as `$null` in the fresh `pwsh -File` session. In PowerShell, `($null -ne 0)` evaluates to `$true`, triggering `if ($LASTEXITCODE -ne 0) { throw 'Install-PrivExec.ps1 failed.' }` at line 205 before `$evidence['gate1_install']` was saved. Additionally, PowerShell's `Set-Acl` cmdlet can request `SeSecurityPrivilege` / owner writes on already-protected directories during repeated installs.
-   - *Fix:*
-     - `Install-PrivExec.ps1` now uses `[System.IO.FileSystemAclExtensions]::SetAccessControl(...)` (writing only the DACL without touching SACL/Owner), uses `-DirectFilesOnly` on parent directories so `state`/`work` never transiently inherit agent `RX`, tracks `$installStage`, emits structured JSON error diagnostics on failure, sets `$global:LASTEXITCODE = 0`, and calls `exit 0` on success.
-     - `Invoke-Gate1And2Elevated.ps1` runs `Install-PrivExec.ps1` as a `pwsh.exe` child process with captured `exit_code`, `stdout`, `stderr`, parsed error payload, and `partial_install_status` saved to `$evidence['gate1_install_diagnostics']` before evaluating failure; records `error_details`; purges temporary test-account SIDs from `C:\ProgramData\PrivExec` in `finally` before deleting temporary accounts; and cleans up empty `C:\ProgramData\PrivExec-Gate2Run`.
+   - *Root Cause & Fix:* Replaced PowerShell `Set-Acl` with `[System.IO.FileSystemAclExtensions]::SetAccessControl(...)` (DACL-only), added explicit `$global:LASTEXITCODE = 0; exit 0` and structured stage/error diagnostics to `Install-PrivExec.ps1`, and invoked `Install-PrivExec.ps1` via child `pwsh.exe` in `Invoke-Gate1And2Elevated.ps1` with full diagnostic capture (`gate1_install_diagnostics`).
+7. **Gate 2 `result` lookup `403 unauthorized_identity` (`run_id: 20261119-190051-5e0fceb1`, `op-ff6347bbd67448b0`):**
+   - *Confirmed Root Cause:* Read-only SQLite query on `C:\ProgramData\PrivExec\state\privexec.db` confirmed `op-ff6347bbd67448b0` (`synthetic.mutate` `apply`) succeeded and was persisted with `client_sid = "S-1-5-21-4067329743-3279872635-954170557-1015"` and `request_id = "gate2-appmut-08af9df5"`. However, `SqliteOperationStore.ReadRecord` called `new OperationRecord(opId, clientSid, requestId, ...)`, whereas `OperationRecord` in `Models.cs` has constructor order `(string OperationId, string RequestId, string ClientSid, ...)`. Swapping arguments 2 and 3 populated `rec.ClientSid` with `"gate2-appmut-08af9df5"` and `rec.RequestId` with `"S-1-5-21-...-1015"`, causing `BrokerEngine.HandleResultLookup`'s ownership check (`rec.ClientSid == client.Sid`) to fail with `Client SID does not own this operation record.`
+   - *Fix:* Corrected `SqliteOperationStore.ReadRecord` to pass `(opId, requestId, clientSid, ...)`. Updated `Test-PrivExecCrossAccount.ps1` and `Invoke-Gate1And2Elevated.ps1` to persist individual subtest results (`status`, `synthetic_read_only`, `synthetic_mutate_dry_run`, `synthetic_mutate_apply`, `synthetic_mutate_result_lookup`, etc.) into `$evidence['gate2_agent']` even if a later subtest fails. Added regression assertions in `Phase2Tests.cs` and `Phase3.SqliteEngineOwnershipAndCrossAgentIdempotency` in `Phase3Tests.cs`.
 
 ## Verified Test Runs (Latest Working Tree)
 - `Build-PrivExecBroker.ps1 -IncludeTests` -> exit 0
-- `dotnet broker/bin/PrivExecBroker.Tests.dll` -> 26/26 C# tests passed
+- `dotnet broker/bin/PrivExecBroker.Tests.dll` -> 27/27 C# tests passed
 - `python -m pytest -o pythonpath=. -v --basetemp=.pytest_tmp_root/tmp` (in `modules/privileged_execution`) -> 19/19 passed
 - `ruff check .` -> All checks passed
 - `python -m pytest -q -p no:cacheprovider --basetemp=modules/privileged_execution/.pytest_tmp_root/scripts_help_tmp modules/scripts_help/tests` -> 55/55 passed

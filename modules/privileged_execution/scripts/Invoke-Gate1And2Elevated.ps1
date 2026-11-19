@@ -344,12 +344,15 @@ try {
         -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $clientScript, '-PipeName', $pipeName, '-InstallRoot', $InstallRoot, '-Role', 'AuthorizedAgent', '-ExpectedTempDir', $agentTemp) `
         -RedirectStandardOutput $agentOut -RedirectStandardError $agentErr -Wait -PassThru -WindowStyle Hidden
 
-    $agentErrText = Get-Content -LiteralPath $agentErr -Raw -ErrorAction SilentlyContinue
+    $agentOutText = if (Test-Path -LiteralPath $agentOut) { Get-Content -LiteralPath $agentOut -Raw -ErrorAction SilentlyContinue } else { '' }
+    $agentErrText = if (Test-Path -LiteralPath $agentErr) { Get-Content -LiteralPath $agentErr -Raw -ErrorAction SilentlyContinue } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($agentOutText)) {
+        try { $evidence['gate2_agent'] = ($agentOutText | ConvertFrom-Json -ErrorAction Stop) } catch {}
+    }
+    Save-GateEvidence
     if ($pAgent.ExitCode -ne 0) {
         throw "AuthorizedAgent cross-account check failed ($($pAgent.ExitCode)): $agentErrText"
     }
-    $evidence['gate2_agent'] = (Get-Content -LiteralPath $agentOut -Raw | ConvertFrom-Json)
-    Save-GateEvidence
 
     if ($UnauthorizedCredential) {
         $evidence['current_step'] = 'gate2_unauthorized'
@@ -366,12 +369,15 @@ try {
             -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $clientScript, '-PipeName', $pipeName, '-InstallRoot', $InstallRoot, '-Role', 'UnauthorizedAccount', '-ExpectedTempDir', $unTemp) `
             -RedirectStandardOutput $unOut -RedirectStandardError $unErr -Wait -PassThru -WindowStyle Hidden
 
-        $unErrText = Get-Content -LiteralPath $unErr -Raw -ErrorAction SilentlyContinue
+        $unOutText = if (Test-Path -LiteralPath $unOut) { Get-Content -LiteralPath $unOut -Raw -ErrorAction SilentlyContinue } else { '' }
+        $unErrText = if (Test-Path -LiteralPath $unErr) { Get-Content -LiteralPath $unErr -Raw -ErrorAction SilentlyContinue } else { '' }
+        if (-not [string]::IsNullOrWhiteSpace($unOutText)) {
+            try { $evidence['gate2_unauthorized'] = ($unOutText | ConvertFrom-Json -ErrorAction Stop) } catch {}
+        }
+        Save-GateEvidence
         if ($pUnauth.ExitCode -ne 0) {
             throw "UnauthorizedAccount cross-account check failed ($($pUnauth.ExitCode)): $unErrText"
         }
-        $evidence['gate2_unauthorized'] = (Get-Content -LiteralPath $unOut -Raw | ConvertFrom-Json)
-        Save-GateEvidence
     }
 
     $evidence['current_step'] = 'gate2_broker_stop'

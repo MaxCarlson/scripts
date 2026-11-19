@@ -486,7 +486,7 @@ public sealed class SqliteOperationStore : IOperationStore, IDisposable
         string? err = WinSqlite3.ReadNullableString(stmt, 17);
 
         return new OperationRecord(
-            opId, clientSid, requestId, capability, targetType, targetId, mode, payloadHash,
+            opId, requestId, clientSid, capability, targetType, targetId, mode, payloadHash,
             state, authorized, exitCode, startedAt, finishedAt, diagCat, resultJson, evidence, postVerified, err);
     }
 

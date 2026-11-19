@@ -476,8 +476,17 @@ def test_gate2_cross_account_script_against_temp_broker(tmp_path: Path) -> None:
             )
             report = json.loads(res.stdout)
             assert report["passed"] is True
-            assert len(report["checks"]) == 9
+            assert len(report["checks"]) == 10
             assert any(c["check"] == "isolated_temp_environment" for c in report["checks"])
+            assert any(
+                c["check"] == "synthetic_mutate_apply" and str(c.get("request_id", "")).startswith("gate2-appmut-")
+                for c in report["checks"]
+            )
+            assert any(
+                c["check"] == "synthetic_mutate_apply_and_result"
+                and str(c.get("request_id", "")).startswith("gate2-appmut-")
+                for c in report["checks"]
+            )
         finally:
             for ro_target in (
                 staged_root / "bin" / "PrivExecBroker.dll",

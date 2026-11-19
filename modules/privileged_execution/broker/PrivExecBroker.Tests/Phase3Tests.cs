@@ -28,6 +28,7 @@ internal static class Phase3Tests
             ("ProcessExecutorPinsChildTempInsideStateDir", TestProcessExecutorPinsChildTempAsync),
             ("AccountDescriptionAndOwnershipMatching", TestAccountDescriptionAndOwnershipMatchingAsync),
             ("PipeServerDoesNotLeakImpersonation", TestPipeServerDoesNotLeakImpersonationAsync),
+            ("SqliteEngineOwnershipAndCrossAgentIdempotency", TestSqliteEngineOwnershipAndCrossAgentIdempotencyAsync),
         };
 
         foreach ((string name, Func<Task> fn) in tests)
@@ -422,6 +423,111 @@ internal static class Phase3Tests
         {
             cts.Cancel();
             await serverTask;
+        }
+    }
+
+    private static async Task TestSqliteEngineOwnershipAndCrossAgentIdempotencyAsync()
+    {
+        const string AgentSid2 = "S-1-5-21-1000-1000-1000-1003";
+        const string UnauthSid = "S-1-5-21-1000-1000-1000-9999";
+
+        string pwshPath = @"C:\Program Files\PowerShell\7\pwsh.exe";
+        if (!File.Exists(pwshPath)) return;
+
+        string dir = Path.Combine(Path.GetTempPath(), "privexec-p3-own-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string stateDir = Path.Combine(dir, "state");
+            Directory.CreateDirectory(stateDir);
+            string scriptPath = Path.Combine(dir, "echo_op.ps1");
+            File.WriteAllText(scriptPath, "param([string]$OperationId) [ordered]@{ op = $OperationId } | ConvertTo-Json -Compress");
+            string sha = SecurityAndAcl.ComputeFileSha256(scriptPath);
+
+            var desc = new CapabilityDescriptor(
+                1, "synthetic.mutate", "1.0.0", "powershell", pwshPath, null, scriptPath, sha, dir,
+                new List<string> { "synthetic" }, new List<string> { "synth-target-1" },
+                true, true, true, 15, false,
+                new List<string> { "-NoProfile", "-NonInteractive", "-File", "{script_path}", "-OperationId", "{operation_id}" },
+                new List<string>(), new List<string>(), new Dictionary<string, ParameterRule>());
+
+            var grant = new SessionGrant
+            {
+                OperatorSid = OperatorSid,
+                AllowedClientSids = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { AgentSid, AgentSid2 },
+                AllowedCapabilities = new HashSet<string> { "synthetic.mutate" },
+                AllowedTargets = new HashSet<string> { "synth-target-1" },
+                AllowMutation = true,
+                AllowedMutationCapabilities = new HashSet<string> { "synthetic.mutate" },
+                ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5)
+            };
+
+            using var store = new SqliteOperationStore(Path.Combine(stateDir, "privexec.db"));
+            var executor = new ProcessCapabilityExecutor(stateDir);
+            var engine = new BrokerEngine(
+                new SessionAuthorizer(grant),
+                new Dictionary<string, CapabilityDescriptor> { ["synthetic.mutate"] = desc },
+                store,
+                executor);
+
+            var agent1 = new ClientIdentity(AgentSid, @"TEST\Agent1", "Negotiate");
+            var agent2 = new ClientIdentity(AgentSid2, @"TEST\Agent2", "Negotiate");
+            var unauth = new ClientIdentity(UnauthSid, @"TEST\Unauth", "Negotiate");
+
+            // 1. Agent 1 executes an apply operation with request_id "shared-req-1"
+            string runReq = """{"protocol_version":1,"action":"run","request_id":"shared-req-1","capability":"synthetic.mutate","target":{"type":"synthetic","id":"synth-target-1"},"mode":"apply","parameters":{}}""";
+            string runResp1 = await engine.HandleRawRequestAsync(runReq, agent1, CancellationToken.None);
+            using JsonDocument runDoc1 = JsonDocument.Parse(runResp1);
+            Assert.True(runDoc1.RootElement.GetProperty("ok").GetBoolean(), "agent1 run ok");
+            Assert.Equal("succeeded", runDoc1.RootElement.GetProperty("state").GetString(), "agent1 run succeeded");
+            Assert.Equal("shared-req-1", runDoc1.RootElement.GetProperty("request_id").GetString(), "agent1 request_id preserved");
+            string opId1 = runDoc1.RootElement.GetProperty("operation_id").GetString()!;
+            Assert.Equal(1, runDoc1.RootElement.GetProperty("evidence").GetArrayLength(), "privileged evidence written");
+
+            // 2. Agent 1 retrieves its own operation result from SQLite
+            string lookupReq1 = $$"""{"protocol_version":1,"action":"result","operation_id":"{{opId1}}"}""";
+            string lookupResp1 = await engine.HandleRawRequestAsync(lookupReq1, agent1, CancellationToken.None);
+            using JsonDocument lookupDoc1 = JsonDocument.Parse(lookupResp1);
+            Assert.True(lookupDoc1.RootElement.GetProperty("ok").GetBoolean(), "agent1 result lookup ok");
+            Assert.Equal(opId1, lookupDoc1.RootElement.GetProperty("operation_id").GetString(), "agent1 lookup opId matches");
+            Assert.Equal("shared-req-1", lookupDoc1.RootElement.GetProperty("request_id").GetString(), "agent1 lookup requestId matches");
+            Assert.Equal("succeeded", lookupDoc1.RootElement.GetProperty("state").GetString(), "agent1 lookup state matches");
+
+            // 3. Agent 2 is denied retrieving Agent 1's operation result
+            string lookupRespCross = await engine.HandleRawRequestAsync(lookupReq1, agent2, CancellationToken.None);
+            using JsonDocument lookupDocCross = JsonDocument.Parse(lookupRespCross);
+            Assert.True(!lookupDocCross.RootElement.GetProperty("ok").GetBoolean(), "agent2 cross-lookup denied");
+            Assert.Equal(403, lookupDocCross.RootElement.GetProperty("exit_code").GetInt32(), "agent2 cross-lookup 403");
+            Assert.Equal("unauthorized_identity", lookupDocCross.RootElement.GetProperty("diagnostic_category").GetString(), "agent2 cross-lookup category");
+
+            // 4. Agent 1 replaying "shared-req-1" gets its own operation replayed
+            string replayResp1 = await engine.HandleRawRequestAsync(runReq, agent1, CancellationToken.None);
+            using JsonDocument replayDoc1 = JsonDocument.Parse(replayResp1);
+            Assert.Equal(opId1, replayDoc1.RootElement.GetProperty("operation_id").GetString(), "agent1 idempotency replay returns opId1");
+            Assert.Equal("shared-req-1", replayDoc1.RootElement.GetProperty("request_id").GetString(), "agent1 idempotency replay preserves request_id");
+
+            // 5. Agent 2 sending the SAME request_id "shared-req-1" gets a brand-new operation owned by Agent 2 (no cross-identity leak)
+            string runResp2 = await engine.HandleRawRequestAsync(runReq, agent2, CancellationToken.None);
+            using JsonDocument runDoc2 = JsonDocument.Parse(runResp2);
+            Assert.True(runDoc2.RootElement.GetProperty("ok").GetBoolean(), "agent2 run with same request_id ok");
+            string opId2 = runDoc2.RootElement.GetProperty("operation_id").GetString()!;
+            Assert.True(!string.Equals(opId1, opId2, StringComparison.Ordinal), "agent2 gets distinct operation_id");
+
+            string lookupReq2 = $$"""{"protocol_version":1,"action":"result","operation_id":"{{opId2}}"}""";
+            string lookupResp2 = await engine.HandleRawRequestAsync(lookupReq2, agent2, CancellationToken.None);
+            using JsonDocument lookupDoc2 = JsonDocument.Parse(lookupResp2);
+            Assert.True(lookupDoc2.RootElement.GetProperty("ok").GetBoolean(), "agent2 retrieves own operation");
+
+            // 6. Unauthorized client is denied capability execution
+            string unauthRunReq = """{"protocol_version":1,"action":"run","request_id":"unauth-req-1","capability":"synthetic.mutate","target":{"type":"synthetic","id":"synth-target-1"},"mode":"dry_run","parameters":{}}""";
+            string unauthResp = await engine.HandleRawRequestAsync(unauthRunReq, unauth, CancellationToken.None);
+            using JsonDocument unauthDoc = JsonDocument.Parse(unauthResp);
+            Assert.True(!unauthDoc.RootElement.GetProperty("ok").GetBoolean(), "unauth client denied");
+            Assert.Equal("unauthorized_identity", unauthDoc.RootElement.GetProperty("diagnostic_category").GetString(), "unauth client category");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
         }
     }
 }

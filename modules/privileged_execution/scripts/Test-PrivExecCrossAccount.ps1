@@ -112,151 +112,182 @@ if ($Role -eq 'UnauthorizedAccount') {
     exit 0
 }
 
-# 1. Verify status succeeds under authorized non-admin account
-$st = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{ protocol_version = 1; action = 'status' }
-if (-not $st.ok -or $st.status -ne 'active') {
-    throw "AuthorizedAgent status failed: $($st | ConvertTo-Json -Compress)"
-}
-$results.Add(@{ check = 'status'; passed = $true; session_id = $st.session_id })
-
-# 2. Verify synthetic read-only capability succeeds
-$reqRead = "gate2-read-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
-$rRead = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
-    protocol_version = 1
-    action           = 'run'
-    request_id       = $reqRead
-    capability       = 'synthetic.echo'
-    target           = @{ type = 'synthetic'; id = $TargetId }
-    mode             = 'dry_run'
-    parameters       = @{ message = 'gate2-read-ok' }
-}
-if ($rRead.state -ne 'succeeded') {
-    throw "synthetic.echo failed: $($rRead | ConvertTo-Json -Compress)"
-}
-$results.Add(@{ check = 'synthetic_read_only'; passed = $true; operation_id = $rRead.operation_id })
-
-# 3. Verify synthetic.mutate dry-run succeeds without mutating, then apply mutates, and result retrieves
-$reqDryMut = "gate2-drymut-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
-$rDryMut = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
-    protocol_version = 1
-    action           = 'run'
-    request_id       = $reqDryMut
-    capability       = 'synthetic.mutate'
-    target           = @{ type = 'synthetic'; id = $TargetId }
-    mode             = 'dry_run'
-    parameters       = @{ marker = 'gate2-dry' }
-}
-if ($rDryMut.state -ne 'succeeded' -or $rDryMut.result.mode -ne 'dry_run') {
-    throw "synthetic.mutate dry_run failed: $($rDryMut | ConvertTo-Json -Compress)"
-}
-$results.Add(@{ check = 'synthetic_mutate_dry_run'; passed = $true; operation_id = $rDryMut.operation_id })
-
-$reqAppMut = "gate2-appmut-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
-$rAppMut = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
-    protocol_version = 1
-    action           = 'run'
-    request_id       = $reqAppMut
-    capability       = 'synthetic.mutate'
-    target           = @{ type = 'synthetic'; id = $TargetId }
-    mode             = 'apply'
-    parameters       = @{ marker = 'gate2-apply' }
-}
-if ($rAppMut.state -ne 'succeeded' -or $rAppMut.result.mode -ne 'apply') {
-    throw "synthetic.mutate apply failed: $($rAppMut | ConvertTo-Json -Compress)"
-}
-$rLookup = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
-    protocol_version = 1
-    action           = 'result'
-    operation_id     = $rAppMut.operation_id
-}
-if ($rLookup.operation_id -ne $rAppMut.operation_id -or $rLookup.state -ne 'succeeded') {
-    throw "result lookup failed: $($rLookup | ConvertTo-Json -Compress)"
-}
-$results.Add(@{ check = 'synthetic_mutate_apply_and_result'; passed = $true; operation_id = $rAppMut.operation_id })
-
-# 4. Negative: duplicate request_id with altered payload rejected
-$rMismatch = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
-    protocol_version = 1
-    action           = 'run'
-    request_id       = $reqAppMut
-    capability       = 'synthetic.mutate'
-    target           = @{ type = 'synthetic'; id = $TargetId }
-    mode             = 'apply'
-    parameters       = @{ marker = 'tampered' }
-}
-if ($rMismatch.diagnostic_category -ne 'request_id_payload_mismatch') {
-    throw "Expected request_id_payload_mismatch, got: $($rMismatch | ConvertTo-Json -Compress)"
-}
-$results.Add(@{ check = 'idempotency_mismatch_denied'; passed = $true })
-
-# 5. Negative: SID / authorization forgery rejected
-$rForge = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
-    protocol_version = 1
-    action           = 'run'
-    request_id       = ("gate2-forge-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
-    capability       = 'synthetic.echo'
-    target           = @{ type = 'synthetic'; id = $TargetId }
-    mode             = 'dry_run'
-    authorized       = $true
-    parameters       = @{}
-}
-if ($rForge.diagnostic_category -ne 'forbidden_property') {
-    throw "Expected forbidden_property, got: $($rForge | ConvertTo-Json -Compress)"
-}
-$results.Add(@{ check = 'forgery_denied'; passed = $true })
-
-# 6. Negative: non-operator agent cannot shut down broker (unless smoke-tested in same-user mode)
-if (-not $ExpectSameUserOperator) {
-    $rStop = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{ protocol_version = 1; action = 'shutdown' }
-    if ($rStop.diagnostic_category -ne 'operator_only_action') {
-        throw "Expected operator_only_action, got: $($rStop | ConvertTo-Json -Compress)"
+$currentCheck = 'status'
+try {
+    # 1. Verify status succeeds under authorized non-admin account
+    $st = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{ protocol_version = 1; action = 'status' }
+    if (-not $st.ok -or $st.status -ne 'active') {
+        throw "AuthorizedAgent status failed: $($st | ConvertTo-Json -Compress)"
     }
-    $results.Add(@{ check = 'agent_shutdown_denied'; passed = $true })
-}
+    $results.Add(@{ check = 'status'; passed = $true; session_id = $st.session_id })
 
-# 7. Negative: wrong target and unauthorized capability denied
-$rTarget = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
-    protocol_version = 1
-    action           = 'run'
-    request_id       = ("gate2-badt-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
-    capability       = 'synthetic.echo'
-    target           = @{ type = 'synthetic'; id = 'synth-target-2' }
-    mode             = 'dry_run'
-    parameters       = @{}
-}
-if ($rTarget.diagnostic_category -ne 'unauthorized_target') {
-    throw "Expected unauthorized_target, got: $($rTarget | ConvertTo-Json -Compress)"
-}
-$results.Add(@{ check = 'wrong_target_denied'; passed = $true })
-
-# 8. Negative: agent cannot modify protected installed binaries, descriptors, adapters, or state
-$protectedTargets = @(
-    (Join-Path $InstallRoot 'bin\PrivExecBroker.dll'),
-    (Join-Path $InstallRoot 'descriptors\synthetic.echo.json'),
-    (Join-Path $InstallRoot 'adapters\Invoke-SyntheticMutationAdapter.ps1'),
-    (Join-Path $InstallRoot 'state\privexec.db')
-)
-foreach ($pt in $protectedTargets) {
-    $blocked = $false
-    try {
-        [System.IO.File]::OpenWrite($pt).Dispose()
-    } catch [System.UnauthorizedAccessException] {
-        $blocked = $true
-    } catch {
-        $blocked = $true
+    # 2. Verify synthetic read-only capability succeeds
+    $currentCheck = 'synthetic_read_only'
+    $reqRead = "gate2-read-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $rRead = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
+        protocol_version = 1
+        action           = 'run'
+        request_id       = $reqRead
+        capability       = 'synthetic.echo'
+        target           = @{ type = 'synthetic'; id = $TargetId }
+        mode             = 'dry_run'
+        parameters       = @{ message = 'gate2-read-ok' }
     }
-    if (-not $blocked) {
-        throw "SECURITY FAILURE: Agent account '$($whoami.Name)' was able to open '$pt' for write!"
+    if ($rRead.state -ne 'succeeded') {
+        throw "synthetic.echo failed: $($rRead | ConvertTo-Json -Compress)"
     }
-}
-$results.Add(@{ check = 'filesystem_write_and_state_denied'; passed = $true; checked = $protectedTargets.Count })
+    $results.Add(@{ check = 'synthetic_read_only'; passed = $true; operation_id = $rRead.operation_id; request_id = $rRead.request_id })
 
-[pscustomobject]@{
-    role      = $Role
-    account   = $whoami.Name
-    sid       = $whoami.User.Value
-    temp_path = $resolvedTemp
-    passed    = $true
-    checks    = $results
-} | ConvertTo-Json -Depth 6
-exit 0
+    # 3a. Verify synthetic.mutate dry-run succeeds without mutating
+    $currentCheck = 'synthetic_mutate_dry_run'
+    $reqDryMut = "gate2-drymut-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $rDryMut = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
+        protocol_version = 1
+        action           = 'run'
+        request_id       = $reqDryMut
+        capability       = 'synthetic.mutate'
+        target           = @{ type = 'synthetic'; id = $TargetId }
+        mode             = 'dry_run'
+        parameters       = @{ marker = 'gate2-dry' }
+    }
+    if ($rDryMut.state -ne 'succeeded' -or $rDryMut.result.mode -ne 'dry_run') {
+        throw "synthetic.mutate dry_run failed: $($rDryMut | ConvertTo-Json -Compress)"
+    }
+    $results.Add(@{ check = 'synthetic_mutate_dry_run'; passed = $true; operation_id = $rDryMut.operation_id; request_id = $rDryMut.request_id })
+
+    # 3b. Verify synthetic.mutate apply succeeds
+    $currentCheck = 'synthetic_mutate_apply'
+    $reqAppMut = "gate2-appmut-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $rAppMut = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
+        protocol_version = 1
+        action           = 'run'
+        request_id       = $reqAppMut
+        capability       = 'synthetic.mutate'
+        target           = @{ type = 'synthetic'; id = $TargetId }
+        mode             = 'apply'
+        parameters       = @{ marker = 'gate2-apply' }
+    }
+    if ($rAppMut.state -ne 'succeeded' -or $rAppMut.result.mode -ne 'apply') {
+        throw "synthetic.mutate apply failed: $($rAppMut | ConvertTo-Json -Compress)"
+    }
+    $results.Add(@{ check = 'synthetic_mutate_apply'; passed = $true; operation_id = $rAppMut.operation_id; request_id = $rAppMut.request_id })
+
+    # 3c. Verify result lookup retrieves completed operation owned by this client
+    $currentCheck = 'synthetic_mutate_result_lookup'
+    $rLookup = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
+        protocol_version = 1
+        action           = 'result'
+        operation_id     = $rAppMut.operation_id
+    }
+    if ($rLookup.operation_id -ne $rAppMut.operation_id -or $rLookup.state -ne 'succeeded') {
+        throw "result lookup failed: $($rLookup | ConvertTo-Json -Compress)"
+    }
+    $results.Add(@{ check = 'synthetic_mutate_apply_and_result'; passed = $true; operation_id = $rAppMut.operation_id; request_id = $rLookup.request_id })
+
+    # 4. Negative: duplicate request_id with altered payload rejected
+    $currentCheck = 'idempotency_mismatch_denied'
+    $rMismatch = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
+        protocol_version = 1
+        action           = 'run'
+        request_id       = $reqAppMut
+        capability       = 'synthetic.mutate'
+        target           = @{ type = 'synthetic'; id = $TargetId }
+        mode             = 'apply'
+        parameters       = @{ marker = 'tampered' }
+    }
+    if ($rMismatch.diagnostic_category -ne 'request_id_payload_mismatch') {
+        throw "Expected request_id_payload_mismatch, got: $($rMismatch | ConvertTo-Json -Compress)"
+    }
+    $results.Add(@{ check = 'idempotency_mismatch_denied'; passed = $true })
+
+    # 5. Negative: SID / authorization forgery rejected
+    $currentCheck = 'forgery_denied'
+    $rForge = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
+        protocol_version = 1
+        action           = 'run'
+        request_id       = ("gate2-forge-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        capability       = 'synthetic.echo'
+        target           = @{ type = 'synthetic'; id = $TargetId }
+        mode             = 'dry_run'
+        authorized       = $true
+        parameters       = @{}
+    }
+    if ($rForge.diagnostic_category -ne 'forbidden_property') {
+        throw "Expected forbidden_property, got: $($rForge | ConvertTo-Json -Compress)"
+    }
+    $results.Add(@{ check = 'forgery_denied'; passed = $true })
+
+    # 6. Negative: non-operator agent cannot shut down broker (unless smoke-tested in same-user mode)
+    if (-not $ExpectSameUserOperator) {
+        $currentCheck = 'agent_shutdown_denied'
+        $rStop = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{ protocol_version = 1; action = 'shutdown' }
+        if ($rStop.diagnostic_category -ne 'operator_only_action') {
+            throw "Expected operator_only_action, got: $($rStop | ConvertTo-Json -Compress)"
+        }
+        $results.Add(@{ check = 'agent_shutdown_denied'; passed = $true })
+    }
+
+    # 7. Negative: wrong target and unauthorized capability denied
+    $currentCheck = 'wrong_target_denied'
+    $rTarget = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
+        protocol_version = 1
+        action           = 'run'
+        request_id       = ("gate2-badt-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        capability       = 'synthetic.echo'
+        target           = @{ type = 'synthetic'; id = 'synth-target-2' }
+        mode             = 'dry_run'
+        parameters       = @{}
+    }
+    if ($rTarget.diagnostic_category -ne 'unauthorized_target') {
+        throw "Expected unauthorized_target, got: $($rTarget | ConvertTo-Json -Compress)"
+    }
+    $results.Add(@{ check = 'wrong_target_denied'; passed = $true })
+
+    # 8. Negative: agent cannot modify protected installed binaries, descriptors, adapters, or state
+    $currentCheck = 'filesystem_write_and_state_denied'
+    $protectedTargets = @(
+        (Join-Path $InstallRoot 'bin\PrivExecBroker.dll'),
+        (Join-Path $InstallRoot 'descriptors\synthetic.echo.json'),
+        (Join-Path $InstallRoot 'adapters\Invoke-SyntheticMutationAdapter.ps1'),
+        (Join-Path $InstallRoot 'state\privexec.db')
+    )
+    foreach ($pt in $protectedTargets) {
+        $blocked = $false
+        try {
+            [System.IO.File]::OpenWrite($pt).Dispose()
+        } catch [System.UnauthorizedAccessException] {
+            $blocked = $true
+        } catch {
+            $blocked = $true
+        }
+        if (-not $blocked) {
+            throw "SECURITY FAILURE: Agent account '$($whoami.Name)' was able to open '$pt' for write!"
+        }
+    }
+    $results.Add(@{ check = 'filesystem_write_and_state_denied'; passed = $true; checked = $protectedTargets.Count })
+
+    [pscustomobject]@{
+        role      = $Role
+        account   = $whoami.Name
+        sid       = $whoami.User.Value
+        temp_path = $resolvedTemp
+        passed    = $true
+        checks    = $results
+    } | ConvertTo-Json -Depth 6
+    exit 0
+}
+catch {
+    $results.Add(@{ check = $currentCheck; passed = $false; error = $_.Exception.Message })
+    [pscustomobject]@{
+        role         = $Role
+        account      = $whoami.Name
+        sid          = $whoami.User.Value
+        temp_path    = $resolvedTemp
+        passed       = $false
+        failed_check = $currentCheck
+        error        = $_.Exception.Message
+        checks       = $results
+    } | ConvertTo-Json -Depth 6
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}

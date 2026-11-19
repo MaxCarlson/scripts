@@ -63,7 +63,9 @@ internal static class Phase2Tests
                 Assert.Equal(1, marked, "interrupted execution marked outcome_unknown");
                 OperationRecord? loaded = reopened.GetByOperationId("op-crash-001");
                 Assert.True(loaded is not null, "loaded record exists");
-                Assert.Equal(OperationState.OutcomeUnknown, loaded!.State, "state after crash recovery");
+                Assert.Equal("req-crash-001", loaded!.RequestId, "request_id preserved on SQLite read");
+                Assert.Equal(AgentSid, loaded.ClientSid, "client_sid preserved on SQLite read");
+                Assert.Equal(OperationState.OutcomeUnknown, loaded.State, "state after crash recovery");
                 Assert.Equal("broker_crash_unknown_outcome", loaded.DiagnosticCategory, "diagnostic category");
             }
         }
