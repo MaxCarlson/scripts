@@ -190,7 +190,7 @@ Describe 'Invoke-H4GuestRecovery.ps1' {
                     return [pscustomobject]@{ exists = $true; ready = $false; exit_code = 2; reason = "Existing recovery bundle uses stale tooling commit '005293bf8651fe81edc297f6c500e822d4c1ed9d'" }
                 }
                 if ($Global:rBundleReady) {
-                    return [pscustomobject]@{ exists = $true; ready = $true; exit_code = 0; tooling_commit = '3d23d260d6799e7bb466f5c1d8f7c723ad120070'; reason = 'verified' }
+                    return [pscustomobject]@{ exists = $true; ready = $true; exit_code = 0; tooling_commit = '1b71f5c4cfa0ea6c09a9d0f294400c26d7415960'; reason = 'verified' }
                 }
                 return [pscustomobject]@{ exists = $false; ready = $false; exit_code = 2; reason = 'Recovery bundle not staged' }
             }
@@ -200,7 +200,7 @@ Describe 'Invoke-H4GuestRecovery.ps1' {
                     return [pscustomobject]@{ status = 'bootstrap_failed'; exit_code = $Global:rBootstrapFailExitCode; output = "Simulated bootstrap failure ($($Global:rBootstrapFailExitCode))" }
                 }
                 $Global:rBundleReady = $true
-                return [pscustomobject]@{ status = 'staged_and_verified'; exit_code = 0; tooling_commit = '3d23d260d6799e7bb466f5c1d8f7c723ad120070'; output = '{"verified":true}' }
+                return [pscustomobject]@{ status = 'staged_and_verified'; exit_code = 0; tooling_commit = '1b71f5c4cfa0ea6c09a9d0f294400c26d7415960'; output = '{"verified":true}' }
             }
             if ($text -match 'RC_H4_DISPOSABLE_GUEST_AUTHORIZED') {
                 $argsArr = @($ArgumentList[2] | ConvertFrom-Json)

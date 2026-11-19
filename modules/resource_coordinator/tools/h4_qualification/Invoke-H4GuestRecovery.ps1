@@ -36,16 +36,16 @@ param(
         'ResourceCoordinator-H4-9ea7312c8c-install-viewer'
     ),
     [string]$HostCleanupManifest = 'C:\H4-VM-Staging\evidence-v8-install-only\v8-install-20261115-194217-a283bd\cleanup-manifest.json',
-    [string]$BundleZip = 'C:\H4-VM-Staging\bundle-rc1-v9\h4-windows-acceptance.zip',
-    [string]$ExpectedBundleSha256 = '16912bab41ddb1d2be7c23f89c5caf70cdb94d84e6cf08e8e24ca0aa16c74017',
+    [string]$BundleZip = 'C:\H4-VM-Staging\bundle-rc1-v10\h4-windows-acceptance.zip',
+    [string]$ExpectedBundleSha256 = 'a4cf9273e5b023bc592f964915115a4734793b350683a432f2932afda9a6bf64',
     [string]$BootstrapScript = (Join-Path $PSScriptRoot 'Bootstrap-H4GuestBundle.ps1'),
     [string]$ExpectedBootstrapSha256 = '57B95576444971B5E39972E33B329E94D3B9F1A06728E196749184619CA718F0',
-    [string]$ExpectedToolingCommit = '',
+    [string]$ExpectedToolingCommit = '1b71f5c4cfa0ea6c09a9d0f294400c26d7415960',
     [string[]]$RejectedToolingCommits = @(
         '005293bf8651fe81edc297f6c500e822d4c1ed9d',
         'f0b5b5e19ad254dde0373ffb5e0d5f814af335e4'
     ),
-    [string]$GuestBundleRoot = 'C:\H4-Guest-Work\recovery-bundles\v10-pending',
+    [string]$GuestBundleRoot = 'C:\H4-Guest-Work\recovery-bundles\v10-a4cf9273',
     [string]$GuestVenvPython = 'C:\H4-Guest-Work\venv\Scripts\python.exe',
     [string]$EvidenceRoot = 'C:\H4-VM-Staging\evidence-recovery'
 )

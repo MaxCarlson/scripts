@@ -14,13 +14,15 @@
       3. Expand-Archive runs only after the external SHA-256 digest matches; this
          external digest check is the trust assumption underlying extraction.
       4. Invokes bundled Verify-H4GuestBundle.ps1 for component manifest checking,
-         source tree verification, and read-only preflight only (never --apply).
+         source tree verification, and read-only preflight (or -IntegrityOnly when
+         staging a verified bundle on a guest awaiting failed-install recovery).
 #>
 param(
     [Parameter(Mandatory)][string]$ArchivePath,
     [Parameter(Mandatory)][string]$ExpectedSha256,
     [string]$DestinationRoot = (Join-Path $env:TEMP ("h4-bundle-" + [guid]::NewGuid().ToString("N"))),
-    [string]$Python = "python"
+    [string]$Python = "python",
+    [switch]$IntegrityOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -100,6 +102,10 @@ try {
     throw
 }
 
-& pwsh -NoProfile -NonInteractive -File $verifyScript -BundleRoot $resolvedDest -Python $Python
+$verifyArgs = @('-NoProfile', '-NonInteractive', '-File', $verifyScript, '-BundleRoot', $resolvedDest, '-Python', $Python)
+if ($IntegrityOnly) {
+    $verifyArgs += '-IntegrityOnly'
+}
+& pwsh @verifyArgs
 $verifyExit = $LASTEXITCODE
 exit $verifyExit
