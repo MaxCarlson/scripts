@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
+import sqlite3
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -150,10 +152,7 @@ class AgyAdapter(ProviderAdapter):
         cwd_val = raw_event.get("cwd")
         if not isinstance(cwd_val, str) or not cwd_val.strip():
             ws_paths = raw_event.get("workspacePaths")
-            if isinstance(ws_paths, list) and ws_paths and isinstance(ws_paths[0], str):
-                cwd_val = ws_paths[0]
-            else:
-                cwd_val = None
+            cwd_val = ws_paths[0] if isinstance(ws_paths, list) and ws_paths and isinstance(ws_paths[0], str) else None
         cwd_str = cwd_val.strip() if isinstance(cwd_val, str) and cwd_val.strip() else None
 
         transcript = raw_event.get("transcriptPath")
@@ -223,6 +222,62 @@ class AgyAdapter(ProviderAdapter):
             surface=surface,
             metadata=metadata,
         )
+
+    def discover_sessions(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """Read-only bounded discovery from ~/.gemini/antigravity-cli/conversation_summaries.db."""
+        db_path = self._home_dir / ".gemini" / "antigravity-cli" / "conversation_summaries.db"
+        if not db_path.exists():
+            return []
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+            conn.row_factory = sqlite3.Row
+        except sqlite3.Error:
+            return []
+        try:
+            rows = conn.execute(
+                """
+                SELECT conversation_id, title, workspace_uris, parent_conversation_id,
+                       last_modified_time, last_user_input_time
+                FROM conversation_summaries
+                ORDER BY last_modified_time DESC
+                LIMIT ?
+                """,
+                (max(1, limit),),
+            ).fetchall()
+            out: list[dict[str, Any]] = []
+            for r in rows:
+                cwd = None
+                raw_ws = r["workspace_uris"]
+                if isinstance(raw_ws, str) and raw_ws.strip():
+                    try:
+                        parsed = json.loads(raw_ws)
+                        if isinstance(parsed, list) and parsed and isinstance(parsed[0], str):
+                            cwd = parsed[0].removeprefix("file:///")
+                            if len(cwd) >= 2 and cwd[1] == ":":
+                                pass
+                            elif not cwd.startswith("/"):
+                                cwd = "/" + cwd
+                    except json.JSONDecodeError:
+                        cwd = None
+                out.append(
+                    {
+                        "provider": self.provider_name,
+                        "native_session_id": r["conversation_id"],
+                        "cwd": cwd,
+                        "native_title": r["title"] or None,
+                        "native_created_at": None,
+                        "last_seen_at": str(r["last_modified_time"]) if r["last_modified_time"] else None,
+                        "last_turn_at": str(r["last_user_input_time"]) if r["last_user_input_time"] else None,
+                        "parent_session_id": r["parent_conversation_id"] or None,
+                        "surface": "antigravity-cli",
+                        "metadata_source": "agy_summaries_sqlite",
+                    }
+                )
+            return out
+        except sqlite3.Error:
+            return []
+        finally:
+            conn.close()
 
     def resolve_resume_command(
         self,

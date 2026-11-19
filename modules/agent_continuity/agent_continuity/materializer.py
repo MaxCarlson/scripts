@@ -483,6 +483,9 @@ class SQLiteMaterializer:
                 (AssociationStatus.CONFLICT.value, ts, assoc_id),
             )
 
+        elif etype == EventType.HOOK_EVENT.value:
+            self._apply_hook_event_in_tx(conn, event, ts)
+
         elif etype == EventType.CHECKPOINT_RECORDED.value:
             conn.execute(
                 """
@@ -545,6 +548,256 @@ class SQLiteMaterializer:
             ),
         )
         return True
+
+    def _resolve_workflow_id_in_tx(self, conn: sqlite3.Connection, marker: str | None) -> str | None:
+        if not marker:
+            return None
+        row = conn.execute(
+            "SELECT workflow_id FROM workflows WHERE workflow_id = ? OR slug = ?",
+            (marker.strip(), marker.strip().lower()),
+        ).fetchone()
+        return str(row["workflow_id"]) if row else None
+
+    def _apply_hook_event_in_tx(self, conn: sqlite3.Connection, event: EventEnvelope, ts: str) -> None:
+        if not event.provider or not event.native_session_id:
+            return
+        p = event.payload
+        self._ensure_env_placeholder(conn, event.environment_id, p.get("environment"), ts)
+
+        norm_type = str(p.get("normalized_event_type") or "session.observed")
+        turn_id = p.get("turn_id")
+        marker = p.get("workflow_marker")
+        conflict_markers = p.get("workflow_markers_conflict") or []
+
+        session_payload = dict(p)
+        session_payload.setdefault("first_observed_at", ts)
+        session_payload.setdefault("last_seen_at", ts)
+        session_payload.setdefault("metadata_source", "hook")
+        if norm_type == "session.created":
+            session_payload["native_created_at"] = ts
+        elif norm_type == "turn.submitted":
+            session_payload["last_turn_at"] = ts
+        elif norm_type == "turn.completed":
+            session_payload["last_completed_turn_at"] = ts
+
+        hook_session_event = EventEnvelope(
+            event_id=event.event_id,
+            event_schema_version=event.event_schema_version,
+            event_type=EventType.SESSION_OBSERVED.value,
+            provider=event.provider,
+            environment_id=event.environment_id,
+            native_session_id=event.native_session_id,
+            source_timestamp=event.source_timestamp,
+            observed_timestamp=event.observed_timestamp,
+            source_adapter_version=event.source_adapter_version,
+            payload=session_payload,
+        )
+        self._upsert_session(conn, hook_session_event, ts)
+
+        resolved_wf_id: str | None = None
+        turn_evidence = "unknown"
+
+        existing_rows = conn.execute(
+            """
+            SELECT association_id, workflow_id, evidence_level, status
+            FROM associations
+            WHERE provider = ? AND environment_id = ? AND native_session_id = ?
+            """,
+            (event.provider, event.environment_id, event.native_session_id),
+        ).fetchall()
+
+        active_rows = [r for r in existing_rows if r["status"] == AssociationStatus.ACTIVE.value]
+        conflict_rows = [r for r in existing_rows if r["status"] == AssociationStatus.CONFLICT.value]
+
+        if conflict_markers:
+            # Multiple conflicting markers in one prompt: flag conflicts without picking a winner
+            for cand_marker in conflict_markers:
+                wf_id = self._resolve_workflow_id_in_tx(conn, str(cand_marker))
+                if not wf_id:
+                    continue
+                assoc_id = f"assoc_{event.event_id}_{wf_id}"
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO associations(
+                        association_id, workflow_id, provider, environment_id, native_session_id,
+                        evidence_level, association_method, evidence_summary, evidence_reference,
+                        status, first_turn_id, last_turn_id, confirmed_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, 'candidate', 'hook_marker_conflict', ?, ?, 'conflict', ?, ?, NULL, ?, ?)
+                    """,
+                    (
+                        assoc_id,
+                        wf_id,
+                        event.provider,
+                        event.environment_id,
+                        event.native_session_id,
+                        f"Conflicting workflow markers in prompt: {', '.join(str(m) for m in conflict_markers)}",
+                        turn_id,
+                        turn_id,
+                        turn_id,
+                        ts,
+                        ts,
+                    ),
+                )
+        elif marker:
+            wf_id = self._resolve_workflow_id_in_tx(conn, str(marker))
+            if wf_id is not None:
+                resolved_wf_id = wf_id
+                turn_evidence = "strong"
+                same_active = [r for r in active_rows if r["workflow_id"] == wf_id]
+                other_confirmed = [
+                    r for r in active_rows if r["workflow_id"] != wf_id and r["evidence_level"] == "confirmed"
+                ]
+                other_strong = [
+                    r for r in active_rows if r["workflow_id"] != wf_id and r["evidence_level"] == "strong"
+                ]
+
+                if same_active:
+                    target_assoc_id = same_active[0]["association_id"]
+                    conn.execute(
+                        "UPDATE associations SET last_turn_id = COALESCE(?, last_turn_id), updated_at = ? WHERE association_id = ?",
+                        (turn_id, ts, target_assoc_id),
+                    )
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO association_evidence(
+                            evidence_id, association_id, event_id, evidence_level, evidence_type, detail_json, created_at
+                        ) VALUES (?, ?, ?, 'strong', 'workflow_marker', ?, ?)
+                        """,
+                        (f"evd_{event.event_id}", target_assoc_id, event.event_id, json.dumps({"marker": marker, "turn_id": turn_id}), ts),
+                    )
+                elif other_confirmed:
+                    # Preserve manual confirmation; surface conflict for review
+                    conflict_assoc_id = f"assoc_{event.event_id}"
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO associations(
+                            association_id, workflow_id, provider, environment_id, native_session_id,
+                            evidence_level, association_method, evidence_summary, evidence_reference,
+                            status, first_turn_id, last_turn_id, confirmed_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, 'strong', 'workflow_marker_conflict', ?, ?, 'conflict', ?, ?, NULL, ?, ?)
+                        """,
+                        (
+                            conflict_assoc_id,
+                            wf_id,
+                            event.provider,
+                            event.environment_id,
+                            event.native_session_id,
+                            f"Hook marker {marker!r} conflicts with manual confirmation for {other_confirmed[0]['workflow_id']}",
+                            turn_id,
+                            turn_id,
+                            turn_id,
+                            ts,
+                            ts,
+                        ),
+                    )
+                else:
+                    # Session repurposing (or first association): supersede prior strong links, create new strong link
+                    for old_r in other_strong:
+                        conn.execute(
+                            "UPDATE associations SET status = ?, updated_at = ? WHERE association_id = ?",
+                            (AssociationStatus.SUPERSEDED.value, ts, old_r["association_id"]),
+                        )
+                    new_assoc_id = f"assoc_{event.event_id}"
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO associations(
+                            association_id, workflow_id, provider, environment_id, native_session_id,
+                            evidence_level, association_method, evidence_summary, evidence_reference,
+                            status, first_turn_id, last_turn_id, confirmed_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, 'strong', 'workflow_marker', ?, ?, 'active', ?, ?, NULL, ?, ?)
+                        """,
+                        (
+                            new_assoc_id,
+                            wf_id,
+                            event.provider,
+                            event.environment_id,
+                            event.native_session_id,
+                            f"Automatic association via Workflow-ID marker ({marker})",
+                            turn_id,
+                            turn_id,
+                            turn_id,
+                            ts,
+                            ts,
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO association_evidence(
+                            evidence_id, association_id, event_id, evidence_level, evidence_type, detail_json, created_at
+                        ) VALUES (?, ?, ?, 'strong', 'workflow_marker', ?, ?)
+                        """,
+                        (f"evd_{event.event_id}", new_assoc_id, event.event_id, json.dumps({"marker": marker, "turn_id": turn_id}), ts),
+                    )
+        else:
+            # Untagged turn or resume: inherit only when unambiguous active association exists and no conflicts
+            unambiguous = [r for r in active_rows if r["evidence_level"] in ("confirmed", "strong")]
+            if not conflict_rows and len(unambiguous) == 1:
+                resolved_wf_id = str(unambiguous[0]["workflow_id"])
+                turn_evidence = str(unambiguous[0]["evidence_level"])
+                if turn_id:
+                    conn.execute(
+                        "UPDATE associations SET last_turn_id = ?, updated_at = ? WHERE association_id = ?",
+                        (turn_id, ts, unambiguous[0]["association_id"]),
+                    )
+
+        if norm_type == "turn.submitted":
+            t_id = str(turn_id or f"turn_{event.event_id}")
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO turns(
+                    turn_id, provider, environment_id, native_session_id, workflow_id,
+                    evidence_level, marker_text, started_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    t_id,
+                    event.provider,
+                    event.environment_id,
+                    event.native_session_id,
+                    resolved_wf_id,
+                    turn_evidence,
+                    str(marker) if marker else None,
+                    ts,
+                ),
+            )
+        elif norm_type == "turn.completed":
+            if turn_id:
+                cur = conn.execute(
+                    "UPDATE turns SET completed_at = ? WHERE turn_id = ?",
+                    (ts, str(turn_id)),
+                )
+                if cur.rowcount == 0:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO turns(
+                            turn_id, provider, environment_id, native_session_id, workflow_id,
+                            evidence_level, marker_text, started_at, completed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+                        """,
+                        (
+                            str(turn_id),
+                            event.provider,
+                            event.environment_id,
+                            event.native_session_id,
+                            resolved_wf_id,
+                            turn_evidence,
+                            ts,
+                        ),
+                    )
+            else:
+                latest_open = conn.execute(
+                    """
+                    SELECT turn_id FROM turns
+                    WHERE provider = ? AND environment_id = ? AND native_session_id = ? AND completed_at IS NULL
+                    ORDER BY started_at DESC LIMIT 1
+                    """,
+                    (event.provider, event.environment_id, event.native_session_id),
+                ).fetchone()
+                if latest_open is not None:
+                    conn.execute(
+                        "UPDATE turns SET completed_at = ? WHERE turn_id = ?",
+                        (ts, latest_open["turn_id"]),
+                    )
 
     def _upsert_environment(
         self,

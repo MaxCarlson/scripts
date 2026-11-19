@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import sqlite3
 import subprocess
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -202,6 +204,59 @@ class CodexAdapter(ProviderAdapter):
             surface="codex-cli",
             metadata=metadata,
         )
+
+    def discover_sessions(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """Read-only bounded discovery from ~/.codex/state_5.sqlite (never parses full rollouts)."""
+        db_path = self._home_dir / ".codex" / "state_5.sqlite"
+        if not db_path.exists():
+            return []
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+            conn.row_factory = sqlite3.Row
+        except sqlite3.Error:
+            return []
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, cwd, title, created_at, updated_at, cli_version,
+                       archived, attached_thread_parent_id
+                FROM threads
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (max(1, limit),),
+            ).fetchall()
+            out: list[dict[str, Any]] = []
+            for r in rows:
+                created_iso = (
+                    datetime.fromtimestamp(r["created_at"], tz=UTC).isoformat().replace("+00:00", "Z")
+                    if r["created_at"]
+                    else None
+                )
+                updated_iso = (
+                    datetime.fromtimestamp(r["updated_at"], tz=UTC).isoformat().replace("+00:00", "Z")
+                    if r["updated_at"]
+                    else None
+                )
+                out.append(
+                    {
+                        "provider": self.provider_name,
+                        "native_session_id": r["id"],
+                        "cwd": r["cwd"],
+                        "native_title": r["title"] or None,
+                        "native_created_at": created_iso,
+                        "last_seen_at": updated_iso,
+                        "native_version": r["cli_version"] or None,
+                        "parent_session_id": r["attached_thread_parent_id"],
+                        "surface": "codex-cli",
+                        "metadata_source": "codex_state_sqlite",
+                    }
+                )
+            return out
+        except sqlite3.Error:
+            return []
+        finally:
+            conn.close()
 
     def resolve_resume_command(
         self,

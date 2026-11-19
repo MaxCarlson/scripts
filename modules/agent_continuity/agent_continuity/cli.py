@@ -194,6 +194,18 @@ def build_parser() -> argparse.ArgumentParser:
     inbox_p.add_argument("-e", "--environment", help="Filter by environment ID or alias.")
 
     # ------------------------------------------------------------------
+    # `agents discover`
+    # ------------------------------------------------------------------
+    disc_p = sub.add_parser(
+        "discover",
+        parents=[common],
+        help="Read-only discovery of native Codex and AGY sessions from local metadata stores.",
+    )
+    disc_p.add_argument("-p", "--provider", choices=["codex", "agy"], help="Filter by provider.")
+    disc_p.add_argument("-n", "--limit", type=int, default=50, help="Max sessions per provider (default: 50).")
+    disc_p.add_argument("-a", "--apply", action="store_true", help="Register newly discovered sessions (default: dry-run).")
+
+    # ------------------------------------------------------------------
     # `agents rebuild`
     # ------------------------------------------------------------------
     rebuild_p = sub.add_parser("rebuild", parents=[common], help="Rebuild SQLite index from durable event spools.")
@@ -524,6 +536,23 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             _print_json({"ok": True, **res})
         else:
             _render_inbox_text(res)
+        return 0
+
+    elif args.command == "discover":
+        res = svc.discover_native_sessions(
+            provider=args.provider,
+            limit=args.limit,
+            apply=bool(args.apply),
+        )
+        if json_mode:
+            _print_json({"ok": True, **res})
+        else:
+            print(res["summary"])
+            for s in res["sessions"]:
+                tag = "tracked" if s["already_tracked"] else "new"
+                print(f"  - [{tag}] {s['provider']} {s['native_session_id']} ({s.get('native_title') or '-'})")
+            if not res["applied"] and res["new_sessions_count"] > 0:
+                print("Pass -a / --apply to register newly discovered sessions.")
         return 0
 
     elif args.command == "rebuild":
