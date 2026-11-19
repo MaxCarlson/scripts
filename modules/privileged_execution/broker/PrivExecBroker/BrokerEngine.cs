@@ -330,6 +330,22 @@ public sealed class BrokerEngine
                     "Broker shutdown interrupted operation during execution; manual reconciliation required before retry.");
                 throw;
             }
+            catch (Exception ex)
+            {
+                string sanitizedErr = OutputSanitizer.SanitizeText(ex.Message, 1024);
+                _store.UpdateOperationState(
+                    opId,
+                    OperationState.Failed,
+                    1,
+                    _clock(),
+                    "executor_unhandled_exception",
+                    JsonSerializer.SerializeToElement(new { error = sanitizedErr, exception_type = ex.GetType().Name }),
+                    new List<string>(),
+                    false,
+                    $"Execution failed with {ex.GetType().Name}: {sanitizedErr}");
+                OperationRecord failedRec = _store.GetByOperationId(opId)!;
+                return SerializeOperationRecord(failedRec);
+            }
             DateTimeOffset finishedAt = _clock();
 
             _store.UpdateOperationState(

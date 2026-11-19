@@ -99,8 +99,10 @@ public static class Program
         await server.RunAsync(cts.Token, () =>
         {
             Console.WriteLine($"PRIVEXEC_BROKER_READY pipe={pipeName} session={grant.SessionId} descriptors={descriptors.Count} expires={grant.ExpiresAtUtc:O}");
+            Console.Out.Flush();
         });
         Console.WriteLine($"PRIVEXEC_BROKER_STOPPED session={grant.SessionId}");
+        Console.Out.Flush();
         return 0;
     }
 

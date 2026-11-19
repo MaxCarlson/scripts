@@ -24,6 +24,8 @@ internal static class Phase3Tests
             ("H4DescriptorsEnforceAllowedModesAndTargets", TestH4DescriptorValidationAsync),
             ("AcceptanceDeniedUnderSetupOnlyGrant", TestAcceptanceDeniedUnderSetupOnlyGrantAsync),
             ("AtomicTryInsertHandlesConcurrentDuplicate", TestAtomicTryInsertHandlesConcurrentDuplicateAsync),
+            ("PipeServerHandlesBadClientAndEarlyEofCleanly", TestPipeServerHandlesBadClientAndEarlyEofAsync),
+            ("ProcessExecutorPinsChildTempInsideStateDir", TestProcessExecutorPinsChildTempAsync),
         };
 
         foreach ((string name, Func<Task> fn) in tests)
@@ -189,5 +191,104 @@ internal static class Phase3Tests
             Directory.Delete(dir, true);
         }
         return Task.CompletedTask;
+    }
+
+    private static async Task TestPipeServerHandlesBadClientAndEarlyEofAsync()
+    {
+        string pipeName = "privexec-cs-eof-" + Guid.NewGuid().ToString("N")[..8];
+        string mySid = SecurityAndAcl.GetCurrentProcessUserSid();
+        var grant = new SessionGrant
+        {
+            OperatorSid = mySid,
+            AllowedClientSids = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { mySid },
+            AllowedCapabilities = new HashSet<string> { "synthetic.echo" },
+            AllowedTargets = new HashSet<string> { "synth-target-1" },
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5)
+        };
+        var desc = new CapabilityDescriptor(
+            1, "synthetic.echo", "1.0.0", "synthetic", null, null, null, null, null,
+            new List<string> { "synthetic" }, new List<string> { "synth-target-1" },
+            true, false, false, 15, false, new List<string>(), new List<string>(), new List<string>(),
+            new Dictionary<string, ParameterRule>());
+        var engine = new BrokerEngine(
+            new SessionAuthorizer(grant),
+            new Dictionary<string, CapabilityDescriptor> { ["synthetic.echo"] = desc },
+            new InMemoryOperationStore(),
+            new SyntheticCapabilityExecutor());
+        var server = new PipeBrokerServer(pipeName, SecurityAndAcl.BuildPipeSecurity(mySid, new[] { mySid }), engine);
+
+        using var cts = new CancellationTokenSource();
+        var listeningTcs = new TaskCompletionSource();
+        Task serverTask = server.RunAsync(cts.Token, () => listeningTcs.TrySetResult());
+        await listeningTcs.Task;
+
+        try
+        {
+            // 1. Client disconnects immediately without sending frame
+            using (var c1 = new System.IO.Pipes.NamedPipeClientStream(".", pipeName, System.IO.Pipes.PipeDirection.InOut,
+                System.IO.Pipes.PipeOptions.None, System.Security.Principal.TokenImpersonationLevel.Impersonation))
+            {
+                await c1.ConnectAsync(3000);
+            }
+
+            // 2. Subsequent valid client still works cleanly
+            using var c2 = new System.IO.Pipes.NamedPipeClientStream(".", pipeName, System.IO.Pipes.PipeDirection.InOut,
+                System.IO.Pipes.PipeOptions.None, System.Security.Principal.TokenImpersonationLevel.Impersonation);
+            await c2.ConnectAsync(3000);
+            byte[] reqBytes = System.Text.Encoding.UTF8.GetBytes("""{"protocol_version":1,"action":"status"}""");
+            byte[] lenBytes = BitConverter.GetBytes((uint)reqBytes.Length);
+            await c2.WriteAsync(lenBytes);
+            await c2.WriteAsync(reqBytes);
+            await c2.FlushAsync();
+
+            byte[] respLenBuf = new byte[4];
+            int r = await c2.ReadAsync(respLenBuf);
+            Assert.Equal(4, r, "valid status header after early EOF");
+            uint rLen = BitConverter.ToUInt32(respLenBuf, 0);
+            byte[] respBuf = new byte[rLen];
+            int bodyRead = await c2.ReadAsync(respBuf);
+            Assert.Equal((int)rLen, bodyRead, "valid status body");
+            using JsonDocument doc = JsonDocument.Parse(respBuf);
+            Assert.True(doc.RootElement.GetProperty("ok").GetBoolean(), "broker remains healthy");
+        }
+        finally
+        {
+            cts.Cancel();
+            await serverTask;
+        }
+    }
+
+    private static async Task TestProcessExecutorPinsChildTempAsync()
+    {
+        string pwshPath = @"C:\Program Files\PowerShell\7\pwsh.exe";
+        if (!File.Exists(pwshPath)) return;
+
+        string dir = Path.Combine(Path.GetTempPath(), "privexec-p3-temp-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string stateDir = Path.Combine(dir, "state");
+            string scriptPath = Path.Combine(dir, "print_temp.ps1");
+            File.WriteAllText(scriptPath, "[ordered]@{ temp = $env:TEMP; tmp = $env:TMP } | ConvertTo-Json -Compress");
+            string sha = SecurityAndAcl.ComputeFileSha256(scriptPath);
+
+            var desc = new CapabilityDescriptor(
+                1, "ps.temp", "1.0.0", "powershell", pwshPath, null, scriptPath, sha, dir,
+                new List<string> { "synthetic" }, new List<string> { "t1" },
+                true, false, false, 15, false,
+                new List<string> { "-NoProfile", "-NonInteractive", "-File", "{script_path}" },
+                new List<string>(), new List<string>(), new Dictionary<string, ParameterRule>());
+
+            var exec = new ProcessCapabilityExecutor(stateDir);
+            var req = new ValidatedRunRequest(1, "r-tmp", "ps.temp", new TargetRef("synthetic", "t1"), "dry_run", new Dictionary<string, object?>(), "{}");
+            ExecutionOutcome outcome = await exec.ExecuteAsync(desc, req, "op-tmp-1", CancellationToken.None);
+            Assert.Equal(OperationState.Succeeded, outcome.FinalState, "temp check succeeds");
+            string expectedTmp = Path.Combine(stateDir, "tmp");
+            Assert.Equal(expectedTmp, outcome.ResultJson.GetProperty("temp").GetString(), "child TEMP pinned inside state\\tmp");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
     }
 }

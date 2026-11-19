@@ -4,8 +4,8 @@
     Gate 2 cross-account client verification script (runs under the non-admin Agent or Unauthorized account).
 .DESCRIPTION
     Connects to a running PrivExecBroker over the local named pipe using .NET NamedPipeClientStream
-    (works on any Windows 11 account without requiring per-user Python) and verifies filesystem write
-    denials against C:\ProgramData\PrivExec. Uses synthetic non-H4 operations only.
+    with TokenImpersonationLevel.Impersonation and verifies filesystem write denials against
+    C:\ProgramData\PrivExec. Uses synthetic non-H4 operations only.
 #>
 [CmdletBinding()]
 param(
@@ -14,6 +14,7 @@ param(
     [ValidateSet('AuthorizedAgent', 'UnauthorizedAccount')]
     [string]$Role = 'AuthorizedAgent',
     [string]$TargetId = 'synth-target-1',
+    [string]$ExpectedTempDir = '',
     [switch]$ExpectSameUserOperator
 )
 
@@ -25,7 +26,13 @@ function Invoke-PrivExecPipeJson {
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
     $lenBytes = [System.BitConverter]::GetBytes([uint32]$bytes.Length)
 
-    $client = [System.IO.Pipes.NamedPipeClientStream]::new('.', $Pipe, [System.IO.Pipes.PipeDirection]::InOut)
+    $client = [System.IO.Pipes.NamedPipeClientStream]::new(
+        '.',
+        $Pipe,
+        [System.IO.Pipes.PipeDirection]::InOut,
+        [System.IO.Pipes.PipeOptions]::None,
+        [System.Security.Principal.TokenImpersonationLevel]::Impersonation
+    )
     try {
         $client.Connect(5000)
         $client.Write($lenBytes, 0, 4)
@@ -36,15 +43,22 @@ function Invoke-PrivExecPipeJson {
         $read = 0
         while ($read -lt 4) {
             $n = $client.Read($inLenBuf, $read, 4 - $read)
-            if ($n -eq 0) { throw 'Unexpected EOF reading pipe response header.' }
+            if ($n -eq 0) {
+                throw "Unexpected EOF reading pipe response header (pipe='$Pipe', action='$($Payload.action)', bytes_read=$read)."
+            }
             $read += $n
         }
         $respLen = [System.BitConverter]::ToUInt32($inLenBuf, 0)
+        if ($respLen -eq 0 -or $respLen -gt 4194304) {
+            throw "Invalid pipe response frame length $respLen (pipe='$Pipe', action='$($Payload.action)')."
+        }
         $respBuf = New-Object byte[] $respLen
         $offset = 0
         while ($offset -lt $respLen) {
             $n = $client.Read($respBuf, $offset, $respLen - $offset)
-            if ($n -eq 0) { throw 'Unexpected EOF reading pipe response body.' }
+            if ($n -eq 0) {
+                throw "Unexpected EOF reading pipe response body (pipe='$Pipe', action='$($Payload.action)', bytes_read=$offset, expected=$respLen)."
+            }
             $offset += $n
         }
         return ([System.Text.Encoding]::UTF8.GetString($respBuf) | ConvertFrom-Json)
@@ -54,7 +68,22 @@ function Invoke-PrivExecPipeJson {
 }
 
 $whoami = [Security.Principal.WindowsIdentity]::GetCurrent()
+$resolvedTemp = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\')
+if (-not (Test-Path -LiteralPath $resolvedTemp -PathType Container)) {
+    throw "Temp directory '$resolvedTemp' does not exist or is inaccessible for '$($whoami.Name)'."
+}
+if (-not [string]::IsNullOrWhiteSpace($ExpectedTempDir)) {
+    $expTemp = [System.IO.Path]::GetFullPath($ExpectedTempDir).TrimEnd('\')
+    if (-not [string]::Equals($resolvedTemp, $expTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Child temp directory mismatch for '$($whoami.Name)': expected '$expTemp', got '$resolvedTemp'."
+    }
+}
+$probeFile = Join-Path $resolvedTemp ("probe-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + ".tmp")
+[System.IO.File]::WriteAllText($probeFile, "ok")
+Remove-Item -LiteralPath $probeFile -Force
+
 $results = [System.Collections.Generic.List[object]]::new()
+$results.Add(@{ check = 'isolated_temp_environment'; passed = $true; temp_path = $resolvedTemp })
 
 if ($Role -eq 'UnauthorizedAccount') {
     $denied = $false
@@ -73,11 +102,12 @@ if ($Role -eq 'UnauthorizedAccount') {
         throw "UnauthorizedAccount '$($whoami.Name)' was NOT denied access to pipe '$PipeName'."
     }
     [pscustomobject]@{
-        role    = $Role
-        account = $whoami.Name
-        sid     = $whoami.User.Value
-        passed  = $true
-        detail  = $detail
+        role      = $Role
+        account   = $whoami.Name
+        sid       = $whoami.User.Value
+        temp_path = $resolvedTemp
+        passed    = $true
+        detail    = $detail
     } | ConvertTo-Json -Depth 4
     exit 0
 }
@@ -184,7 +214,7 @@ if (-not $ExpectSameUserOperator) {
     $results.Add(@{ check = 'agent_shutdown_denied'; passed = $true })
 }
 
-# 7. Negative: wrong target and unknown capability denied
+# 7. Negative: wrong target and unauthorized capability denied
 $rTarget = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
     protocol_version = 1
     action           = 'run'
@@ -222,10 +252,11 @@ foreach ($pt in $protectedTargets) {
 $results.Add(@{ check = 'filesystem_write_and_state_denied'; passed = $true; checked = $protectedTargets.Count })
 
 [pscustomobject]@{
-    role    = $Role
-    account = $whoami.Name
-    sid     = $whoami.User.Value
-    passed  = $true
-    checks  = $results
+    role      = $Role
+    account   = $whoami.Name
+    sid       = $whoami.User.Value
+    temp_path = $resolvedTemp
+    passed    = $true
+    checks    = $results
 } | ConvertTo-Json -Depth 6
 exit 0

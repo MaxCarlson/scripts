@@ -25,6 +25,7 @@ public sealed class NullCredentialProvider : IOperatorCredentialProvider
 public sealed class ProcessCapabilityExecutor : ICapabilityExecutor
 {
     private readonly string _evidenceBaseDir;
+    private readonly string _childTempDir;
     private readonly IOperatorCredentialProvider _credentialProvider;
     private readonly SyntheticCapabilityExecutor _syntheticFallback = new();
 
@@ -33,6 +34,9 @@ public sealed class ProcessCapabilityExecutor : ICapabilityExecutor
         _evidenceBaseDir = Path.Combine(stateDir, "evidence");
         Directory.CreateDirectory(_evidenceBaseDir);
         SecurityAndAcl.AssertNoReparsePoints(_evidenceBaseDir, "Evidence base directory");
+        _childTempDir = Path.Combine(stateDir, "tmp");
+        Directory.CreateDirectory(_childTempDir);
+        SecurityAndAcl.AssertNoReparsePoints(_childTempDir, "Child temp directory");
         _credentialProvider = credentialProvider ?? new NullCredentialProvider();
     }
 
@@ -75,18 +79,20 @@ public sealed class ProcessCapabilityExecutor : ICapabilityExecutor
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            RedirectStandardInput = descriptor.RequiresGuestCredential,
+            RedirectStandardInput = true,
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
 
-        // Prevent inherited Python path injection or user site-packages pollution.
+        // Prevent inherited Python path injection or user site-packages pollution, and pin child TEMP inside protected state.
         psi.Environment.Remove("PYTHONPATH");
         psi.Environment.Remove("PYTHONHOME");
         psi.Environment["PYTHONNOUSERSITE"] = "1";
         psi.Environment["PYTHONDONTWRITEBYTECODE"] = "1";
         psi.Environment["PRIVEXEC_OPERATION_ID"] = operationId;
         psi.Environment["PRIVEXEC_MODE"] = request.Mode;
+        psi.Environment["TEMP"] = _childTempDir;
+        psi.Environment["TMP"] = _childTempDir;
 
         BuildTypedArgumentList(psi.ArgumentList, descriptor, request, operationId);
 
@@ -115,6 +121,10 @@ public sealed class ProcessCapabilityExecutor : ICapabilityExecutor
                 TryKillTree(process);
                 return FailOutcome("credential_handoff_failed", $"Failed to pass guest credential to child process: {ex.Message}");
             }
+        }
+        else
+        {
+            process.StandardInput.Close();
         }
 
         Task<string> stdoutTask = ReadBoundedAsync(process.StandardOutput, OutputSanitizer.MaxStdoutChars);

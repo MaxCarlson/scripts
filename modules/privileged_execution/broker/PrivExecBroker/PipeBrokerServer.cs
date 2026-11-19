@@ -3,7 +3,9 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
+using System.Security;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -81,8 +83,9 @@ public sealed class PipeBrokerServer
                 concurrencySlots.Release();
                 break;
             }
-            catch
+            catch (Exception ex)
             {
+                LogServerError("accept", "accept", ex);
                 server.Dispose();
                 concurrencySlots.Release();
                 if (cancellationToken.IsCancellationRequested) break;
@@ -90,17 +93,19 @@ public sealed class PipeBrokerServer
             }
 
             NamedPipeServerStream connectedPipe = server;
+            string connId = Guid.NewGuid().ToString("N")[..8];
             Task handler = Task.Run(async () =>
             {
                 try
                 {
-                    await HandleConnectionAsync(connectedPipe, cancellationToken);
+                    await HandleConnectionAsync(connectedPipe, connId, cancellationToken);
                 }
                 catch (OperationCanceledException)
                 {
                 }
-                catch (IOException)
+                catch (Exception ex)
                 {
+                    LogServerError(connId, "unhandled_connection_loop", ex);
                 }
                 finally
                 {
@@ -119,43 +124,130 @@ public sealed class PipeBrokerServer
         }
     }
 
-    private async Task HandleConnectionAsync(NamedPipeServerStream server, CancellationToken cancellationToken)
+    private async Task HandleConnectionAsync(NamedPipeServerStream server, string connId, CancellationToken cancellationToken)
     {
-        byte[] lenBuf = await ReadExactAsync(server, 4, cancellationToken);
-        uint frameLen = BinaryPrimitives.ReadUInt32LittleEndian(lenBuf);
-        if (frameLen == 0 || frameLen > ProtocolConstants.MaxFrameBytes)
+        string requestJson;
+        try
         {
-            throw new IOException($"Invalid request frame length: {frameLen}.");
-        }
+            byte[] lenBuf = await ReadExactAsync(server, 4, cancellationToken);
+            uint frameLen = BinaryPrimitives.ReadUInt32LittleEndian(lenBuf);
+            if (frameLen == 0 || frameLen > ProtocolConstants.MaxFrameBytes)
+            {
+                throw new IOException($"Invalid request frame length: {frameLen}.");
+            }
 
-        byte[] bodyBuf = await ReadExactAsync(server, (int)frameLen, cancellationToken);
-        string requestJson = Encoding.UTF8.GetString(bodyBuf);
+            byte[] bodyBuf = await ReadExactAsync(server, (int)frameLen, cancellationToken);
+            requestJson = Encoding.UTF8.GetString(bodyBuf);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            LogServerError(connId, "read_frame", ex);
+            await TryWriteErrorResponseAsync(server, "malformed_request", $"Failed reading request frame ({ex.GetType().Name}).");
+            return;
+        }
 
         // Capture authenticated Windows identity server-side after reading client bytes.
         ClientIdentity? clientIdentity = null;
-        server.RunAsClient(() =>
+        try
         {
-            clientIdentity = SecurityAndAcl.GetCurrentWindowsIdentity();
-        });
+            server.RunAsClient(() =>
+            {
+                clientIdentity = SecurityAndAcl.GetCurrentWindowsIdentity();
+            });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException or InvalidOperationException)
+        {
+            LogServerError(connId, "run_as_client_auth", ex);
+            await TryWriteErrorResponseAsync(server, "authentication_failed",
+                $"Failed to authenticate Windows named-pipe client ({ex.GetType().Name}). Ensure client connects with TokenImpersonationLevel.Impersonation.");
+            return;
+        }
 
         if (clientIdentity is null)
         {
-            throw new InvalidOperationException("Failed to derive Windows client identity from pipe.");
+            LogServerError(connId, "null_client_identity", new InvalidOperationException("Null client identity."));
+            await TryWriteErrorResponseAsync(server, "authentication_failed", "Failed to derive Windows client identity from pipe.");
+            return;
         }
 
-        string responseJson = await _engine.HandleRawRequestAsync(requestJson, clientIdentity, cancellationToken);
+        string responseJson;
+        try
+        {
+            responseJson = await _engine.HandleRawRequestAsync(requestJson, clientIdentity, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            await TryWriteErrorResponseAsync(server, "broker_shutting_down", "Broker is shutting down.");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            LogServerError(connId, "engine_dispatch", ex);
+            responseJson = BuildErrorJson("broker_internal_error", $"Broker internal error ({ex.GetType().Name}).");
+        }
+
         byte[] responseBytes = Encoding.UTF8.GetBytes(responseJson);
         if (responseBytes.Length > ProtocolConstants.MaxFrameBytes)
         {
-            throw new InvalidOperationException("Response frame exceeds maximum allowed size.");
+            LogServerError(connId, "response_too_large", new InvalidOperationException("Response exceeds MaxFrameBytes."));
+            responseBytes = Encoding.UTF8.GetBytes(BuildErrorJson("response_too_large", "Response frame exceeds maximum allowed size."));
         }
 
+        try
+        {
+            await WriteFrameAsync(server, responseBytes);
+        }
+        catch (IOException ex)
+        {
+            LogServerError(connId, "write_response", ex);
+        }
+    }
+
+    private static async Task WriteFrameAsync(NamedPipeServerStream server, byte[] responseBytes)
+    {
         byte[] outLen = new byte[4];
         BinaryPrimitives.WriteUInt32LittleEndian(outLen, (uint)responseBytes.Length);
         await server.WriteAsync(outLen, CancellationToken.None);
         await server.WriteAsync(responseBytes, CancellationToken.None);
         await server.FlushAsync(CancellationToken.None);
         server.WaitForPipeDrain();
+    }
+
+    private static async Task TryWriteErrorResponseAsync(NamedPipeServerStream server, string category, string message)
+    {
+        try
+        {
+            if (!server.IsConnected) return;
+            byte[] bytes = Encoding.UTF8.GetBytes(BuildErrorJson(category, message));
+            await WriteFrameAsync(server, bytes);
+        }
+        catch
+        {
+        }
+    }
+
+    private static string BuildErrorJson(string category, string message)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            protocol_version = ProtocolConstants.ProtocolVersion,
+            ok = false,
+            state = "denied",
+            authorized = false,
+            diagnostic_category = category,
+            error = message
+        });
+    }
+
+    private static void LogServerError(string connId, string phase, Exception ex)
+    {
+        string sanitized = OutputSanitizer.SanitizeText(ex.Message, 512).Replace('\r', ' ').Replace('\n', ' ');
+        Console.Error.WriteLine($"[PRIVEXEC_PIPE_ERROR] conn={connId} phase={phase} type={ex.GetType().Name} msg={sanitized}");
+        Console.Error.Flush();
     }
 
     private static async Task<byte[]> ReadExactAsync(Stream stream, int size, CancellationToken cancellationToken)

@@ -7,8 +7,9 @@
     operator authorization. Performs:
       - Gate 1: Install-PrivExec.ps1 -Apply -Mode CrossAccountIsolated + ACL/hash verification
       - Gate 2: Real cross-account isolation tests with a separate standard Windows user
-                (either operator-supplied credentials or temporary standard test accounts)
-                using synthetic non-H4 operations only.
+                using isolated per-user temp directories (never exposing operator profile
+                directories) and synthetic non-H4 operations only.
+    Always preserves structured non-secret evidence at every checkpoint (including failures).
     Does NOT execute any H4 capabilities or Hyper-V VM commands.
     Never logs or persists passwords.
 #>
@@ -31,7 +32,52 @@ if (-not $isAdmin) {
     throw 'Invoke-Gate1And2Elevated.ps1 requires an elevated Administrator PowerShell 7 session.'
 }
 
-$createdUsers = [System.Collections.Generic.List[string]]::new()
+$runId = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
+$opIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$createdUsers = [System.Collections.Generic.List[object]]::new()
+$ownedAccountTag = "PrivExec Gate 2 temporary test account ($runId)"
+
+$evidence = [ordered]@{
+    run_id               = $runId
+    started_at_utc       = (Get-Date).ToUniversalTime().ToString('o')
+    completed_at_utc     = $null
+    status               = 'started'
+    current_step         = 'init'
+    failing_step         = $null
+    error                = $null
+    operator_account     = $opIdentity.Name
+    operator_sid         = $opIdentity.User.Value
+    agent_account        = $null
+    agent_sid            = $null
+    created_accounts     = @()
+    prior_install_found  = (Test-Path -LiteralPath $InstallRoot)
+    gate1_install        = $null
+    acl_state            = $null
+    acl_descriptors      = $null
+    broker_stdout        = $null
+    broker_stderr        = $null
+    gate2_agent          = $null
+    gate2_unauthorized   = $null
+    gate2_expiry_check   = $null
+    cleanup              = [ordered]@{ temp_dir_removed = $false; accounts_removed = @(); errors = @() }
+    services_or_tasks    = 0
+    h4_executed          = $false
+}
+
+$fallbackEvidencePath = Join-Path $env:TEMP "privexec-gate12-$runId.json"
+
+function Save-GateEvidence {
+    $evidence['created_accounts'] = @($createdUsers)
+    $json = $evidence | ConvertTo-Json -Depth 10
+    $targetDir = Split-Path -Parent $EvidenceOut
+    if ($targetDir -and (Test-Path -LiteralPath $targetDir)) {
+        $tmpPath = "$EvidenceOut.tmp"
+        Set-Content -LiteralPath $tmpPath -Value $json -Encoding utf8NoBOM
+        Move-Item -LiteralPath $tmpPath -Destination $EvidenceOut -Force
+    } else {
+        Set-Content -LiteralPath $fallbackEvidencePath -Value $json -Encoding utf8NoBOM
+    }
+}
 
 function New-TransientTestUser {
     param([Parameter(Mandatory)][string]$Username)
@@ -41,17 +87,85 @@ function New-TransientTestUser {
     $raw = 'Px!' + [Convert]::ToBase64String($bytes) + '9a'
     $sec = ConvertTo-SecureString -String $raw -AsPlainText -Force
     $raw = $null
-    New-LocalUser -Name $Username -Password $sec -AccountNeverExpires -Description 'Temporary PrivExec Gate 2 standard test account' | Out-Null
+    New-LocalUser -Name $Username -Password $sec -AccountNeverExpires -Description $ownedAccountTag | Out-Null
     Add-LocalGroupMember -Group 'Users' -Member $Username | Out-Null
-    $createdUsers.Add($Username)
+    $sid = ([System.Security.Principal.NTAccount]"$env:COMPUTERNAME\$Username").Translate([System.Security.Principal.SecurityIdentifier]).Value
+    $createdUsers.Add([pscustomobject]@{ username = $Username; sid = $sid; tag = $ownedAccountTag })
     return [pscredential]::new("$env:COMPUTERNAME\$Username", $sec)
+}
+
+function New-IsolatedUserEnvironment {
+    param(
+        [Parameter(Mandatory)][string]$UserTempDir,
+        [Parameter(Mandatory)][string]$UserProfileDir,
+        [Parameter(Mandatory)][string]$AccountName
+    )
+    $icacls = "$env:SystemRoot\System32\icacls.exe"
+    foreach ($d in @($UserProfileDir, $UserTempDir)) {
+        New-Item -ItemType Directory -Path $d -Force | Out-Null
+        & $icacls $d /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" "${OperatorAccount}:(OI)(CI)F" "${AccountName}:(OI)(CI)F" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to ACL isolated child directory '$d' for '$AccountName'." }
+    }
+    return @{
+        SystemRoot   = $env:SystemRoot
+        ComSpec      = $env:ComSpec
+        WINDIR       = $env:WINDIR
+        PATH         = "$env:SystemRoot\System32;$env:SystemRoot;C:\Program Files\PowerShell\7;C:\Program Files\dotnet"
+        TEMP         = $UserTempDir
+        TMP          = $UserTempDir
+        TMPDIR       = $UserTempDir
+        USERPROFILE  = $UserProfileDir
+        LOCALAPPDATA = $UserProfileDir
+        APPDATA      = $UserProfileDir
+        HOME         = $UserProfileDir
+        HOMEDRIVE    = [System.IO.Path]::GetPathRoot($UserProfileDir).TrimEnd('\')
+        HOMEPATH     = $UserProfileDir.Substring([System.IO.Path]::GetPathRoot($UserProfileDir).Length - 1)
+    }
+}
+
+function Stop-BrokerCleanlyOverPipe {
+    param([Parameter(Mandatory)][string]$PipeName, $Proc)
+    try {
+        $shutdownJson = @{ protocol_version = 1; action = 'shutdown' } | ConvertTo-Json -Compress
+        $sBytes = [System.Text.Encoding]::UTF8.GetBytes($shutdownJson)
+        $sLen = [System.BitConverter]::GetBytes([uint32]$sBytes.Length)
+        $opPipe = [System.IO.Pipes.NamedPipeClientStream]::new(
+            '.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut,
+            [System.IO.Pipes.PipeOptions]::None, [System.Security.Principal.TokenImpersonationLevel]::Impersonation)
+        try {
+            $opPipe.Connect(5000)
+            $opPipe.Write($sLen, 0, 4)
+            $opPipe.Write($sBytes, 0, $sBytes.Length)
+            $opPipe.Flush()
+            $inLenBuf = New-Object byte[] 4
+            $r = 0
+            while ($r -lt 4) { $n = $opPipe.Read($inLenBuf, $r, 4 - $r); if ($n -eq 0) { break }; $r += $n }
+            if ($r -eq 4) {
+                $rl = [System.BitConverter]::ToUInt32($inLenBuf, 0)
+                $rb = New-Object byte[] $rl
+                $off = 0
+                while ($off -lt $rl) { $n = $opPipe.Read($rb, $off, $rl - $off); if ($n -eq 0) { break }; $off += $n }
+            }
+        } finally {
+            $opPipe.Dispose()
+        }
+        if ($Proc) { $Proc.WaitForExit(5000) | Out-Null }
+    } catch {
+        if ($Proc -and -not $Proc.HasExited) {
+            $Proc.Kill()
+            $Proc.WaitForExit(5000) | Out-Null
+        }
+    }
 }
 
 $brokerProc = $null
 $tempGrant = $null
-$tempOutDir = Join-Path $env:TEMP ('privexec-g2-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$isolatedRunRoot = "C:\ProgramData\PrivExec-Gate2Run\$runId"
+
+Save-GateEvidence
 
 try {
+    $evidence['current_step'] = 'prepare_accounts'
     if ($CreateTempTestAccounts) {
         $AgentCredential = New-TransientTestUser -Username ('PrivExecAg_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
         $UnauthorizedCredential = New-TransientTestUser -Username ('PrivExecUn_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
@@ -59,8 +173,13 @@ try {
     } elseif ([string]::IsNullOrWhiteSpace($AgentAccount) -or -not $AgentCredential) {
         throw 'Supply -AgentAccount and -AgentCredential, or pass -CreateTempTestAccounts.'
     }
+    $agentSid = ([System.Security.Principal.NTAccount]$AgentAccount).Translate([System.Security.Principal.SecurityIdentifier]).Value
+    $evidence['agent_account'] = $AgentAccount
+    $evidence['agent_sid'] = $agentSid
+    Save-GateEvidence
 
     # Gate 1: Elevated staged installation
+    $evidence['current_step'] = 'gate1_install'
     $installScript = Join-Path $PSScriptRoot 'Install-PrivExec.ps1'
     $installJson = & $installScript -Apply -Mode CrossAccountIsolated `
         -InstallRoot $InstallRoot `
@@ -69,11 +188,12 @@ try {
         -H4SourceDir $H4SourceDir `
         -Json
     if ($LASTEXITCODE -ne 0) { throw 'Install-PrivExec.ps1 failed.' }
-    $installReport = $installJson | ConvertFrom-Json
+    $evidence['gate1_install'] = ($installJson | ConvertFrom-Json)
 
-    # Verify ACLs and zero unexpected services/tasks
     $aclState = (& icacls (Join-Path $InstallRoot 'state')) -join "`n"
     $aclDesc = (& icacls (Join-Path $InstallRoot 'descriptors')) -join "`n"
+    $evidence['acl_state'] = $aclState
+    $evidence['acl_descriptors'] = $aclDesc
     if ($aclState -match [regex]::Escape($AgentAccount.Split('\')[-1])) {
         throw "SECURITY FAILURE: Agent account appears in state directory ACL!"
     }
@@ -82,11 +202,12 @@ try {
     if ($privServices.Count -gt 0 -or $privTasks.Count -gt 0) {
         throw 'Unexpected PrivExec Windows service or scheduled task found.'
     }
+    Save-GateEvidence
 
     # Gate 2: Start installed broker from C:\ProgramData\PrivExec with synthetic-only grant
-    $agentSid = ([System.Security.Principal.NTAccount]$AgentAccount).Translate([System.Security.Principal.SecurityIdentifier]).Value
+    $evidence['current_step'] = 'gate2_broker_start'
     $pipeName = 'privexec-gate2-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-    $tempGrant = Join-Path $InstallRoot 'state\gate2-grant.json'
+    $tempGrant = Join-Path $InstallRoot "state\gate2-grant-$runId.json"
     @{
         allowed_client_sids           = @($agentSid)
         allowed_capabilities          = @('synthetic.echo', 'synthetic.mutate')
@@ -96,9 +217,8 @@ try {
         ttl_seconds                   = 300
     } | ConvertTo-Json | Set-Content -LiteralPath $tempGrant -Encoding utf8NoBOM
 
-    $brokerOut = Join-Path $InstallRoot 'state\gate2-broker.stdout.log'
-    $brokerErr = Join-Path $InstallRoot 'state\gate2-broker.stderr.log'
-    Remove-Item -LiteralPath $brokerOut, $brokerErr -Force -ErrorAction SilentlyContinue
+    $brokerOut = Join-Path $InstallRoot "state\gate2-broker-$runId.stdout.log"
+    $brokerErr = Join-Path $InstallRoot "state\gate2-broker-$runId.stderr.log"
     $brokerProc = Start-Process -FilePath 'dotnet' -ArgumentList @(
         (Join-Path $InstallRoot 'bin\PrivExecBroker.dll'),
         '--pipe', $pipeName,
@@ -111,7 +231,8 @@ try {
     $ready = $false
     while ((Get-Date) -lt $deadline) {
         if ($brokerProc.HasExited) {
-            throw "Installed broker exited early ($($brokerProc.ExitCode)): $(Get-Content -LiteralPath $brokerErr -Raw -ErrorAction SilentlyContinue)"
+            $bErr = Get-Content -LiteralPath $brokerErr -Raw -ErrorAction SilentlyContinue
+            throw "Installed broker exited early ($($brokerProc.ExitCode)): $bErr"
         }
         if ((Test-Path -LiteralPath $brokerOut) -and ((Get-Content -LiteralPath $brokerOut -Raw) -match 'PRIVEXEC_BROKER_READY')) {
             $ready = $true
@@ -120,93 +241,111 @@ try {
         Start-Sleep -Milliseconds 150
     }
     if (-not $ready) { throw 'Timed out waiting for installed broker readiness.' }
+    Save-GateEvidence
 
-    New-Item -ItemType Directory -Path $tempOutDir -Force | Out-Null
-    & icacls $tempOutDir /grant "${AgentAccount}:(OI)(CI)F" | Out-Null
+    # Prepare isolated per-user working/temp directories (never inheriting operator profile TEMP)
+    $evidence['current_step'] = 'gate2_agent'
+    New-Item -ItemType Directory -Path $isolatedRunRoot -Force | Out-Null
+    $agentProfile = Join-Path $isolatedRunRoot 'agent_profile'
+    $agentTemp = Join-Path $isolatedRunRoot 'agent_temp'
+    $agentEnv = New-IsolatedUserEnvironment -UserTempDir $agentTemp -UserProfileDir $agentProfile -AccountName $AgentAccount
 
     $clientScript = Join-Path $InstallRoot 'client\Test-PrivExecCrossAccount.ps1'
-    $agentOut = Join-Path $tempOutDir 'agent-out.json'
-    $agentErr = Join-Path $tempOutDir 'agent-err.txt'
+    $agentOut = Join-Path $agentProfile 'agent-out.json'
+    $agentErr = Join-Path $agentProfile 'agent-err.txt'
+
     $pAgent = Start-Process -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' `
         -Credential $AgentCredential `
-        -WorkingDirectory $tempOutDir `
-        -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $clientScript, '-PipeName', $pipeName, '-InstallRoot', $InstallRoot, '-Role', 'AuthorizedAgent') `
+        -WorkingDirectory $agentProfile `
+        -Environment $agentEnv `
+        -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $clientScript, '-PipeName', $pipeName, '-InstallRoot', $InstallRoot, '-Role', 'AuthorizedAgent', '-ExpectedTempDir', $agentTemp) `
         -RedirectStandardOutput $agentOut -RedirectStandardError $agentErr -Wait -PassThru -WindowStyle Hidden
-    if ($pAgent.ExitCode -ne 0) {
-        throw "AuthorizedAgent cross-account check failed ($($pAgent.ExitCode)): $(Get-Content -LiteralPath $agentErr -Raw -ErrorAction SilentlyContinue)"
-    }
-    $agentReport = Get-Content -LiteralPath $agentOut -Raw | ConvertFrom-Json
 
-    $unauthReport = $null
+    $agentErrText = Get-Content -LiteralPath $agentErr -Raw -ErrorAction SilentlyContinue
+    if ($pAgent.ExitCode -ne 0) {
+        throw "AuthorizedAgent cross-account check failed ($($pAgent.ExitCode)): $agentErrText"
+    }
+    $evidence['gate2_agent'] = (Get-Content -LiteralPath $agentOut -Raw | ConvertFrom-Json)
+    Save-GateEvidence
+
     if ($UnauthorizedCredential) {
-        & icacls $tempOutDir /grant "$($UnauthorizedCredential.UserName):(OI)(CI)F" | Out-Null
-        $unOut = Join-Path $tempOutDir 'unauth-out.json'
-        $unErr = Join-Path $tempOutDir 'unauth-err.txt'
+        $evidence['current_step'] = 'gate2_unauthorized'
+        $unProfile = Join-Path $isolatedRunRoot 'unauth_profile'
+        $unTemp = Join-Path $isolatedRunRoot 'unauth_temp'
+        $unEnv = New-IsolatedUserEnvironment -UserTempDir $unTemp -UserProfileDir $unProfile -AccountName $UnauthorizedCredential.UserName
+        $unOut = Join-Path $unProfile 'unauth-out.json'
+        $unErr = Join-Path $unProfile 'unauth-err.txt'
+
         $pUnauth = Start-Process -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' `
             -Credential $UnauthorizedCredential `
-            -WorkingDirectory $tempOutDir `
-            -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $clientScript, '-PipeName', $pipeName, '-InstallRoot', $InstallRoot, '-Role', 'UnauthorizedAccount') `
+            -WorkingDirectory $unProfile `
+            -Environment $unEnv `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $clientScript, '-PipeName', $pipeName, '-InstallRoot', $InstallRoot, '-Role', 'UnauthorizedAccount', '-ExpectedTempDir', $unTemp) `
             -RedirectStandardOutput $unOut -RedirectStandardError $unErr -Wait -PassThru -WindowStyle Hidden
+
+        $unErrText = Get-Content -LiteralPath $unErr -Raw -ErrorAction SilentlyContinue
         if ($pUnauth.ExitCode -ne 0) {
-            throw "UnauthorizedAccount cross-account check failed ($($pUnauth.ExitCode)): $(Get-Content -LiteralPath $unErr -Raw -ErrorAction SilentlyContinue)"
+            throw "UnauthorizedAccount cross-account check failed ($($pUnauth.ExitCode)): $unErrText"
         }
-        $unauthReport = Get-Content -LiteralPath $unOut -Raw | ConvertFrom-Json
+        $evidence['gate2_unauthorized'] = (Get-Content -LiteralPath $unOut -Raw | ConvertFrom-Json)
+        Save-GateEvidence
     }
 
-    # Clean operator shutdown via local operator identity over named pipe
-    $shutdownJson = @{ protocol_version = 1; action = 'shutdown' } | ConvertTo-Json -Compress
-    $sBytes = [System.Text.Encoding]::UTF8.GetBytes($shutdownJson)
-    $sLen = [System.BitConverter]::GetBytes([uint32]$sBytes.Length)
-    $opPipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [System.IO.Pipes.PipeDirection]::InOut)
-    try {
-        $opPipe.Connect(5000)
-        $opPipe.Write($sLen, 0, 4)
-        $opPipe.Write($sBytes, 0, $sBytes.Length)
-        $opPipe.Flush()
-        $inLenBuf = New-Object byte[] 4
-        $r = 0
-        while ($r -lt 4) { $n = $opPipe.Read($inLenBuf, $r, 4 - $r); if ($n -eq 0) { break }; $r += $n }
-        if ($r -eq 4) {
-            $rl = [System.BitConverter]::ToUInt32($inLenBuf, 0)
-            $rb = New-Object byte[] $rl
-            $off = 0
-            while ($off -lt $rl) { $n = $opPipe.Read($rb, $off, $rl - $off); if ($n -eq 0) { break }; $off += $n }
-        }
-    } finally {
-        $opPipe.Dispose()
-    }
-    $brokerProc.WaitForExit(5000) | Out-Null
+    $evidence['current_step'] = 'gate2_broker_stop'
+    Stop-BrokerCleanlyOverPipe -PipeName $pipeName -Proc $brokerProc
+    $brokerProc = $null
 
-    $opIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $evidence = [ordered]@{
-        completed_at_utc    = (Get-Date).ToUniversalTime().ToString('o')
-        operator_account    = $opIdentity.Name
-        operator_sid        = $opIdentity.User.Value
-        agent_account       = $AgentAccount
-        agent_sid           = $agentSid
-        gate1_install       = $installReport
-        acl_state           = $aclState
-        acl_descriptors     = $aclDesc
-        gate2_agent         = $agentReport
-        gate2_unauthorized  = $unauthReport
-        services_or_tasks   = 0
-        h4_executed         = $false
+    $evidence['status'] = 'passed'
+    $evidence['current_step'] = 'completed'
+    $evidence['completed_at_utc'] = (Get-Date).ToUniversalTime().ToString('o')
+}
+catch {
+    $evidence['status'] = 'failed'
+    $evidence['failing_step'] = $evidence['current_step']
+    $evidence['error'] = $_.Exception.Message
+    $evidence['completed_at_utc'] = (Get-Date).ToUniversalTime().ToString('o')
+    if ($brokerOut -and (Test-Path -LiteralPath $brokerOut)) {
+        $evidence['broker_stdout'] = Get-Content -LiteralPath $brokerOut -Raw -ErrorAction SilentlyContinue
     }
-    $evidence | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $EvidenceOut -Encoding utf8NoBOM
-    Write-Output ($evidence | ConvertTo-Json -Depth 8)
+    if ($brokerErr -and (Test-Path -LiteralPath $brokerErr)) {
+        $evidence['broker_stderr'] = Get-Content -LiteralPath $brokerErr -Raw -ErrorAction SilentlyContinue
+    }
+    Save-GateEvidence
+    throw
 }
 finally {
     if ($brokerProc -and -not $brokerProc.HasExited) {
-        $brokerProc.Kill()
-        $brokerProc.WaitForExit(5000) | Out-Null
+        Stop-BrokerCleanlyOverPipe -PipeName $pipeName -Proc $brokerProc
+    }
+    if ($brokerOut -and (Test-Path -LiteralPath $brokerOut) -and -not $evidence['broker_stdout']) {
+        $evidence['broker_stdout'] = Get-Content -LiteralPath $brokerOut -Raw -ErrorAction SilentlyContinue
+    }
+    if ($brokerErr -and (Test-Path -LiteralPath $brokerErr) -and -not $evidence['broker_stderr']) {
+        $evidence['broker_stderr'] = Get-Content -LiteralPath $brokerErr -Raw -ErrorAction SilentlyContinue
     }
     if ($tempGrant -and (Test-Path -LiteralPath $tempGrant)) {
         Remove-Item -LiteralPath $tempGrant -Force -ErrorAction SilentlyContinue
     }
-    if (Test-Path -LiteralPath $tempOutDir) {
-        Remove-Item -LiteralPath $tempOutDir -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $isolatedRunRoot) {
+        try {
+            Remove-Item -LiteralPath $isolatedRunRoot -Recurse -Force -ErrorAction Stop
+            $evidence['cleanup']['temp_dir_removed'] = $true
+        } catch {
+            $evidence['cleanup']['errors'] += "Failed to remove '$isolatedRunRoot': $($_.Exception.Message)"
+        }
     }
     foreach ($u in $createdUsers) {
-        Remove-LocalUser -Name $u -ErrorAction SilentlyContinue
+        try {
+            $acct = Get-LocalUser -Name $u.username -ErrorAction SilentlyContinue
+            if ($acct -and $acct.Description -eq $ownedAccountTag) {
+                Remove-LocalUser -Name $u.username -ErrorAction Stop
+                $evidence['cleanup']['accounts_removed'] += $u.username
+            }
+        } catch {
+            $evidence['cleanup']['errors'] += "Failed to remove '$($u.username)': $($_.Exception.Message)"
+        }
     }
+    Save-GateEvidence
 }
+
+Write-Output ($evidence | ConvertTo-Json -Depth 10)

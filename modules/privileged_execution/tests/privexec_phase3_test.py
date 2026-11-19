@@ -476,7 +476,8 @@ def test_gate2_cross_account_script_against_temp_broker(tmp_path: Path) -> None:
             )
             report = json.loads(res.stdout)
             assert report["passed"] is True
-            assert len(report["checks"]) == 8
+            assert len(report["checks"]) == 9
+            assert any(c["check"] == "isolated_temp_environment" for c in report["checks"])
         finally:
             for ro_target in (
                 staged_root / "bin" / "PrivExecBroker.dll",
@@ -489,3 +490,77 @@ def test_gate2_cross_account_script_against_temp_broker(tmp_path: Path) -> None:
         if proc.poll() is None:
             proc.terminate()
             proc.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires Windows PowerShell 7")
+def test_cross_account_script_detects_mismatched_temp_and_reports_pipe_eof(tmp_path: Path) -> None:
+    import threading
+    import uuid
+
+    # 1. Wrong ExpectedTempDir fails immediately with actionable diagnostic
+    wrong_temp = tmp_path / "expected-other-temp"
+    wrong_temp.mkdir()
+    res_temp = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(SCRIPTS_DIR / "Test-PrivExecCrossAccount.ps1"),
+            "-PipeName",
+            "unused-pipe",
+            "-ExpectedTempDir",
+            str(wrong_temp),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_temp.returncode != 0
+    assert "Child temp directory mismatch" in res_temp.stderr
+
+    # 2. Early pipe closure before response header reports pipe name & bytes_read=0
+    pipe_name = f"privexec-eof-mock-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    ready_ev = threading.Event()
+
+    def _close_early() -> None:
+        import ctypes
+        import ctypes.wintypes as wt
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateNamedPipeW.restype = wt.HANDLE
+        h = k32.CreateNamedPipeW(rf"\\.\pipe\{pipe_name}", 3, 0, 1, 4096, 4096, 0, None)
+        ready_ev.set()
+        k32.ConnectNamedPipe(h, None)
+        hdr = ctypes.create_string_buffer(4)
+        n = wt.DWORD(0)
+        k32.ReadFile(h, hdr, 4, ctypes.byref(n), None)
+        body_len = int.from_bytes(hdr.raw[:4], "little")
+        body = ctypes.create_string_buffer(body_len)
+        k32.ReadFile(h, body, body_len, ctypes.byref(n), None)
+        k32.DisconnectNamedPipe(h)
+        k32.CloseHandle(h)
+
+    t = threading.Thread(target=_close_early, daemon=True)
+    t.start()
+    ready_ev.wait(timeout=3.0)
+
+    res_eof = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(SCRIPTS_DIR / "Test-PrivExecCrossAccount.ps1"),
+            "-PipeName",
+            pipe_name,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    t.join(timeout=3.0)
+    assert res_eof.returncode != 0
+    assert "Unexpected EOF reading pipe response header" in res_eof.stderr
+    assert f"pipe='{pipe_name}'" in res_eof.stderr
+    assert "bytes_read=0" in res_eof.stderr
