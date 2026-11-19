@@ -93,6 +93,8 @@ public static class DescriptorLoader
         }
         bool requiresGuestCred = root.TryGetProperty("requires_guest_credential", out var rgc) && rgc.GetBoolean();
         var fixedArgs = ReadOptionalStringList(root, "fixed_args");
+        var dryRunArgs = ReadOptionalStringList(root, "dry_run_args");
+        var applyArgs = ReadOptionalStringList(root, "apply_args");
 
         var paramSchema = new Dictionary<string, ParameterRule>(StringComparer.Ordinal);
         if (root.TryGetProperty("parameter_schema", out JsonElement psEl) && psEl.ValueKind == JsonValueKind.Object)
@@ -133,6 +135,8 @@ public static class DescriptorLoader
             maxDuration,
             requiresGuestCred,
             fixedArgs,
+            dryRunArgs,
+            applyArgs,
             paramSchema
         );
     }

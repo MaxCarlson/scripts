@@ -56,6 +56,7 @@ public static class Program
 
         Directory.CreateDirectory(stateDir);
         SecurityAndAcl.AssertNoReparsePoints(stateDir, "State directory");
+        string dbPath = Path.Combine(stateDir, "privexec.db");
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) =>
@@ -66,8 +67,13 @@ public static class Program
         };
 
         var authorizer = new SessionAuthorizer(grant);
-        var store = new InMemoryOperationStore();
-        var executor = new SyntheticCapabilityExecutor();
+        using var store = new SqliteOperationStore(dbPath);
+        int recoveredUnknown = store.MarkInterruptedExecutionsAsOutcomeUnknown();
+        if (recoveredUnknown > 0)
+        {
+            Console.WriteLine($"PRIVEXEC_CRASH_RECOVERY marked_outcome_unknown={recoveredUnknown}");
+        }
+        var executor = new ProcessCapabilityExecutor(stateDir);
         var engine = new BrokerEngine(authorizer, descriptors, store, executor, null, () => cts.Cancel());
         var pipeSecurity = SecurityAndAcl.BuildPipeSecurity(operatorSid, grant.AllowedClientSids);
         var server = new PipeBrokerServer(pipeName, pipeSecurity, engine);

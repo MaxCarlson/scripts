@@ -99,6 +99,8 @@ public sealed record CapabilityDescriptor(
     int MaxDurationSeconds,
     bool RequiresGuestCredential,
     List<string> FixedArgs,
+    List<string> DryRunArgs,
+    List<string> ApplyArgs,
     Dictionary<string, ParameterRule> ParameterSchema
 );
 

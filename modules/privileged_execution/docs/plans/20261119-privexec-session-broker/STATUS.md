@@ -1,27 +1,29 @@
 # Status — `20261119-privexec-session-broker`
 
-- **Current Phase:** Phase 1 complete (committed checkpoint); moving to Phase 2 (Execution & Persistence)
+- **Current Phase:** Phase 2 complete (committed checkpoint); moving to Phase 3 (H4 Integration, Windows Setup & Repo Registration)
 - **Branch:** `feat/privexec-session-broker-20261119`
 - **Worktree:** `C:\Users\mcarls\src\scripts-privexec`
 - **Base Commit:** `e7b9f36d5296d8b8fe301ef47e9f35adc64f886b`
 
 ## Completed Work
-- **Phase 0:** Master plan, Phase 0 architecture/protocol v1 contract, and module planning docs (`805db2c9`).
-- **Phase 1:**
-  - Python `privexec` package (`pyproject.toml`, `privexec/protocol.py`, `privexec/transport.py`, `privexec/cli.py`).
-  - C#/.NET 10 `PrivExecBroker` (`Models.cs`, `SecurityAndAcl.cs`, `ProtocolValidator.cs`, `DescriptorLoader.cs`, `SessionAuthorizer.cs`, `OperationStore.cs`, `BrokerEngine.cs`, `PipeBrokerServer.cs`, `Program.cs`) and `PrivExecBroker.Tests`.
-  - `scripts/Build-PrivExecBroker.ps1` (supports both `dotnet build` and VS2022 Roslyn `csc.exe` against `.NET 10.0.15` runtime).
-  - Synthetic read-only capability `descriptors/synthetic.echo.json`.
+- **Phase 0:** Master plan, Phase 0 contract/architecture, and module docs (`805db2c9`).
+- **Phase 1:** Python `privexec` CLI + C# `.NET 10` `PrivExecBroker` + Win32 named-pipe transport + authorization (`37867b47`).
+- **Phase 2:**
+  - `SqliteOperationStore.cs` (`winsqlite3.dll` P/Invoke, WAL mode, `UNIQUE(client_sid, request_id)`, crash recovery `executing -> outcome_unknown`).
+  - `ProcessCapabilityExecutor` (`ProcessExecutor.cs`) with `UseShellExecute=false`, typed `ArgumentList`, pre-launch SHA-256 + reparse-point checks, bounded stdout/stderr, tree kill timeout, sanitized evidence files.
+  - `OutputSanitizer.cs` secret/credential redaction and structured JSON extraction.
+  - Concurrent `PipeBrokerServer.cs` (`MaxServerInstances=8`) with immediate target-level mutation conflict rejection (`409`).
+  - Fixed C# ternary numeric promotion bug in `ProtocolValidator.ConvertPrimitiveOrReject` so JSON integers remain `long` for `int` parameter rules.
 
 ## Verified Test Runs
 - `pwsh -NoProfile -NonInteractive -File scripts/Build-PrivExecBroker.ps1 -IncludeTests` -> exit 0
-- `dotnet broker/bin/PrivExecBroker.Tests.dll` -> 10/10 passed
-- `python -m pytest -v` (in `modules/privileged_execution`) -> 7 passed in 0.55s (including real Win32 named-pipe IPC + `RunAsClient` Windows SID authentication + negative authorization + clean broker shutdown)
+- `dotnet broker/bin/PrivExecBroker.Tests.dll` -> 10/10 Phase 1 + 7/7 Phase 2 C# tests passed
+- `python -m pytest -v` (in `modules/privileged_execution`) -> 9 passed in 3.96s
 - `python -m ruff check privexec tests` -> All checks passed
 
 ## Security Assumptions & Pending Privilege Validation
-- Cross-account Windows ACL isolation and named-pipe cross-SID rejection remain pending authorized two-account Windows validation (same-user UAC is accidental-misuse containment only).
+- Cross-account Windows ACL isolation and named-pipe cross-SID rejection remain pending authorized two-account Windows validation.
 - Real Hyper-V / H4 guest mutations are not authorized in this assignment.
 
 ## Next Actionable Step
-- Implement Phase 2: `winsqlite3.dll` durable SQLite ledger, fixed executable/script launcher (`ProcessExecutor.cs`) with SHA-256 & reparse-point guards, typed CLI argument building, bounded/sanitized output, target mutation locking, crash `outcome_unknown` recovery, and adversarial tests.
+- Implement Phase 3: H4 capability adapters (`h4.preflight`, `h4.qualify`, `h4.recover`), operator guest credential memory handoff, dry-run-first Windows install/uninstall scripts, validation guide, `scripts_help` registry entry, and H4 unit/mock tests.

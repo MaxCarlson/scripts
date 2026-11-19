@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
@@ -10,6 +11,7 @@ namespace PrivExecBroker;
 
 public sealed class PipeBrokerServer
 {
+    private const int MaxServerInstances = 8;
     private readonly string _pipeName;
     private readonly PipeSecurity _pipeSecurity;
     private readonly BrokerEngine _engine;
@@ -24,23 +26,44 @@ public sealed class PipeBrokerServer
     public async Task RunAsync(CancellationToken cancellationToken, Action? onListening = null)
     {
         bool firstInstance = true;
+        var activeHandlers = new List<Task>();
+        using var concurrencySlots = new SemaphoreSlim(MaxServerInstances, MaxServerInstances);
+
         while (!cancellationToken.IsCancellationRequested)
         {
+            try
+            {
+                await concurrencySlots.WaitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
             PipeOptions options = PipeOptions.Asynchronous | PipeOptions.WriteThrough;
             if (firstInstance)
             {
                 options |= PipeOptions.FirstPipeInstance;
             }
 
-            using var server = NamedPipeServerStreamAcl.Create(
-                _pipeName,
-                PipeDirection.InOut,
-                1,
-                PipeTransmissionMode.Byte,
-                options,
-                65536,
-                65536,
-                _pipeSecurity);
+            NamedPipeServerStream? server = null;
+            try
+            {
+                server = NamedPipeServerStreamAcl.Create(
+                    _pipeName,
+                    PipeDirection.InOut,
+                    MaxServerInstances,
+                    PipeTransmissionMode.Byte,
+                    options,
+                    65536,
+                    65536,
+                    _pipeSecurity);
+            }
+            catch
+            {
+                concurrencySlots.Release();
+                throw;
+            }
 
             if (firstInstance)
             {
@@ -54,21 +77,45 @@ public sealed class PipeBrokerServer
             }
             catch (OperationCanceledException)
             {
+                server.Dispose();
+                concurrencySlots.Release();
                 break;
+            }
+            catch
+            {
+                server.Dispose();
+                concurrencySlots.Release();
+                if (cancellationToken.IsCancellationRequested) break;
+                continue;
             }
 
-            try
+            NamedPipeServerStream connectedPipe = server;
+            Task handler = Task.Run(async () =>
             {
-                await HandleConnectionAsync(server, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (IOException)
-            {
-                // Client disconnected mid-request; continue serving next request.
-            }
+                try
+                {
+                    await HandleConnectionAsync(connectedPipe, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (IOException)
+                {
+                }
+                finally
+                {
+                    connectedPipe.Dispose();
+                    concurrencySlots.Release();
+                }
+            }, CancellationToken.None);
+
+            activeHandlers.RemoveAll(t => t.IsCompleted);
+            activeHandlers.Add(handler);
+        }
+
+        if (activeHandlers.Count > 0)
+        {
+            await Task.WhenAll(activeHandlers);
         }
     }
 

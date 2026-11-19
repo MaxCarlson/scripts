@@ -307,7 +307,7 @@ public static class ProtocolValidator
     private static object? ConvertPrimitiveOrReject(JsonElement el, string name) => el.ValueKind switch
     {
         JsonValueKind.String => el.GetString(),
-        JsonValueKind.Number => el.TryGetInt64(out long l) ? l : el.GetDouble(),
+        JsonValueKind.Number => el.TryGetInt64(out long l) ? (object)l : el.GetDouble(),
         JsonValueKind.True => true,
         JsonValueKind.False => false,
         JsonValueKind.Null => null,

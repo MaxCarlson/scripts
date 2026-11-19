@@ -18,13 +18,13 @@
 - [x] Phase 1 negative & positive authorization tests pass
 
 ## Phase 2 — Execution and persistence
-- [ ] Fixed executable/script invocation with SHA-256 verification and reparse-point rejection
-- [ ] Typed parameter validation (no shell interpolation)
-- [ ] Bounded stdout/stderr capture, JSON result parsing, and secret redaction
-- [ ] SQLite operation ledger (`winsqlite3.dll`) with idempotency & canonical payload verification
-- [ ] Target-level mutation concurrency lock & conflict rejection
-- [ ] Child timeout/supervision & crash `outcome_unknown` recovery (no auto-replay)
-- [ ] Phase 2 adversarial security & reliability tests pass
+- [x] Fixed executable/script invocation with SHA-256 verification and reparse-point rejection
+- [x] Typed parameter validation (no shell interpolation)
+- [x] Bounded stdout/stderr capture, JSON result parsing, and secret redaction
+- [x] SQLite operation ledger (`winsqlite3.dll`) with idempotency & canonical payload verification
+- [x] Target-level mutation concurrency lock & conflict rejection
+- [x] Child timeout/supervision & crash `outcome_unknown` recovery (no auto-replay)
+- [x] Phase 2 adversarial security & reliability tests pass
 
 ## Phase 3 — H4 integration
 - [ ] `h4.preflight`, `h4.qualify`, and `h4.recover` capability descriptors and PowerShell adapters

@@ -59,6 +59,7 @@ public static class Program
         }
 
         Console.WriteLine($"All {passed}/{tests.Length} PrivExecBroker Phase 1 C# tests passed.");
+        await Phase2Tests.RunAllAsync();
         return 0;
     }
 
@@ -85,6 +86,8 @@ public static class Program
             new List<string> { "synthetic" },
             new List<string> { "synth-target-1", "synth-target-2" },
             true, false, false, 30, false,
+            new List<string>(),
+            new List<string>(),
             new List<string>(),
             new Dictionary<string, ParameterRule>
             {
