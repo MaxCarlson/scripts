@@ -279,3 +279,27 @@ def test_scripts_help_registry_contains_privileged_execution() -> None:
     text = registry_py.read_text(encoding="utf-8")
     assert "privileged_execution (module)" in text
     assert '"path": "modules/privileged_execution"' in text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires Windows and built PrivExecBroker.dll")
+def test_broker_rejects_invalid_pipe_name(tmp_path: Path) -> None:
+    broker_dll = MODULE_ROOT / "broker" / "bin" / "PrivExecBroker.dll"
+    if not broker_dll.is_file():
+        pytest.skip("PrivExecBroker.dll not built")
+    res = subprocess.run(
+        [
+            "dotnet",
+            str(broker_dll),
+            "--pipe",
+            r"bad\pipe",
+            "--descriptors-dir",
+            str(DESCRIPTORS_DIR),
+            "--state-dir",
+            str(tmp_path / "state"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 2
+    assert "Invalid pipe name" in res.stderr

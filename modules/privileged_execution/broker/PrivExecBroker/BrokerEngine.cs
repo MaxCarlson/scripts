@@ -263,7 +263,10 @@ public sealed class BrokerEngine
                 new List<string>(),
                 false,
                 decision.Reason ?? "Operation denied.");
-            _store.InsertOperation(deniedRecord);
+            if (!_store.TryInsertOperation(deniedRecord, out IdempotencyLookup conflict))
+            {
+                return ResolveIdempotencyConflict(conflict, req);
+            }
             return SerializeOperationRecord(deniedRecord);
         }
 
@@ -303,9 +306,30 @@ public sealed class BrokerEngine
                 new List<string>(),
                 false,
                 null);
-            _store.InsertOperation(executingRecord);
+            if (!_store.TryInsertOperation(executingRecord, out IdempotencyLookup execConflict))
+            {
+                return ResolveIdempotencyConflict(execConflict, req);
+            }
 
-            ExecutionOutcome outcome = await _executor.ExecuteAsync(descriptor, req, opId, cancellationToken);
+            ExecutionOutcome outcome;
+            try
+            {
+                outcome = await _executor.ExecuteAsync(descriptor, req, opId, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                _store.UpdateOperationState(
+                    opId,
+                    OperationState.OutcomeUnknown,
+                    null,
+                    _clock(),
+                    "broker_shutdown_during_execution",
+                    null,
+                    new List<string>(),
+                    false,
+                    "Broker shutdown interrupted operation during execution; manual reconciliation required before retry.");
+                throw;
+            }
             DateTimeOffset finishedAt = _clock();
 
             _store.UpdateOperationState(
@@ -329,6 +353,24 @@ public sealed class BrokerEngine
                 _store.ReleaseTargetMutationLock(req.Target.Id, opId);
             }
         }
+    }
+
+    private static string ResolveIdempotencyConflict(IdempotencyLookup conflict, ValidatedRunRequest req)
+    {
+        if (conflict.Kind == IdempotencyLookupKind.ReplayExisting && conflict.ExistingRecord is not null)
+        {
+            return SerializeOperationRecord(conflict.ExistingRecord);
+        }
+        return SerializeErrorResponse(
+            conflict.ExistingRecord?.OperationId,
+            req.RequestId,
+            req.Capability,
+            req.Target.Id,
+            "denied",
+            false,
+            409,
+            "request_id_payload_mismatch",
+            $"request_id '{req.RequestId}' was already used with a different request payload.");
     }
 
     public static string SerializeOperationRecord(OperationRecord rec)

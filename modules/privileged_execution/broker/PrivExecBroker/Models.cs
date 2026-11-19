@@ -115,6 +115,7 @@ public sealed class SessionGrant
     public HashSet<string> AllowedTargets { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public bool AllowMutation { get; init; }
     public HashSet<string> AllowedMutationCapabilities { get; init; } = new(StringComparer.Ordinal);
+    public HashSet<string> AllowedH4Stages { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public bool Revoked { get; set; }
 }
 

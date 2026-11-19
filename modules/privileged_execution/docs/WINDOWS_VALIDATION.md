@@ -1,72 +1,101 @@
-# PrivExec Windows Security & H4 Validation Guide
+# PrivExec Operator Readiness & Windows Validation Runbook
 
-All non-privileged synthetic unit and IPC tests run automatically without elevation. The procedures below verify real Windows privilege isolation, ACL enforcement, and live Resource Coordinator H4 qualification, which require explicit operator authorization.
+All non-privileged synthetic unit, adversarial, and local named-pipe IPC tests run without elevation. The 5 gates below govern elevated deployment, real Windows account isolation, and live Resource Coordinator H4 qualification.
 
-## 1. Security Boundary Modes
+## Security Mode Distinction
 
-- **Same-user UAC (`SameUserDev`)**: Broker runs elevated and agent runs non-elevated under the same Windows user account. This provides accidental-misuse containment only; per Microsoft guidance, same-desktop UAC is **not** a security boundary against a compromised agent.
-- **Cross-account isolation (`CrossAccountIsolated`)**: Broker runs under a dedicated privileged operator account (`<OPERATOR_ACCOUNT>`), and the agent runs under a separate non-administrator account (`<AGENT_ACCOUNT>`).
+- **`SameUserDev` (Development / Accidental-Misuse Containment):** Broker and agent run under the same Windows user account. Per Microsoft guidance, same-desktop UAC elevation is **not** a security boundary against a compromised agent.
+- **`CrossAccountIsolated` (Stronger OS Isolation):** Broker runs under a dedicated privileged operator account (`<OPERATOR>`), and the agent runs under a separate non-administrator account (`<AGENT>`).
 
-## 2. Staged Installation Validation (Requires Operator Elevation)
+---
 
-Preview installation plan (safe, read-only):
+## Gate 1 — Elevated Installation (Requires Operator Elevation)
 
-```powershell
-pwsh -NoProfile -File .\scripts\Install-PrivExec.ps1 -Mode CrossAccountIsolated `
-    -OperatorAccount "XERES\<OPERATOR>" -AgentAccount "XERES\<AGENT>" `
-    -H4SourceDir "C:\Path\To\resource_coordinator\tools\h4_qualification" -Json
-```
+1. Build the broker:
 
-Perform elevated installation (only when authorized):
+   ```powershell
+   pwsh -NoProfile -File .\scripts\Build-PrivExecBroker.ps1 -IncludeTests
+   ```
 
-```powershell
-pwsh -NoProfile -File .\scripts\Install-PrivExec.ps1 -Apply -Mode CrossAccountIsolated `
-    -OperatorAccount "XERES\<OPERATOR>" -AgentAccount "XERES\<AGENT>" `
-    -H4SourceDir "C:\Path\To\resource_coordinator\tools\h4_qualification" -Json
-```
+2. Preview installation plan (read-only dry-run):
 
-Verify ACLs:
+   ```powershell
+   pwsh -NoProfile -File .\scripts\Install-PrivExec.ps1 -Mode CrossAccountIsolated `
+       -OperatorAccount "XERES\<OPERATOR>" -AgentAccount "XERES\<AGENT>" `
+       -H4SourceDir "C:\Users\mcarls\src\scripts\.worktrees\rc-h4-task-discovery-20261115\modules\resource_coordinator\tools\h4_qualification" `
+       -Json
+   ```
 
-```powershell
-icacls C:\ProgramData\PrivExec\descriptors
-icacls C:\ProgramData\PrivExec\state
-```
+3. Perform authorized installation:
 
-Expected: `<AGENT>` has `RX` only on `bin`, `descriptors`, `adapters`, `h4_scripts`; zero write permissions anywhere under `C:\ProgramData\PrivExec`; zero access to `C:\ProgramData\PrivExec\state`.
+   ```powershell
+   pwsh -NoProfile -File .\scripts\Install-PrivExec.ps1 -Apply -Mode CrossAccountIsolated `
+       -OperatorAccount "XERES\<OPERATOR>" -AgentAccount "XERES\<AGENT>" `
+       -H4SourceDir "C:\Users\mcarls\src\scripts\.worktrees\rc-h4-task-discovery-20261115\modules\resource_coordinator\tools\h4_qualification" `
+       -Json
+   ```
 
-## 3. Cross-Account Pipe & SID Validation
+4. Verify ACLs and agent write denial:
 
-1. As `<OPERATOR>` (elevated), start the broker with a grant JSON listing `<AGENT_SID>` (and NOT other SIDs):
+   ```powershell
+   icacls C:\ProgramData\PrivExec\descriptors
+   icacls C:\ProgramData\PrivExec\adapters
+   icacls C:\ProgramData\PrivExec\state
+   ```
+
+   Expected: `<AGENT>` has `(OI)(CI)RX` only on `bin`, `descriptors`, `adapters`, `h4_scripts`; zero write permissions anywhere under `C:\ProgramData\PrivExec`; zero access to `C:\ProgramData\PrivExec\state`.
+
+---
+
+## Gate 2 — Cross-Account Isolation (Requires Separate Operator & Non-Admin Agent Accounts)
+
+1. As `<OPERATOR>` (elevated), create an operator grant JSON with `<AGENT_SID>` and start the broker:
 
    ```powershell
    privexec broker start -c C:\ProgramData\PrivExec\operator-grant.json `
+       -b C:\ProgramData\PrivExec\bin\PrivExecBroker.dll `
        -d C:\ProgramData\PrivExec\descriptors -s C:\ProgramData\PrivExec\state -g
    ```
 
-2. As `<AGENT>` (non-admin account):
-   - `privexec status` -> succeeds and shows active session.
+2. As `<AGENT>` (non-administrator account):
+   - `privexec status` -> succeeds and reports active session.
    - `privexec broker stop` -> denied (`operator_only_action`).
-   - Attempt to write to `C:\ProgramData\PrivExec\adapters\Invoke-H4PreflightAdapter.ps1` -> `Access is denied`.
-3. As a third unrelated local account `<OTHER_USER>`:
+   - `Add-Content C:\ProgramData\PrivExec\adapters\Invoke-H4PreflightAdapter.ps1 "#test"` -> `Access is denied`.
+   - `privexec run synthetic.echo -t synth-target-1 -T synthetic -p .\forged-sid.json` (with `"sid"`/`"authorized"`) -> rejected (`forbidden_property`).
+3. As a third unrelated Windows account `<OTHER_USER>`:
    - `privexec status` -> `PipeAccessDeniedError` (`ERROR_ACCESS_DENIED`).
 
-## 4. H4 Qualification Workflow (Requires Explicit VM Authorization)
+---
 
-1. Read-only preflight (no VM mutation):
+## Gate 3 — Live H4 Read-Only Preflight (Requires Explicit Operator Approval)
+
+1. Verify VM `RC-H4-Windows-Acceptance` (`d8483f98-8884-4758-abd1-cd6107c83c03`) and protected checkpoint (`9f45b469-382c-4be0-a50e-7a71384c7922`) read-only.
+2. Start broker with a read-only grant (`allowed_capabilities: ["h4.preflight"]`, `allow_mutation: false`, `allowed_targets: ["d8483f98-8884-4758-abd1-cd6107c83c03"]`, `-g` for operator guest credential prompt).
+3. As `<AGENT>`:
 
    ```powershell
    privexec run h4.preflight -t d8483f98-8884-4758-abd1-cd6107c83c03 -T hyperv_vm
+   privexec result <operation_id> -f json
    ```
 
-2. Authorized setup (requires `h4.qualify` in `allowed_mutation_capabilities` and `allow_mutation: true`):
+4. Confirm `state == "succeeded"`, `exit_code == 0`, and zero host/guest mutations occurred.
 
-   ```powershell
-   privexec run h4.qualify -t d8483f98-8884-4758-abd1-cd6107c83c03 -T hyperv_vm `
-       -p .\setup-params.json -A
-   ```
+---
 
-3. Recovery inspection / authorized recovery (requires separate `h4.recover` grant):
+## Gate 4 — Live H4 Mutation (Requires Separate Explicit Approval Per Stage)
 
-   ```powershell
-   privexec run h4.recover -t d8483f98-8884-4758-abd1-cd6107c83c03 -T hyperv_vm
-   ```
+Never grant `All` or unrestricted `h4.qualify` stages. Authorize one exact stage at a time (`allowed_h4_stages: ["Setup"]` for Setup; `["Acceptance"]` only when separately approved):
+
+```powershell
+# Setup (with grant allow_mutation=true, allowed_mutation_capabilities=["h4.qualify"], allowed_h4_stages=["Setup"])
+privexec run h4.qualify -t d8483f98-8884-4758-abd1-cd6107c83c03 -T hyperv_vm -p .\setup-stage.json -A
+
+# Recovery inspection (read-only default) or authorized recovery (separate h4.recover grant)
+privexec run h4.recover -t d8483f98-8884-4758-abd1-cd6107c83c03 -T hyperv_vm
+```
+
+---
+
+## Gate 5 — Final Integration
+
+Merge `feat/privexec-session-broker-20261119` into `main` only after Gates 1–4 pass, all tests pass, and the operator explicitly authorizes integration.

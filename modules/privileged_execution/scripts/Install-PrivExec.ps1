@@ -75,22 +75,24 @@ $securityNotice = if ($Mode -eq 'SameUserDev') {
 }
 
 $plan = [ordered]@{
-    schema_version    = 1
-    action            = 'privexec_install'
-    apply             = [bool]$Apply
-    mode              = $Mode
-    security_notice   = $securityNotice
-    install_root      = $resolvedRoot
-    operator_account  = $OperatorAccount
-    agent_account     = if ($AgentAccount) { $AgentAccount } else { $OperatorAccount }
-    broker_dll_source = $brokerDll
-    broker_built      = (Test-Path -LiteralPath $brokerDll -PathType Leaf)
-    h4_source_dir     = $H4SourceDir
-    directories       = $subDirs
-    creates_service   = $false
-    creates_task      = $false
-    modifies_accounts = $false
-    verified          = $false
+    schema_version     = 1
+    action             = 'privexec_install'
+    apply              = [bool]$Apply
+    mode               = $Mode
+    requires_elevation = ($Mode -eq 'CrossAccountIsolated')
+    security_notice    = $securityNotice
+    install_root       = $resolvedRoot
+    operator_account   = $OperatorAccount
+    agent_account      = if ($AgentAccount) { $AgentAccount } else { $OperatorAccount }
+    broker_dll_source  = $brokerDll
+    broker_built       = (Test-Path -LiteralPath $brokerDll -PathType Leaf)
+    h4_source_dir      = $H4SourceDir
+    h4_required_files  = @('Invoke-H4GuestQualification.ps1', 'Invoke-H4GuestRecovery.ps1', 'Bootstrap-H4GuestBundle.ps1')
+    directories        = $subDirs
+    creates_service    = $false
+    creates_task       = $false
+    modifies_accounts  = $false
+    verified           = $false
 }
 
 if (-not $Apply) {
@@ -108,10 +110,24 @@ if (-not $Apply) {
 if (-not (Test-Path -LiteralPath $brokerDll -PathType Leaf) -or -not (Test-Path -LiteralPath $brokerCfg -PathType Leaf)) {
     throw "Compiled PrivExecBroker artifacts missing in '$brokerBinDir'. Run Build-PrivExecBroker.ps1 first."
 }
+Assert-NoReparsePoint -FullPath $brokerBinDir
+Assert-NoReparsePoint -FullPath $adaptersSrcDir
+Assert-NoReparsePoint -FullPath $descriptorsSrcDir
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if ($Mode -eq 'CrossAccountIsolated' -and -not $isAdmin) {
     throw 'Elevated Administrator privileges are required for CrossAccountIsolated ACL installation.'
+}
+
+if (-not [string]::IsNullOrWhiteSpace($H4SourceDir)) {
+    $resolvedH4Check = [System.IO.Path]::GetFullPath($H4SourceDir)
+    Assert-NoReparsePoint -FullPath $resolvedH4Check
+    foreach ($fName in @('Invoke-H4GuestQualification.ps1', 'Invoke-H4GuestRecovery.ps1', 'Bootstrap-H4GuestBundle.ps1')) {
+        $src = Join-Path $resolvedH4Check $fName
+        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) {
+            throw "Required H4 script '$fName' not found in -H4SourceDir '$resolvedH4Check'."
+        }
+    }
 }
 
 foreach ($d in @($resolvedRoot) + @($subDirs.Values)) {
@@ -193,6 +209,17 @@ foreach ($d in $readOnlyDirs) {
 foreach ($d in @($subDirs.state, $subDirs.work)) {
     & $icacls $d /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" "${OperatorAccount}:(OI)(CI)F" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "icacls failed on '$d'." }
+}
+
+# Post-install integrity verification of staged descriptors and adapters
+Get-ChildItem -LiteralPath $subDirs.descriptors -Filter '*.json' -File | ForEach-Object {
+    $stagedDesc = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+    if ($stagedDesc.runner_type -eq 'powershell' -and $stagedDesc.script_path) {
+        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath ([string]$stagedDesc.script_path)).Hash.ToLowerInvariant()
+        if ($actualHash -ne ([string]$stagedDesc.script_sha256).ToLowerInvariant()) {
+            throw "Post-install integrity verification failed for '$($_.Name)'."
+        }
+    }
 }
 
 $plan['verified'] = $true

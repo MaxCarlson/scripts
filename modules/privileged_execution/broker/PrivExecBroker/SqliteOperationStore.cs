@@ -11,6 +11,7 @@ internal static class WinSqlite3
 {
     private const string Dll = "winsqlite3.dll";
     public const int SQLITE_OK = 0;
+    public const int SQLITE_CONSTRAINT = 19;
     public const int SQLITE_ROW = 100;
     public const int SQLITE_DONE = 101;
     public const int SQLITE_OPEN_READWRITE = 0x00000002;
@@ -225,6 +226,14 @@ public sealed class SqliteOperationStore : IOperationStore, IDisposable
 
     public void InsertOperation(OperationRecord record)
     {
+        if (!TryInsertOperation(record, out _))
+        {
+            throw new InvalidOperationException($"Duplicate client_sid/request_id '{record.RequestId}'.");
+        }
+    }
+
+    public bool TryInsertOperation(OperationRecord record, out IdempotencyLookup conflict)
+    {
         lock (_sync)
         {
             const string sql = """
@@ -236,6 +245,7 @@ public sealed class SqliteOperationStore : IOperationStore, IDisposable
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18);
                 """;
             IntPtr stmt = Prepare(sql);
+            int step;
             try
             {
                 WinSqlite3.BindTextOrNull(stmt, 1, record.OperationId);
@@ -260,16 +270,26 @@ public sealed class SqliteOperationStore : IOperationStore, IDisposable
                 WinSqlite3.Check(WinSqlite3.sqlite3_bind_int(stmt, 17, record.PostconditionVerified ? 1 : 0), "bind postcondition", _db);
                 WinSqlite3.BindTextOrNull(stmt, 18, record.Error);
 
-                int step = WinSqlite3.sqlite3_step(stmt);
-                if (step != WinSqlite3.SQLITE_DONE)
-                {
-                    throw new InvalidOperationException($"SQLite insert failed: {WinSqlite3.GetErrorMessage(_db)}");
-                }
+                step = WinSqlite3.sqlite3_step(stmt);
             }
             finally
             {
                 WinSqlite3.sqlite3_finalize(stmt);
             }
+
+            if (step == WinSqlite3.SQLITE_DONE)
+            {
+                conflict = new IdempotencyLookup(IdempotencyLookupKind.NewRequest, null);
+                return true;
+            }
+
+            if (step == WinSqlite3.SQLITE_CONSTRAINT)
+            {
+                conflict = CheckIdempotency(record.ClientSid, record.RequestId, record.CanonicalPayloadHash);
+                return false;
+            }
+
+            throw new InvalidOperationException($"SQLite insert failed: {WinSqlite3.GetErrorMessage(_db)}");
         }
     }
 

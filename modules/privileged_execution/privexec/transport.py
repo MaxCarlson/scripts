@@ -67,6 +67,9 @@ class WindowsNamedPipeClient:
         generic_read = 0x80000000
         generic_write = 0x40000000
         open_existing = 3
+        security_sqos_present = 0x00100000
+        security_impersonation = 0x00020000
+        pipe_flags = security_sqos_present | security_impersonation
         invalid_handle = wintypes.HANDLE(-1).value
         err_file_not_found = 2
         err_access_denied = 5
@@ -78,7 +81,7 @@ class WindowsNamedPipeClient:
             0,
             None,
             open_existing,
-            0,
+            pipe_flags,
             None,
         )
         if handle == invalid_handle:
@@ -94,7 +97,7 @@ class WindowsNamedPipeClient:
                     0,
                     None,
                     open_existing,
-                    0,
+                    pipe_flags,
                     None,
                 )
             if handle == invalid_handle:

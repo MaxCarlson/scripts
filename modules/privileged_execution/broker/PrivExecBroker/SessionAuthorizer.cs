@@ -118,6 +118,26 @@ public sealed class SessionAuthorizer
                         "mutation_not_authorized",
                         $"Mutating execution of '{request.Capability}' requires an active operator mutation grant.");
                 }
+                if (string.Equals(request.Capability, "h4.qualify", StringComparison.Ordinal) &&
+                    request.Parameters.TryGetValue("stage", out object? stageObj) &&
+                    stageObj is string stageName)
+                {
+                    if (_grant.AllowedH4Stages.Count > 0 && !_grant.AllowedH4Stages.Contains(stageName))
+                    {
+                        return new AuthorizationDecision(
+                            false,
+                            "stage_not_authorized",
+                            $"H4 qualification stage '{stageName}' is not authorized in the current session grant.");
+                    }
+                    if (string.Equals(stageName, "Acceptance", StringComparison.OrdinalIgnoreCase) &&
+                        !_grant.AllowedH4Stages.Contains("Acceptance"))
+                    {
+                        return new AuthorizationDecision(
+                            false,
+                            "stage_not_authorized",
+                            "H4 'Acceptance' stage requires explicit 'Acceptance' authorization in allowed_h4_stages.");
+                    }
+                }
             }
         }
 

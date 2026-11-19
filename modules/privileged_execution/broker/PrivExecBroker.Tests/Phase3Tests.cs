@@ -22,6 +22,8 @@ internal static class Phase3Tests
             ("OperatorMemoryCredentialProviderStdinHandoff", TestCredentialProviderAsync),
             ("MissingGuestCredentialDeniedCleanly", TestMissingGuestCredentialAsync),
             ("H4DescriptorsEnforceAllowedModesAndTargets", TestH4DescriptorValidationAsync),
+            ("AcceptanceDeniedUnderSetupOnlyGrant", TestAcceptanceDeniedUnderSetupOnlyGrantAsync),
+            ("AtomicTryInsertHandlesConcurrentDuplicate", TestAtomicTryInsertHandlesConcurrentDuplicateAsync),
         };
 
         foreach ((string name, Func<Task> fn) in tests)
@@ -131,6 +133,61 @@ internal static class Phase3Tests
         Assert.True(!recDecision.Authorized, "h4.recover apply requires separate mutation grant");
         Assert.Equal("mutation_not_authorized", recDecision.DiagnosticCategory, "recover denial category");
 
+        return Task.CompletedTask;
+    }
+
+    private static Task TestAcceptanceDeniedUnderSetupOnlyGrantAsync()
+    {
+        string repoDescDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "descriptors"));
+        if (!Directory.Exists(repoDescDir)) return Task.CompletedTask;
+        IReadOnlyDictionary<string, CapabilityDescriptor> descriptors = DescriptorLoader.LoadFromDirectory(repoDescDir);
+
+        var setupOnlyGrant = new SessionGrant
+        {
+            OperatorSid = OperatorSid,
+            AllowedClientSids = new HashSet<string> { AgentSid },
+            AllowedCapabilities = new HashSet<string> { "h4.qualify" },
+            AllowedTargets = new HashSet<string> { H4VmId },
+            AllowMutation = true,
+            AllowedMutationCapabilities = new HashSet<string> { "h4.qualify" },
+            AllowedH4Stages = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Setup" },
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(10)
+        };
+        var auth = new SessionAuthorizer(setupOnlyGrant);
+
+        var acceptanceReq = new ValidatedRunRequest(
+            1, "r-acc", "h4.qualify", new TargetRef("hyperv_vm", H4VmId), "apply",
+            new Dictionary<string, object?> { ["stage"] = "Acceptance", ["authorize_guest_mutation"] = true }, "{}");
+        AuthorizationDecision decision = auth.Authorize(AgentSid, acceptanceReq, descriptors["h4.qualify"]);
+        Assert.True(!decision.Authorized, "Acceptance must be denied under Setup-only grant");
+        Assert.Equal("stage_not_authorized", decision.DiagnosticCategory, "stage denial category");
+        return Task.CompletedTask;
+    }
+
+    private static Task TestAtomicTryInsertHandlesConcurrentDuplicateAsync()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "privexec-p3-atomic-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            using var store = new SqliteOperationStore(Path.Combine(dir, "privexec.db"));
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            var rec1 = new OperationRecord(
+                "op-a1", "req-same", AgentSid, "synthetic.echo", "synthetic", "t1", "dry_run",
+                "hash-A", OperationState.Succeeded, true, 0, now, now, null, null, new List<string>(), true, null);
+            var recDup = rec1 with { OperationId = "op-a2" };
+            var recMismatch = rec1 with { OperationId = "op-a3", CanonicalPayloadHash = "hash-B" };
+
+            Assert.True(store.TryInsertOperation(rec1, out _), "first insert succeeds");
+            Assert.True(!store.TryInsertOperation(recDup, out IdempotencyLookup c1), "duplicate insert returns false");
+            Assert.Equal(IdempotencyLookupKind.ReplayExisting, c1.Kind, "duplicate kind");
+            Assert.True(!store.TryInsertOperation(recMismatch, out IdempotencyLookup c2), "mismatch insert returns false");
+            Assert.Equal(IdempotencyLookupKind.PayloadMismatch, c2.Kind, "mismatch kind");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
         return Task.CompletedTask;
     }
 }

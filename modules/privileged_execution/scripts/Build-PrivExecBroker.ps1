@@ -21,6 +21,8 @@ $brokerProjDir = Join-Path $moduleRoot 'broker\PrivExecBroker'
 $testsProjDir = Join-Path $moduleRoot 'broker\PrivExecBroker.Tests'
 
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
+Get-ChildItem -LiteralPath $OutDir -Filter 'PrivExecBroker*.dll' -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+Get-ChildItem -LiteralPath $OutDir -Filter 'PrivExecBroker*.pdb' -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
 function Get-DotnetSdkVersion {
     try {

@@ -80,7 +80,9 @@ public sealed class ProcessCapabilityExecutor : ICapabilityExecutor
             StandardErrorEncoding = Encoding.UTF8
         };
 
-        // Prevent user site-packages or bytecode pollution in child Python processes.
+        // Prevent inherited Python path injection or user site-packages pollution.
+        psi.Environment.Remove("PYTHONPATH");
+        psi.Environment.Remove("PYTHONHOME");
         psi.Environment["PYTHONNOUSERSITE"] = "1";
         psi.Environment["PYTHONDONTWRITEBYTECODE"] = "1";
         psi.Environment["PRIVEXEC_OPERATION_ID"] = operationId;

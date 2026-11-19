@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -9,6 +10,8 @@ namespace PrivExecBroker;
 
 public static class Program
 {
+    private static readonly Regex PipeNameRegex = new("^[A-Za-z0-9._-]{1,128}$", RegexOptions.Compiled);
+
     public static async Task<int> Main(string[] args)
     {
         string pipeName = ProtocolConstants.DefaultPipeName;
@@ -52,6 +55,12 @@ public static class Program
                     Console.Error.WriteLine($"Unknown argument: {args[i]}");
                     return 2;
             }
+        }
+
+        if (!PipeNameRegex.IsMatch(pipeName))
+        {
+            Console.Error.WriteLine($"Invalid pipe name '{pipeName}'. Must match ^[A-Za-z0-9._-]{{1,128}}$.");
+            return 2;
         }
 
         string operatorSid = SecurityAndAcl.GetCurrentProcessUserSid();
@@ -101,6 +110,7 @@ public static class Program
         var allowedCaps = new HashSet<string>(StringComparer.Ordinal);
         var allowedTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var allowedMutationCaps = new HashSet<string>(StringComparer.Ordinal);
+        var allowedH4Stages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         bool allowMutation = false;
 
         if (!string.IsNullOrWhiteSpace(grantFile))
@@ -144,6 +154,14 @@ public static class Program
                     if (!string.IsNullOrWhiteSpace(v)) allowedMutationCaps.Add(v);
                 }
             }
+            if (root.TryGetProperty("allowed_h4_stages", out var h4Stages))
+            {
+                foreach (var st in h4Stages.EnumerateArray())
+                {
+                    string? v = st.GetString();
+                    if (!string.IsNullOrWhiteSpace(v)) allowedH4Stages.Add(v);
+                }
+            }
             if (root.TryGetProperty("ttl_seconds", out var ttlEl) && ttlEl.TryGetInt32(out int fileTtl))
             {
                 ttlSeconds = fileTtl;
@@ -163,6 +181,7 @@ public static class Program
             AllowedTargets = allowedTargets,
             AllowMutation = allowMutation,
             AllowedMutationCapabilities = allowedMutationCaps,
+            AllowedH4Stages = allowedH4Stages,
             ExpiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(Math.Clamp(ttlSeconds, 1, 86400))
         };
     }

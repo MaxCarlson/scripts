@@ -17,6 +17,7 @@ public interface IOperationStore
 {
     IdempotencyLookup CheckIdempotency(string clientSid, string requestId, string canonicalPayloadHash);
     void InsertOperation(OperationRecord record);
+    bool TryInsertOperation(OperationRecord record, out IdempotencyLookup conflict);
     void UpdateOperationState(
         string operationId,
         OperationState state,
@@ -67,6 +68,29 @@ public sealed class InMemoryOperationStore : IOperationStore
             {
                 _byClientReq[CompositeKey(record.ClientSid, record.RequestId)] = record;
             }
+        }
+    }
+
+    public bool TryInsertOperation(OperationRecord record, out IdempotencyLookup conflict)
+    {
+        lock (_sync)
+        {
+            if (!string.IsNullOrEmpty(record.RequestId) &&
+                _byClientReq.TryGetValue(CompositeKey(record.ClientSid, record.RequestId), out OperationRecord? existing))
+            {
+                var kind = string.Equals(existing.CanonicalPayloadHash, record.CanonicalPayloadHash, StringComparison.Ordinal)
+                    ? IdempotencyLookupKind.ReplayExisting
+                    : IdempotencyLookupKind.PayloadMismatch;
+                conflict = new IdempotencyLookup(kind, existing);
+                return false;
+            }
+            _byOpId[record.OperationId] = record;
+            if (!string.IsNullOrEmpty(record.RequestId))
+            {
+                _byClientReq[CompositeKey(record.ClientSid, record.RequestId)] = record;
+            }
+            conflict = new IdempotencyLookup(IdempotencyLookupKind.NewRequest, null);
+            return true;
         }
     }
 
