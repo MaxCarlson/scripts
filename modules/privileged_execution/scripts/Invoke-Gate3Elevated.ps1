@@ -25,48 +25,77 @@ param(
     [string]$VmName = 'RC-H4-Windows-Acceptance',
     [string]$CheckpointId = '9f45b469-382c-4be0-a50e-7a71384c7922',
     [string]$ExpectedGuestHost = 'DESKTOP-1ITSJV0',
-    [string]$EvidenceOut = 'C:\ProgramData\PrivExec\state\gate3-evidence.json'
+    [string]$EvidenceOut = 'C:\ProgramData\PrivExec\state\gate3-evidence.json',
+    [string]$DotnetExe = 'C:\Program Files\dotnet\dotnet.exe',
+    [int]$BrokerReadyTimeoutSeconds = 120,
+    [switch]$SkipElevationCheck,
+    [switch]$SkipGitProvenanceCheck
 )
 
 $ErrorActionPreference = 'Stop'
 
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    throw 'Invoke-Gate3Elevated.ps1 requires an elevated Administrator PowerShell 7 session.'
+if (-not $SkipElevationCheck) {
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        throw 'Invoke-Gate3Elevated.ps1 requires an elevated Administrator PowerShell 7 session.'
+    }
 }
 
+function Assert-NoReparsePoint {
+    param([Parameter(Mandatory)][string]$FullPath, [string]$Label = 'Path')
+    $root = [System.IO.Path]::GetPathRoot($FullPath)
+    $current = $FullPath
+    while (-not [string]::IsNullOrWhiteSpace($current) -and $current -ne $root) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "$Label traverses a reparse point at '$current'."
+            }
+        }
+        $parent = Split-Path -Parent $current
+        if ($parent -eq $current) { break }
+        $current = $parent
+    }
+}
+
+$moduleRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $moduleRoot)
 $runId = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $opIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $isolatedRunRoot = "C:\ProgramData\PrivExec-Gate3Run\$runId"
 $brokerProc = $null
 $tempGrant = $null
 $pipeName = 'privexec-gate3-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+$createdAccountInThisRun = $false
 
 $evidence = [ordered]@{
-    run_id                = $runId
-    started_at_utc        = (Get-Date).ToUniversalTime().ToString('o')
-    completed_at_utc      = $null
-    status                = 'started'
-    current_step          = 'init'
-    failing_step          = $null
-    error                 = $null
-    operator_account      = $opIdentity.Name
-    operator_sid          = $opIdentity.User.Value
-    agent_account         = "$env:COMPUTERNAME\$AgentUsername"
-    agent_sid             = $null
-    agent_groups          = @()
-    pre_rebind_acls       = $null
-    gate3_install         = $null
-    post_rebind_acl_state = $null
-    post_rebind_acl_desc  = $null
-    vm_before             = $null
-    checkpoint_before     = $null
-    gate3_preflight       = $null
-    vm_after              = $null
-    checkpoint_after      = $null
-    pipe_closed_verified  = $false
-    cleanup               = [ordered]@{ temp_dir_removed = $false; grant_removed = $false; errors = @() }
-    h4_mutations_executed = $false
+    run_id                    = $runId
+    started_at_utc            = (Get-Date).ToUniversalTime().ToString('o')
+    completed_at_utc          = $null
+    status                    = 'started'
+    current_step              = 'init'
+    failing_step              = $null
+    error                     = $null
+    git_head                  = $null
+    operator_account          = $opIdentity.Name
+    operator_sid              = $opIdentity.User.Value
+    agent_account             = "$env:COMPUTERNAME\$AgentUsername"
+    agent_sid                 = $null
+    agent_groups              = @()
+    created_account_preserved = $false
+    pre_rebind_acls           = $null
+    gate3_install             = $null
+    post_rebind_acl_state     = $null
+    post_rebind_acl_desc      = $null
+    broker_dll_sha256         = $null
+    vm_before                 = $null
+    checkpoint_before         = $null
+    gate3_preflight           = $null
+    vm_after                  = $null
+    checkpoint_after          = $null
+    pipe_closed_verified      = $false
+    cleanup                   = [ordered]@{ temp_dir_removed = $false; grant_removed = $false; errors = @() }
+    h4_mutations_executed     = $false
 }
 
 function Save-Gate3Evidence {
@@ -137,6 +166,16 @@ function Stop-BrokerOverPipe {
 }
 
 try {
+    # 0. Git/source provenance check
+    if (-not $SkipGitProvenanceCheck) {
+        $evidence['current_step'] = 'git_provenance'
+        $gitStatus = (& git -C $repoRoot status --porcelain) -join "`n"
+        if (-not [string]::IsNullOrWhiteSpace($gitStatus)) {
+            throw "Refusing Gate 3 run on dirty repository '$repoRoot'."
+        }
+        $evidence['git_head'] = (& git -C $repoRoot rev-parse HEAD).Trim()
+    }
+
     # 1. Account verification / provisioning
     $evidence['current_step'] = 'verify_agent_account'
     $existing = Get-LocalUser -Name $AgentUsername -ErrorAction SilentlyContinue
@@ -150,6 +189,8 @@ try {
         }
         New-LocalUser -Name $AgentUsername -Password $AgentCredential.Password -AccountNeverExpires -Description 'PrivExec dedicated standard-user agent' | Out-Null
         Add-LocalGroupMember -Group 'Users' -Member $AgentUsername | Out-Null
+        $createdAccountInThisRun = $true
+        $evidence['created_account_preserved'] = $true
     } elseif (-not $existing) {
         throw "Account '$AgentUsername' does not exist. Pass -CreateAgentAccount after operator approval."
     } elseif (-not $AgentCredential) {
@@ -199,8 +240,16 @@ try {
     $evidence['checkpoint_before'] = @{ name = $cpBefore[0].Name; id = [string]$cpBefore[0].Id; creation_time = $cpBefore[0].CreationTime.ToUniversalTime().ToString('o') }
     Save-Gate3Evidence
 
-    # 4. Start h4.preflight-only broker via protected dotnet.exe (interactive -g guest credential prompt)
+    # 4. Trusted .NET runtime & broker launch-chain integrity + startup
     $evidence['current_step'] = 'broker_start'
+    Assert-NoReparsePoint -FullPath $DotnetExe -Label 'Dotnet executable'
+    if (-not (Test-Path -LiteralPath $DotnetExe -PathType Leaf)) {
+        throw "Trusted dotnet executable not found: '$DotnetExe'."
+    }
+    $brokerDll = Join-Path $InstallRoot 'bin\PrivExecBroker.dll'
+    Assert-NoReparsePoint -FullPath $brokerDll -Label 'Staged PrivExecBroker.dll'
+    $evidence['broker_dll_sha256'] = (Get-FileHash -Algorithm SHA256 -LiteralPath $brokerDll).Hash.ToLowerInvariant()
+
     $tempGrant = Join-Path $InstallRoot "state\gate3-grant-$runId.json"
     @{
         allowed_client_sids           = @($agentSid)
@@ -211,12 +260,14 @@ try {
         ttl_seconds                   = 300
     } | ConvertTo-Json | Set-Content -LiteralPath $tempGrant -Encoding utf8NoBOM
 
-    $brokerOut = Join-Path $InstallRoot "state\gate3-broker-$runId.stdout.log"
-    $brokerErr = Join-Path $InstallRoot "state\gate3-broker-$runId.stderr.log"
-    $dotnetExe = 'C:\Program Files\dotnet\dotnet.exe'
-    Write-Host "Starting PrivExecBroker via '$dotnetExe'. Enter DESKTOP-1ITSJV0 guest credentials when prompted..."
-    $brokerProc = Start-Process -FilePath $dotnetExe -ArgumentList @(
-        (Join-Path $InstallRoot 'bin\PrivExecBroker.dll'),
+    # Clear potentially dangerous .NET startup hook / deps env vars before launching elevated broker
+    foreach ($dotnetEnvVar in @('DOTNET_STARTUP_HOOKS', 'DOTNET_ADDITIONAL_DEPS', 'DOTNET_SHARED_STORE', 'COREHOST_TRACE')) {
+        Remove-Item "Env:$dotnetEnvVar" -ErrorAction SilentlyContinue
+    }
+
+    Write-Host "Starting PrivExecBroker via '$DotnetExe'. Enter DESKTOP-1ITSJV0 guest credentials when prompted..."
+    $brokerProc = Start-Process -FilePath $DotnetExe -WorkingDirectory (Join-Path $InstallRoot 'bin') -ArgumentList @(
+        $brokerDll,
         '--pipe', $pipeName,
         '--descriptors-dir', (Join-Path $InstallRoot 'descriptors'),
         '--state-dir', (Join-Path $InstallRoot 'state'),
@@ -225,9 +276,20 @@ try {
         '--prompt-guest-credential'
     ) -PassThru
 
-    Start-Sleep -Seconds 2
-    if ($brokerProc.HasExited) {
-        throw "PrivExecBroker exited early ($($brokerProc.ExitCode))."
+    $pipeDeadline = (Get-Date).AddSeconds($BrokerReadyTimeoutSeconds)
+    $pipeReady = $false
+    while ((Get-Date) -lt $pipeDeadline) {
+        if ($brokerProc.HasExited) {
+            throw "PrivExecBroker exited early ($($brokerProc.ExitCode))."
+        }
+        if (Test-Path "\\.\pipe\$pipeName") {
+            $pipeReady = $true
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $pipeReady) {
+        throw "Timed out waiting ${BrokerReadyTimeoutSeconds}s for PrivExecBroker named pipe '$pipeName'."
     }
 
     # 5. Execute single read-only h4.preflight under XERES\PrivExecAgent
@@ -239,9 +301,12 @@ try {
 
     $agentScript = Join-Path $agProfile 'Invoke-Gate3AgentClient.ps1'
     @'
-param([string]$PipeName, [string]$VmId, [string]$VmName, [string]$ExpectedGuestHost, [string]$InstallRoot)
+param([string]$PipeName, [string]$VmId, [string]$VmName, [string]$ExpectedGuestHost, [string]$InstallRoot, [string]$ExpectedAgentSid)
 $ErrorActionPreference = 'Stop'
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+if ($ExpectedAgentSid -and $id.User.Value -ne $ExpectedAgentSid) {
+    throw "Agent SID mismatch: expected '$ExpectedAgentSid', got '$($id.User.Value)'."
+}
 function Send-Pipe([hashtable]$Payload) {
     $json = $Payload | ConvertTo-Json -Depth 8 -Compress
     $b = [Text.Encoding]::UTF8.GetBytes($json)
@@ -265,15 +330,31 @@ $runResp = Send-Pipe @{
     capability = 'h4.preflight'; target = @{ type = 'hyperv_vm'; id = $VmId }; mode = 'dry_run'
     parameters = @{ vm_name = $VmName; expected_guest_host = $ExpectedGuestHost }
 }
+if (-not $runResp.ok -or $runResp.state -ne 'succeeded') {
+    throw "h4.preflight failed (state=$($runResp.state), category=$($runResp.diagnostic_category)): $($runResp.error)"
+}
 $resResp = Send-Pipe @{ protocol_version = 1; action = 'result'; operation_id = $runResp.operation_id }
-[pscustomobject]@{ account = $id.Name; sid = $id.User.Value; status = $st; run = $runResp; result = $resResp } | ConvertTo-Json -Depth 10
+if (-not $resResp.ok -or $resResp.state -ne 'succeeded' -or $resResp.result.stage_results.Preflight -ne 'PASS' -or $resResp.result.apply_requested -ne $false -or $resResp.result.guest_authorized -ne $false) {
+    throw "h4.preflight result verification failed: $($resResp | ConvertTo-Json -Compress)"
+}
+foreach ($pt in @(
+    (Join-Path $InstallRoot 'bin\PrivExecBroker.dll'),
+    (Join-Path $InstallRoot 'descriptors\h4.preflight.json'),
+    (Join-Path $InstallRoot 'adapters\Invoke-H4PreflightAdapter.ps1'),
+    (Join-Path $InstallRoot 'state\privexec.db')
+)) {
+    $blocked = $false
+    try { [IO.File]::OpenWrite($pt).Dispose() } catch { $blocked = $true }
+    if (-not $blocked) { throw "SECURITY FAILURE: Agent could open '$pt' for write." }
+}
+[pscustomobject]@{ account = $id.Name; sid = $id.User.Value; status = $st; run = $runResp; result = $resResp; write_denials_checked = 4 } | ConvertTo-Json -Depth 10
 '@ | Set-Content -LiteralPath $agentScript -Encoding utf8NoBOM
 
     $agOut = Join-Path $agProfile 'agent-out.json'
     $agErr = Join-Path $agProfile 'agent-err.txt'
     $pAg = Start-Process -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' `
         -Credential $AgentCredential -WorkingDirectory $agProfile -Environment $agEnv `
-        -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $agentScript, '-PipeName', $pipeName, '-VmId', $VmId, '-VmName', $VmName, '-ExpectedGuestHost', $ExpectedGuestHost, '-InstallRoot', $InstallRoot) `
+        -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $agentScript, '-PipeName', $pipeName, '-VmId', $VmId, '-VmName', $VmName, '-ExpectedGuestHost', $ExpectedGuestHost, '-InstallRoot', $InstallRoot, '-ExpectedAgentSid', $agentSid) `
         -RedirectStandardOutput $agOut -RedirectStandardError $agErr -Wait -PassThru -WindowStyle Hidden
     if ($pAg.ExitCode -ne 0) {
         $errTxt = Get-Content -LiteralPath $agErr -Raw -ErrorAction SilentlyContinue
@@ -289,8 +370,12 @@ $resResp = Send-Pipe @{ protocol_version = 1; action = 'result'; operation_id = 
 
     $vmAfter = Get-VM -Id ([guid]$VmId) -ErrorAction Stop
     $cpAfter = @(Get-VMSnapshot -VM $vmAfter -ErrorAction Stop | Where-Object { $_.Id -eq [guid]$CheckpointId })
+    if ($cpAfter.Count -ne 1) { throw "Postflight checkpoint '$CheckpointId' missing." }
     $evidence['vm_after'] = @{ name = $vmAfter.Name; id = [string]$vmAfter.Id; state = [string]$vmAfter.State }
     $evidence['checkpoint_after'] = @{ name = $cpAfter[0].Name; id = [string]$cpAfter[0].Id; creation_time = $cpAfter[0].CreationTime.ToUniversalTime().ToString('o') }
+    if ($evidence['vm_after'].id -ne $evidence['vm_before'].id -or $evidence['vm_after'].state -ne $evidence['vm_before'].state -or $evidence['checkpoint_after'].id -ne $evidence['checkpoint_before'].id) {
+        throw 'VM or checkpoint state changed unexpectedly during Gate 3 preflight.'
+    }
 
     $evidence['status'] = 'passed'
     $evidence['current_step'] = 'completed'
@@ -315,6 +400,10 @@ finally {
     if (Test-Path -LiteralPath $isolatedRunRoot) {
         Remove-Item -LiteralPath $isolatedRunRoot -Recurse -Force -ErrorAction SilentlyContinue
         $evidence['cleanup']['temp_dir_removed'] = $true
+    }
+    $g3Parent = Split-Path -Parent $isolatedRunRoot
+    if ($g3Parent -and (Test-Path -LiteralPath $g3Parent) -and @(Get-ChildItem -LiteralPath $g3Parent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+        Remove-Item -LiteralPath $g3Parent -Force -ErrorAction SilentlyContinue
     }
     Save-Gate3Evidence
 }

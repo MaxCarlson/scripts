@@ -925,3 +925,71 @@ def test_unauthorized_isolated_client_and_expired_grant_checks(tmp_path: Path) -
         if p2.poll() is None:
             p2.terminate()
             p2.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires Windows PowerShell 7")
+def test_gate3_runner_fail_closed_guards(tmp_path: Path) -> None:
+    gate3_script = SCRIPTS_DIR / "Invoke-Gate3Elevated.ps1"
+    ev_dir = tmp_path / "state"
+    ev_dir.mkdir(parents=True)
+
+    # 1. Non-elevated session must fail closed when -SkipElevationCheck is omitted
+    res_nonadmin = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(gate3_script)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_nonadmin.returncode != 0
+    assert "requires an elevated Administrator" in res_nonadmin.stderr
+
+    # 2. Missing agent account without -CreateAgentAccount must fail closed and write evidence
+    ev_missing = ev_dir / "ev-missing.json"
+    res_missing = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(gate3_script),
+            "-SkipElevationCheck",
+            "-SkipGitProvenanceCheck",
+            "-AgentUsername",
+            "NonexistentPrivExecAgent_999",
+            "-EvidenceOut",
+            str(ev_missing),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_missing.returncode != 0
+    assert "does not exist" in res_missing.stderr
+    ev_missing_data = json.loads(ev_missing.read_text(encoding="utf-8"))
+    assert ev_missing_data["status"] == "failed"
+    assert ev_missing_data["failing_step"] == "verify_agent_account"
+    assert ev_missing_data["h4_mutations_executed"] is False
+
+    # 3. Existing account with -CreateAgentAccount must refuse to overwrite
+    ev_exists = ev_dir / "ev-exists.json"
+    res_exists = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(gate3_script),
+            "-SkipElevationCheck",
+            "-SkipGitProvenanceCheck",
+            "-CreateAgentAccount",
+            "-AgentUsername",
+            os.environ.get("USERNAME", "mcarls"),
+            "-EvidenceOut",
+            str(ev_exists),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_exists.returncode != 0
+    assert "already exists; refusing to overwrite" in res_exists.stderr
