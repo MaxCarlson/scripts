@@ -23,11 +23,14 @@
    Get-VM -Id d8483f98-8884-4758-abd1-cd6107c83c03 | Select-Object Id, Name, State
    Get-VMSnapshot -VMName RC-H4-Windows-Acceptance | Where-Object { $_.Id -eq '9f45b469-382c-4be0-a50e-7a71384c7922' } | Select-Object Id, Name, CreationTime
    ```
-2. **Operator binds staged ACLs to the designated non-admin agent account and starts a read-only broker session** (prompting interactively for guest credential via `-g`, with `allow_mutation: false`, `allowed_capabilities: ["h4.preflight"]`, `allowed_targets: ["d8483f98-8884-4758-abd1-cd6107c83c03"]`, short TTL e.g. `ttl_seconds: 300`):
+2. **Operator binds staged ACLs to the designated non-admin agent account and starts a read-only broker session** directly via `C:\Program Files\dotnet\dotnet.exe` (avoiding agent-writable Python `.venv` in the elevated launch chain) with `--prompt-guest-credential`, `allow_mutation: false`, `allowed_capabilities: ["h4.preflight"]`, `allowed_targets: ["d8483f98-8884-4758-abd1-cd6107c83c03"]`, and short TTL (`--ttl-seconds 300`):
    ```powershell
-   privexec broker start -c C:\ProgramData\PrivExec\gate3-preflight-grant.json `
-       -b C:\ProgramData\PrivExec\bin\PrivExecBroker.dll `
-       -d C:\ProgramData\PrivExec\descriptors -s C:\ProgramData\PrivExec\state -g
+   & "C:\Program Files\dotnet\dotnet.exe" "C:\ProgramData\PrivExec\bin\PrivExecBroker.dll" `
+       --pipe privexec-broker-v1 `
+       --descriptors-dir "C:\ProgramData\PrivExec\descriptors" `
+       --state-dir "C:\ProgramData\PrivExec\state" `
+       --grant-file "C:\ProgramData\PrivExec\state\gate3-preflight-grant.json" `
+       --ttl-seconds 300 --prompt-guest-credential
    ```
 3. **Authorized non-admin agent executes `h4.preflight`:**
    ```powershell
