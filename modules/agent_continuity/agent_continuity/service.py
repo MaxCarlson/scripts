@@ -912,7 +912,7 @@ class ContinuityService:
         """Preview or execute a full atomic rebuild of index.sqlite from durable events."""
         assert_sqlite_writer_allowed(self.materializer.db_path, allow_unsafe_cross_os=self.allow_unsafe_cross_os)
         roots = discover_spool_roots(self.home_dir)
-        scan = read_spool_events(roots)
+        scan = read_spool_events(roots, optional_roots={self.home_dir / "events"})
         if not apply:
             return {
                 "action": "rebuild",
@@ -937,7 +937,7 @@ class ContinuityService:
         """Collect read-only diagnostic state across storage, environment, and providers."""
         local_env = load_or_create_environment(self.home_dir, persist=False)
         spool_roots = discover_spool_roots(self.home_dir)
-        scan = read_spool_events(spool_roots)
+        scan = read_spool_events(spool_roots, optional_roots={self.home_dir / "events"})
         db_snap = self.materializer.get_diagnostics_snapshot()
         can_write = self._can_write_sqlite()
 

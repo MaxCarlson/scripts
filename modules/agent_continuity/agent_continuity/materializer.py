@@ -94,7 +94,7 @@ class SQLiteMaterializer:
     def sync_from_spools(self, extra_roots: list[Path] | None = None) -> SyncResult:
         """Ingest any unmaterialized events from configured spool roots."""
         roots = discover_spool_roots(self.home_dir, extra_roots=extra_roots)
-        scan = read_spool_events(roots)
+        scan = read_spool_events(roots, optional_roots={self.home_dir / "events"})
         ingested = 0
         skipped = 0
 
@@ -150,7 +150,7 @@ class SQLiteMaterializer:
         """Rebuild index.sqlite atomically from scratch by replaying all durable spool events."""
         assert_sqlite_writer_allowed(self.db_path, allow_unsafe_cross_os=self.allow_unsafe_cross_os)
         roots = discover_spool_roots(self.home_dir, extra_roots=extra_roots)
-        scan = read_spool_events(roots)
+        scan = read_spool_events(roots, optional_roots={self.home_dir / "events"})
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         staging = self.db_path.with_name(f".index.sqlite.rebuild.{os.getpid()}.{secrets.token_hex(4)}.tmp")

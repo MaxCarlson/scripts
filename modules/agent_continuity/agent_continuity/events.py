@@ -15,6 +15,9 @@ from .environment import load_config
 from .errors import ContinuityError, ErrorCode
 from .models import EventEnvelope
 
+MAX_EVENT_FILE_BYTES = 1_048_576
+SUPPORTED_EVENT_SCHEMA_VERSIONS = frozenset({1})
+
 _REQUIRED_FIELDS = (
     "event_id",
     "event_schema_version",
@@ -118,25 +121,58 @@ def discover_spool_roots(home_dir: Path, extra_roots: list[Path] | None = None) 
     return roots
 
 
-def read_spool_events(spool_roots: list[Path]) -> SpoolScanResult:
+def read_spool_events(
+    spool_roots: list[Path],
+    *,
+    optional_roots: set[Path] | None = None,
+    max_event_bytes: int = MAX_EVENT_FILE_BYTES,
+) -> SpoolScanResult:
     """
     Scan all event files across spool roots without mutating spool files.
 
-    Malformed, truncated, or schema-invalid JSON files are recorded as SpoolIssue entries
-    rather than aborting valid event ingestion.
+    Malformed, truncated, oversized, or schema-invalid JSON files are recorded as
+    SpoolIssue entries rather than aborting valid event ingestion.
     """
     records: list[SpoolRecord] = []
     issues: list[SpoolIssue] = []
+    optional_keys = {str(p) for p in (optional_roots or set())}
 
     for root in spool_roots:
-        if not root.exists():
+        try:
+            exists = root.exists()
+            is_dir = root.is_dir() if exists else False
+        except OSError as exc:
+            issues.append(SpoolIssue(str(root), f"Spool root is inaccessible: {exc}"))
             continue
-        if not root.is_dir():
+        if not exists:
+            if str(root) not in optional_keys:
+                issues.append(SpoolIssue(str(root), "Configured external spool root does not exist or is inaccessible"))
+            continue
+        if not is_dir:
             issues.append(SpoolIssue(str(root), "Spool root is not a directory"))
             continue
 
-        for path in sorted(root.rglob("*.json")):
+        try:
+            candidates = sorted(root.rglob("*.json"))
+        except OSError as exc:
+            issues.append(SpoolIssue(str(root), f"Failed to list spool root: {exc}"))
+            continue
+
+        for path in candidates:
             if path.name.startswith(".tmp.") or "quarantine" in path.parts:
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError as exc:
+                issues.append(SpoolIssue(str(path), f"Unreadable event file metadata: {exc}"))
+                continue
+            if size == 0:
+                issues.append(SpoolIssue(str(path), "Zero-byte or whitespace-only event file"))
+                continue
+            if size > max_event_bytes:
+                issues.append(
+                    SpoolIssue(str(path), f"Oversized event file ({size} > {max_event_bytes} bytes)")
+                )
                 continue
             try:
                 raw_text = path.read_text(encoding="utf-8")
@@ -158,6 +194,15 @@ def read_spool_events(spool_roots: list[Path]) -> SpoolScanResult:
             missing = [f for f in _REQUIRED_FIELDS if f not in data]
             if missing:
                 issues.append(SpoolIssue(str(path), f"Missing required event fields: {', '.join(missing)}"))
+                continue
+            schema_ver = data.get("event_schema_version")
+            if isinstance(schema_ver, bool) or not isinstance(schema_ver, int) or schema_ver not in SUPPORTED_EVENT_SCHEMA_VERSIONS:
+                issues.append(
+                    SpoolIssue(str(path), f"Unsupported event_schema_version: {schema_ver!r}")
+                )
+                continue
+            if not all(isinstance(data.get(k), str) and data.get(k, "").strip() for k in ("event_id", "event_type", "environment_id")):
+                issues.append(SpoolIssue(str(path), "event_id, event_type, and environment_id must be non-empty strings"))
                 continue
             if not isinstance(data.get("payload"), dict):
                 issues.append(SpoolIssue(str(path), "Event payload must be a JSON object"))
