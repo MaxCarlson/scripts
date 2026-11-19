@@ -280,20 +280,23 @@ public sealed class ProcessCapabilityExecutor : ICapabilityExecutor
         string sanitizedOut,
         string sanitizedErr)
     {
-        string opDir = Path.Combine(_evidenceBaseDir, operationId);
-        Directory.CreateDirectory(opDir);
-        SecurityAndAcl.AssertNoReparsePoints(opDir, "Operation evidence directory");
-
-        string resultFile = Path.Combine(opDir, "sanitized-result.json");
-        var payload = new
+        return SecurityAndAcl.RunAsProcessIdentity(() =>
         {
-            operation_id = operationId,
-            result = parsedResult,
-            stdout = sanitizedOut,
-            stderr = sanitizedErr
-        };
-        File.WriteAllText(resultFile, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
-        return new List<string> { resultFile };
+            string opDir = Path.Combine(_evidenceBaseDir, operationId);
+            Directory.CreateDirectory(opDir);
+            SecurityAndAcl.AssertNoReparsePoints(opDir, "Operation evidence directory");
+
+            string resultFile = Path.Combine(opDir, "sanitized-result.json");
+            var payload = new
+            {
+                operation_id = operationId,
+                result = parsedResult,
+                stdout = sanitizedOut,
+                stderr = sanitizedErr
+            };
+            File.WriteAllText(resultFile, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
+            return new List<string> { resultFile };
+        });
     }
 
     private static async Task<string> ReadBoundedAsync(StreamReader reader, int maxChars)

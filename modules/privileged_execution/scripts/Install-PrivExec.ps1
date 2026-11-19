@@ -133,27 +133,57 @@ if (-not [string]::IsNullOrWhiteSpace($H4SourceDir)) {
     }
 }
 
-$icacls = "$env:SystemRoot\System32\icacls.exe"
+function Set-StrictDirectoryAcl {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$OperatorAccount,
+        [string]$ReadOnlyAgentAccount = ''
+    )
+    $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    $prop = [System.Security.AccessControl.PropagationFlags]'None'
+    $allow = [System.Security.AccessControl.AccessControlType]::Allow
+
+    foreach ($adminAcct in @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators', $OperatorAccount)) {
+        $sid = ([System.Security.Principal.NTAccount]$adminAcct).Translate([System.Security.Principal.SecurityIdentifier])
+        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+            $sid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $prop, $allow))
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ReadOnlyAgentAccount)) {
+        $agentSid = ([System.Security.Principal.NTAccount]$ReadOnlyAgentAccount).Translate([System.Security.Principal.SecurityIdentifier])
+        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+            $agentSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, $inherit, $prop, $allow))
+    }
+
+    Set-Acl -LiteralPath $Path -AclObject $acl
+
+    # Reset any existing child items so they inherit only the reconciled parent ACL (purging stale explicit ACEs)
+    Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        $childAcl = Get-Acl -LiteralPath $_.FullName
+        $childAcl.SetAccessRuleProtection($false, $false)
+        foreach ($r in @($childAcl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))) {
+            $childAcl.RemoveAccessRuleSpecific($r)
+        }
+        Set-Acl -LiteralPath $_.FullName -AclObject $childAcl
+    }
+}
+
 $readOnlyDirs = @($resolvedRoot, $subDirs.bin, (Split-Path -Parent $subDirs.client), $subDirs.client, $subDirs.descriptors, $subDirs.adapters, $subDirs.h4_scripts)
 $privateDirs = @($subDirs.state, $subDirs.work)
 
 # Create directories and apply restrictive ACLs BEFORE staging binaries/scripts (closes partial-install window)
+$agentForReadOnly = if ($Mode -eq 'CrossAccountIsolated') { $AgentAccount } else { '' }
 foreach ($d in $readOnlyDirs) {
     New-Item -ItemType Directory -Path $d -Force | Out-Null
     Assert-NoReparsePoint -FullPath $d
-    & $icacls $d /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" "${OperatorAccount}:(OI)(CI)F" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "icacls failed on '$d'." }
-    if ($Mode -eq 'CrossAccountIsolated') {
-        & $icacls $d /grant "${AgentAccount}:(OI)(CI)RX" | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "icacls agent RX grant failed on '$d'." }
-    }
+    Set-StrictDirectoryAcl -Path $d -OperatorAccount $OperatorAccount -ReadOnlyAgentAccount $agentForReadOnly
 }
 
 foreach ($d in $privateDirs) {
     New-Item -ItemType Directory -Path $d -Force | Out-Null
     Assert-NoReparsePoint -FullPath $d
-    & $icacls $d /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" "${OperatorAccount}:(OI)(CI)F" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "icacls failed on '$d'." }
+    Set-StrictDirectoryAcl -Path $d -OperatorAccount $OperatorAccount
 }
 
 Copy-Item -LiteralPath $brokerDll -Destination (Join-Path $subDirs.bin 'PrivExecBroker.dll') -Force

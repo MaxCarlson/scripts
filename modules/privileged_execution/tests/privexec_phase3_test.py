@@ -627,3 +627,43 @@ def test_gate2_account_description_length_and_cleanup_matching() -> None:
         check=True,
     )
     assert "OWNERSHIP_OK" in res.stdout
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL reconciliation runs on Windows")
+def test_installer_reconciles_and_purges_stale_acls(tmp_path: Path) -> None:
+    install_root = tmp_path / "privexec-install"
+    desc_dir = install_root / "descriptors"
+    state_dir = install_root / "state"
+    desc_dir.mkdir(parents=True)
+    state_dir.mkdir(parents=True)
+    stale_child = desc_dir / "stale.json"
+    stale_child.write_text("{}", encoding="utf-8")
+
+    # Seed stale explicit ACEs on descriptors, child file, and state
+    for target in (desc_dir, stale_child, state_dir):
+        subprocess.run(["icacls", str(target), "/grant", "BUILTIN\\Users:(RX)"], check=True, capture_output=True)
+
+    subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(SCRIPTS_DIR / "Install-PrivExec.ps1"),
+            "-Apply",
+            "-Mode",
+            "SameUserDev",
+            "-InstallRoot",
+            str(install_root),
+            "-Json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    for target in (desc_dir, stale_child, state_dir):
+        acl_out = subprocess.run(["icacls", str(target)], check=True, capture_output=True, text=True).stdout
+        assert "BUILTIN\\Users" not in acl_out
+        assert "NT AUTHORITY\\SYSTEM" in acl_out
+        assert "BUILTIN\\Administrators" in acl_out

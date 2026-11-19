@@ -27,6 +27,7 @@ internal static class Phase3Tests
             ("PipeServerHandlesBadClientAndEarlyEofCleanly", TestPipeServerHandlesBadClientAndEarlyEofAsync),
             ("ProcessExecutorPinsChildTempInsideStateDir", TestProcessExecutorPinsChildTempAsync),
             ("AccountDescriptionAndOwnershipMatching", TestAccountDescriptionAndOwnershipMatchingAsync),
+            ("PipeServerDoesNotLeakImpersonation", TestPipeServerDoesNotLeakImpersonationAsync),
         };
 
         foreach ((string name, Func<Task> fn) in tests)
@@ -328,5 +329,99 @@ internal static class Phase3Tests
         Assert.True(!MatchesOwnership("", runId), "empty description rejected");
 
         return Task.CompletedTask;
+    }
+
+    private sealed class ImpersonationCheckingExecutor : ICapabilityExecutor
+    {
+        public string? ThreadIdentityBeforeAwait { get; private set; }
+        public string? ThreadIdentityAfterAwait { get; private set; }
+        public int ThreadIdBeforeAwait { get; private set; }
+
+        public async Task<ExecutionOutcome> ExecuteAsync(
+            CapabilityDescriptor descriptor,
+            ValidatedRunRequest request,
+            string operationId,
+            CancellationToken cancellationToken)
+        {
+            ThreadIdBeforeAwait = Environment.CurrentManagedThreadId;
+            using (var id1 = System.Security.Principal.WindowsIdentity.GetCurrent(true))
+            {
+                ThreadIdentityBeforeAwait = id1 is null ? null : $"{id1.Name}({id1.ImpersonationLevel})[T{Environment.CurrentManagedThreadId}]";
+            }
+            await Task.Yield();
+            using (var id2 = System.Security.Principal.WindowsIdentity.GetCurrent(true))
+            {
+                ThreadIdentityAfterAwait = id2 is null ? null : $"{id2.Name}({id2.ImpersonationLevel})[T{Environment.CurrentManagedThreadId}]";
+            }
+            return new ExecutionOutcome(
+                OperationState.Succeeded,
+                0,
+                null,
+                JsonSerializer.SerializeToElement(new { ok = true }),
+                new List<string>(),
+                true,
+                null);
+        }
+    }
+
+    private static async Task TestPipeServerDoesNotLeakImpersonationAsync()
+    {
+        string mySid = SecurityAndAcl.GetCurrentProcessUserSid();
+        string pipeName = "privexec-imp-" + Guid.NewGuid().ToString("N")[..8];
+        var grant = new SessionGrant
+        {
+            OperatorSid = mySid,
+            AllowedClientSids = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { mySid },
+            AllowedCapabilities = new HashSet<string> { "synthetic.check" },
+            AllowedTargets = new HashSet<string> { "t1" },
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5)
+        };
+        var desc = new CapabilityDescriptor(
+            1, "synthetic.check", "1.0.0", "synthetic", null, null, null, null, null,
+            new List<string> { "synthetic" }, new List<string> { "t1" },
+            true, false, false, 15, false, new List<string>(), new List<string>(), new List<string>(),
+            new Dictionary<string, ParameterRule>());
+        var exec = new ImpersonationCheckingExecutor();
+        var engine = new BrokerEngine(
+            new SessionAuthorizer(grant),
+            new Dictionary<string, CapabilityDescriptor> { ["synthetic.check"] = desc },
+            new InMemoryOperationStore(),
+            exec);
+        var server = new PipeBrokerServer(pipeName, SecurityAndAcl.BuildPipeSecurity(mySid, new[] { mySid }), engine);
+
+        using var cts = new CancellationTokenSource();
+        var listeningTcs = new TaskCompletionSource();
+        Task serverTask = server.RunAsync(cts.Token, () => listeningTcs.TrySetResult());
+        await listeningTcs.Task;
+
+        try
+        {
+            using var client = new System.IO.Pipes.NamedPipeClientStream(
+                ".", pipeName, System.IO.Pipes.PipeDirection.InOut,
+                System.IO.Pipes.PipeOptions.None, System.Security.Principal.TokenImpersonationLevel.Impersonation);
+            await client.ConnectAsync(3000);
+            byte[] reqBytes = System.Text.Encoding.UTF8.GetBytes(
+                """{"protocol_version":1,"action":"run","request_id":"req-imp-1","capability":"synthetic.check","target":{"type":"synthetic","id":"t1"},"mode":"dry_run","parameters":{}}""");
+            byte[] lenBytes = BitConverter.GetBytes((uint)reqBytes.Length);
+            await client.WriteAsync(lenBytes);
+            await client.WriteAsync(reqBytes);
+            await client.FlushAsync();
+
+            byte[] respLenBuf = new byte[4];
+            int r = await client.ReadAsync(respLenBuf);
+            Assert.Equal(4, r, "response header length");
+            uint rLen = BitConverter.ToUInt32(respLenBuf, 0);
+            byte[] respBuf = new byte[rLen];
+            int bodyRead = await client.ReadAsync(respBuf);
+            Assert.Equal((int)rLen, bodyRead, "response body length");
+
+            Assert.Equal(null, exec.ThreadIdentityBeforeAwait, "thread must not impersonate before await");
+            Assert.Equal(null, exec.ThreadIdentityAfterAwait, $"thread must not impersonate after await (before was T{exec.ThreadIdBeforeAwait})");
+        }
+        finally
+        {
+            cts.Cancel();
+            await serverTask;
+        }
     }
 }

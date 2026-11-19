@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using Microsoft.Win32.SafeHandles;
 
 namespace PrivExecBroker;
 
@@ -12,6 +14,30 @@ public sealed record ClientIdentity(string Sid, string AccountName, string Authe
 
 public static class SecurityAndAcl
 {
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool RevertToSelf();
+
+    public static void RevertImpersonationIfActive()
+    {
+        using var threadId = WindowsIdentity.GetCurrent(true);
+        if (threadId is not null)
+        {
+            RevertToSelf();
+        }
+    }
+
+    public static T RunAsProcessIdentity<T>(Func<T> action)
+    {
+        RevertImpersonationIfActive();
+        return WindowsIdentity.RunImpersonated(SafeAccessTokenHandle.InvalidHandle, action);
+    }
+
+    public static System.Threading.Tasks.Task<T> RunAsProcessIdentityAsync<T>(Func<System.Threading.Tasks.Task<T>> action)
+    {
+        RevertImpersonationIfActive();
+        return WindowsIdentity.RunImpersonatedAsync(SafeAccessTokenHandle.InvalidHandle, action);
+    }
+
     public static ClientIdentity GetCurrentWindowsIdentity()
     {
         using var identity = WindowsIdentity.GetCurrent(TokenAccessLevels.Query);

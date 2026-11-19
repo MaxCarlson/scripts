@@ -161,10 +161,15 @@ public sealed class PipeBrokerServer
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException or InvalidOperationException)
         {
+            SecurityAndAcl.RevertImpersonationIfActive();
             LogServerError(connId, "run_as_client_auth", ex);
             await TryWriteErrorResponseAsync(server, "authentication_failed",
                 $"Failed to authenticate Windows named-pipe client ({ex.GetType().Name}). Ensure client connects with TokenImpersonationLevel.Impersonation.");
             return;
+        }
+        finally
+        {
+            SecurityAndAcl.RevertImpersonationIfActive();
         }
 
         if (clientIdentity is null)
@@ -177,7 +182,8 @@ public sealed class PipeBrokerServer
         string responseJson;
         try
         {
-            responseJson = await _engine.HandleRawRequestAsync(requestJson, clientIdentity, cancellationToken);
+            responseJson = await SecurityAndAcl.RunAsProcessIdentityAsync(
+                () => _engine.HandleRawRequestAsync(requestJson, clientIdentity, cancellationToken));
         }
         catch (OperationCanceledException)
         {
