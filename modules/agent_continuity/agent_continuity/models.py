@@ -78,6 +78,7 @@ class EventType(StrEnum):
     ASSOCIATION_UNLINKED = "association.unlinked"
     ASSOCIATION_CONFLICT_FLAGGED = "association.conflict_flagged"
     ASSOCIATION_CANDIDATE_REJECTED = "association.candidate_rejected"
+    HOOK_EVENT = "hook.event"
     CHECKPOINT_RECORDED = "checkpoint.recorded"
 
 
