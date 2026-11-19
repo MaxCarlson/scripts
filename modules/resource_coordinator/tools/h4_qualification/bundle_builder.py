@@ -214,7 +214,8 @@ def _render_guest_script() -> str:
     return """#Requires -Version 7.0
 param(
     [Parameter(Mandatory)][string]$BundleRoot,
-    [string]$Python = "python"
+    [string]$Python = "python",
+    [switch]$IntegrityOnly
 )
 $ErrorActionPreference = "Stop"
 $bundle = (Resolve-Path -LiteralPath $BundleRoot).Path
@@ -223,7 +224,10 @@ $newSource = Join-Path $bundle "sources\\rc-1.0.0"
 $oldSource = Join-Path $bundle "sources\\rc-0.14.0"
 $integrityScript = Join-Path $bundle "harness\\source_integrity.py"
 $runner = Join-Path $bundle "harness\\windows_acceptance.py"
-foreach ($required in @($manifest, $newSource, $oldSource, $integrityScript, $runner)) {
+$reqMain = Join-Path $bundle "dependencies\\requirements.txt"
+$reqDev = Join-Path $bundle "dependencies\\requirements-dev.txt"
+$depLock = Join-Path $bundle "dependencies\\dependency-lock.json"
+foreach ($required in @($manifest, $newSource, $oldSource, $integrityScript, $runner, $reqMain, $reqDev, $depLock)) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Required bundle component missing: $required"
     }
@@ -257,6 +261,10 @@ try {
 if (-not $integrityInfo.verified) {
     [Console]::Error.WriteLine("Bundle component verification failed (bundle_component_mismatch).")
     exit 2
+}
+if ($IntegrityOnly) {
+    Write-Output ($integrityRaw -join "`n")
+    exit 0
 }
 $env:PYTHONPATH = (Join-Path $newSource "modules\\resource_coordinator") + [IO.Path]::PathSeparator + (Join-Path $newSource "modules\\resource_metrics")
 $run = Join-Path $env:TEMP ("h4-rc-" + [guid]::NewGuid().ToString("N"))

@@ -69,7 +69,9 @@ Describe 'Invoke-H4GuestRecovery.ps1' {
             [switch]$DryRunFail,
             [switch]$ApplyFail,
             [switch]$PhaseRootMissingAfterApply,
-            [switch]$TasksCleanInitially
+            [switch]$TasksCleanInitially,
+            [switch]$ExistingInvalidBundle,
+            [int]$BootstrapFailExitCode = 0
         )
         $Global:rEvents = [System.Collections.Generic.List[string]]::new()
         $Global:rPyCalls = [System.Collections.Generic.List[object]]::new()
@@ -79,6 +81,8 @@ Describe 'Invoke-H4GuestRecovery.ps1' {
         $Global:rPhaseRootExists = $true
         $Global:rRecoveryApplied = $false
         $Global:rBundleReady = -not [bool]$BundleNotStaged
+        $Global:rExistingInvalidBundle = [bool]$ExistingInvalidBundle
+        $Global:rBootstrapFailExitCode = $BootstrapFailExitCode
         $Global:rGuestHostname = $GuestHostname
         $Global:rMissingMarker = [bool]$MissingMarker
         $Global:rMissingManifest = [bool]$MissingManifest
@@ -181,16 +185,22 @@ Describe 'Invoke-H4GuestRecovery.ps1' {
                     test_results_preserved = $true
                 }
             }
-            if ($text -match 'Verify-H4GuestBundle\.ps1' -and $text -match 'new_1_0_0') {
-                if ($Global:rBundleReady) {
-                    return [pscustomobject]@{ ready = $true; reason = 'verified' }
+            if ($text -match 'Verify-H4GuestBundle\.ps1' -and $text -match 'recovery_root_identity_mismatch') {
+                if ($Global:rExistingInvalidBundle) {
+                    return [pscustomobject]@{ exists = $true; ready = $false; exit_code = 2; reason = "Existing recovery bundle uses stale tooling commit '005293bf8651fe81edc297f6c500e822d4c1ed9d'" }
                 }
-                return [pscustomobject]@{ ready = $false; reason = 'Recovery bundle not staged' }
+                if ($Global:rBundleReady) {
+                    return [pscustomobject]@{ exists = $true; ready = $true; exit_code = 0; tooling_commit = '3d23d260d6799e7bb466f5c1d8f7c723ad120070'; reason = 'verified' }
+                }
+                return [pscustomobject]@{ exists = $false; ready = $false; exit_code = 2; reason = 'Recovery bundle not staged' }
             }
-            if ($text -match 'Bootstrap-H4GuestBundle\.ps1') {
-                $Global:rEvents.Add('StageRecoveryBundle')
+            if ($text -match 'Bootstrap-H4GuestBundle\.ps1' -and $text -match '-IntegrityOnly') {
+                $Global:rEvents.Add('StageRecoveryBundle:-IntegrityOnly')
+                if ($Global:rBootstrapFailExitCode -ne 0) {
+                    return [pscustomobject]@{ status = 'bootstrap_failed'; exit_code = $Global:rBootstrapFailExitCode; output = "Simulated bootstrap failure ($($Global:rBootstrapFailExitCode))" }
+                }
                 $Global:rBundleReady = $true
-                return $null
+                return [pscustomobject]@{ status = 'staged_and_verified'; exit_code = 0; tooling_commit = '3d23d260d6799e7bb466f5c1d8f7c723ad120070'; output = '{"verified":true}' }
             }
             if ($text -match 'RC_H4_DISPOSABLE_GUEST_AUTHORIZED') {
                 $argsArr = @($ArgumentList[2] | ConvertFrom-Json)
@@ -354,16 +364,58 @@ Describe 'Invoke-H4GuestRecovery.ps1' {
         ($Global:rEvents -contains "CopyFrom:$guestRoot\*->$($jApplyFail.evidence_dir)\guest-evidence") | Should Be $true
     }
 
-    It 'executes gated apply: runs dry-run first, stages if requested, applies recovery, verifies post-recovery inventory, and preserves evidence' {
+    It 'fails closed on missing or invalid host cleanup manifest before staging or apply' {
+        Initialize-RecoveryMocks
+        $rMissing = Invoke-Rec -Extra @{ HostCleanupManifest = (Join-Path $testTemp 'nonexistent-manifest.json'); Apply = $true; AuthorizeGuestMutation = $true }
+        $rMissing.ExitCode | Should Be 2
+        ($rMissing.Output | ConvertFrom-Json).error_category | Should Be 'host_manifest_missing'
+        $Global:rPyCalls.Count | Should Be 0
+
+        $badJsonPath = Join-Path $testTemp 'bad-host-manifest.json'
+        Set-Content -LiteralPath $badJsonPath -Value '{"schema_version":1,"phases":[]}' -Encoding UTF8
+        $rInvalid = Invoke-Rec -Extra @{ HostCleanupManifest = $badJsonPath; Apply = $true; AuthorizeGuestMutation = $true }
+        $rInvalid.ExitCode | Should Be 2
+        ($rInvalid.Output | ConvertFrom-Json).error_category | Should Be 'host_manifest_invalid'
+        $Global:rPyCalls.Count | Should Be 0
+    }
+
+    It 'rejects existing stale/corrupt bundle without deleting it, reuses verified bundle, and preserves bootstrap exit codes' {
+        # 1. Existing partial/corrupt/stale directory fails closed even with -StageBundle
+        Initialize-RecoveryMocks -ExistingInvalidBundle
+        $rBadExisting = Invoke-Rec -Extra @{ StageBundle = $true }
+        $rBadExisting.ExitCode | Should Be 2
+        $jBad = $rBadExisting.Output | ConvertFrom-Json
+        $jBad.bundle_status | Should Be 'existing_bundle_invalid'
+        ($Global:rEvents -contains 'StageRecoveryBundle:-IntegrityOnly') | Should Be $false
+
+        # 2. Already-verified bundle is reused without re-extracting even when -StageBundle is supplied
+        Initialize-RecoveryMocks
+        $rReuse = Invoke-Rec -Extra @{ StageBundle = $true }
+        $rReuse.ExitCode | Should Be 0
+        $jReuse = $rReuse.Output | ConvertFrom-Json
+        $jReuse.bundle_status | Should Be 'reused_verified'
+        ($Global:rEvents -contains 'StageRecoveryBundle:-IntegrityOnly') | Should Be $false
+
+        # 3. Bootstrap error preserves exact exit code and details
+        Initialize-RecoveryMocks -BundleNotStaged -BootstrapFailExitCode 7
+        $rBootErr = Invoke-Rec -Extra @{ StageBundle = $true }
+        $rBootErr.ExitCode | Should Be 7
+        $jBootErr = $rBootErr.Output | ConvertFrom-Json
+        $jBootErr.error_category | Should Be 'bundle_bootstrap_failed'
+        $jBootErr.error | Should Match 'Simulated bootstrap failure \(7\)'
+    }
+
+    It 'executes gated apply: runs dry-run first, stages via -IntegrityOnly if requested, applies recovery, verifies post-recovery inventory, and preserves evidence' {
         Initialize-RecoveryMocks -BundleNotStaged
         $r = Invoke-Rec -Extra @{ Apply = $true; AuthorizeGuestMutation = $true; StageBundle = $true }
         $r.ExitCode | Should Be 0
         $j = $r.Output | ConvertFrom-Json
+        $j.bundle_status | Should Be 'staged_and_verified'
         $j.python_status | Should Be 'applied'
         $j.evidence_preserved | Should Be $true
         $j.post_inventory.rc_tasks.Count | Should Be 0
         $j.post_inventory.phases[0].root_exists | Should Be $true
-        $Global:rEvents -contains 'StageRecoveryBundle' | Should Be $true
+        ($Global:rEvents -contains 'StageRecoveryBundle:-IntegrityOnly') | Should Be $true
         $Global:rPyCalls.Count | Should Be 2
         $Global:rPyCalls[0].apply | Should Be $false
         $Global:rPyCalls[1].apply | Should Be $true
@@ -377,6 +429,25 @@ Describe 'Invoke-H4GuestRecovery.ps1' {
         Initialize-RecoveryMocks -PhaseRootMissingAfterApply
         $rMissing = Invoke-Rec -Extra @{ Apply = $true; AuthorizeGuestMutation = $true }
         $rMissing.ExitCode | Should Not Be 0
+
+        # Preserves existing host evidence directory on collision
+        $evCollideRoot = Join-Path $testTemp 'collide_rec_ev'
+        $evCollideDir = Join-Path $evCollideRoot 'rec01'
+        New-Item -ItemType Directory -Path $evCollideDir -Force | Out-Null
+        $sentinel = Join-Path $evCollideDir 'final-recovery-summary.json'
+        Set-Content -LiteralPath $sentinel -Value '{"keep":true}' -NoNewline -Encoding UTF8
+        Initialize-RecoveryMocks
+        $rCollide = Invoke-Rec -Extra @{ Apply = $true; AuthorizeGuestMutation = $true; EvidenceRoot = $evCollideRoot }
+        $rCollide.ExitCode | Should Not Be 0
+        (Get-Content -LiteralPath $sentinel -Raw) | Should Be '{"keep":true}'
+    }
+
+    It 'rejects stale v9 tooling commit when checking real bundle guard scriptblock logic' {
+        $scriptAst = [System.Management.Automation.Language.Parser]::ParseInput((Get-Content -LiteralPath $scriptPath -Raw), [ref]$null, [ref]$null)
+        $rawText = $scriptAst.Extent.Text
+        $rawText | Should Match '005293bf8651fe81edc297f6c500e822d4c1ed9d'
+        $rawText | Should Match '-IntegrityOnly'
+        $rawText | Should Not Match 'Remove-Item[^\r\n]*\$bRoot'
     }
 
     It 'supports standalone read-only -PostInventory verification and fails if residual task remains' {

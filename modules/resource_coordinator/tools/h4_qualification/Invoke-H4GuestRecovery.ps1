@@ -39,8 +39,13 @@ param(
     [string]$BundleZip = 'C:\H4-VM-Staging\bundle-rc1-v9\h4-windows-acceptance.zip',
     [string]$ExpectedBundleSha256 = '16912bab41ddb1d2be7c23f89c5caf70cdb94d84e6cf08e8e24ca0aa16c74017',
     [string]$BootstrapScript = (Join-Path $PSScriptRoot 'Bootstrap-H4GuestBundle.ps1'),
-    [string]$ExpectedBootstrapSha256 = '5EFACFAFCECC45DF5459D53B75A999B21574C83D0A2F5339F0A4AB1AB5D01DE9',
-    [string]$GuestBundleRoot = 'C:\H4-Guest-Work\recovery-bundles\v9-16912bab',
+    [string]$ExpectedBootstrapSha256 = '57B95576444971B5E39972E33B329E94D3B9F1A06728E196749184619CA718F0',
+    [string]$ExpectedToolingCommit = '',
+    [string[]]$RejectedToolingCommits = @(
+        '005293bf8651fe81edc297f6c500e822d4c1ed9d',
+        'f0b5b5e19ad254dde0373ffb5e0d5f814af335e4'
+    ),
+    [string]$GuestBundleRoot = 'C:\H4-Guest-Work\recovery-bundles\v10-pending',
     [string]$GuestVenvPython = 'C:\H4-Guest-Work\venv\Scripts\python.exe',
     [string]$EvidenceRoot = 'C:\H4-VM-Staging\evidence-recovery'
 )
@@ -489,6 +494,7 @@ $summary = [ordered]@{
     guest_bundle_root       = $GuestBundleRoot
     evidence_dir            = $null
     python_command          = $null
+    bundle_status           = 'not_checked'
     python_status           = 'not_run'
     evidence_preserved      = $null
     pre_inventory           = $null
@@ -530,8 +536,74 @@ try {
         throw "Protected baseline checkpoint '$ProtectedCheckpointId' was not found on VM '$VmName' ($VmId)."
     }
 
-    $bundleSha = Assert-H4FileDigest -Path $BundleZip -ExpectedSha256 $ExpectedBundleSha256 -Label 'Recovery v9 bundle'
+    $bundleSha = Assert-H4FileDigest -Path $BundleZip -ExpectedSha256 $ExpectedBundleSha256 -Label 'Recovery bundle'
     $bootstrapSha = Assert-H4FileDigest -Path $BootstrapScript -ExpectedSha256 $ExpectedBootstrapSha256 -Label 'Standalone Bootstrap-H4GuestBundle.ps1'
+
+    # Required host cleanup-manifest.json validation BEFORE any guest session, staging, or recovery apply
+    if ([string]::IsNullOrWhiteSpace($HostCleanupManifest)) {
+        $summary['error_category'] = 'host_manifest_missing'
+        $overallExit = 2
+        throw 'Required -HostCleanupManifest path cannot be empty.'
+    }
+    Assert-H4NoReparsePoint -FullPath $HostCleanupManifest -Label 'Host cleanup-manifest.json'
+    if (-not (Test-Path -LiteralPath $HostCleanupManifest -PathType Leaf)) {
+        $summary['error_category'] = 'host_manifest_missing'
+        $overallExit = 2
+        throw "Required host cleanup-manifest.json not found: '$HostCleanupManifest'."
+    }
+    try {
+        $hostManifest = Get-Content -LiteralPath $HostCleanupManifest -Raw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        $summary['error_category'] = 'host_manifest_invalid'
+        $overallExit = 2
+        throw "Host cleanup-manifest.json is unreadable or invalid JSON '$HostCleanupManifest': $($_.Exception.Message)"
+    }
+    if (-not $hostManifest -or $hostManifest.schema_version -ne 1 -or @($hostManifest.phases).Count -eq 0) {
+        $summary['error_category'] = 'host_manifest_invalid'
+        $overallExit = 2
+        throw "Host cleanup-manifest.json schema is invalid or contains no phases: '$HostCleanupManifest'."
+    }
+    $hostPhases = @($hostManifest.phases)
+    $hostTaskSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($hp in $hostPhases) {
+        if ($hp.phase -notin @('install', 'upgrade', 'rollback') -or [string]::IsNullOrWhiteSpace([string]$hp.run_id)) {
+            $summary['error_category'] = 'host_manifest_invalid'
+            $overallExit = 2
+            throw "Host cleanup-manifest.json has invalid phase or run_id in '$HostCleanupManifest'."
+        }
+        if ([string]$hp.source_tree_sha256 -ne $ExpectedSourceTreeSha256.ToLowerInvariant()) {
+            $summary['error_category'] = 'host_manifest_invalid'
+            $overallExit = 2
+            throw "Host cleanup-manifest.json source_tree_sha256 '$($hp.source_tree_sha256)' does not match expected '$ExpectedSourceTreeSha256'."
+        }
+        if ($hp.port -in @(0, 1235) -or $hp.port -lt 1024 -or $hp.port -gt 65535) {
+            $summary['error_category'] = 'host_manifest_invalid'
+            $overallExit = 2
+            throw "Host cleanup-manifest.json listener port '$($hp.port)' is invalid."
+        }
+        if (@($hp.task_names).Count -ne 3 -or (@($hp.task_names | Select-Object -Unique).Count -ne 3)) {
+            $summary['error_category'] = 'host_manifest_invalid'
+            $overallExit = 2
+            throw "Host cleanup-manifest.json task_names must contain 3 distinct task names."
+        }
+        foreach ($ht in @($hp.task_names)) {
+            if ($ht -notlike 'ResourceCoordinator-H4-*') {
+                $summary['error_category'] = 'host_manifest_invalid'
+                $overallExit = 2
+                throw "Host cleanup-manifest.json task '$ht' is not H4-scoped."
+            }
+            [void]$hostTaskSet.Add([string]$ht)
+        }
+    }
+    if ($ExpectedManifestTasks.Count -gt 0) {
+        $missingHostExp = @($ExpectedManifestTasks | Where-Object { -not $hostTaskSet.Contains($_) })
+        $extraHostExp = @($hostTaskSet | Where-Object { $ExpectedManifestTasks -notcontains $_ })
+        if ($missingHostExp.Count -gt 0 -or $extraHostExp.Count -gt 0) {
+            $summary['error_category'] = 'host_manifest_invalid'
+            $overallExit = 2
+            throw "Host cleanup-manifest.json task set mismatch against expected v8 tasks (missing=$($missingHostExp -join ','), extra=$($extraHostExp -join ','))."
+        }
+    }
 
     if ($isMutatingApply) {
         Assert-H4NoReparsePoint -FullPath $hostEvidenceDir -Label 'Host recovery evidence root'
@@ -564,25 +636,21 @@ try {
     $summary['pre_inventory'] = $preInsp
     $summary['evidence_preserved'] = [bool]($preInsp.test_root_exists -and $preInsp.manifest_exists -and $preInsp.marker_exists)
 
-    if (-not [string]::IsNullOrWhiteSpace($HostCleanupManifest) -and (Test-Path -LiteralPath $HostCleanupManifest -PathType Leaf)) {
-        $hostManifest = Get-Content -LiteralPath $HostCleanupManifest -Raw | ConvertFrom-Json -ErrorAction Stop
-        $hostPhases = @($hostManifest.phases)
-        $guestPhases = @($preInsp.phases)
-        if ($hostPhases.Count -ne $guestPhases.Count) {
-            throw "Host cleanup-manifest.json phase count ($($hostPhases.Count)) differs from guest ($($guestPhases.Count))."
-        }
-        for ($i = 0; $i -lt $hostPhases.Count; $i++) {
-            $hp = $hostPhases[$i]; $gp = $guestPhases[$i]
-            $hTasks = (@($hp.task_names) | ForEach-Object { [string]$_ } | Sort-Object) -join '|'
-            $gTasks = (@($gp.task_names) | ForEach-Object { [string]$_ } | Sort-Object) -join '|'
-            if ([string]$hp.phase -ne [string]$gp.phase -or
-                [string]$hp.run_id -ne [string]$gp.run_id -or
-                [int]$hp.port -ne [int]$gp.port -or
-                [string]$hp.source_tree_sha256 -ne [string]$gp.source_tree_sha256 -or
-                ([string]$hp.root).ToLowerInvariant() -ne ([string]$gp.root).ToLowerInvariant() -or
-                $hTasks -ne $gTasks) {
-                throw "Host cleanup-manifest.json does not match live guest cleanup-manifest.json for phase '$($gp.phase)'."
-            }
+    $guestPhases = @($preInsp.phases)
+    if ($hostPhases.Count -ne $guestPhases.Count) {
+        throw "Host cleanup-manifest.json phase count ($($hostPhases.Count)) differs from guest ($($guestPhases.Count))."
+    }
+    for ($i = 0; $i -lt $hostPhases.Count; $i++) {
+        $hp = $hostPhases[$i]; $gp = $guestPhases[$i]
+        $hTasks = (@($hp.task_names) | ForEach-Object { [string]$_ } | Sort-Object) -join '|'
+        $gTasks = (@($gp.task_names) | ForEach-Object { [string]$_ } | Sort-Object) -join '|'
+        if ([string]$hp.phase -ne [string]$gp.phase -or
+            [string]$hp.run_id -ne [string]$gp.run_id -or
+            [int]$hp.port -ne [int]$gp.port -or
+            [string]$hp.source_tree_sha256 -ne [string]$gp.source_tree_sha256 -or
+            ([string]$hp.root).ToLowerInvariant() -ne ([string]$gp.root).ToLowerInvariant() -or
+            $hTasks -ne $gTasks) {
+            throw "Host cleanup-manifest.json does not match live guest cleanup-manifest.json for phase '$($gp.phase)'."
         }
     }
 
@@ -590,79 +658,148 @@ try {
 
     if ($PostInventory) {
         $summary['post_inventory'] = $preInsp
+        $summary['bundle_status'] = 'skipped_post_inventory'
         $summary['python_status'] = 'skipped_post_inventory'
         if ($Json) { $summary | ConvertTo-Json -Depth 10 } else { Write-Host "POST-RECOVERY INVENTORY PASSED ($OperationId)." }
         exit 0
     }
 
-    # 3. Verify or explicitly stage immutable v9 recovery bundle on guest
-    $bundleState = Invoke-H4GuestScript -Session $session -ArgumentList @($GuestBundleRoot, $GuestVenvPython, $ExpectedSourceTreeSha256) -ScriptBlock {
-        param($bRoot, $pyExe, $expSrcSha)
+    # 3. Verify existing bundle (without deleting partial/corrupt/stale dirs) or stage new immutable bundle with -IntegrityOnly
+    $rejectedJson = ConvertTo-Json -Compress -InputObject @($RejectedToolingCommits)
+    $bundleState = Invoke-H4GuestScript -Session $session -ArgumentList @($GuestBundleRoot, $GuestVenvPython, $ExpectedSourceTreeSha256, $ExpectedToolingCommit, $rejectedJson) -ScriptBlock {
+        param($bRoot, $pyExe, $expSrcSha, $expToolingSha, $rejToolingRaw)
         $ErrorActionPreference = 'Stop'
+        $rejected = @($rejToolingRaw | ConvertFrom-Json)
         $pyOk = Test-Path -LiteralPath $pyExe -PathType Leaf
+        if (-not $pyOk) {
+            return [pscustomobject]@{ exists = (Test-Path -LiteralPath $bRoot); ready = $false; exit_code = 2; reason = "Guest venv Python missing: $pyExe" }
+        }
+        $exists = Test-Path -LiteralPath $bRoot
+        if (-not $exists) {
+            return [pscustomobject]@{ exists = $false; ready = $false; exit_code = 2; reason = "Recovery bundle not staged at '$bRoot'" }
+        }
+        $item = Get-Item -LiteralPath $bRoot -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not $item.PSIsContainer) {
+            return [pscustomobject]@{ exists = $true; ready = $false; exit_code = 2; reason = "Existing recovery bundle path is unsafe or not a directory: '$bRoot'" }
+        }
         $manifestPath = Join-Path $bRoot 'manifest.json'
         $verifyPs1 = Join-Path $bRoot 'scripts\Verify-H4GuestBundle.ps1'
         $runnerPy = Join-Path $bRoot 'harness\windows_acceptance.py'
         $srcNew = Join-Path $bRoot 'sources\rc-1.0.0'
-        if (-not $pyOk) { return [pscustomobject]@{ ready = $false; reason = "Guest venv Python missing: $pyExe" } }
-        if (-not ((Test-Path -LiteralPath $manifestPath -PathType Leaf) -and (Test-Path -LiteralPath $verifyPs1 -PathType Leaf) -and (Test-Path -LiteralPath $runnerPy -PathType Leaf) -and (Test-Path -LiteralPath $srcNew -PathType Container))) {
-            return [pscustomobject]@{ ready = $false; reason = "Recovery bundle not staged at '$bRoot'" }
+        foreach ($req in @($manifestPath, $verifyPs1, $runnerPy, $srcNew)) {
+            if (-not (Test-Path -LiteralPath $req)) {
+                return [pscustomobject]@{ exists = $true; ready = $false; exit_code = 2; reason = "Existing recovery bundle is incomplete (missing '$req') at '$bRoot'" }
+            }
         }
-        $m = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $m = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -ErrorAction Stop
         $newSrc = @($m.sources | Where-Object { $_.source_role -eq 'new_1_0_0' } | Select-Object -First 1)
         if ($newSrc.Count -ne 1 -or ([string]$newSrc[0].source_tree_sha256).ToLowerInvariant() -ne $expSrcSha.ToLowerInvariant()) {
-            return [pscustomobject]@{ ready = $false; reason = 'Bundle manifest new_1_0_0 digest mismatch' }
+            return [pscustomobject]@{ exists = $true; ready = $false; exit_code = 2; reason = 'Existing recovery bundle manifest new_1_0_0 digest mismatch' }
+        }
+        $toolingSha = if ($m.tooling_source) { ([string]$m.tooling_source.commit_sha).ToLowerInvariant() } else { '' }
+        if ([string]::IsNullOrWhiteSpace($toolingSha) -or ($rejected -contains $toolingSha)) {
+            return [pscustomobject]@{ exists = $true; ready = $false; exit_code = 2; reason = "Existing recovery bundle uses stale or unpinned tooling commit '$toolingSha'" }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($expToolingSha) -and $toolingSha -ne $expToolingSha.ToLowerInvariant()) {
+            return [pscustomobject]@{ exists = $true; ready = $false; exit_code = 2; reason = "Existing recovery bundle tooling commit '$toolingSha' does not match expected '$expToolingSha'" }
+        }
+        $verifyText = Get-Content -LiteralPath $verifyPs1 -Raw
+        if ($verifyText -notmatch '\[switch\]\$IntegrityOnly') {
+            return [pscustomobject]@{ exists = $true; ready = $false; exit_code = 2; reason = 'Existing recovery bundle Verify-H4GuestBundle.ps1 lacks -IntegrityOnly support' }
+        }
+        $runnerText = Get-Content -LiteralPath $runnerPy -Raw
+        if ($runnerText -notmatch 'recovery_root_identity_mismatch' -or $runnerText -notmatch 'post_recovery_inventory') {
+            return [pscustomobject]@{ exists = $true; ready = $false; exit_code = 2; reason = 'Existing recovery bundle windows_acceptance.py lacks hardened recovery safeguards' }
         }
         $env:PYTHONDONTWRITEBYTECODE = '1'
         $pwshExe = 'C:\Program Files\PowerShell\7\pwsh.exe'
-        $vOut = @(& $pwshExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $verifyPs1 -BundleRoot $bRoot -Python $pyExe *>&1)
-        if ($LASTEXITCODE -ne 0) {
-            return [pscustomobject]@{ ready = $false; reason = ("Verify-H4GuestBundle failed: " + (($vOut | ForEach-Object { [string]$_ }) -join "`n")) }
+        $vOut = @(& $pwshExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $verifyPs1 -BundleRoot $bRoot -Python $pyExe -IntegrityOnly *>&1)
+        $vExit = $LASTEXITCODE
+        if ($vExit -ne 0) {
+            return [pscustomobject]@{ exists = $true; ready = $false; exit_code = $vExit; reason = ("Existing recovery bundle failed Verify-H4GuestBundle -IntegrityOnly (exit $vExit): " + (($vOut | ForEach-Object { [string]$_ }) -join "`n")) }
         }
-        return [pscustomobject]@{ ready = $true; reason = 'verified' }
+        return [pscustomobject]@{ exists = $true; ready = $true; exit_code = 0; tooling_commit = $toolingSha; reason = 'verified' }
     }
 
-    if (-not $bundleState.ready) {
+    if ($bundleState.ready) {
+        $summary['bundle_status'] = 'reused_verified'
+    } else {
+        if ($bundleState.exists) {
+            $summary['bundle_status'] = 'existing_bundle_invalid'
+            $summary['error_category'] = 'existing_bundle_invalid'
+            $overallExit = if ($bundleState.exit_code -and [int]$bundleState.exit_code -ne 0) { [int]$bundleState.exit_code } else { 2 }
+            throw "$($bundleState.reason). Refusing destructive cleanup or reuse of existing directory '$GuestBundleRoot'."
+        }
         if (-not $isMutatingStage) {
             $drySpec = Get-H4RecoveryCommandSpec -PythonExe $GuestVenvPython -BundleRoot $GuestBundleRoot -TestRoot $GuestTestRoot
             $summary['python_command'] = $drySpec.rendered
+            $summary['bundle_status'] = 'bundle_not_staged'
             $summary['python_status'] = 'bundle_not_staged'
             $summary['error_category'] = 'bundle_not_staged'
             $overallExit = 2
-            throw "$($bundleState.reason). Re-run with -StageBundle once to verify and extract the immutable v9 recovery bundle into '$GuestBundleRoot' (no task or test-root changes)."
+            throw "$($bundleState.reason). Re-run with -StageBundle once to verify and extract the immutable recovery bundle into '$GuestBundleRoot' (no task or test-root changes)."
         }
         $stageDir = "C:\H4-Guest-Work\recovery-bundles\stage-$OperationId"
         Invoke-H4GuestScript -Session $session -ArgumentList @($stageDir, $GuestBundleRoot) -ScriptBlock {
             param($sDir, $bRoot)
             $ErrorActionPreference = 'Stop'
             if (Test-Path -LiteralPath $bRoot) {
-                throw "Target recovery bundle directory already exists and failed verification: '$bRoot'."
+                throw "Target recovery bundle directory already exists: '$bRoot'."
             }
             New-Item -ItemType Directory -Path $sDir -Force | Out-Null
             New-Item -ItemType Directory -Path (Split-Path -Parent $bRoot) -Force | Out-Null
         }
         Copy-H4ToGuest -Session $session -SourcePath $BundleZip -Destination "$stageDir\h4-windows-acceptance.zip"
         Copy-H4ToGuest -Session $session -SourcePath $BootstrapScript -Destination "$stageDir\Bootstrap-H4GuestBundle.ps1"
-        Invoke-H4GuestScript -Session $session -ArgumentList @($stageDir, $GuestBundleRoot, $bundleSha, $bootstrapSha, $GuestVenvPython) -ScriptBlock {
-            param($sDir, $bRoot, $expBundle, $expBoot, $pyExe)
+        $stageRes = Invoke-H4GuestScript -Session $session -ArgumentList @($stageDir, $GuestBundleRoot, $bundleSha, $bootstrapSha, $GuestVenvPython, $ExpectedSourceTreeSha256, $ExpectedToolingCommit, $rejectedJson) -ScriptBlock {
+            param($sDir, $bRoot, $expBundle, $expBoot, $pyExe, $expSrcSha, $expToolingSha, $rejToolingRaw)
             $ErrorActionPreference = 'Stop'
+            $rejected = @($rejToolingRaw | ConvertFrom-Json)
             $actBundle = (Get-FileHash -Algorithm SHA256 -LiteralPath "$sDir\h4-windows-acceptance.zip").Hash
-            if ($actBundle.ToLowerInvariant() -ne $expBundle.ToLowerInvariant()) { throw "Guest recovery bundle SHA-256 mismatch: $actBundle" }
+            if ($actBundle.ToLowerInvariant() -ne $expBundle.ToLowerInvariant()) {
+                return [pscustomobject]@{ status = 'digest_mismatch'; exit_code = 2; output = "Guest recovery bundle SHA-256 mismatch: $actBundle" }
+            }
             $actBoot = (Get-FileHash -Algorithm SHA256 -LiteralPath "$sDir\Bootstrap-H4GuestBundle.ps1").Hash
-            if ($actBoot.ToLowerInvariant() -ne $expBoot.ToLowerInvariant()) { throw "Guest Bootstrap-H4GuestBundle.ps1 SHA-256 mismatch: $actBoot" }
+            if ($actBoot.ToLowerInvariant() -ne $expBoot.ToLowerInvariant()) {
+                return [pscustomobject]@{ status = 'digest_mismatch'; exit_code = 2; output = "Guest Bootstrap-H4GuestBundle.ps1 SHA-256 mismatch: $actBoot" }
+            }
             $env:PYTHONDONTWRITEBYTECODE = '1'
             $pwshExe = 'C:\Program Files\PowerShell\7\pwsh.exe'
-            & $pwshExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$sDir\Bootstrap-H4GuestBundle.ps1" `
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            $bootOut = @(& $pwshExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$sDir\Bootstrap-H4GuestBundle.ps1" `
                 -ArchivePath "$sDir\h4-windows-acceptance.zip" `
                 -ExpectedSha256 $expBundle `
                 -DestinationRoot $bRoot `
-                -Python $pyExe
-            if ($LASTEXITCODE -ne 0) { throw "Bootstrap-H4GuestBundle.ps1 exited $LASTEXITCODE" }
-            $vOut = @(& $pwshExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$bRoot\scripts\Verify-H4GuestBundle.ps1" -BundleRoot $bRoot -Python $pyExe *>&1)
-            if ($LASTEXITCODE -ne 0) {
-                throw ("Verify-H4GuestBundle.ps1 exited ${LASTEXITCODE}: " + (($vOut | ForEach-Object { [string]$_ }) -join "`n"))
+                -Python $pyExe `
+                -IntegrityOnly *>&1)
+            $bootExit = $LASTEXITCODE
+            $ErrorActionPreference = $prevEap
+            if ($bootExit -ne 0) {
+                return [pscustomobject]@{ status = 'bootstrap_failed'; exit_code = $bootExit; output = (($bootOut | ForEach-Object { [string]$_ }) -join "`n") }
             }
+            $m = Get-Content -LiteralPath "$bRoot\manifest.json" -Raw | ConvertFrom-Json -ErrorAction Stop
+            $newSrc = @($m.sources | Where-Object { $_.source_role -eq 'new_1_0_0' } | Select-Object -First 1)
+            if ($newSrc.Count -ne 1 -or ([string]$newSrc[0].source_tree_sha256).ToLowerInvariant() -ne $expSrcSha.ToLowerInvariant()) {
+                return [pscustomobject]@{ status = 'manifest_mismatch'; exit_code = 2; output = 'Extracted bundle manifest new_1_0_0 digest mismatch' }
+            }
+            $toolingSha = if ($m.tooling_source) { ([string]$m.tooling_source.commit_sha).ToLowerInvariant() } else { '' }
+            if ([string]::IsNullOrWhiteSpace($toolingSha) -or ($rejected -contains $toolingSha) -or (-not [string]::IsNullOrWhiteSpace($expToolingSha) -and $toolingSha -ne $expToolingSha.ToLowerInvariant())) {
+                return [pscustomobject]@{ status = 'stale_tooling'; exit_code = 2; output = "Extracted bundle tooling commit '$toolingSha' rejected (expected '$expToolingSha')" }
+            }
+            $runnerText = Get-Content -LiteralPath "$bRoot\harness\windows_acceptance.py" -Raw
+            if ($runnerText -notmatch 'recovery_root_identity_mismatch' -or $runnerText -notmatch 'post_recovery_inventory') {
+                return [pscustomobject]@{ status = 'stale_tooling'; exit_code = 2; output = 'Extracted windows_acceptance.py lacks hardened recovery safeguards' }
+            }
+            return [pscustomobject]@{ status = 'staged_and_verified'; exit_code = 0; tooling_commit = $toolingSha; output = (($bootOut | ForEach-Object { [string]$_ }) -join "`n") }
         }
+        if (-not $stageRes -or $stageRes.exit_code -ne 0 -or $stageRes.status -ne 'staged_and_verified') {
+            $summary['bundle_status'] = if ($stageRes -and $stageRes.status) { [string]$stageRes.status } else { 'bootstrap_failed' }
+            $summary['error_category'] = 'bundle_bootstrap_failed'
+            $overallExit = if ($stageRes -and [int]$stageRes.exit_code -ne 0) { [int]$stageRes.exit_code } else { 2 }
+            throw "Recovery bundle staging/verification failed ($($summary['bundle_status']), exit=$overallExit): $($stageRes.output)"
+        }
+        $summary['bundle_status'] = 'staged_and_verified'
     }
 
     # 4. Always execute read-only Python --profile recover dry-run first

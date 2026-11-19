@@ -1047,3 +1047,70 @@ def test_recover_cli_requires_manifest_and_keeps_dry_run_failure_readonly(tmp_pa
     assert err_payload["reason_code"] == "recovery_manifest_missing"
     assert not (run_root / "recovery-error.json").exists()
     assert not (run_root / "recovery-result.json").exists()
+
+
+@pytest.mark.skipif(not PWSH, reason="pwsh required for PowerShell bootstrap/verifier tests")
+def test_bootstrap_integrity_only_bypasses_preflight_while_enforcing_digests(tmp_path):
+    _, zip_path, expected_sha = _build_bundle(tmp_path, "integrity_only_bundle")
+
+    # 1. Bootstrap with -IntegrityOnly exits 0 on non-guest host (no installation preflight)
+    int_dest = tmp_path / "dest_integrity_only"
+    proc_int = subprocess.run(
+        [
+            PWSH, "-NoProfile", "-NonInteractive", "-File", str(BOOTSTRAP_PS1),
+            "-ArchivePath", str(zip_path),
+            "-ExpectedSha256", expected_sha,
+            "-DestinationRoot", str(int_dest),
+            "-Python", sys.executable,
+            "-IntegrityOnly",
+        ],
+        capture_output=True, text=True, timeout=45, check=False,
+    )
+    assert proc_int.returncode == 0
+    integrity_json = json.loads(proc_int.stdout.strip().splitlines()[-1])
+    assert integrity_json["verified"] is True
+    assert integrity_json["component_count"] > 0
+
+    # 2. Default Verify-H4GuestBundle (without -IntegrityOnly) still runs preflight and fails closed (exit 3)
+    verify_ps1 = int_dest / "scripts" / "Verify-H4GuestBundle.ps1"
+    proc_default = subprocess.run(
+        [
+            PWSH, "-NoProfile", "-NonInteractive", "-File", str(verify_ps1),
+            "-BundleRoot", str(int_dest),
+            "-Python", sys.executable,
+        ],
+        capture_output=True, text=True, timeout=45, check=False,
+    )
+    assert proc_default.returncode == 3
+
+    # 3. Normal installation preflight still rejects rc_task_present
+    rc_root = tmp_path / "h4-rc-install-blocked"
+    rc_root.mkdir()
+    blocked_evidence = {
+        "queries": {"system": "available", "tasks": "available", "services": "available", "processes": "available"},
+        "computer": {"manufacturer": "Microsoft Corporation", "model": "Virtual Machine", "hypervisor_present": True},
+        "rc_tasks": [{"name": "ResourceCoordinator-H4-9ea7312c8c-install-logon", "state": "Disabled"}],
+        "rc_services": [], "rc_processes": [],
+    }
+    rc_blocked = windows_acceptance.main(
+        ["--test-root", str(rc_root), "--profile", "preflight", "--json"],
+        evidence_override=blocked_evidence,
+        is_windows=True,
+    )
+    assert rc_blocked == 3
+    preflight_blocked = json.loads((rc_root / "preflight.json").read_text(encoding="utf-8"))
+    assert "rc_task_present" in preflight_blocked["observed_guard_reasons"]
+
+    # 4. Component tampering is STILL rejected in -IntegrityOnly mode (exit 2)
+    (int_dest / "dependencies" / "requirements.txt").write_text("# tampered\n", encoding="utf-8")
+    proc_tamper = subprocess.run(
+        [
+            PWSH, "-NoProfile", "-NonInteractive", "-File", str(verify_ps1),
+            "-BundleRoot", str(int_dest),
+            "-Python", sys.executable,
+            "-IntegrityOnly",
+        ],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc_tamper.returncode == 2
+    assert "bundle_component_mismatch" in proc_tamper.stderr

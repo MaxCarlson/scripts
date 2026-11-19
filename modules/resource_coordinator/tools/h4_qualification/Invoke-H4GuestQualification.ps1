@@ -46,7 +46,7 @@ param(
     [string]$BundleZip = 'C:\H4-VM-Staging\bundle-rc1-v9\h4-windows-acceptance.zip',
     [string]$ExpectedBundleSha256 = '16912bab41ddb1d2be7c23f89c5caf70cdb94d84e6cf08e8e24ca0aa16c74017',
     [string]$BootstrapScript = (Join-Path $PSScriptRoot 'Bootstrap-H4GuestBundle.ps1'),
-    [string]$ExpectedBootstrapSha256 = '5EFACFAFCECC45DF5459D53B75A999B21574C83D0A2F5339F0A4AB1AB5D01DE9',
+    [string]$ExpectedBootstrapSha256 = '57B95576444971B5E39972E33B329E94D3B9F1A06728E196749184619CA718F0',
     [string]$WheelsDir = 'C:\H4-VM-Staging\guest-deps\wheels',
     [string]$WheelsManifest = 'C:\H4-VM-Staging\guest-deps\wheels-sha256.txt',
     [string]$PythonInstaller = 'C:\H4-VM-Staging\guest-deps\installers\python-3.12.10-amd64.exe',

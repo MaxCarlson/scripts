@@ -160,7 +160,8 @@ def test_listener_probe_is_loopback_scoped_and_bounded(monkeypatch):
     assert captured["timeout"] == 20
     assert captured["env"]["RC_H4_LISTENER_PORT"] == "45431"
     script = captured["command"][-1]
-    assert "Get-NetTCPConnection -State Listen -LocalPort $port" in script
+    assert "Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetTCPConnection" in script
+    assert "State = 2 AND LocalPort = " in script
     assert "Get-CimInstance Win32_Process" in script
 
 
