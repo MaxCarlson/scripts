@@ -8,6 +8,7 @@ Updated: 2026-11-19
 - Branch: `feat/scripts-shared-packages-20261119`
 - Base: `f57b22652dfc8cd67823a2a0d1d2792b3f09a320`
 - Local checkpoint before this qualification: `f808c24e` (`docs(scripts): record shared package qualification`).
+- Final qualification workflow and wheelhouse checkpoint: `e71ec54b` (`ci(scripts): add shared package Linux qualification`).
 - All implementation changes are scoped to the scripts integration branch.
 - Primary `scripts/main` is unchanged. Retirement branch `audit/post-p6-source-retirement-20261119` remains at the supplied `cc3273f0` checkpoint; its quarantines, manifests, five raw JSON evidence files, and seven holds were not modified.
 - No source directories were removed, no quarantine was changed, and nothing was pushed or merged.

@@ -2,6 +2,7 @@
 
 ## Prerequisite and ownership
 
+- [x] Commit the local qualification workflow and wheelhouse at `e71ec54b` on `feat/scripts-shared-packages-20261119`; do not push or merge.
 - [x] Inspect supplied shared-package contract and package metadata.
 - [x] Match all five wheel hashes against `dist/SHA256SUMS.txt`.
 - [x] Install the wheels into a separate scripts integration worktree environment.
