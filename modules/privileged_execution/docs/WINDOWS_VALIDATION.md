@@ -2,6 +2,8 @@
 
 All non-privileged synthetic unit, adversarial, and local named-pipe IPC tests run without elevation. The 5 gates below govern elevated deployment, real Windows account isolation, and live Resource Coordinator H4 qualification.
 
+> **Validation Status (2026-11-19):** **Gates 1–2 PASSED** via synthetic cross-account run `20261119-193433-fb3d1c6e` (see [gate1-2-acceptance-evidence.md](plans/20261119-privexec-session-broker/gate1-2-acceptance-evidence.md)). Permanent production agent identity binding and **Gates 3–4** (see [gate3-read-only-proposal.md](plans/20261119-privexec-session-broker/gate3-read-only-proposal.md)) remain pending explicit operator authorization.
+
 ## Security Mode Distinction
 
 - **`SameUserDev` (Development / Accidental-Misuse Containment):** Broker and agent run under the same Windows user account. Per Microsoft guidance, same-desktop UAC elevation is **not** a security boundary against a compromised agent.

@@ -50,6 +50,6 @@
 - [x] Broker crashes cannot trigger automatic mutation replay
 - [x] Conflicting target mutations are rejected
 - [x] Guest credentials do not appear in client requests or logs
-- [ ] Windows security controls tested with real separate operator & non-admin agent accounts (pending authorized Windows elevation/account validation; see `docs/WINDOWS_VALIDATION.md`)
+- [x] Windows security controls tested with real separate operator & non-admin agent accounts (Gates 1–2 synthetic cross-account validation **PASSED** in run `20261119-193433-fb3d1c6e`; permanent agent identity binding and Gates 3–4 live H4 remain pending)
 - [x] Existing H4 validation logic is preserved
-- [ ] Multi-step H4 workflow executed against live `RC-H4-Windows-Acceptance` VM (adapters & mock tests complete; live VM execution pending explicit operator authorization)
+- [ ] Multi-step H4 workflow executed against live `RC-H4-Windows-Acceptance` VM (Gate 3 read-only proposal prepared in `gate3-read-only-proposal.md`; live VM execution pending explicit operator authorization)
