@@ -11,6 +11,7 @@ from typing import Any
 from . import __version__
 from .errors import ContinuityError, ErrorCode
 from .service import ContinuityService, MutationPreview
+from .shim import run_hook_shim
 
 
 def _common_parent() -> argparse.ArgumentParser:
@@ -204,6 +205,17 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_p = sub.add_parser("doctor", parents=[common], help="Diagnose storage, spools, SQLite index, and providers.")
     doctor_p.add_argument("-v", "--verbose", action="store_true", help="Show detailed capability and path diagnostics.")
 
+    # ------------------------------------------------------------------
+    # `agents hook-shim`
+    # ------------------------------------------------------------------
+    shim_p = sub.add_parser(
+        "hook-shim",
+        parents=[common],
+        help="Fail-open hook stdin entrypoint for Codex and AGY lifecycle hooks.",
+    )
+    shim_p.add_argument("-p", "--provider", required=True, choices=["codex", "agy"], help="Provider emitting the hook.")
+    shim_p.add_argument("-E", "--event", help="Optional native event name hint if omitted by provider payload.")
+
     return parser
 
 
@@ -364,6 +376,13 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if not args.command:
         parser.print_help()
         return 0
+
+    if args.command == "hook-shim":
+        return run_hook_shim(
+            args.provider,
+            home_dir=home,
+            event_name_hint=args.event,
+        )
 
     svc = ContinuityService(home_dir=home)
 
