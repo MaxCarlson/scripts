@@ -904,6 +904,81 @@ class ContinuityService:
             "conflict_associations": conflicts,
         }
 
+    def discover_native_sessions(
+        self,
+        *,
+        provider: str | None = None,
+        limit: int = 50,
+        apply: bool = False,
+    ) -> dict[str, Any]:
+        """Discover native sessions read-only from installed providers and optionally register new ones."""
+        self._sync_if_safe()
+        targets = [self._validate_provider(provider)] if provider else sorted(_VALID_PROVIDERS)
+        local_env = load_or_create_environment(self.home_dir, persist=apply)
+        known_envs = self.materializer.list_environments()
+
+        discovered: list[dict[str, Any]] = []
+        new_events: list[EventEnvelope] = []
+        ts = now_utc_iso()
+
+        for p_name in targets:
+            adapter = self.adapters.get(p_name)
+            if adapter is None:
+                continue
+            for item in adapter.discover_sessions(limit=limit):
+                sid = str(item.get("native_session_id") or "").strip()
+                if not sid:
+                    continue
+                existing = self.materializer.get_session(p_name, local_env.environment_id, sid)
+                is_new = existing is None
+                discovered.append({**item, "environment_id": local_env.environment_id, "already_tracked": not is_new})
+                if is_new:
+                    new_events.append(
+                        EventEnvelope(
+                            event_id=generate_id("evt"),
+                            event_schema_version=SCHEMA_EVENT_VERSION,
+                            event_type=EventType.SESSION_REGISTERED.value,
+                            provider=p_name,
+                            environment_id=local_env.environment_id,
+                            native_session_id=sid,
+                            source_timestamp=item.get("last_seen_at") or ts,
+                            observed_timestamp=ts,
+                            source_adapter_version=ADAPTER_VERSION,
+                            payload={
+                                "environment": local_env.to_dict(),
+                                "cwd_native": item.get("cwd"),
+                                "cwd_canonical": normalize_path_canonical(item.get("cwd")),
+                                "repository_identity": normalize_repo_identity(item.get("cwd")),
+                                "native_title": item.get("native_title"),
+                                "native_created_at": item.get("native_created_at"),
+                                "first_observed_at": ts,
+                                "last_seen_at": item.get("last_seen_at") or ts,
+                                "last_turn_at": item.get("last_turn_at"),
+                                "parent_session_id": item.get("parent_session_id"),
+                                "surface": item.get("surface"),
+                                "native_version": item.get("native_version"),
+                                "metadata_source": item.get("metadata_source", "native_discovery"),
+                            },
+                        )
+                    )
+
+        if apply and new_events:
+            env_events = self._ensure_environment_event(local_env, known_envs, ts)
+            self._emit_and_materialize(env_events + new_events)
+
+        return {
+            "action": "discover",
+            "applied": apply,
+            "discovered_count": len(discovered),
+            "new_sessions_count": len(new_events),
+            "sessions": discovered,
+            "summary": (
+                f"Registered {len(new_events)} new native session(s) out of {len(discovered)} discovered."
+                if apply
+                else f"Dry-run: discovered {len(discovered)} native session(s) ({len(new_events)} new)."
+            ),
+        }
+
     # ------------------------------------------------------------------
     # Rebuild & Diagnostics
     # ------------------------------------------------------------------

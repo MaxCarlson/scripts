@@ -6,6 +6,8 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from ..hooks import NormalizedHookEvent
+
 
 @dataclass(slots=True)
 class ProviderInstallation:
@@ -97,9 +99,20 @@ class ProviderAdapter(ABC):
     def get_capabilities(self) -> ProviderCapabilities:
         """Report explicitly supported and unsupported capabilities."""
 
-    def normalize_hook_event(self, raw_event: dict[str, Any]) -> dict[str, Any]:
-        """Normalize a native hook payload (deferred to Phase 2)."""
-        raise NotImplementedError(f"{self.provider_name} hook normalization is scheduled for Phase 2.")
+    def normalize_hook_event(
+        self,
+        raw_event: dict[str, Any],
+        *,
+        environment_id: str,
+        observed_timestamp: str | None = None,
+        event_name_hint: str | None = None,
+    ) -> NormalizedHookEvent:
+        """Normalize a native hook payload into a NormalizedHookEvent."""
+        raise NotImplementedError(f"{self.provider_name} hook normalization is not implemented.")
+
+    def safe_hook_response(self, normalized: NormalizedHookEvent | None = None) -> dict[str, Any]:
+        """Return the provider-safe stdout JSON response for a telemetry hook."""
+        return {}
 
     def discover_sessions(self) -> list[dict[str, Any]]:
         """Discover native sessions read-only (deferred to Phase 2/3)."""

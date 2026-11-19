@@ -1,0 +1,37 @@
+{
+  "session_start_1_5": {
+    "conversationId": "ec33ebf9-0cba-4100-8142-c61503f6c587",
+    "hookEventName": "SessionStart",
+    "workspacePaths": ["C:\\Users\\mcarls\\src\\scripts"],
+    "transcriptPath": "C:\\Users\\mcarls\\.gemini\\antigravity-cli\\conversations\\ec33ebf9.db",
+    "modelName": "auto",
+    "cwd": "C:\\Users\\mcarls\\src\\scripts"
+  },
+  "pre_invocation_tagged": {
+    "conversationId": "ec33ebf9-0cba-4100-8142-c61503f6c587",
+    "hookEventName": "PreInvocation",
+    "invocationNum": 1,
+    "initialNumSteps": 0,
+    "lastUserInput": "Workflow-ID: procwatch\n\nRun unit tests.",
+    "workspacePaths": ["C:\\Users\\mcarls\\src\\scripts"],
+    "cwd": "C:\\Users\\mcarls\\src\\scripts",
+    "modelName": "auto"
+  },
+  "pre_invocation_v1_2_minimal": {
+    "conversationId": "ec33ebf9-0cba-4100-8142-c61503f6c587",
+    "invocationNum": 2,
+    "initialNumSteps": 4,
+    "workspacePaths": ["/mnt/c/Users/mcarls/src/scripts"],
+    "transcriptPath": "/home/mcarls/.gemini/antigravity-cli/conversations/ec33ebf9.db",
+    "modelName": "auto"
+  },
+  "stop": {
+    "conversationId": "ec33ebf9-0cba-4100-8142-c61503f6c587",
+    "hookEventName": "Stop",
+    "executionNum": 1,
+    "terminationReason": "NO_TOOL_CALL",
+    "fullyIdle": true,
+    "continuationActive": false,
+    "cwd": "C:\\Users\\mcarls\\src\\scripts"
+  }
+}

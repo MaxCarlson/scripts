@@ -10,7 +10,9 @@ from typing import Any
 
 from . import __version__
 from .errors import ContinuityError, ErrorCode
+from .installer import inspect_hooks_status, install_hooks, rollback_hooks, uninstall_hooks
 from .service import ContinuityService, MutationPreview
+from .shim import run_hook_shim
 
 
 def _common_parent() -> argparse.ArgumentParser:
@@ -193,6 +195,18 @@ def build_parser() -> argparse.ArgumentParser:
     inbox_p.add_argument("-e", "--environment", help="Filter by environment ID or alias.")
 
     # ------------------------------------------------------------------
+    # `agents discover`
+    # ------------------------------------------------------------------
+    disc_p = sub.add_parser(
+        "discover",
+        parents=[common],
+        help="Read-only discovery of native Codex and AGY sessions from local metadata stores.",
+    )
+    disc_p.add_argument("-p", "--provider", choices=["codex", "agy"], help="Filter by provider.")
+    disc_p.add_argument("-n", "--limit", type=int, default=50, help="Max sessions per provider (default: 50).")
+    disc_p.add_argument("-a", "--apply", action="store_true", help="Register newly discovered sessions (default: dry-run).")
+
+    # ------------------------------------------------------------------
     # `agents rebuild`
     # ------------------------------------------------------------------
     rebuild_p = sub.add_parser("rebuild", parents=[common], help="Rebuild SQLite index from durable event spools.")
@@ -203,6 +217,51 @@ def build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------
     doctor_p = sub.add_parser("doctor", parents=[common], help="Diagnose storage, spools, SQLite index, and providers.")
     doctor_p.add_argument("-v", "--verbose", action="store_true", help="Show detailed capability and path diagnostics.")
+
+    # ------------------------------------------------------------------
+    # `agents hooks ...`
+    # ------------------------------------------------------------------
+    hooks_p = sub.add_parser("hooks", parents=[common], help="Inspect, install, uninstall, or rollback provider hooks.")
+    hooks_sub = hooks_p.add_subparsers(dest="hooks_command", metavar="<hooks-command>")
+
+    h_status = hooks_sub.add_parser("status", parents=[common], help="Inspect hook configuration status.")
+    h_status.add_argument("-p", "--provider", choices=["codex", "agy"], help="Filter by provider.")
+    h_status.add_argument("-c", "--config-dir", help="Override provider config directory.")
+
+    h_install = hooks_sub.add_parser("install", parents=[common], help="Install module-owned hooks (dry-run by default).")
+    h_install.add_argument("-p", "--provider", required=True, choices=["codex", "agy"], help="Target provider.")
+    h_install.add_argument("-c", "--config-dir", help="Override provider config directory.")
+    h_install.add_argument("-C", "--command", dest="shim_command", help="Override shim command string.")
+    h_install.add_argument(
+        "-S",
+        "--no-session-start",
+        action="store_true",
+        help="Omit SessionStart for older AGY 1.2.x installations.",
+    )
+    h_install.add_argument("-a", "--apply", action="store_true", help="Write hooks.json (default: dry-run).")
+
+    h_uninst = hooks_sub.add_parser("uninstall", parents=[common], help="Remove module-owned hooks (dry-run by default).")
+    h_uninst.add_argument("-p", "--provider", required=True, choices=["codex", "agy"], help="Target provider.")
+    h_uninst.add_argument("-c", "--config-dir", help="Override provider config directory.")
+    h_uninst.add_argument("-a", "--apply", action="store_true", help="Write hooks.json (default: dry-run).")
+
+    h_roll = hooks_sub.add_parser("rollback", parents=[common], help="Restore hooks.json from backup (dry-run by default).")
+    h_roll.add_argument("-p", "--provider", required=True, choices=["codex", "agy"], help="Target provider.")
+    h_roll.add_argument("-c", "--config-dir", help="Override provider config directory.")
+    h_roll.add_argument("-b", "--backup", help="Specific backup file path.")
+    h_roll.add_argument("-f", "--force", action="store_true", help="Overwrite even if unrelated hooks changed since backup.")
+    h_roll.add_argument("-a", "--apply", action="store_true", help="Restore backup (default: dry-run).")
+
+    # ------------------------------------------------------------------
+    # `agents hook-shim`
+    # ------------------------------------------------------------------
+    shim_p = sub.add_parser(
+        "hook-shim",
+        parents=[common],
+        help="Fail-open hook stdin entrypoint for Codex and AGY lifecycle hooks.",
+    )
+    shim_p.add_argument("-p", "--provider", required=True, choices=["codex", "agy"], help="Provider emitting the hook.")
+    shim_p.add_argument("-E", "--event", help="Optional native event name hint if omitted by provider payload.")
 
     return parser
 
@@ -365,6 +424,13 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         parser.print_help()
         return 0
 
+    if args.command == "hook-shim":
+        return run_hook_shim(
+            args.provider,
+            home_dir=home,
+            event_name_hint=args.event,
+        )
+
     svc = ContinuityService(home_dir=home)
 
     if args.command == "wf":
@@ -507,6 +573,23 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             _render_inbox_text(res)
         return 0
 
+    elif args.command == "discover":
+        res = svc.discover_native_sessions(
+            provider=args.provider,
+            limit=args.limit,
+            apply=bool(args.apply),
+        )
+        if json_mode:
+            _print_json({"ok": True, **res})
+        else:
+            print(res["summary"])
+            for s in res["sessions"]:
+                tag = "tracked" if s["already_tracked"] else "new"
+                print(f"  - [{tag}] {s['provider']} {s['native_session_id']} ({s.get('native_title') or '-'})")
+            if not res["applied"] and res["new_sessions_count"] > 0:
+                print("Pass -a / --apply to register newly discovered sessions.")
+        return 0
+
     elif args.command == "rebuild":
         res = svc.rebuild_index(apply=bool(args.apply))
         if json_mode:
@@ -516,6 +599,58 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             if not res["applied"]:
                 print("Pass -a / --apply to execute rebuild.")
         return 0
+
+    elif args.command == "hooks":
+        if not args.hooks_command:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Missing `hooks` subcommand. Try `agents hooks --help`.")
+        if args.hooks_command == "status":
+            targets = [args.provider] if args.provider else ["codex", "agy"]
+            statuses = [inspect_hooks_status(p, config_dir=args.config_dir) for p in targets]
+            if json_mode:
+                _print_json({"ok": True, "hooks": statuses})
+            else:
+                for st in statuses:
+                    print(f"{st['provider']}: installed={st['installed']} path={st['hooks_path']} backups={len(st['backups'])}")
+            return 0
+        if args.hooks_command == "install":
+            res = install_hooks(
+                args.provider,
+                config_dir=args.config_dir,
+                shim_command=args.shim_command,
+                include_session_start=not bool(args.no_session_start),
+                apply=bool(args.apply),
+            )
+            if json_mode:
+                _print_json({"ok": True, **res})
+            else:
+                print(res["summary"])
+                if not res["applied"]:
+                    print("Pass -a / --apply to write hooks.json.")
+            return 0
+        if args.hooks_command == "uninstall":
+            res = uninstall_hooks(
+                args.provider,
+                config_dir=args.config_dir,
+                apply=bool(args.apply),
+            )
+            if json_mode:
+                _print_json({"ok": True, **res})
+            else:
+                print(res["summary"])
+            return 0
+        if args.hooks_command == "rollback":
+            res = rollback_hooks(
+                args.provider,
+                config_dir=args.config_dir,
+                backup_path=args.backup,
+                force=bool(args.force),
+                apply=bool(args.apply),
+            )
+            if json_mode:
+                _print_json({"ok": True, **res})
+            else:
+                print(res["summary"])
+            return 0
 
     elif args.command == "doctor":
         res = svc.diagnose()
