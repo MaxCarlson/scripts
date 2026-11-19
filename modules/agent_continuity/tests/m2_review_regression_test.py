@@ -204,3 +204,78 @@ def test_rollback_protects_post_backup_unrelated_changes_and_custom_command(tmp_
     with pytest.raises(ContinuityError) as exc_missing:
         rollback_hooks("agy", config_dir=tmp_path / "empty_cfg", apply=True)
     assert exc_missing.value.code == ErrorCode.METADATA_INACCESSIBLE
+
+
+def test_16_independent_subprocesses_concurrent_init_materialize_and_rebuild(tmp_path: Path) -> None:
+    for trial in range(2):
+        home = tmp_path / f"mp_home_{trial}"
+
+        def _invoke(i: int, target_home: Path = home, t: int = trial) -> subprocess.CompletedProcess[str]:
+            payload = json.dumps({"session_id": f"mp-ses-{t}-{i}", "hook_event_name": "Stop"})
+            return _run_cli(target_home, "hook-shim", "-p", "codex", stdin_text=payload)
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            procs = list(pool.map(_invoke, range(16)))
+
+        assert all(p.returncode == 0 and json.loads(p.stdout) == {} for p in procs)
+        assert not (home / "environment.json.lock").exists()
+        assert list(home.glob(".environment.*.tmp")) == []
+
+        env_data = json.loads((home / "environment.json").read_text(encoding="utf-8"))
+        persisted_env_id = env_data["environment_id"]
+        spool_files = list((home / "events").rglob("*.json"))
+        assert len(spool_files) == 16
+        assert {json.loads(f.read_text(encoding="utf-8"))["environment_id"] for f in spool_files} == {persisted_env_id}
+
+        # Stability across subsequent CLI invocation
+        proc_next = _run_cli(
+            home,
+            "hook-shim",
+            "-p",
+            "agy",
+            stdin_text=json.dumps({"conversationId": f"mp-agy-{trial}", "hookEventName": "Stop"}),
+        )
+        assert proc_next.returncode == 0
+        assert json.loads((home / "environment.json").read_text(encoding="utf-8"))["environment_id"] == persisted_env_id
+
+        # Materialize & rebuild verify all 17 sessions under one environment_id
+        r_doc = _run_cli(home, "doctor", "-j")
+        assert r_doc.returncode == 0
+        svc = ContinuityService(home_dir=home)
+        sync = svc.materializer.sync_from_spools()
+        assert sync.issues == []
+        sessions_before = {(s.provider, s.environment_id, s.native_session_id) for s in svc.materializer.list_sessions()}
+        assert len(sessions_before) == 17
+        assert {k[1] for k in sessions_before} == {persisted_env_id}
+
+        (home / "index.sqlite").unlink()
+        rb = svc.rebuild_index(apply=True)
+        assert rb["issues"] == []
+        sessions_after = {(s.provider, s.environment_id, s.native_session_id) for s in svc.materializer.list_sessions()}
+        assert sessions_after == sessions_before
+
+
+def test_subprocess_hook_failure_isolation_modes(tmp_path: Path) -> None:
+    home = tmp_path / "fail_open_home"
+    # 1. Malformed JSON, missing ID, oversized input -> exit 0 with {}
+    for bad_in in (
+        "{not-json",
+        json.dumps({"hook_event_name": "Stop"}),
+        "{" + (" " * (MAX_SHIM_STDIN_BYTES + 100)) + "}",
+    ):
+        proc = _run_cli(home, "hook-shim", "-p", "codex", stdin_text=bad_in)
+        assert proc.returncode == 0
+        assert json.loads(proc.stdout) == {}
+
+    # 2. Inaccessible home_dir (regular file blocking directory creation) -> exit 0 with {}
+    blocked_home = tmp_path / "file_not_dir"
+    blocked_home.write_text("not a directory", encoding="utf-8")
+    proc_blocked = _run_cli(
+        blocked_home,
+        "hook-shim",
+        "-p",
+        "agy",
+        stdin_text=json.dumps({"conversationId": "c1", "hookEventName": "Stop"}),
+    )
+    assert proc_blocked.returncode == 0
+    assert json.loads(proc_blocked.stdout) == {}

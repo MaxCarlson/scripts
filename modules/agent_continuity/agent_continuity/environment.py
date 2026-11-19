@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import platform
@@ -165,7 +166,8 @@ def load_or_create_environment(home_dir: Path, *, persist: bool = True) -> Envir
     Load the stable local environment identity from <home_dir>/environment.json.
 
     When persist=False (used by dry-run previews), an uninitialized environment is computed
-    in memory without creating files on disk.
+    in memory without creating files on disk. When persist=True, uses an atomic O_EXCL
+    creation lock so concurrent independent processes always agree on one environment_id.
     """
     env_file = home_dir / "environment.json"
     if env_file.exists():
@@ -174,21 +176,50 @@ def load_or_create_environment(home_dir: Path, *, persist: bool = True) -> Envir
     if not persist:
         return _build_local_environment()
 
+    lock_path = home_dir / "environment.json.lock"
     with _ENV_LOCK:
-        if env_file.exists():
-            return _read_environment_file(env_file)
-        env = _build_local_environment()
         home_dir.mkdir(parents=True, exist_ok=True)
-        tmp = env_file.with_name(f".environment.{os.getpid()}.{secrets.token_hex(4)}.tmp")
-        tmp.write_text(json.dumps(env.to_dict(), indent=2) + "\n", encoding="utf-8")
-        try:
-            os.replace(tmp, env_file)
-        except OSError:
-            tmp.unlink(missing_ok=True)
+        deadline = time.monotonic() + 5.0
+        while True:
             if env_file.exists():
                 return _read_environment_file(env_file)
-            raise
-        return env
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                with contextlib.suppress(OSError):
+                    if time.time() - lock_path.stat().st_mtime > 30.0:
+                        lock_path.unlink(missing_ok=True)
+                        continue
+                if time.monotonic() >= deadline:
+                    raise ContinuityError(
+                        ErrorCode.METADATA_INACCESSIBLE,
+                        f"Timed out waiting for environment lock {lock_path}",
+                        {"path": str(lock_path)},
+                    )
+                time.sleep(0.01)
+                continue
+
+            try:
+                with contextlib.suppress(OSError):
+                    os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+                os.close(fd)
+                if env_file.exists():
+                    return _read_environment_file(env_file)
+                env = _build_local_environment()
+                tmp = env_file.with_name(f".environment.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+                try:
+                    tmp.write_text(json.dumps(env.to_dict(), indent=2) + "\n", encoding="utf-8")
+                    os.replace(tmp, env_file)
+                except OSError:
+                    with contextlib.suppress(OSError):
+                        tmp.unlink(missing_ok=True)
+                    if env_file.exists():
+                        return _read_environment_file(env_file)
+                    raise
+                return env
+            finally:
+                with contextlib.suppress(OSError):
+                    lock_path.unlink(missing_ok=True)
 
 
 def resolve_environment_selector(
