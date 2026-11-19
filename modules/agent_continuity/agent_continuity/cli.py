@@ -231,7 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
     h_install = hooks_sub.add_parser("install", parents=[common], help="Install module-owned hooks (dry-run by default).")
     h_install.add_argument("-p", "--provider", required=True, choices=["codex", "agy"], help="Target provider.")
     h_install.add_argument("-c", "--config-dir", help="Override provider config directory.")
-    h_install.add_argument("-C", "--command", help="Override shim command string.")
+    h_install.add_argument("-C", "--command", dest="shim_command", help="Override shim command string.")
     h_install.add_argument(
         "-S",
         "--no-session-start",
@@ -615,7 +615,7 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             res = install_hooks(
                 args.provider,
                 config_dir=args.config_dir,
-                shim_command=args.command,
+                shim_command=args.shim_command,
                 include_session_start=not bool(args.no_session_start),
                 apply=bool(args.apply),
             )

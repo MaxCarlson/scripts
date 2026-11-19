@@ -66,7 +66,7 @@ def test_provider_adapters_unavailable_and_resume_commands(tmp_path: Path) -> No
     agy_missing = AgyAdapter(which_fn=lambda _: None, home_dir=tmp_path)
     health_a = agy_missing.get_health_status()
     assert health_a.status == "unavailable"
-    assert health_a.capabilities.hook_installation is False
+    assert health_a.capabilities.hook_installation is True
     assert health_a.capabilities.history_scan is False
 
     plan_c = codex_missing.resolve_resume_command(

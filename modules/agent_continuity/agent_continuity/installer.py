@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import secrets
@@ -191,10 +192,8 @@ def inspect_hooks_status(
     if norm == Provider.CODEX.value:
         cfg_toml = cfg_dir / "config.toml"
         if cfg_toml.exists():
-            try:
+            with contextlib.suppress(OSError):
                 legacy_notify = "notify" in cfg_toml.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                pass
 
     return {
         "provider": norm,
