@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 $resolvedRoot = [System.IO.Path]::GetFullPath($InstallRoot)
 $exists = Test-Path -LiteralPath $resolvedRoot
 
-$targets = @('bin', 'descriptors', 'adapters', 'h4_scripts', 'work')
+$targets = @('bin', 'client', 'descriptors', 'adapters', 'h4_scripts', 'work')
 if ($PurgeState) {
     $targets += 'state'
 }

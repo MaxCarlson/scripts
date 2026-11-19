@@ -27,12 +27,14 @@ def test_h4_descriptors_match_checked_in_adapter_hashes() -> None:
         "h4.preflight.json": "Invoke-H4PreflightAdapter.ps1",
         "h4.qualify.json": "Invoke-H4QualifyAdapter.ps1",
         "h4.recover.json": "Invoke-H4RecoverAdapter.ps1",
+        "synthetic.mutate.json": "Invoke-SyntheticMutationAdapter.ps1",
     }
     for desc_name, adapter_name in expected_map.items():
         desc = json.loads((DESCRIPTORS_DIR / desc_name).read_text(encoding="utf-8"))
-        assert desc["requires_guest_credential"] is True
-        assert desc["allowed_targets"] == [H4_VM_ID]
         assert desc["script_sha256"].lower() == _sha256(ADAPTERS_DIR / adapter_name)
+        if desc_name.startswith("h4."):
+            assert desc["requires_guest_credential"] is True
+            assert desc["allowed_targets"] == [H4_VM_ID]
 
     qualify_desc = json.loads((DESCRIPTORS_DIR / "h4.qualify.json").read_text(encoding="utf-8"))
     allowed_stages = qualify_desc["parameter_schema"]["stage"]["allowed_values"]
@@ -40,6 +42,62 @@ def test_h4_descriptors_match_checked_in_adapter_hashes() -> None:
     assert "Checkpoint" not in allowed_stages
     assert "Install" not in allowed_stages
     assert set(allowed_stages) == {"Preflight", "Setup", "Acceptance"}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell 7 synthetic mutation adapter runs on Windows")
+def test_synthetic_mutation_adapter_dry_run_and_apply(tmp_path: Path) -> None:
+    adapter = ADAPTERS_DIR / "Invoke-SyntheticMutationAdapter.ps1"
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    r_dry = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(adapter),
+            "-OperationId",
+            "op-sdry",
+            "-TargetId",
+            "synth-target-1",
+            "-Marker",
+            "dry1",
+        ],
+        cwd=work_dir,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    dry_json = json.loads(r_dry.stdout.strip())
+    assert dry_json["mode"] == "dry_run"
+    assert dry_json["apply_count"] == 0
+    assert not (work_dir / "synthetic-synth-target-1.json").exists()
+
+    r_app = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(adapter),
+            "-OperationId",
+            "op-sapp",
+            "-TargetId",
+            "synth-target-1",
+            "-Marker",
+            "app1",
+            "-Apply",
+        ],
+        cwd=work_dir,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    app_json = json.loads(r_app.stdout.strip())
+    assert app_json["mode"] == "apply"
+    assert app_json["apply_count"] == 1
+    assert (work_dir / "synthetic-synth-target-1.json").is_file()
 
 
 def test_install_and_uninstall_scripts_dry_run_by_default() -> None:
@@ -303,3 +361,131 @@ def test_broker_rejects_invalid_pipe_name(tmp_path: Path) -> None:
     )
     assert res.returncode == 2
     assert "Invalid pipe name" in res.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires Windows and built PrivExecBroker.dll")
+def test_gate2_cross_account_script_against_temp_broker(tmp_path: Path) -> None:
+    broker_dll = MODULE_ROOT / "broker" / "bin" / "PrivExecBroker.dll"
+    if not broker_dll.is_file():
+        pytest.skip("PrivExecBroker.dll not built")
+
+    import time
+    import uuid
+
+    # Stage synthetic.echo and synthetic.mutate into tmp_path
+    staged_root = tmp_path / "staged"
+    (staged_root / "bin").mkdir(parents=True)
+    (staged_root / "descriptors").mkdir(parents=True)
+    (staged_root / "adapters").mkdir(parents=True)
+    (staged_root / "state").mkdir(parents=True)
+    (staged_root / "work").mkdir(parents=True)
+
+    adapter_src = ADAPTERS_DIR / "Invoke-SyntheticMutationAdapter.ps1"
+    adapter_dst = staged_root / "adapters" / adapter_src.name
+    adapter_dst.write_text(adapter_src.read_text(encoding="utf-8"), encoding="utf-8")
+
+    (staged_root / "descriptors" / "synthetic.echo.json").write_text(
+        (DESCRIPTORS_DIR / "synthetic.echo.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    mut_desc = json.loads((DESCRIPTORS_DIR / "synthetic.mutate.json").read_text(encoding="utf-8"))
+    mut_desc["script_path"] = str(adapter_dst)
+    mut_desc["script_sha256"] = _sha256(adapter_dst)
+    mut_desc["working_directory"] = str(staged_root / "work")
+    (staged_root / "descriptors" / "synthetic.mutate.json").write_text(
+        json.dumps(mut_desc, indent=2), encoding="utf-8"
+    )
+
+    pipe_name = f"privexec-g2-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    grant_file = tmp_path / "grant.json"
+    grant_file.write_text(
+        json.dumps(
+            {
+                "allowed_capabilities": ["synthetic.echo", "synthetic.mutate"],
+                "allowed_targets": ["synth-target-1"],
+                "allow_mutation": True,
+                "allowed_mutation_capabilities": ["synthetic.mutate"],
+                "ttl_seconds": 120,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    proc = subprocess.Popen(
+        [
+            "dotnet",
+            str(broker_dll),
+            "--pipe",
+            pipe_name,
+            "--descriptors-dir",
+            str(staged_root / "descriptors"),
+            "--state-dir",
+            str(staged_root / "state"),
+            "--grant-file",
+            str(grant_file),
+            "--allow-same-user",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        assert proc.stdout is not None
+        deadline = time.monotonic() + 10.0
+        ready = False
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if line and line.strip().startswith("PRIVEXEC_BROKER_READY"):
+                ready = True
+                break
+        assert ready, "Broker failed to report READY"
+
+        # Verify pipe protocol checks (expect filesystem check to skip/fail only if writable; here test pipe + dry-run/apply)
+        # Note: in same-user tmp_path, the user owns staged_root, so Test-PrivExecCrossAccount.ps1 filesystem write test
+        # would see write-allowed; we test the cross-account script's pipe protocol & negative checks via a read-only lock or test its pipe checks directly.
+        # Make protected targets read-only attribute temporarily? No, File.OpenWrite respects ReadOnly attribute on Windows!
+        (staged_root / "bin" / "PrivExecBroker.dll").write_text("x", encoding="utf-8")
+        (staged_root / "state" / "privexec.db").write_text("x", encoding="utf-8")
+        for ro_target in (
+            staged_root / "bin" / "PrivExecBroker.dll",
+            staged_root / "descriptors" / "synthetic.echo.json",
+            adapter_dst,
+            staged_root / "state" / "privexec.db",
+        ):
+            os.chmod(ro_target, 0o444)
+
+        try:
+            res = subprocess.run(
+                [
+                    "pwsh",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-File",
+                    str(SCRIPTS_DIR / "Test-PrivExecCrossAccount.ps1"),
+                    "-PipeName",
+                    pipe_name,
+                    "-InstallRoot",
+                    str(staged_root),
+                    "-Role",
+                    "AuthorizedAgent",
+                    "-ExpectSameUserOperator",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            report = json.loads(res.stdout)
+            assert report["passed"] is True
+            assert len(report["checks"]) == 8
+        finally:
+            for ro_target in (
+                staged_root / "bin" / "PrivExecBroker.dll",
+                staged_root / "descriptors" / "synthetic.echo.json",
+                adapter_dst,
+                staged_root / "state" / "privexec.db",
+            ):
+                os.chmod(ro_target, 0o666)
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=5)

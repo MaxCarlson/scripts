@@ -29,6 +29,7 @@ $moduleRoot = Split-Path -Parent $PSScriptRoot
 $brokerBinDir = Join-Path $moduleRoot 'broker\bin'
 $adaptersSrcDir = Join-Path $moduleRoot 'adapters'
 $descriptorsSrcDir = Join-Path $moduleRoot 'descriptors'
+$clientSrcDir = Join-Path $moduleRoot 'privexec'
 
 function Assert-NoReparsePoint {
     param([Parameter(Mandatory)][string]$FullPath)
@@ -59,6 +60,7 @@ Assert-NoReparsePoint -FullPath $resolvedRoot
 
 $subDirs = [ordered]@{
     bin         = Join-Path $resolvedRoot 'bin'
+    client      = Join-Path $resolvedRoot 'client\privexec'
     descriptors = Join-Path $resolvedRoot 'descriptors'
     adapters    = Join-Path $resolvedRoot 'adapters'
     h4_scripts  = Join-Path $resolvedRoot 'h4_scripts'
@@ -113,6 +115,7 @@ if (-not (Test-Path -LiteralPath $brokerDll -PathType Leaf) -or -not (Test-Path 
 Assert-NoReparsePoint -FullPath $brokerBinDir
 Assert-NoReparsePoint -FullPath $adaptersSrcDir
 Assert-NoReparsePoint -FullPath $descriptorsSrcDir
+Assert-NoReparsePoint -FullPath $clientSrcDir
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if ($Mode -eq 'CrossAccountIsolated' -and -not $isAdmin) {
@@ -130,13 +133,39 @@ if (-not [string]::IsNullOrWhiteSpace($H4SourceDir)) {
     }
 }
 
-foreach ($d in @($resolvedRoot) + @($subDirs.Values)) {
+$icacls = "$env:SystemRoot\System32\icacls.exe"
+$readOnlyDirs = @($resolvedRoot, $subDirs.bin, (Split-Path -Parent $subDirs.client), $subDirs.client, $subDirs.descriptors, $subDirs.adapters, $subDirs.h4_scripts)
+$privateDirs = @($subDirs.state, $subDirs.work)
+
+# Create directories and apply restrictive ACLs BEFORE staging binaries/scripts (closes partial-install window)
+foreach ($d in $readOnlyDirs) {
     New-Item -ItemType Directory -Path $d -Force | Out-Null
     Assert-NoReparsePoint -FullPath $d
+    & $icacls $d /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" "${OperatorAccount}:(OI)(CI)F" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed on '$d'." }
+    if ($Mode -eq 'CrossAccountIsolated') {
+        & $icacls $d /grant "${AgentAccount}:(OI)(CI)RX" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "icacls agent RX grant failed on '$d'." }
+    }
+}
+
+foreach ($d in $privateDirs) {
+    New-Item -ItemType Directory -Path $d -Force | Out-Null
+    Assert-NoReparsePoint -FullPath $d
+    & $icacls $d /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" "${OperatorAccount}:(OI)(CI)F" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed on '$d'." }
 }
 
 Copy-Item -LiteralPath $brokerDll -Destination (Join-Path $subDirs.bin 'PrivExecBroker.dll') -Force
 Copy-Item -LiteralPath $brokerCfg -Destination (Join-Path $subDirs.bin 'PrivExecBroker.runtimeconfig.json') -Force
+
+Get-ChildItem -LiteralPath $clientSrcDir -Filter '*.py' -File | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $subDirs.client $_.Name) -Force
+}
+$crossAcctScript = Join-Path $PSScriptRoot 'Test-PrivExecCrossAccount.ps1'
+if (Test-Path -LiteralPath $crossAcctScript -PathType Leaf) {
+    Copy-Item -LiteralPath $crossAcctScript -Destination (Join-Path (Split-Path -Parent $subDirs.client) 'Test-PrivExecCrossAccount.ps1') -Force
+}
 
 Get-ChildItem -LiteralPath $adaptersSrcDir -Filter '*.ps1' -File | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $subDirs.adapters $_.Name) -Force
@@ -193,25 +222,7 @@ Get-ChildItem -LiteralPath $descriptorsSrcDir -Filter '*.json' -File | ForEach-O
     $desc | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $subDirs.descriptors $_.Name) -Encoding utf8NoBOM
 }
 
-# Apply least-privilege Windows ACLs
-$icacls = "$env:SystemRoot\System32\icacls.exe"
-$readOnlyDirs = @($resolvedRoot, $subDirs.bin, $subDirs.descriptors, $subDirs.adapters, $subDirs.h4_scripts)
-foreach ($d in $readOnlyDirs) {
-    & $icacls $d /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" "${OperatorAccount}:(OI)(CI)F" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "icacls failed on '$d'." }
-    if ($Mode -eq 'CrossAccountIsolated') {
-        & $icacls $d /grant "${AgentAccount}:(OI)(CI)RX" | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "icacls agent RX grant failed on '$d'." }
-    }
-}
-
-# State and work dirs: operator/system/admin only; agent must not access SQLite DB directly
-foreach ($d in @($subDirs.state, $subDirs.work)) {
-    & $icacls $d /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" "${OperatorAccount}:(OI)(CI)F" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "icacls failed on '$d'." }
-}
-
-# Post-install integrity verification of staged descriptors and adapters
+# Re-verify ACL inheritance protection and descriptor/adapter SHA-256 digests post-install
 Get-ChildItem -LiteralPath $subDirs.descriptors -Filter '*.json' -File | ForEach-Object {
     $stagedDesc = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
     if ($stagedDesc.runner_type -eq 'powershell' -and $stagedDesc.script_path) {

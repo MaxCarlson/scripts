@@ -43,7 +43,17 @@ All non-privileged synthetic unit, adversarial, and local named-pipe IPC tests r
    icacls C:\ProgramData\PrivExec\state
    ```
 
-   Expected: `<AGENT>` has `(OI)(CI)RX` only on `bin`, `descriptors`, `adapters`, `h4_scripts`; zero write permissions anywhere under `C:\ProgramData\PrivExec`; zero access to `C:\ProgramData\PrivExec\state`.
+   Expected: `<AGENT>` has `(OI)(CI)RX` only on `bin`, `client`, `descriptors`, `adapters`, `h4_scripts`; zero write permissions anywhere under `C:\ProgramData\PrivExec`; zero access to `C:\ProgramData\PrivExec\state` or `work`.
+
+### Combined Automated Gate 1 + Gate 2 Operator Runner (Elevated PowerShell 7)
+
+Run from an elevated Administrator PowerShell 7 session to execute Gate 1 installation + Gate 2 cross-account isolation (synthetic capabilities only; zero H4 execution) and emit non-secret evidence to `C:\ProgramData\PrivExec\gate1-2-evidence.json`:
+
+```powershell
+pwsh -NoProfile -File .\scripts\Invoke-Gate1And2Elevated.ps1 -CreateTempTestAccounts
+```
+
+To bind the ACLs permanently to an existing non-admin account (e.g. `XERES\CodexSandboxOffline`), run `Install-PrivExec.ps1 -Apply -Mode CrossAccountIsolated -OperatorAccount "XERES\mcarls" -AgentAccount "XERES\CodexSandboxOffline" -H4SourceDir ...` after Gate 2 validation.
 
 ---
 
