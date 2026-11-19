@@ -8,6 +8,8 @@ import platform
 import re
 import secrets
 import socket
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,7 @@ from .models import EnvironmentInfo, RuntimeKind
 
 HOME_ENV_VAR = "AGENT_CONTINUITY_HOME"
 _MNT_DRIVE_RE = re.compile(r"^/mnt/[a-zA-Z](?:/|$)")
+_ENV_LOCK = threading.Lock()
 
 
 def resolve_home_dir(home_override: Path | str | None = None) -> Path:
@@ -128,15 +131,9 @@ def _build_local_environment() -> EnvironmentInfo:
     )
 
 
-def load_or_create_environment(home_dir: Path, *, persist: bool = True) -> EnvironmentInfo:
-    """
-    Load the stable local environment identity from <home_dir>/environment.json.
-
-    When persist=False (used by dry-run previews), an uninitialized environment is computed
-    in memory without creating files on disk.
-    """
-    env_file = home_dir / "environment.json"
-    if env_file.exists():
+def _read_environment_file(env_file: Path) -> EnvironmentInfo:
+    last_exc: Exception | None = None
+    for attempt in range(5):
         try:
             raw = json.loads(env_file.read_text(encoding="utf-8"))
             return EnvironmentInfo(
@@ -148,20 +145,50 @@ def load_or_create_environment(home_dir: Path, *, persist: bool = True) -> Envir
                 created_at=str(raw.get("created_at", now_utc_iso())),
                 last_seen_at=str(raw.get("last_seen_at", now_utc_iso())),
             )
+        except PermissionError as exc:
+            last_exc = exc
+            if attempt < 4:
+                time.sleep(0.01)
+                continue
         except (OSError, KeyError, json.JSONDecodeError) as exc:
-            raise ContinuityError(
-                ErrorCode.METADATA_INACCESSIBLE,
-                f"Corrupt environment metadata at {env_file}: {exc}",
-                {"path": str(env_file)},
-            ) from exc
+            last_exc = exc
+            break
+    raise ContinuityError(
+        ErrorCode.METADATA_INACCESSIBLE,
+        f"Corrupt environment metadata at {env_file}: {last_exc}",
+        {"path": str(env_file)},
+    ) from last_exc
 
-    env = _build_local_environment()
-    if persist:
+
+def load_or_create_environment(home_dir: Path, *, persist: bool = True) -> EnvironmentInfo:
+    """
+    Load the stable local environment identity from <home_dir>/environment.json.
+
+    When persist=False (used by dry-run previews), an uninitialized environment is computed
+    in memory without creating files on disk.
+    """
+    env_file = home_dir / "environment.json"
+    if env_file.exists():
+        return _read_environment_file(env_file)
+
+    if not persist:
+        return _build_local_environment()
+
+    with _ENV_LOCK:
+        if env_file.exists():
+            return _read_environment_file(env_file)
+        env = _build_local_environment()
         home_dir.mkdir(parents=True, exist_ok=True)
-        tmp = env_file.with_name(f".environment.{os.getpid()}.{secrets.token_hex(3)}.tmp")
+        tmp = env_file.with_name(f".environment.{os.getpid()}.{secrets.token_hex(4)}.tmp")
         tmp.write_text(json.dumps(env.to_dict(), indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, env_file)
-    return env
+        try:
+            os.replace(tmp, env_file)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            if env_file.exists():
+                return _read_environment_file(env_file)
+            raise
+        return env
 
 
 def resolve_environment_selector(
