@@ -2,25 +2,22 @@
 
 - **Updated:** 2026-11-19
 - **Repository:** `scripts`
-- **Worktree:** `../scripts-agent-session-continuity`
-- **Branch:** `feature/gui-agent-session-continuity`
-- **Base Commit:** `e7b9f36d5296d8b8fe301ef47e9f35adc64f886b`
-- **Active Plan:** [docs/plans/20261119-0650_phase0-phase1-foundation/STATUS.md](./plans/20261119-0650_phase0-phase1-foundation/STATUS.md)
+- **Worktree:** `../scripts-agent-continuity-m2`
+- **Branch:** `feature/agent-continuity-m2`
+- **Base Commit:** `59e124f4ff570f30d53c36267e2871862b690e42` (descends from M1 `ab9195acbfe0093e6a6683a723495b0347b7c718`)
 
 ## Current State
 
-- **Phase 0:** Completed and documented in [ADR-001](./adr/ADR-001-phase0-architecture-decisions.md).
-- **Phase 1 (M1):** Implemented and validated in isolated worktree:
-  - Durable environment-isolated atomic per-event JSON spools (`events/<environment_id>/`)
-  - SQLite WAL materialized index (`index.sqlite`) with schema v1, idempotent replay, and atomic rebuild
-  - Workflow registry, multi-GUI URL support, compound `(provider, environment_id, native_session_id)` sessions
-  - Manual linking/unlinking, candidate rejection, conflict detection, and `--supersede` provenance tracking
-  - Provider adapter foundation (`CodexAdapter`, `AgyAdapter`) with read-only detection and verified resume command generation
-  - `agents` CLI (dry-run by default, `-a/--apply`, `-j/--json`, short+long flags) and `scripts_help` registration
-  - 19 pytest tests + `ruff check` passing on Windows; live CLI & `/mnt/c` cross-OS SQLite guard verified in WSL2 Ubuntu
+- **Phase 0 & Phase 1 (M1):** Complete and integrated into `main`.
+- **Phase 2 (M2):** Implemented in isolated worktree (`0.2.0`):
+  - Verified Codex `0.170.0` and AGY `1.5.12` / `1.2.11` hook contracts ([ADR-002](./adr/ADR-002-phase2-hook-contracts.md))
+  - `markers.py`: deterministic `Workflow-ID:` / `[wf:...]` parser ignoring code fences, blockquotes, and inline examples, with conflict detection
+  - `hooks.py` & `shim.py`: normalized hook events and fail-open `agents hook-shim` writing only to durable atomic spools
+  - `materializer.py`: automatic `strong` association, untagged lineage inheritance, session repurposing, manual-confirmation conflict preservation, and `turns` tracking
+  - `providers/`: read-only bounded `discover_sessions()` for Codex `state_5.sqlite` and AGY `conversation_summaries.db` + `agents discover`
+  - `installer.py` & `agents hooks status|install|uninstall|rollback`: dry-run-first, backup/rollback-safe hook management (not activated against live user config)
 
-## Next Action (Phase 2 — M2)
+## Next Action (Phase 3 / Live Activation)
 
-1. Capture and verify live Codex `0.170.0` hook payloads (`SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd`) on Windows in a controlled test directory without altering default user hooks until explicitly approved.
-2. Capture and verify live AGY `1.5.12` (Windows) and `1.2.11` (WSL2) hook payloads (`SessionStart`, `PreInvocation`, `PostInvocation`, `Stop`) per `hooks.md`.
-3. Implement normalized hook event ingestion, `Workflow-ID: <id>` marker parser, session lineage inheritance, turn-level association transitions, and `--apply` hook install/rollback tooling.
+1. Upon explicit user approval, run `agents hooks install -p codex -a` and `agents hooks install -p agy -a` to activate live hook capture.
+2. Implement Phase 3 historical recovery scanners, handoff fingerprinting, summary previews, and validated checkpoints.

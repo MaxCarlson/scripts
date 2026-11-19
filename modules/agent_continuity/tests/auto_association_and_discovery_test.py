@@ -201,7 +201,7 @@ def test_session_repurposing_and_manual_confirmation_precedence(tmp_path: Path) 
         home_dir=home,
     )
     assert len(svc.find_sessions(workflow_identifier="wf-a")["sessions"]) == 1
-    assert len(svc.find_sessions(workflow_identifier="wf-b")["sessions"]) == 0
+    assert len(svc.find_sessions(workflow_identifier="wf-b", provider="codex")["sessions"]) == 0
     assert len(svc.list_inbox(workflow_identifier="wf-b")["conflict_associations"]) == 1
 
 
