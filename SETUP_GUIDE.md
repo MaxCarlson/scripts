@@ -47,13 +47,14 @@ python setup.py -R ~/scripts/ -D ~/dotfiles/ -B ~/src/scripts/bin/
 - Re-execs itself under the venv Python
 - All subsequent operations use the venv
 
-### 2. Module Installation
+### 2. Module Installation and Ownership Boundary
 
-**modules/setup.py**:
-- Scans `modules/` directory
-- Installs each module in editable mode (`pip install -e`)
-- Tracks package names for proxy generation
-- Handles dependencies via `dependency_resolver.py`
+**modules/setup.py** and **scripts_setup/transferred_modules.py**:
+- Scans `modules/` directory while excluding the 23 modules transferred to `MaxCarlson/llm-agent-toolkit` (`TRANSFERRED_MODULE_DIRS` / `TRANSFERRED_NORMALIZED_DISTRIBUTIONS` in `scripts_setup/transferred_modules.py`).
+- Historical source directories for transferred modules remain untouched on disk in `scripts/modules/`, but are never installed into `scripts/.venv` or exposed via `scripts/bin`.
+- Installs each `scripts`-owned module in editable mode (`pip install -e`).
+- Tracks package names for proxy generation and handles dependencies via `dependency_resolver.py`.
+- `scripts/bin` wrappers delegate invocation logging to `script_logging.launcher` using the sibling `llm-agent-toolkit/.venv` interpreter (or `LLM_AGENT_TOOLKIT_ROOT`) with `-I` and `--target-python` pointing to `scripts/.venv`.
 
 ### 3. Console Script Proxies
 

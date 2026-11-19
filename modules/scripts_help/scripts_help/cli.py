@@ -64,8 +64,15 @@ def _discover_cli_programs() -> set[str]:
 
     modules_dir = repo / "modules"
     if modules_dir.exists():
+        try:
+            if str(repo) not in sys.path:
+                sys.path.insert(0, str(repo))
+            from scripts_setup.transferred_modules import is_transferred_module_dir
+        except ImportError:
+            is_transferred_module_dir = lambda _p: False  # noqa: E731
+
         for mod in modules_dir.iterdir():
-            if not mod.is_dir() or mod.name.startswith("_"):
+            if not mod.is_dir() or mod.name.startswith("_") or is_transferred_module_dir(mod):
                 continue
 
             has_cli_file = (mod / "cli.py").exists() or (mod / "__main__.py").exists()
@@ -626,19 +633,41 @@ def _render_in_glow(text: str) -> None:
 
 def _run_help_cmd(item: dict) -> None:
     repo = find_repo_root()
+    raw_cmd = list(item["help_cmd"])
+    try:
+        if str(repo) not in sys.path:
+            sys.path.insert(0, str(repo))
+        from scripts_setup.transferred_modules import is_transferred_module_dir
+    except ImportError:
+        is_transferred_module_dir = lambda _p: False  # noqa: E731
+
+    item_path = str(item.get("path", ""))
+    is_transferred = item_path.startswith("modules/") and is_transferred_module_dir(item_path)
+    toolkit_py: Path | None = None
+    if is_transferred:
+        env_tk = os.environ.get("LLM_AGENT_TOOLKIT_ROOT")
+        for cand_root in ([Path(env_tk)] if env_tk else []) + [repo.parent / "llm-agent-toolkit"]:
+            cand_py = cand_root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            if cand_py.is_file():
+                toolkit_py = cand_py
+                break
+
     resolved: list[str] = []
     after_m = False
-    for part in item["help_cmd"]:
+    for idx, part in enumerate(raw_cmd):
         if part == "python":
-            resolved.append(sys.executable)
+            resolved.append(str(toolkit_py) if toolkit_py is not None else sys.executable)
         elif part == "-m":
             after_m = True
             resolved.append(part)
         elif after_m or part.startswith("-"):
             resolved.append(part)
         else:
-            candidate = repo / part
-            resolved.append(str(candidate) if candidate.exists() else part)
+            if idx == 0 and shutil.which(part):
+                resolved.append(shutil.which(part) or part)
+            else:
+                candidate = repo / part
+                resolved.append(str(candidate) if candidate.exists() else part)
 
     try:
         result = subprocess.run(resolved, capture_output=True, text=True,

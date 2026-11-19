@@ -41,8 +41,20 @@ def discover_skills(modules_dir: Path, verbose: bool = False) -> list[Path]:
         _log_warning(f"Modules directory does not exist: {modules_dir}", verbose)
         return skills
 
+    try:
+        from scripts_setup.transferred_modules import is_transferred_module_dir
+    except ImportError:
+        is_transferred_module_dir = lambda _p: False  # noqa: E731
+
     for skill_md in sorted(modules_dir.rglob("SKILL.md")):
         skill_dir = skill_md.parent
+        try:
+            rel_parts = skill_md.relative_to(modules_dir).parts
+            if rel_parts and is_transferred_module_dir(rel_parts[0]):
+                _log_info(f"Skipping transferred toolkit module skill: {skill_md}", verbose)
+                continue
+        except ValueError:
+            pass
         # Skip anything inside .egg-info, __pycache__, .git, refs, templates
         parts_str = str(skill_dir)
         if any(skip in parts_str for skip in (".egg-info", "__pycache__", ".git", "/refs/", "/templates/")):

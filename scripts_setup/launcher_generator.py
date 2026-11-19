@@ -121,10 +121,28 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
     root = repo_root.resolve()
     commands: Dict[str, CommandEntry] = {}
 
+    try:
+        from scripts_setup.transferred_modules import (
+            is_transferred_cli_command,
+            is_transferred_distribution,
+            is_transferred_module_dir,
+        )
+    except ImportError:
+        _here = Path(__file__).resolve().parent
+        if str(_here.parent) not in sys.path:
+            sys.path.insert(0, str(_here.parent))
+        from scripts_setup.transferred_modules import (
+            is_transferred_cli_command,
+            is_transferred_distribution,
+            is_transferred_module_dir,
+        )
+
     # 1. Modules under modules/*/pyproject.toml
     modules_dir = root / "modules"
     if modules_dir.is_dir():
         for mod in sorted(modules_dir.iterdir()):
+            if is_transferred_module_dir(mod):
+                continue
             pyproject = mod / "pyproject.toml"
             if not pyproject.is_file():
                 continue
@@ -136,11 +154,15 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
 
             project = data.get("project", {})
             dist_name = project.get("name", mod.name)
+            if is_transferred_distribution(dist_name):
+                continue
             dist_version = project.get("version", "0.1.0")
             scripts = project.get("scripts", {})
 
             source_rel = str(mod.relative_to(root)).replace("\\", "/")
             for script_name, ep in scripts.items():
+                if is_transferred_cli_command(script_name):
+                    continue
                 commands[script_name] = CommandEntry(
                     name=script_name,
                     program_id=f"module:{dist_name}",
@@ -318,7 +340,14 @@ def generate_windows_wrapper(command_name: str) -> str:
         '  echo [ERROR] Python venv interpreter not found at %_VENV_PY% 1>&2\r\n'
         "  exit /b 127\r\n"
         ")\r\n"
-        '"%_VENV_PY%" -m script_logging.launcher --manifest "%_MANIFEST%" --command "%~n0" --wrapper "%~f0" -- %*\r\n'
+        'set "_LAUNCHER_PY=%_VENV_PY%"\r\n'
+        'if exist "%_ROOT%..\\llm-agent-toolkit\\.venv\\Scripts\\python.exe" (\r\n'
+        '  set "_LAUNCHER_PY=%_ROOT%..\\llm-agent-toolkit\\.venv\\Scripts\\python.exe"\r\n'
+        ")\r\n"
+        'if defined LLM_AGENT_TOOLKIT_ROOT if exist "%LLM_AGENT_TOOLKIT_ROOT%\\.venv\\Scripts\\python.exe" (\r\n'
+        '  set "_LAUNCHER_PY=%LLM_AGENT_TOOLKIT_ROOT%\\.venv\\Scripts\\python.exe"\r\n'
+        ")\r\n"
+        '"%_LAUNCHER_PY%" -I -m script_logging.launcher --manifest "%_MANIFEST%" --command "%~n0" --wrapper "%~f0" --target-python "%_VENV_PY%" -- %*\r\n'
         "exit /b %ERRORLEVEL%\r\n"
     )
 
@@ -336,7 +365,14 @@ if [ ! -x "$VENV_PY" ]; then
   echo "[ERROR] Python venv interpreter not found at $VENV_PY" 1>&2
   exit 127
 fi
-exec "$VENV_PY" -m script_logging.launcher --manifest "$MANIFEST" --command "${{0##*/}}" --wrapper "$0" -- "$@"
+LAUNCHER_PY="$VENV_PY"
+if [ -x "$ROOT/../llm-agent-toolkit/.venv/bin/python" ]; then
+  LAUNCHER_PY="$ROOT/../llm-agent-toolkit/.venv/bin/python"
+fi
+if [ -n "${{LLM_AGENT_TOOLKIT_ROOT:-}}" ] && [ -x "${{LLM_AGENT_TOOLKIT_ROOT}}/.venv/bin/python" ]; then
+  LAUNCHER_PY="${{LLM_AGENT_TOOLKIT_ROOT}}/.venv/bin/python"
+fi
+exec "$LAUNCHER_PY" -I -m script_logging.launcher --manifest "$MANIFEST" --command "${{0##*/}}" --wrapper "$0" --target-python "$VENV_PY" -- "$@"
 """
 
 

@@ -47,6 +47,17 @@ def source_name(directory: Path) -> str | None:
 
 def package_sources(root: Path) -> tuple[list[tuple[str, Path]], list[Path]]:
     """Return unique package sources in core/dependency order and unknown metadata."""
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from scripts_setup.transferred_modules import (
+            is_transferred_distribution,
+            is_transferred_module_dir,
+        )
+    except ImportError:
+        is_transferred_module_dir = lambda _p: False  # noqa: E731
+        is_transferred_distribution = lambda _d: False  # noqa: E731
+
     module_dir = root / "modules"
     candidates = [module_dir / name for name in CORE] + [root / "scripts_setup"]
     if module_dir.is_dir() and (module_dir / "setup_utils" / "dependency_resolver.py").is_file():
@@ -61,9 +72,14 @@ def package_sources(root: Path) -> tuple[list[tuple[str, Path]], list[Path]]:
             order = sorted(path.name for path in module_dir.iterdir() if path.is_dir() and not path.name.startswith("."))
         finally:
             sys.path.remove(str(resolver_path))
-        candidates.extend(module_dir / name for name in order if name not in CORE)
+        candidates.extend(module_dir / name for name in order if name not in CORE and not is_transferred_module_dir(name))
     elif module_dir.is_dir():
-        candidates.extend(sorted(path for path in module_dir.iterdir() if path.is_dir() and path.name not in CORE and not path.name.startswith(".")))
+        candidates.extend(
+            sorted(
+                path for path in module_dir.iterdir()
+                if path.is_dir() and path.name not in CORE and not path.name.startswith(".") and not is_transferred_module_dir(path)
+            )
+        )
     pscripts_modules = root / "pscripts" / "modules"
     if pscripts_modules.is_dir():
         candidates.extend(sorted(path for path in pscripts_modules.iterdir() if path.is_dir() and not path.name.startswith(".")))
@@ -72,6 +88,8 @@ def package_sources(root: Path) -> tuple[list[tuple[str, Path]], list[Path]]:
     sources: list[tuple[str, Path]] = []
     unknown: list[Path] = []
     for path in candidates:
+        if path.parent == module_dir and is_transferred_module_dir(path):
+            continue
         if not ((path / "pyproject.toml").is_file() or (path / "setup.py").is_file()):
             continue
         try:
@@ -82,6 +100,8 @@ def package_sources(root: Path) -> tuple[list[tuple[str, Path]], list[Path]]:
             continue
         if not name:
             unknown.append(path)
+            continue
+        if path.parent == module_dir and is_transferred_distribution(name):
             continue
         key = normalized(name)
         if key not in seen:
@@ -144,15 +164,34 @@ def write_launcher(destination: Path, source: Path, kind: str, windows: bool, py
 
 
 def console_scripts(package_names: list[str]) -> list[tuple[str, str]]:
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    try:
+        from scripts_setup.transferred_modules import (
+            is_transferred_cli_command,
+            is_transferred_distribution,
+        )
+    except ImportError:
+        is_transferred_distribution = lambda _d: False  # noqa: E731
+        is_transferred_cli_command = lambda _c: False  # noqa: E731
+
     names: dict[str, str] = {}
     for package_name in package_names:
+        if is_transferred_distribution(package_name):
+            continue
         try:
             dist = metadata.distribution(package_name)
         except metadata.PackageNotFoundError:
             continue
         owner = dist.metadata.get("Name") or package_name
+        if is_transferred_distribution(owner):
+            continue
         for entry_point in dist.entry_points:
-            if entry_point.group == "console_scripts" and entry_point.name:
+            if (
+                entry_point.group == "console_scripts"
+                and entry_point.name
+                and not is_transferred_cli_command(entry_point.name)
+            ):
                 names[entry_point.name] = owner
     return sorted(names.items())
 

@@ -110,7 +110,7 @@ cd modules/module_name
 pip install -e .
 ```
 
-### Module Dependencies
+### Module Dependencies and Ownership Boundary
 
 Core modules are installed in order:
 1. `standard_ui` - No dependencies
@@ -118,7 +118,16 @@ Core modules are installed in order:
 3. `python_setup` - Depends on `cross_platform`
 4. `scripts_setup` - No dependencies
 
-Other modules are auto-resolved via `modules/setup_utils/dependency_resolver.py`.
+Other `scripts`-owned modules are auto-resolved via `modules/setup_utils/dependency_resolver.py`.
+
+#### Transferred LLM Agent Toolkit Modules (Excluded from `scripts` Setup)
+
+The 23 LLM/agent/benchmark modules transferred to [`MaxCarlson/llm-agent-toolkit`](https://github.com/MaxCarlson/llm-agent-toolkit) retain their historical source directories under `scripts/modules/` untouched on disk, but are permanently excluded from `scripts` installation, `scripts_manifest.json`, skill symlinking, and `scripts/bin` wrapper generation via [`scripts_setup/transferred_modules.py`](scripts_setup/transferred_modules.py):
+
+- `agent_abilities` (`agent-abilities`), `agent_benchmark` (`agent-benchmark`), `agent_memory` (`agent-memory`), `agent_skills` (`agent-skills`), `agent_sync` (`agent-sync`), `agt` (`agt`), `ai_orchestrator` (`ai_orchestrator`), `benchmark_core` (`benchmark-core`), `interactive_reports` (`interactive-reports`), `knowledge_manager` (`knowledge_manager`), `llm-interface` (`api-parser`), `llm-models` (`llm-models`), `llm-patcher` (`llm-patcher`), `llm_local` (`llm-local`), `llm_monitor` (`llm-monitor`), `lmstui` (`lmstui`), `local_agent_bridge` (`local-agent-bridge`), `orchestrator_web_viewer` (`orchestrator-web-viewer`), `resource_coordinator` (`resource-coordinator`), `resource_metrics` (`resource-metrics`), `script_logging` (`script-logging`), `web_ai_automator` (`web-ai-automator`), and `web_ui_tools` (`web-ui-tools`).
+- Install and manage those 23 modules and their 28 CLI commands from the standalone `llm-agent-toolkit` checkout (`.\bootstrap.ps1 -x` / `./bootstrap.sh -x`), which exposes `<llm-agent-toolkit>/bin` globally on `PATH`.
+- `termdash` and `cross_platform` remain `scripts`-owned shared modules.
+- See [`docs/POST_P6_CUTOVER_REPORT.md`](docs/POST_P6_CUTOVER_REPORT.md) for the complete cutover inventory and verification evidence.
 
 ## Platform Notes
 

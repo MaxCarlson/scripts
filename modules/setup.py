@@ -617,29 +617,43 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
         return errors_encountered, touched_pkgs
 
     with section("Python Modules Installation"):
+        repo_root = modules_dir.parent
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        try:
+            from scripts_setup.transferred_modules import (
+                is_transferred_distribution,
+                is_transferred_module_dir,
+            )
+        except ImportError:
+            is_transferred_module_dir = lambda _p: False  # noqa: E731
+            is_transferred_distribution = lambda _d: False  # noqa: E731
+
         # Try to use dependency-aware ordering
         try:
-            setup_utils_dir = modules_dir.parent / "setup_utils"
+            setup_utils_dir = modules_dir / "setup_utils"
+            if not (setup_utils_dir / "dependency_resolver.py").exists():
+                setup_utils_dir = modules_dir.parent / "setup_utils"
             if (setup_utils_dir / "dependency_resolver.py").exists():
                 sys.path.insert(0, str(setup_utils_dir))
                 from dependency_resolver import resolve_module_order
                 ordered_names = resolve_module_order(modules_dir)
                 entries = [
                     modules_dir / name for name in ordered_names
-                    if (modules_dir / name).is_dir()
+                    if (modules_dir / name).is_dir() and not is_transferred_module_dir(name)
                 ]
                 if verbose:
                     log_info(f"Using dependency-aware installation order: {', '.join(ordered_names)}")
             else:
                 entries = sorted(
-                    (p for p in modules_dir.iterdir() if p.is_dir()),
+                    (p for p in modules_dir.iterdir() if p.is_dir() and not is_transferred_module_dir(p)),
                     key=lambda p: p.name.lower(),
                 )
         except Exception as e:
             if verbose:
                 log_warning(f"Dependency resolver failed ({e}), using alphabetical order")
             entries = sorted(
-                (p for p in modules_dir.iterdir() if p.is_dir()),
+                (p for p in modules_dir.iterdir() if p.is_dir() and not is_transferred_module_dir(p)),
                 key=lambda p: p.name.lower(),
             )
 
@@ -647,6 +661,11 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
 
         for entry in entries:
             name = entry.name
+
+            if is_transferred_module_dir(entry):
+                if verbose:
+                    status_line(f"{name}: transferred to llm-agent-toolkit — skipped", "unchanged")
+                continue
 
             if entry.resolve() == Path(__file__).resolve().parent:
                 status_line(f"{name}: internal setup folder — skipped", "unchanged")
@@ -1030,15 +1049,28 @@ def generate_console_proxies(installed_pkg_names: list[str]) -> None:
 
     console_map: dict[str, str] = {}
 
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    try:
+        from scripts_setup.transferred_modules import (
+            is_transferred_cli_command,
+            is_transferred_distribution,
+        )
+    except ImportError:
+        is_transferred_distribution = lambda _d: False  # noqa: E731
+        is_transferred_cli_command = lambda _c: False  # noqa: E731
+
     for dist in metadata.distributions():
         dist_name = (dist.metadata.get("Name") or "").lower()
         if not dist_name:
+            continue
+        if is_transferred_distribution(dist_name):
             continue
         # If desired is None, include all; otherwise only include if in desired set
         if desired is not None and dist_name not in desired:
             continue
         for ep in dist.entry_points or []:
-            if ep.group == "console_scripts" and ep.name:
+            if ep.group == "console_scripts" and ep.name and not is_transferred_cli_command(ep.name):
                 console_map[ep.name] = dist_name
 
     if not console_map:

@@ -926,6 +926,17 @@ def _get_current_install_mode(module_dir: Path, verbose: bool) -> str | None:
 def ensure_module_installed(module_display_name: str, install_path: Path,
                             skip_reinstall: bool, editable: bool, verbose: bool,
                             soft_fail: bool = False):
+    try:
+        from scripts_setup.transferred_modules import is_transferred_module_dir
+        if is_transferred_module_dir(install_path):
+            status_line(
+                f"{module_display_name}: transferred to llm-agent-toolkit — skipped",
+                "unchanged",
+                "skip",
+            )
+            return
+    except ImportError:
+        pass
     desired_mode = "editable" if editable else "normal"
 
     # Version-aware skip / reinstall decision (MODULE_STANDARDS.md §1)
@@ -1258,12 +1269,11 @@ def main():
 
     # Core modules — now safe because we're under ./.venv
     # Order matters: cross_platform must be installed before python_setup (dependency)
-    with setup_group("Core Modules", 6):
+    # Note: script_logging and resource_metrics were transferred to MaxCarlson/llm-agent-toolkit.
+    with setup_group("Core Modules", 4):
         for name, path in [
             ("standard_ui", STANDARD_UI_SETUP_DIR),
             ("cross_platform", CROSS_PLATFORM_DIR),
-            ("script_logging", SCRIPT_LOGGING_DIR),
-            ("resource_metrics", MODULES_DIR / "resource_metrics"),
             ("python_setup", PYTHON_SETUP_DIR),
             ("scripts_setup", SCRIPTS_SETUP_PACKAGE_DIR),
         ]:
