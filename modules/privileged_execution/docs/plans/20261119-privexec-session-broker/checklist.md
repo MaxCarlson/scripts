@@ -9,13 +9,13 @@
 - [x] Finalize protocol v1 schema, capability descriptor format, toolchain selection, and Windows ACL model (`01_interface-contract-and-architecture.md`)
 
 ## Phase 1 — Secure broker foundation
-- [ ] Packaged `privexec` Python CLI (`status`, `run`, `result`, `broker start`, `broker stop`)
-- [ ] C#/.NET 10 broker process (`PrivExecBroker`) + build script
-- [ ] Local-only named-pipe transport with server-side Windows identity enforcement
-- [ ] Operator-started session, in-memory authorized scope, expiration, and revocation
-- [ ] Protected capability descriptor loading
-- [ ] Synthetic read-only capability and non-mutating installer planning
-- [ ] Phase 1 negative & positive authorization tests pass
+- [x] Packaged `privexec` Python CLI (`status`, `run`, `result`, `broker start`, `broker stop`)
+- [x] C#/.NET 10 broker process (`PrivExecBroker`) + build script
+- [x] Local-only named-pipe transport with server-side Windows identity enforcement
+- [x] Operator-started session, in-memory authorized scope, expiration, and revocation
+- [x] Protected capability descriptor loading
+- [x] Synthetic read-only capability and non-mutating installer planning
+- [x] Phase 1 negative & positive authorization tests pass
 
 ## Phase 2 — Execution and persistence
 - [ ] Fixed executable/script invocation with SHA-256 verification and reparse-point rejection

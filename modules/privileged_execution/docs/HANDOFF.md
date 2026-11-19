@@ -1,7 +1,7 @@
 # Handoff — `modules/privileged_execution`
 
 - **Active plan:** `docs/plans/20261119-privexec-session-broker/`
-- **Current stage:** Phase 0 complete; starting Phase 1 (Broker & CLI Foundation)
+- **Current stage:** Phase 1 complete; starting Phase 2 (Trusted Execution & Durable Persistence)
 - **Branch:** `feat/privexec-session-broker-20261119`
 - **Worktree:** `C:\Users\mcarls\src\scripts-privexec`
 - **Base commit:** `e7b9f36d5296d8b8fe301ef47e9f35adc64f886b`
