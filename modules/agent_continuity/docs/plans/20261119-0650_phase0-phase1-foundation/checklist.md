@@ -8,22 +8,22 @@
 - [x] Record ADR-001 with all Phase 0 decisions
 
 ## Stage 1 — Registry, Event Spool, & SQLite Materializer
-- [ ] Package skeleton (`pyproject.toml`, `__init__.py`, `__main__.py`, `.gitignore`, `conftest.py`)
-- [ ] Core domain models, error taxonomy, ID/slug/URL normalization
-- [ ] Environment identity & cross-OS SQLite safety guard
-- [ ] Atomic per-event JSON spool writer/reader
-- [ ] SQLite schema v1, migrations, idempotent transactional materializer, atomic rebuild
+- [x] Package skeleton (`pyproject.toml`, `__init__.py`, `__main__.py`, `.gitignore`, `conftest.py`)
+- [x] Core domain models, error taxonomy, ID/slug/URL normalization
+- [x] Environment identity & cross-OS SQLite safety guard
+- [x] Atomic per-event JSON spool writer/reader
+- [x] SQLite schema v1, migrations, idempotent transactional materializer, atomic rebuild
 
 ## Stage 2 — Association Engine, Provider Adapters, Diagnostics & CLI
-- [ ] Continuity queries (`latest_created`, `latest_seen`, `latest_turn`, `latest_completed_turn`, `latest_by_provider`)
-- [ ] Conflict detection, candidate/rejection/supersession semantics
-- [ ] Provider adapter contract + read-only Codex/AGY detection & resume command builders
-- [ ] `doctor` diagnostics
-- [ ] `agents` CLI (`wf`, `find`, `link`, `unlink`, `reject`, `status`, `inbox`, `rebuild`, `doctor`) with dry-run default & `--json`
-- [ ] Register in `modules/scripts_help/scripts_help/registry/registry.py`
+- [x] Continuity queries (`latest_created`, `latest_seen`, `latest_turn`, `latest_completed_turn`, `latest_by_provider`)
+- [x] Conflict detection, candidate/rejection/supersession semantics
+- [x] Provider adapter contract + read-only Codex/AGY detection & resume command builders
+- [x] `doctor` diagnostics
+- [x] `agents` CLI (`wf`, `find`, `link`, `unlink`, `reject`, `status`, `inbox`, `rebuild`, `doctor`) with dry-run default & `--json`
+- [x] Register in `modules/scripts_help/scripts_help/registry/registry.py`
 
 ## Stage 3 — Validation & Documentation
-- [ ] Unit & integration tests covering Master Plan & Handoff Scenarios A–I
-- [ ] Run `pytest` and `ruff`
-- [ ] Verify CLI commands & rebuild end-to-end
-- [ ] Finalize docs & checkpoints
+- [x] Unit & integration tests covering Master Plan & Handoff Scenarios A–I
+- [x] Run `pytest` and `ruff`
+- [x] Verify CLI commands, rebuild, and WSL2 guard end-to-end
+- [x] Finalize docs & checkpoints
