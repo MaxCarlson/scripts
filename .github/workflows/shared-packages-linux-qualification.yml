@@ -1,0 +1,144 @@
+name: Shared Packages Linux Qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shared-packages-linux-qualification-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Ubuntu 24.04 / Python 3.12
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONNOUSERSITE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_INPUT: "1"
+
+    steps:
+      - name: Check out scripts at the dispatched ref
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+
+      - name: Initialize and verify pinned pscripts submodules
+        run: |
+          git submodule update --init --recursive -- pscripts
+          test -f pscripts/setup.py
+          test "$(git -C pscripts rev-parse HEAD)" = "70ba27dd9259eea44d3710691fb276573c26789a"
+          test "$(git -C pscripts/modules/aebn-vod-downloader-custom rev-parse HEAD)" = "af6bb8b1db14c8434c0a9da446ec49bbf067ab9b"
+
+      - name: Verify committed qualified wheel artifacts and metadata
+        run: |
+          cd .github/qualified-wheelhouse
+          sha256sum --check SHA256SUMS.txt
+          python -I - "$GITHUB_WORKSPACE/.github/qualified-wheelhouse" <<'PY'
+          import hashlib
+          import sys
+          from email.parser import BytesParser
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheelhouse = Path(sys.argv[1])
+          expected = {
+              "resource_metrics-0.3.0-py3-none-any.whl": ("resource-metrics", "0.3.0", "dee0f067de04c0fff4f16e4d2c5db19732dc13bf1e23f0e9a68e4f039c704164"),
+              "script_logging-0.1.1-py3-none-any.whl": ("script-logging", "0.1.1", "dae0ec9b58eb03ae97e6f5c54187944c80578cb698d2efe260241bf1964d7a56"),
+              "web_ui_tools-0.2.0-py3-none-any.whl": ("web-ui-tools", "0.2.0", "4ffe9b92fa93765294ae990264bf6b955b317c040daeb15d4c303c45cb7513d0"),
+              "termdash-0.10.0-py3-none-any.whl": ("termdash", "0.10.0", "f7ba9bbfbbdef68d8a46c6ff3b02aeb39b18c1c10f18862ace9c8beba951fdc6"),
+              "cross_platform-0.9.0-py3-none-any.whl": ("cross-platform", "0.9.0", "5d9f39a1be8eaacfb872f00205586e7d648654b3a4f54fa5c9f3059c00e6bf40"),
+          }
+          actual_wheels = {path.name for path in wheelhouse.glob("*.whl")}
+          if actual_wheels != set(expected):
+              raise SystemExit(f"wheel set mismatch: expected {sorted(expected)}, got {sorted(actual_wheels)}")
+          for filename, (expected_name, expected_version, expected_hash) in expected.items():
+              path = wheelhouse / filename
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if digest != expected_hash:
+                  raise SystemExit(f"{filename}: expected SHA-256 {expected_hash}, got {digest}")
+              with ZipFile(path) as archive:
+                  metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+                  metadata = BytesParser().parsebytes(archive.read(metadata_name))
+              if metadata["Name"] != expected_name or metadata["Version"] != expected_version:
+                  raise SystemExit(f"{filename}: unexpected metadata Name/Version {metadata['Name']}/{metadata['Version']}")
+              print(f"{expected_name}=={expected_version} sha256={digest}")
+          PY
+
+      - name: Run the Bash latest bootstrap in a clean scripts environment
+        run: |
+          export PIP_FIND_LINKS="$GITHUB_WORKSPACE/.github/qualified-wheelhouse"
+          timeout --signal=TERM --kill-after=15s 50m ./bootstrap_latest.sh
+
+      - name: Install test-only HTTP and pytest tools
+        run: .venv/bin/python -I -m pip install "pytest==8.3.5" "pytest-timeout==2.4.0" "httpx==0.28.1"
+
+      - name: Check installation, provenance, and generated launchers
+        run: |
+          .venv/bin/python -I -m pip check
+          .venv/bin/python -I - <<'PY'
+          import importlib
+          import importlib.metadata as metadata
+          import sys
+          from pathlib import Path
+
+          expected = {
+              "resource-metrics": ("resource_metrics", "0.3.0"),
+              "script-logging": ("script_logging", "0.1.1"),
+              "web-ui-tools": ("web_ui_tools", "0.2.0"),
+              "termdash": ("termdash", "0.10.0"),
+              "cross-platform": ("cross_platform", "0.9.0"),
+          }
+          site_dirs = [Path(path).resolve() for path in sys.path if path.endswith("site-packages")]
+          assert site_dirs, f"no site-packages entries in isolated sys.path: {sys.path}"
+          for distribution, (module_name, version) in expected.items():
+              dist = metadata.distribution(distribution)
+              module = importlib.import_module(module_name)
+              origin = Path(module.__file__).resolve()
+              assert dist.version == version, (distribution, dist.version)
+              assert any(origin.is_relative_to(site) for site in site_dirs), (module_name, origin)
+              direct_url = dist.read_text("direct_url.json")
+              if direct_url:
+                  lowered = direct_url.lower()
+                  assert "shared-python-modules" not in lowered and "llm-agent-toolkit" not in lowered, direct_url
+              print(f"{distribution}=={version} -> {origin}")
+          assert not any("shared-python-modules" in path.lower() or "llm-agent-toolkit" in path.lower() for path in sys.path)
+          PY
+          ./bin/termdash --help
+          ./bin/runmux --help
+
+      - name: Run selected scripts consumer regressions
+        run: |
+          timeout --signal=TERM --kill-after=15s 25m .venv/bin/python -I -m pytest -q \
+            --timeout=60 \
+            --basetemp="$RUNNER_TEMP/scripts-pytest-tmp" \
+            scripts_setup/tests/shared_packages_test.py \
+            scripts_setup/tests/transferred_modules_test.py \
+            modules/setup_utils/tests \
+            modules/backup_module/tests/test_backup_module.py \
+            modules/compresser/tests/measurement_test.py \
+            modules/compresser/tests/ui_test.py \
+            modules/rrbackup/tests/viewer_test.py \
+            modules/rrbackup/tests/viewer_dashboard_test.py \
+            modules/rrbackup/tests/schedule_math_test.py \
+            modules/runmux/tests/telemetry_history_api_test.py \
+            modules/runmux/tests/historical_runs_api_test.py \
+            modules/sysmon/tests/test_sampler.py \
+            modules/system_manager/tests/process_watch_sampler_test.py \
+            modules/scheduler/tests/test_logger.py \
+            modules/scheduler/tests/test_history.py
+
+      - name: Recheck dependency health after test dependencies
+        run: .venv/bin/python -I -m pip check

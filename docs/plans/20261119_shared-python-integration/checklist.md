@@ -33,13 +33,19 @@
 - [x] Run clean-env `pip check`, all five shared import provenance checks, TermDash and Runmux CLI help, generated TermDash/Runmux `.cmd` wrapper help, and transferred-command collision check (none).
 - [ ] Complete Runmux browser TestClient HTTP suite. **Blocked before request dispatch** by Windows Proactor `_fallback_socketpair`/`socket.accept`; same stall reproduced with minimal FastAPI in baseline primary environment. Runmux app construction passes; no application regression identified. Retry under a Windows environment where asyncio socket pairs work.
 - [x] Compare the Runmux HTTP hang against a baseline minimal FastAPI app and capture bounded faulthandler evidence; no scripts-owned fix justified.
+- [x] Make one bounded Python 3.12 SelectorEventLoop TestClient attempt using AnyIO's supported `loop_factory`; faulthandler confirms the same `_fallback_socketpair`/`socket.accept` stall before request dispatch. Stop Windows workarounds; no production event-loop changes.
 - [ ] Run Linux/Ubuntu qualification. WSL Ubuntu and docker-desktop are stopped; startup service state is unknown, so neither distro was started. Use isolated Linux CI/WSL with confirmed safe startup configuration.
+- [x] Prepare a manual-only Ubuntu GitHub Actions workflow using the five committed CI-only wheel fixtures under `.github/qualified-wheelhouse/`; it checks exact hashes/metadata, initializes pinned `pscripts`, runs Bash bootstrap, verifies imports/launchers/`pip check`, and runs selected bounded consumer and Runmux HTTP tests.
+- [ ] Dispatch the hosted Ubuntu workflow and review its results. Not run here; all Linux test results remain pending. No YAML/actionlint parser is installed locally, and Git Bash was blocked from starting by sandbox object permissions; both embedded Python heredocs pass AST parsing.
+- [x] Attempt local wheel reproduction in `.tmp_build/ci-wheel-repro-ff134131`; sandbox DNS could not resolve PyPI while fetching build-isolation requirement `wheel`. The attempt failed before package build; shared source was not modified. Since the pinned shared Git tree does not contain the qualified wheel artifacts and wheel ZIP file timestamps are not represented by Git, CI uses the exact committed artifact fixture rather than rebuilding and assuming identical bytes.
+- [ ] Run actual Runmux TestClient request tests in a compatible Windows environment; Proactor and SelectorEventLoop both fail before dispatch in this host. Ubuntu workflow selects the synthetic-state HTTP-only tests.
 
 ## Retirement/integration
 
 - [x] Preserve existing retirement branch/checkpoint/quarantines and raw evidence files.
 - [x] Keep all existing source ownership and data holds; do not delete or move source.
 - [x] Prepare non-mutating retirement reconciliation and rollback order; integration changes must be accepted first, then selectively apply qualified module removals on a separate branch after comparing current main and quarantine manifests.
+- [x] Compare integration and retirement diffs: overlap is limited to `scripts_setup/transferred_modules.py` and `scripts_setup/tests/transferred_modules_test.py`; do not merge the retirement branch wholesale.
 - [ ] Apply retirement deletions or merge retirement work (explicitly out of scope for this phase).
 - [ ] Review five raw JSON files for sensitivity before any future publication.
 - [ ] Obtain later cleanup/integration authorization; do not merge, push, publish or retire primary-checkout source in this task.
