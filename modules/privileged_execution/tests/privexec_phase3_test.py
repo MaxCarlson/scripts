@@ -667,3 +667,65 @@ def test_installer_reconciles_and_purges_stale_acls(tmp_path: Path) -> None:
         assert "BUILTIN\\Users" not in acl_out
         assert "NT AUTHORITY\\SYSTEM" in acl_out
         assert "BUILTIN\\Administrators" in acl_out
+
+    # Seed existing ledger and evidence, then run repeated in-process install (& $script)
+    # where $LASTEXITCODE starts as $null (regression test for run 20261119-184515-5819f80d).
+    db_file = state_dir / "privexec.db"
+    ev_file = state_dir / "evidence" / "op-existing" / "sanitized-result.json"
+    ev_file.parent.mkdir(parents=True, exist_ok=True)
+    db_file.write_text("sqlite-placeholder", encoding="utf-8")
+    ev_file.write_text('{"operation_id":"op-existing"}', encoding="utf-8")
+
+    inproc_cmd = f"""
+    $ErrorActionPreference = 'Stop'
+    $out = & '{SCRIPTS_DIR / "Install-PrivExec.ps1"}' -Apply -Mode SameUserDev -InstallRoot '{install_root}' -Json
+    if ($null -eq $LASTEXITCODE -or $LASTEXITCODE -ne 0) {{
+        throw "Unexpected LASTEXITCODE=$LASTEXITCODE"
+    }}
+    $parsed = $out | ConvertFrom-Json
+    if (-not $parsed.ok -or -not $parsed.verified) {{
+        throw "Installer output not verified"
+    }}
+    Write-Output "INPROC_INSTALL_OK"
+    """
+    res_inproc = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", inproc_cmd],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "INPROC_INSTALL_OK" in res_inproc.stdout
+    assert db_file.read_text(encoding="utf-8") == "sqlite-placeholder"
+    assert ev_file.read_text(encoding="utf-8") == '{"operation_id":"op-existing"}'
+
+    # Verify structured failure diagnostics on stderr when -Apply encounters an error
+    res_fail = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(SCRIPTS_DIR / "Install-PrivExec.ps1"),
+            "-Apply",
+            "-Mode",
+            "SameUserDev",
+            "-InstallRoot",
+            str(install_root),
+            "-OperatorAccount",
+            "NONEXISTENT_DOMAIN_999\\NonexistentUser_999",
+            "-Json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert res_fail.returncode != 0
+    err_lines = res_fail.stderr.strip().splitlines()
+    # Extract the JSON diagnostic block from stderr
+    json_blob = "\n".join(line for line in err_lines if not line.startswith("Install-PrivExec.ps1:"))
+    # Parse up to closing brace of first JSON object
+    end_idx = json_blob.find("\n}\n")
+    err_json = json.loads(json_blob[: end_idx + 2] if end_idx != -1 else json_blob)
+    assert err_json["ok"] is False
+    assert err_json["failed_stage"] == "reconcile_parent_acls"
+    assert "partial_install_status" in err_json

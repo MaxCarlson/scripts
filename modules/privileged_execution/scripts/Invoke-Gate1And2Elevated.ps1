@@ -44,25 +44,33 @@ $evidence = [ordered]@{
     completed_at_utc     = $null
     status               = 'started'
     current_step         = 'init'
-    failing_step         = $null
-    error                = $null
-    operator_account     = $opIdentity.Name
-    operator_sid         = $opIdentity.User.Value
-    agent_account        = $null
-    agent_sid            = $null
-    created_accounts     = @()
-    prior_install_found  = (Test-Path -LiteralPath $InstallRoot)
-    gate1_install        = $null
-    acl_state            = $null
-    acl_descriptors      = $null
-    broker_stdout        = $null
-    broker_stderr        = $null
-    gate2_agent          = $null
-    gate2_unauthorized   = $null
-    gate2_expiry_check   = $null
-    cleanup              = [ordered]@{ temp_dir_removed = $false; accounts_removed = @(); errors = @() }
-    services_or_tasks    = 0
-    h4_executed          = $false
+    failing_step              = $null
+    error                     = $null
+    error_details             = $null
+    operator_account          = $opIdentity.Name
+    operator_sid              = $opIdentity.User.Value
+    agent_account             = $null
+    agent_sid                 = $null
+    created_accounts          = @()
+    prior_install_found       = (Test-Path -LiteralPath $InstallRoot)
+    gate1_install             = $null
+    gate1_install_diagnostics = $null
+    acl_state                 = $null
+    acl_descriptors           = $null
+    broker_stdout             = $null
+    broker_stderr             = $null
+    gate2_agent               = $null
+    gate2_unauthorized        = $null
+    gate2_expiry_check        = $null
+    cleanup                   = [ordered]@{
+        temp_dir_created       = $false
+        temp_dir_removed       = $false
+        temp_agent_acl_cleaned = $false
+        accounts_removed       = @()
+        errors                 = @()
+    }
+    services_or_tasks         = 0
+    h4_executed               = $false
 }
 
 $fallbackEvidencePath = Join-Path $env:TEMP "privexec-gate12-$runId.json"
@@ -196,14 +204,73 @@ try {
     # Gate 1: Elevated staged installation
     $evidence['current_step'] = 'gate1_install'
     $installScript = Join-Path $PSScriptRoot 'Install-PrivExec.ps1'
-    $installJson = & $installScript -Apply -Mode CrossAccountIsolated `
-        -InstallRoot $InstallRoot `
-        -OperatorAccount $OperatorAccount `
-        -AgentAccount $AgentAccount `
-        -H4SourceDir $H4SourceDir `
-        -Json
-    if ($LASTEXITCODE -ne 0) { throw 'Install-PrivExec.ps1 failed.' }
-    $evidence['gate1_install'] = ($installJson | ConvertFrom-Json)
+    $installArgs = @(
+        '-NoProfile',
+        '-NonInteractive',
+        '-File', $installScript,
+        '-Apply',
+        '-Mode', 'CrossAccountIsolated',
+        '-InstallRoot', $InstallRoot,
+        '-OperatorAccount', $OperatorAccount,
+        '-AgentAccount', $AgentAccount,
+        '-H4SourceDir', $H4SourceDir,
+        '-Json'
+    )
+    $instOutFile = Join-Path $env:TEMP "privexec-gate1-install-$runId.stdout.log"
+    $instErrFile = Join-Path $env:TEMP "privexec-gate1-install-$runId.stderr.log"
+    try {
+        $pInstall = Start-Process -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' `
+            -ArgumentList $installArgs `
+            -RedirectStandardOutput $instOutFile `
+            -RedirectStandardError $instErrFile `
+            -Wait -PassThru -WindowStyle Hidden
+        $instOutText = if (Test-Path -LiteralPath $instOutFile) { Get-Content -LiteralPath $instOutFile -Raw -ErrorAction SilentlyContinue } else { '' }
+        $instErrText = if (Test-Path -LiteralPath $instErrFile) { Get-Content -LiteralPath $instErrFile -Raw -ErrorAction SilentlyContinue } else { '' }
+    } finally {
+        if (Test-Path -LiteralPath $instOutFile) { Remove-Item -LiteralPath $instOutFile -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $instErrFile) { Remove-Item -LiteralPath $instErrFile -Force -ErrorAction SilentlyContinue }
+    }
+
+    $parsedInstall = $null
+    if (-not [string]::IsNullOrWhiteSpace($instOutText)) {
+        try { $parsedInstall = $instOutText | ConvertFrom-Json -ErrorAction Stop } catch {}
+    }
+    $parsedInstallErr = $null
+    if (-not [string]::IsNullOrWhiteSpace($instErrText)) {
+        try { $parsedInstallErr = $instErrText | ConvertFrom-Json -ErrorAction Stop } catch {}
+    }
+
+    $evidence['gate1_install_diagnostics'] = [ordered]@{
+        executable             = 'C:\Program Files\PowerShell\7\pwsh.exe'
+        arguments              = $installArgs
+        exit_code              = $pInstall.ExitCode
+        stdout                 = $instOutText
+        stderr                 = $instErrText
+        error_payload          = $parsedInstallErr
+        partial_install_status = [ordered]@{
+            root_exists       = (Test-Path -LiteralPath $InstallRoot)
+            broker_dll_staged = (Test-Path -LiteralPath (Join-Path $InstallRoot 'bin\PrivExecBroker.dll'))
+            descriptors_count = @(Get-ChildItem -LiteralPath (Join-Path $InstallRoot 'descriptors') -Filter '*.json' -File -ErrorAction SilentlyContinue).Count
+            adapters_count    = @(Get-ChildItem -LiteralPath (Join-Path $InstallRoot 'adapters') -Filter '*.ps1' -File -ErrorAction SilentlyContinue).Count
+            state_exists      = (Test-Path -LiteralPath (Join-Path $InstallRoot 'state'))
+        }
+    }
+    if ($parsedInstall) {
+        $evidence['gate1_install'] = $parsedInstall
+    }
+    Save-GateEvidence
+
+    if ($pInstall.ExitCode -ne 0 -or -not $parsedInstall -or ($parsedInstall.PSObject.Properties['ok'] -and -not $parsedInstall.ok)) {
+        $stageMsg = if ($parsedInstallErr -and $parsedInstallErr.failed_stage) { "stage='$($parsedInstallErr.failed_stage)' " } else { '' }
+        $errDetail = if ($parsedInstallErr -and $parsedInstallErr.error_message) {
+            "$($parsedInstallErr.exception_type): $($parsedInstallErr.error_message)"
+        } elseif (-not [string]::IsNullOrWhiteSpace($instErrText)) {
+            $instErrText.Trim()
+        } else {
+            "exit_code=$($pInstall.ExitCode)"
+        }
+        throw "Install-PrivExec.ps1 failed (${stageMsg}exit=$($pInstall.ExitCode)): $errDetail"
+    }
 
     $aclState = (& icacls (Join-Path $InstallRoot 'state')) -join "`n"
     $aclDesc = (& icacls (Join-Path $InstallRoot 'descriptors')) -join "`n"
@@ -261,6 +328,7 @@ try {
     # Prepare isolated per-user working/temp directories (never inheriting operator profile TEMP)
     $evidence['current_step'] = 'gate2_agent'
     New-Item -ItemType Directory -Path $isolatedRunRoot -Force | Out-Null
+    $evidence['cleanup']['temp_dir_created'] = $true
     $agentProfile = Join-Path $isolatedRunRoot 'agent_profile'
     $agentTemp = Join-Path $isolatedRunRoot 'agent_temp'
     $agentEnv = New-IsolatedUserEnvironment -UserTempDir $agentTemp -UserProfileDir $agentProfile -AccountName $AgentAccount
@@ -318,6 +386,12 @@ catch {
     $evidence['status'] = 'failed'
     $evidence['failing_step'] = $evidence['current_step']
     $evidence['error'] = $_.Exception.Message
+    $evidence['error_details'] = [ordered]@{
+        exception_type     = $_.Exception.GetType().FullName
+        message            = $_.Exception.Message
+        position           = if ($_.InvocationInfo) { $_.InvocationInfo.PositionMessage } else { $null }
+        script_stack_trace = $_.ScriptStackTrace
+    }
     $evidence['completed_at_utc'] = (Get-Date).ToUniversalTime().ToString('o')
     if ($brokerOut -and (Test-Path -LiteralPath $brokerOut)) {
         $evidence['broker_stdout'] = Get-Content -LiteralPath $brokerOut -Raw -ErrorAction SilentlyContinue
@@ -347,6 +421,46 @@ finally {
             $evidence['cleanup']['temp_dir_removed'] = $true
         } catch {
             $evidence['cleanup']['errors'] += "Failed to remove '$isolatedRunRoot': $($_.Exception.Message)"
+        }
+    } else {
+        $evidence['cleanup']['temp_dir_removed'] = $true
+    }
+    $isolatedParent = Split-Path -Parent $isolatedRunRoot
+    if ($isolatedParent -and (Test-Path -LiteralPath $isolatedParent)) {
+        $remainingRuns = @(Get-ChildItem -LiteralPath $isolatedParent -Force -ErrorAction SilentlyContinue)
+        if ($remainingRuns.Count -eq 0) {
+            Remove-Item -LiteralPath $isolatedParent -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if ($CreateTempTestAccounts -and $agentSid -and (Test-Path -LiteralPath $InstallRoot)) {
+        try {
+            $cleanAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+            $cleanAcl.SetAccessRuleProtection($true, $false)
+            $inh = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+            $prp = [System.Security.AccessControl.PropagationFlags]'None'
+            $alw = [System.Security.AccessControl.AccessControlType]::Allow
+            foreach ($adm in @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators', $OperatorAccount)) {
+                $admSid = ([System.Security.Principal.NTAccount]$adm).Translate([System.Security.Principal.SecurityIdentifier])
+                $cleanAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+                    $admSid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inh, $prp, $alw))
+            }
+            $roTargets = @(
+                $InstallRoot,
+                (Join-Path $InstallRoot 'bin'),
+                (Join-Path $InstallRoot 'client'),
+                (Join-Path $InstallRoot 'client\privexec'),
+                (Join-Path $InstallRoot 'descriptors'),
+                (Join-Path $InstallRoot 'adapters'),
+                (Join-Path $InstallRoot 'h4_scripts')
+            )
+            foreach ($roDir in $roTargets) {
+                if (Test-Path -LiteralPath $roDir) {
+                    [System.IO.FileSystemAclExtensions]::SetAccessControl([System.IO.DirectoryInfo]::new($roDir), $cleanAcl)
+                }
+            }
+            $evidence['cleanup']['temp_agent_acl_cleaned'] = $true
+        } catch {
+            $evidence['cleanup']['errors'] += "Failed to purge temporary agent SID '$agentSid' from ACLs: $($_.Exception.Message)"
         }
     }
     foreach ($u in $createdUsers) {

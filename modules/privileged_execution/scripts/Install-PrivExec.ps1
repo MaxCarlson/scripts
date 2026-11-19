@@ -137,7 +137,8 @@ function Set-StrictDirectoryAcl {
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$OperatorAccount,
-        [string]$ReadOnlyAgentAccount = ''
+        [string]$ReadOnlyAgentAccount = '',
+        [switch]$DirectFilesOnly
     )
     $acl = [System.Security.AccessControl.DirectorySecurity]::new()
     $acl.SetAccessRuleProtection($true, $false)
@@ -156,117 +157,176 @@ function Set-StrictDirectoryAcl {
             $agentSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, $inherit, $prop, $allow))
     }
 
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    [System.IO.FileSystemAclExtensions]::SetAccessControl([System.IO.DirectoryInfo]::new($Path), $acl)
 
-    # Reset any existing child items so they inherit only the reconciled parent ACL (purging stale explicit ACEs)
-    Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
-        $childAcl = Get-Acl -LiteralPath $_.FullName
-        $childAcl.SetAccessRuleProtection($false, $false)
-        foreach ($r in @($childAcl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))) {
-            $childAcl.RemoveAccessRuleSpecific($r)
-        }
-        Set-Acl -LiteralPath $_.FullName -AclObject $childAcl
+    # Reset existing child items so they inherit only the reconciled parent ACL (purging stale explicit ACEs)
+    $children = if ($DirectFilesOnly) {
+        Get-ChildItem -LiteralPath $Path -File -Force -ErrorAction SilentlyContinue
+    } else {
+        Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
     }
-}
-
-$readOnlyDirs = @($resolvedRoot, $subDirs.bin, (Split-Path -Parent $subDirs.client), $subDirs.client, $subDirs.descriptors, $subDirs.adapters, $subDirs.h4_scripts)
-$privateDirs = @($subDirs.state, $subDirs.work)
-
-# Create directories and apply restrictive ACLs BEFORE staging binaries/scripts (closes partial-install window)
-$agentForReadOnly = if ($Mode -eq 'CrossAccountIsolated') { $AgentAccount } else { '' }
-foreach ($d in $readOnlyDirs) {
-    New-Item -ItemType Directory -Path $d -Force | Out-Null
-    Assert-NoReparsePoint -FullPath $d
-    Set-StrictDirectoryAcl -Path $d -OperatorAccount $OperatorAccount -ReadOnlyAgentAccount $agentForReadOnly
-}
-
-foreach ($d in $privateDirs) {
-    New-Item -ItemType Directory -Path $d -Force | Out-Null
-    Assert-NoReparsePoint -FullPath $d
-    Set-StrictDirectoryAcl -Path $d -OperatorAccount $OperatorAccount
-}
-
-Copy-Item -LiteralPath $brokerDll -Destination (Join-Path $subDirs.bin 'PrivExecBroker.dll') -Force
-Copy-Item -LiteralPath $brokerCfg -Destination (Join-Path $subDirs.bin 'PrivExecBroker.runtimeconfig.json') -Force
-
-Get-ChildItem -LiteralPath $clientSrcDir -Filter '*.py' -File | ForEach-Object {
-    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $subDirs.client $_.Name) -Force
-}
-$crossAcctScript = Join-Path $PSScriptRoot 'Test-PrivExecCrossAccount.ps1'
-if (Test-Path -LiteralPath $crossAcctScript -PathType Leaf) {
-    Copy-Item -LiteralPath $crossAcctScript -Destination (Join-Path (Split-Path -Parent $subDirs.client) 'Test-PrivExecCrossAccount.ps1') -Force
-}
-
-Get-ChildItem -LiteralPath $adaptersSrcDir -Filter '*.ps1' -File | ForEach-Object {
-    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $subDirs.adapters $_.Name) -Force
-}
-
-$h4ExpectedSha = @{}
-if (-not [string]::IsNullOrWhiteSpace($H4SourceDir)) {
-    $resolvedH4 = [System.IO.Path]::GetFullPath($H4SourceDir)
-    Assert-NoReparsePoint -FullPath $resolvedH4
-    foreach ($fName in @('Invoke-H4GuestQualification.ps1', 'Invoke-H4GuestRecovery.ps1', 'Bootstrap-H4GuestBundle.ps1')) {
-        $src = Join-Path $resolvedH4 $fName
-        if (Test-Path -LiteralPath $src -PathType Leaf) {
-            $dst = Join-Path $subDirs.h4_scripts $fName
-            Copy-Item -LiteralPath $src -Destination $dst -Force
-            $h4ExpectedSha[$fName] = (Get-FileHash -Algorithm SHA256 -LiteralPath $dst).Hash.ToLowerInvariant()
+    foreach ($child in @($children)) {
+        if ($child.PSIsContainer) {
+            $childAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+            $childAcl.SetAccessRuleProtection($false, $false)
+            [System.IO.FileSystemAclExtensions]::SetAccessControl([System.IO.DirectoryInfo]::new($child.FullName), $childAcl)
+        } else {
+            $childAcl = [System.Security.AccessControl.FileSecurity]::new()
+            $childAcl.SetAccessRuleProtection($false, $false)
+            [System.IO.FileSystemAclExtensions]::SetAccessControl([System.IO.FileInfo]::new($child.FullName), $childAcl)
         }
     }
 }
 
-# Stage descriptors bound to $resolvedRoot and current adapter SHA-256 digests
-Get-ChildItem -LiteralPath $descriptorsSrcDir -Filter '*.json' -File | ForEach-Object {
-    $desc = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
-    if ($desc.runner_type -eq 'powershell' -and $desc.script_path) {
-        $adapterName = Split-Path -Leaf ([string]$desc.script_path)
-        $stagedAdapter = Join-Path $subDirs.adapters $adapterName
-        if (Test-Path -LiteralPath $stagedAdapter -PathType Leaf) {
-            $desc.script_path = $stagedAdapter
-            $desc.script_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedAdapter).Hash.ToLowerInvariant()
-        }
-        $desc.working_directory = $subDirs.work
-        $newArgs = [System.Collections.Generic.List[string]]::new()
-        for ($i = 0; $i -lt $desc.fixed_args.Count; $i++) {
-            $arg = [string]$desc.fixed_args[$i]
-            if ($arg -like '*Invoke-H4GuestQualification.ps1') {
-                $qDst = Join-Path $subDirs.h4_scripts 'Invoke-H4GuestQualification.ps1'
-                $newArgs.Add($qDst)
-                if ($h4ExpectedSha.ContainsKey('Invoke-H4GuestQualification.ps1')) {
-                    $newArgs.Add('-ExpectedH4ScriptSha256')
-                    $newArgs.Add($h4ExpectedSha['Invoke-H4GuestQualification.ps1'])
-                }
-            } elseif ($arg -like '*Invoke-H4GuestRecovery.ps1') {
-                $rDst = Join-Path $subDirs.h4_scripts 'Invoke-H4GuestRecovery.ps1'
-                $newArgs.Add($rDst)
-                if ($h4ExpectedSha.ContainsKey('Invoke-H4GuestRecovery.ps1')) {
-                    $newArgs.Add('-ExpectedH4ScriptSha256')
-                    $newArgs.Add($h4ExpectedSha['Invoke-H4GuestRecovery.ps1'])
-                }
-            } else {
-                $newArgs.Add($arg)
+$installStage = 'init'
+try {
+    $clientParentDir = Split-Path -Parent $subDirs.client
+    $leafReadOnlyDirs = @($subDirs.bin, $subDirs.client, $subDirs.descriptors, $subDirs.adapters, $subDirs.h4_scripts)
+    $privateDirs = @($subDirs.state, $subDirs.work)
+    $agentForReadOnly = if ($Mode -eq 'CrossAccountIsolated') { $AgentAccount } else { '' }
+
+    # Create directories and apply restrictive ACLs BEFORE staging binaries/scripts (closes partial-install window).
+    # Parent directories use -DirectFilesOnly so private subdirectories (state, work) never inherit agent RX even transiently.
+    $installStage = 'reconcile_parent_acls'
+    foreach ($parentDir in @($resolvedRoot, $clientParentDir)) {
+        New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
+        Assert-NoReparsePoint -FullPath $parentDir
+        Set-StrictDirectoryAcl -Path $parentDir -OperatorAccount $OperatorAccount -ReadOnlyAgentAccount $agentForReadOnly -DirectFilesOnly
+    }
+
+    $installStage = 'reconcile_private_acls'
+    foreach ($d in $privateDirs) {
+        New-Item -ItemType Directory -Path $d -Force | Out-Null
+        Assert-NoReparsePoint -FullPath $d
+        Set-StrictDirectoryAcl -Path $d -OperatorAccount $OperatorAccount
+    }
+
+    $installStage = 'reconcile_readonly_acls'
+    foreach ($d in $leafReadOnlyDirs) {
+        New-Item -ItemType Directory -Path $d -Force | Out-Null
+        Assert-NoReparsePoint -FullPath $d
+        Set-StrictDirectoryAcl -Path $d -OperatorAccount $OperatorAccount -ReadOnlyAgentAccount $agentForReadOnly
+    }
+
+    $installStage = 'stage_binaries'
+    Copy-Item -LiteralPath $brokerDll -Destination (Join-Path $subDirs.bin 'PrivExecBroker.dll') -Force
+    Copy-Item -LiteralPath $brokerCfg -Destination (Join-Path $subDirs.bin 'PrivExecBroker.runtimeconfig.json') -Force
+
+    $installStage = 'stage_client'
+    Get-ChildItem -LiteralPath $clientSrcDir -Filter '*.py' -File | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $subDirs.client $_.Name) -Force
+    }
+    $crossAcctScript = Join-Path $PSScriptRoot 'Test-PrivExecCrossAccount.ps1'
+    if (Test-Path -LiteralPath $crossAcctScript -PathType Leaf) {
+        Copy-Item -LiteralPath $crossAcctScript -Destination (Join-Path $clientParentDir 'Test-PrivExecCrossAccount.ps1') -Force
+    }
+
+    $installStage = 'stage_adapters'
+    Get-ChildItem -LiteralPath $adaptersSrcDir -Filter '*.ps1' -File | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $subDirs.adapters $_.Name) -Force
+    }
+
+    $installStage = 'stage_h4_scripts'
+    $h4ExpectedSha = @{}
+    if (-not [string]::IsNullOrWhiteSpace($H4SourceDir)) {
+        $resolvedH4 = [System.IO.Path]::GetFullPath($H4SourceDir)
+        Assert-NoReparsePoint -FullPath $resolvedH4
+        foreach ($fName in @('Invoke-H4GuestQualification.ps1', 'Invoke-H4GuestRecovery.ps1', 'Bootstrap-H4GuestBundle.ps1')) {
+            $src = Join-Path $resolvedH4 $fName
+            if (Test-Path -LiteralPath $src -PathType Leaf) {
+                $dst = Join-Path $subDirs.h4_scripts $fName
+                Copy-Item -LiteralPath $src -Destination $dst -Force
+                $h4ExpectedSha[$fName] = (Get-FileHash -Algorithm SHA256 -LiteralPath $dst).Hash.ToLowerInvariant()
             }
         }
-        $desc.fixed_args = $newArgs.ToArray()
     }
-    $desc | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $subDirs.descriptors $_.Name) -Encoding utf8NoBOM
-}
 
-# Re-verify ACL inheritance protection and descriptor/adapter SHA-256 digests post-install
-Get-ChildItem -LiteralPath $subDirs.descriptors -Filter '*.json' -File | ForEach-Object {
-    $stagedDesc = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
-    if ($stagedDesc.runner_type -eq 'powershell' -and $stagedDesc.script_path) {
-        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath ([string]$stagedDesc.script_path)).Hash.ToLowerInvariant()
-        if ($actualHash -ne ([string]$stagedDesc.script_sha256).ToLowerInvariant()) {
-            throw "Post-install integrity verification failed for '$($_.Name)'."
+    # Stage descriptors bound to $resolvedRoot and current adapter SHA-256 digests
+    $installStage = 'stage_descriptors'
+    Get-ChildItem -LiteralPath $descriptorsSrcDir -Filter '*.json' -File | ForEach-Object {
+        $desc = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+        if ($desc.runner_type -eq 'powershell' -and $desc.script_path) {
+            $adapterName = Split-Path -Leaf ([string]$desc.script_path)
+            $stagedAdapter = Join-Path $subDirs.adapters $adapterName
+            if (Test-Path -LiteralPath $stagedAdapter -PathType Leaf) {
+                $desc.script_path = $stagedAdapter
+                $desc.script_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedAdapter).Hash.ToLowerInvariant()
+            }
+            $desc.working_directory = $subDirs.work
+            $newArgs = [System.Collections.Generic.List[string]]::new()
+            for ($i = 0; $i -lt $desc.fixed_args.Count; $i++) {
+                $arg = [string]$desc.fixed_args[$i]
+                if ($arg -like '*Invoke-H4GuestQualification.ps1') {
+                    $qDst = Join-Path $subDirs.h4_scripts 'Invoke-H4GuestQualification.ps1'
+                    $newArgs.Add($qDst)
+                    if ($h4ExpectedSha.ContainsKey('Invoke-H4GuestQualification.ps1')) {
+                        $newArgs.Add('-ExpectedH4ScriptSha256')
+                        $newArgs.Add($h4ExpectedSha['Invoke-H4GuestQualification.ps1'])
+                    }
+                } elseif ($arg -like '*Invoke-H4GuestRecovery.ps1') {
+                    $rDst = Join-Path $subDirs.h4_scripts 'Invoke-H4GuestRecovery.ps1'
+                    $newArgs.Add($rDst)
+                    if ($h4ExpectedSha.ContainsKey('Invoke-H4GuestRecovery.ps1')) {
+                        $newArgs.Add('-ExpectedH4ScriptSha256')
+                        $newArgs.Add($h4ExpectedSha['Invoke-H4GuestRecovery.ps1'])
+                    }
+                } else {
+                    $newArgs.Add($arg)
+                }
+            }
+            $desc.fixed_args = $newArgs.ToArray()
+        }
+        $desc | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $subDirs.descriptors $_.Name) -Encoding utf8NoBOM
+    }
+
+    # Re-verify ACL inheritance protection and descriptor/adapter SHA-256 digests post-install
+    $installStage = 'verify_integrity'
+    Get-ChildItem -LiteralPath $subDirs.descriptors -Filter '*.json' -File | ForEach-Object {
+        $stagedDesc = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+        if ($stagedDesc.runner_type -eq 'powershell' -and $stagedDesc.script_path) {
+            $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath ([string]$stagedDesc.script_path)).Hash.ToLowerInvariant()
+            if ($actualHash -ne ([string]$stagedDesc.script_sha256).ToLowerInvariant()) {
+                throw "Post-install integrity verification failed for '$($_.Name)'."
+            }
         }
     }
-}
 
-$plan['verified'] = $true
-$plan['h4_staged_sha256'] = $h4ExpectedSha
-if ($Json) {
-    $plan | ConvertTo-Json -Depth 6
-} else {
-    Write-Host "PrivExec staged and ACL-protected at '$resolvedRoot' (Mode=$Mode)."
+    $installStage = 'completed'
+    $plan['ok'] = $true
+    $plan['stage'] = $installStage
+    $plan['verified'] = $true
+    $plan['h4_staged_sha256'] = $h4ExpectedSha
+    if ($Json) {
+        $plan | ConvertTo-Json -Depth 6
+    } else {
+        Write-Host "PrivExec staged and ACL-protected at '$resolvedRoot' (Mode=$Mode)."
+    }
+    $global:LASTEXITCODE = 0
+    exit 0
+}
+catch {
+    $errInfo = [ordered]@{
+        schema_version         = 1
+        action                 = 'privexec_install'
+        ok                     = $false
+        apply                  = [bool]$Apply
+        mode                   = $Mode
+        install_root           = $resolvedRoot
+        failed_stage           = $installStage
+        exception_type         = $_.Exception.GetType().FullName
+        error_message          = $_.Exception.Message
+        position               = if ($_.InvocationInfo) { $_.InvocationInfo.PositionMessage } else { $null }
+        script_stack_trace     = $_.ScriptStackTrace
+        partial_install_status = [ordered]@{
+            root_exists       = (Test-Path -LiteralPath $resolvedRoot)
+            broker_dll_staged = (Test-Path -LiteralPath (Join-Path $subDirs.bin 'PrivExecBroker.dll'))
+            descriptors_count = @(Get-ChildItem -LiteralPath $subDirs.descriptors -Filter '*.json' -File -ErrorAction SilentlyContinue).Count
+            adapters_count    = @(Get-ChildItem -LiteralPath $subDirs.adapters -Filter '*.ps1' -File -ErrorAction SilentlyContinue).Count
+            state_exists      = (Test-Path -LiteralPath $subDirs.state)
+        }
+    }
+    $errJson = $errInfo | ConvertTo-Json -Depth 6
+    [Console]::Error.WriteLine($errJson)
+    $global:LASTEXITCODE = 1
+    throw
 }
