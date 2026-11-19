@@ -738,3 +738,190 @@ def test_installer_reconciles_and_purges_stale_acls(tmp_path: Path) -> None:
     assert err_json["ok"] is False
     assert err_json["failed_stage"] == "reconcile_parent_acls"
     assert "partial_install_status" in err_json
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires Windows and built PrivExecBroker.dll")
+def test_unauthorized_isolated_client_and_expired_grant_checks(tmp_path: Path) -> None:
+    broker_dll = MODULE_ROOT / "broker" / "bin" / "PrivExecBroker.dll"
+    if not broker_dll.is_file():
+        pytest.skip("PrivExecBroker.dll not built")
+
+    import shutil
+    import time
+    import uuid
+
+    staged_root = tmp_path / "staged"
+    (staged_root / "descriptors").mkdir(parents=True)
+    (staged_root / "state").mkdir(parents=True)
+    (staged_root / "descriptors" / "synthetic.echo.json").write_text(
+        (DESCRIPTORS_DIR / "synthetic.echo.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    # 1. Stage minimal isolated client script outside staged_root (simulating unauth_profile)
+    unauth_profile = tmp_path / "unauth_profile"
+    unauth_profile.mkdir()
+    isolated_client = unauth_profile / "Test-PrivExecCrossAccount.ps1"
+    shutil.copyfile(SCRIPTS_DIR / "Test-PrivExecCrossAccount.ps1", isolated_client)
+
+    # 2. Missing pipe must FAIL UnauthorizedAccount (never treat unreachable pipe as auth denial)
+    res_missing = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(isolated_client),
+            "-PipeName",
+            f"privexec-missing-{uuid.uuid4().hex[:8]}",
+            "-InstallRoot",
+            str(staged_root),
+            "-Role",
+            "UnauthorizedAccount",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_missing.returncode != 0
+
+    # 3. Broker with non-matching allowed_client_sids returns structured unauthorized_identity
+    pipe_unauth = f"privexec-unauth-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    grant_unauth = tmp_path / "grant_unauth.json"
+    grant_unauth.write_text(
+        json.dumps(
+            {
+                "allowed_client_sids": ["S-1-5-21-1000-1000-1000-9999"],
+                "allowed_capabilities": ["synthetic.echo"],
+                "allowed_targets": ["synth-target-1"],
+                "ttl_seconds": 60,
+            }
+        ),
+        encoding="utf-8",
+    )
+    p1 = subprocess.Popen(
+        [
+            "dotnet",
+            str(broker_dll),
+            "--pipe",
+            pipe_unauth,
+            "--descriptors-dir",
+            str(staged_root / "descriptors"),
+            "--state-dir",
+            str(staged_root / "state"),
+            "--grant-file",
+            str(grant_unauth),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        assert p1.stdout is not None
+        deadline = time.monotonic() + 10.0
+        ready = False
+        while time.monotonic() < deadline:
+            line = p1.stdout.readline()
+            if line and line.strip().startswith("PRIVEXEC_BROKER_READY"):
+                ready = True
+                break
+        assert ready, "Unauth test broker failed to report READY"
+
+        res_unauth = subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-NonInteractive",
+                "-File",
+                str(isolated_client),
+                "-PipeName",
+                pipe_unauth,
+                "-InstallRoot",
+                str(staged_root),
+                "-Role",
+                "UnauthorizedAccount",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        rep_unauth = json.loads(res_unauth.stdout)
+        assert rep_unauth["passed"] is True
+        assert rep_unauth["connection_outcome"] == "connected_protocol_denied"
+        assert rep_unauth["protocol_outcome"] == "unauthorized_identity"
+        assert rep_unauth["observed"] == "unauthorized_identity"
+    finally:
+        if p1.poll() is None:
+            p1.terminate()
+            p1.wait(timeout=5)
+
+    # 4. Short-lived grant (1s TTL) rejects authorized caller with expired_grant after expiry
+    pipe_exp = f"privexec-exp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    grant_exp = tmp_path / "grant_exp.json"
+    grant_exp.write_text(
+        json.dumps(
+            {
+                "allowed_capabilities": ["synthetic.echo"],
+                "allowed_targets": ["synth-target-1"],
+                "ttl_seconds": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    p2 = subprocess.Popen(
+        [
+            "dotnet",
+            str(broker_dll),
+            "--pipe",
+            pipe_exp,
+            "--descriptors-dir",
+            str(staged_root / "descriptors"),
+            "--state-dir",
+            str(staged_root / "state"),
+            "--grant-file",
+            str(grant_exp),
+            "--allow-same-user",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        assert p2.stdout is not None
+        deadline = time.monotonic() + 10.0
+        ready = False
+        while time.monotonic() < deadline:
+            line = p2.stdout.readline()
+            if line and line.strip().startswith("PRIVEXEC_BROKER_READY"):
+                ready = True
+                break
+        assert ready, "Expiry test broker failed to report READY"
+
+        time.sleep(2.0)
+        res_exp = subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-NonInteractive",
+                "-File",
+                str(isolated_client),
+                "-PipeName",
+                pipe_exp,
+                "-InstallRoot",
+                str(staged_root),
+                "-Role",
+                "ExpiredGrantCheck",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        rep_exp = json.loads(res_exp.stdout)
+        assert rep_exp["passed"] is True
+        assert rep_exp["diagnostic_category"] == "session_expired"
+        assert rep_exp["state"] == "denied"
+    finally:
+        if p2.poll() is None:
+            p2.terminate()
+            p2.wait(timeout=5)

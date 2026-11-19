@@ -178,6 +178,9 @@ function Stop-BrokerCleanlyOverPipe {
 
 $brokerProc = $null
 $tempGrant = $null
+$expiryBrokerProc = $null
+$expiryGrant = $null
+$expiryPipeName = $null
 $isolatedRunRoot = "C:\ProgramData\PrivExec-Gate2Run\$runId"
 
 Save-GateEvidence
@@ -359,6 +362,10 @@ try {
         $unProfile = Join-Path $isolatedRunRoot 'unauth_profile'
         $unTemp = Join-Path $isolatedRunRoot 'unauth_temp'
         $unEnv = New-IsolatedUserEnvironment -UserTempDir $unTemp -UserProfileDir $unProfile -AccountName $UnauthorizedCredential.UserName
+        # Stage only the minimal nonprivileged test client into the unauthorized account's isolated directory
+        # so it can execute and reach the named-pipe boundary without access to C:\ProgramData\PrivExec.
+        $unClientScript = Join-Path $unProfile 'Test-PrivExecCrossAccount.ps1'
+        Copy-Item -LiteralPath $clientScript -Destination $unClientScript -Force
         $unOut = Join-Path $unProfile 'unauth-out.json'
         $unErr = Join-Path $unProfile 'unauth-err.txt'
 
@@ -366,7 +373,7 @@ try {
             -Credential $UnauthorizedCredential `
             -WorkingDirectory $unProfile `
             -Environment $unEnv `
-            -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $clientScript, '-PipeName', $pipeName, '-InstallRoot', $InstallRoot, '-Role', 'UnauthorizedAccount', '-ExpectedTempDir', $unTemp) `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $unClientScript, '-PipeName', $pipeName, '-InstallRoot', $InstallRoot, '-Role', 'UnauthorizedAccount', '-ExpectedTempDir', $unTemp) `
             -RedirectStandardOutput $unOut -RedirectStandardError $unErr -Wait -PassThru -WindowStyle Hidden
 
         $unOutText = if (Test-Path -LiteralPath $unOut) { Get-Content -LiteralPath $unOut -Raw -ErrorAction SilentlyContinue } else { '' }
@@ -383,6 +390,68 @@ try {
     $evidence['current_step'] = 'gate2_broker_stop'
     Stop-BrokerCleanlyOverPipe -PipeName $pipeName -Proc $brokerProc
     $brokerProc = $null
+
+    # Gate 2 expiry check: start a short-lived (2s TTL) broker, wait for expiration, and confirm authorized agent receives expired_grant
+    $evidence['current_step'] = 'gate2_expiry_check'
+    $expiryPipeName = 'privexec-gate2-exp-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $expiryGrant = Join-Path $InstallRoot "state\gate2-expiry-grant-$runId.json"
+    @{
+        allowed_client_sids           = @($agentSid)
+        allowed_capabilities          = @('synthetic.echo')
+        allowed_targets               = @('synth-target-1')
+        allow_mutation                = $false
+        allowed_mutation_capabilities = @()
+        ttl_seconds                   = 2
+    } | ConvertTo-Json | Set-Content -LiteralPath $expiryGrant -Encoding utf8NoBOM
+
+    $expBrokerOut = Join-Path $InstallRoot "state\gate2-exp-broker-$runId.stdout.log"
+    $expBrokerErr = Join-Path $InstallRoot "state\gate2-exp-broker-$runId.stderr.log"
+    $expiryBrokerProc = Start-Process -FilePath 'dotnet' -ArgumentList @(
+        (Join-Path $InstallRoot 'bin\PrivExecBroker.dll'),
+        '--pipe', $expiryPipeName,
+        '--descriptors-dir', (Join-Path $InstallRoot 'descriptors'),
+        '--state-dir', (Join-Path $InstallRoot 'state'),
+        '--grant-file', $expiryGrant
+    ) -RedirectStandardOutput $expBrokerOut -RedirectStandardError $expBrokerErr -PassThru -WindowStyle Hidden
+
+    $expDeadline = (Get-Date).AddSeconds(15)
+    $expReady = $false
+    while ((Get-Date) -lt $expDeadline) {
+        if ($expiryBrokerProc.HasExited) {
+            $ebErr = Get-Content -LiteralPath $expBrokerErr -Raw -ErrorAction SilentlyContinue
+            throw "Expiry test broker exited early ($($expiryBrokerProc.ExitCode)): $ebErr"
+        }
+        if ((Test-Path -LiteralPath $expBrokerOut) -and ((Get-Content -LiteralPath $expBrokerOut -Raw) -match 'PRIVEXEC_BROKER_READY')) {
+            $expReady = $true
+            break
+        }
+        Start-Sleep -Milliseconds 150
+    }
+    if (-not $expReady) { throw 'Timed out waiting for expiry test broker readiness.' }
+
+    Start-Sleep -Seconds 3
+
+    $expOut = Join-Path $agentProfile 'agent-expiry-out.json'
+    $expErr = Join-Path $agentProfile 'agent-expiry-err.txt'
+    $pExp = Start-Process -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' `
+        -Credential $AgentCredential `
+        -WorkingDirectory $agentProfile `
+        -Environment $agentEnv `
+        -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $clientScript, '-PipeName', $expiryPipeName, '-InstallRoot', $InstallRoot, '-Role', 'ExpiredGrantCheck', '-ExpectedTempDir', $agentTemp) `
+        -RedirectStandardOutput $expOut -RedirectStandardError $expErr -Wait -PassThru -WindowStyle Hidden
+
+    $expOutText = if (Test-Path -LiteralPath $expOut) { Get-Content -LiteralPath $expOut -Raw -ErrorAction SilentlyContinue } else { '' }
+    $expErrText = if (Test-Path -LiteralPath $expErr) { Get-Content -LiteralPath $expErr -Raw -ErrorAction SilentlyContinue } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($expOutText)) {
+        try { $evidence['gate2_expiry_check'] = ($expOutText | ConvertFrom-Json -ErrorAction Stop) } catch {}
+    }
+    Save-GateEvidence
+    if ($pExp.ExitCode -ne 0) {
+        throw "ExpiredGrantCheck failed ($($pExp.ExitCode)): $expErrText"
+    }
+
+    Stop-BrokerCleanlyOverPipe -PipeName $expiryPipeName -Proc $expiryBrokerProc
+    $expiryBrokerProc = $null
 
     $evidence['status'] = 'passed'
     $evidence['current_step'] = 'completed'
@@ -412,6 +481,9 @@ finally {
     if ($brokerProc -and -not $brokerProc.HasExited) {
         Stop-BrokerCleanlyOverPipe -PipeName $pipeName -Proc $brokerProc
     }
+    if ($expiryBrokerProc -and -not $expiryBrokerProc.HasExited) {
+        Stop-BrokerCleanlyOverPipe -PipeName $expiryPipeName -Proc $expiryBrokerProc
+    }
     if ($brokerOut -and (Test-Path -LiteralPath $brokerOut) -and -not $evidence['broker_stdout']) {
         $evidence['broker_stdout'] = Get-Content -LiteralPath $brokerOut -Raw -ErrorAction SilentlyContinue
     }
@@ -420,6 +492,9 @@ finally {
     }
     if ($tempGrant -and (Test-Path -LiteralPath $tempGrant)) {
         Remove-Item -LiteralPath $tempGrant -Force -ErrorAction SilentlyContinue
+    }
+    if ($expiryGrant -and (Test-Path -LiteralPath $expiryGrant)) {
+        Remove-Item -LiteralPath $expiryGrant -Force -ErrorAction SilentlyContinue
     }
     if (Test-Path -LiteralPath $isolatedRunRoot) {
         try {

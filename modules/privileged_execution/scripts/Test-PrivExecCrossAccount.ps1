@@ -11,7 +11,7 @@
 param(
     [string]$PipeName = 'privexec-broker-v1',
     [string]$InstallRoot = 'C:\ProgramData\PrivExec',
-    [ValidateSet('AuthorizedAgent', 'UnauthorizedAccount')]
+    [ValidateSet('AuthorizedAgent', 'UnauthorizedAccount', 'ExpiredGrantCheck')]
     [string]$Role = 'AuthorizedAgent',
     [string]$TargetId = 'synth-target-1',
     [string]$ExpectedTempDir = '',
@@ -87,27 +87,80 @@ $results.Add(@{ check = 'isolated_temp_environment'; passed = $true; temp_path =
 
 if ($Role -eq 'UnauthorizedAccount') {
     $denied = $false
+    $connectionOutcome = 'unknown'
+    $protocolOutcome = $null
+    $observed = ''
     $detail = ''
     try {
         $resp = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{ protocol_version = 1; action = 'status' }
-        if ($resp.ok -eq $false -or $resp.diagnostic_category -eq 'unauthorized_identity') {
+        if ($resp.ok -eq $false -and $resp.diagnostic_category -eq 'unauthorized_identity') {
             $denied = $true
-            $detail = $resp.diagnostic_category
+            $connectionOutcome = 'connected_protocol_denied'
+            $protocolOutcome = $resp.diagnostic_category
+            $observed = $resp.diagnostic_category
+            $detail = $resp.error
+        } else {
+            $connectionOutcome = 'connected_unexpected_allow'
+            $protocolOutcome = $resp.diagnostic_category
+            $observed = "unexpected_response:$($resp | ConvertTo-Json -Compress)"
+            throw "UnauthorizedAccount '$($whoami.Name)' was NOT denied with unauthorized_identity: $observed"
         }
     } catch {
-        $denied = $true
-        $detail = $_.Exception.Message
+        $ex = $_.Exception
+        $isAccessDenied = ($ex -is [System.UnauthorizedAccessException]) -or
+            ($ex.InnerException -is [System.UnauthorizedAccessException]) -or
+            ($ex.Message -match 'Access to the path is denied')
+        if ($isAccessDenied) {
+            $denied = $true
+            $connectionOutcome = 'pipe_access_denied'
+            $observed = 'pipe_access_denied'
+            $detail = $ex.Message
+        } else {
+            throw
+        }
     }
     if (-not $denied) {
         throw "UnauthorizedAccount '$($whoami.Name)' was NOT denied access to pipe '$PipeName'."
     }
     [pscustomobject]@{
-        role      = $Role
-        account   = $whoami.Name
-        sid       = $whoami.User.Value
-        temp_path = $resolvedTemp
-        passed    = $true
-        detail    = $detail
+        role               = $Role
+        account            = $whoami.Name
+        sid                = $whoami.User.Value
+        temp_path          = $resolvedTemp
+        passed             = $true
+        connection_outcome = $connectionOutcome
+        protocol_outcome   = $protocolOutcome
+        expected           = 'pipe_access_denied or unauthorized_identity'
+        observed           = $observed
+        detail             = $detail
+    } | ConvertTo-Json -Depth 4
+    exit 0
+}
+
+if ($Role -eq 'ExpiredGrantCheck') {
+    $reqExp = "gate2-exp-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $respExp = Invoke-PrivExecPipeJson -Pipe $PipeName -Payload @{
+        protocol_version = 1
+        action           = 'run'
+        request_id       = $reqExp
+        capability       = 'synthetic.echo'
+        target           = @{ type = 'synthetic'; id = $TargetId }
+        mode             = 'dry_run'
+        parameters       = @{ message = 'gate2-expiry-probe' }
+    }
+    if ($respExp.ok -ne $false -or $respExp.diagnostic_category -ne 'session_expired' -or $respExp.state -ne 'denied') {
+        throw "Expected session_expired denial, got: $($respExp | ConvertTo-Json -Compress)"
+    }
+    [pscustomobject]@{
+        role                = $Role
+        account             = $whoami.Name
+        sid                 = $whoami.User.Value
+        temp_path           = $resolvedTemp
+        passed              = $true
+        diagnostic_category = $respExp.diagnostic_category
+        state               = $respExp.state
+        expected            = 'session_expired'
+        observed            = $respExp.diagnostic_category
     } | ConvertTo-Json -Depth 4
     exit 0
 }
