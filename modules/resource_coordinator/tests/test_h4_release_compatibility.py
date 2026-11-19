@@ -871,3 +871,179 @@ def test_windows_live_session_and_missing_task_probe():
     assert isinstance(ev["interactive_sessions"], list)
     probe = windows_acceptance._probe_scheduled_task_info("ResourceCoordinator-H4-NonExistent-Probe-0000")
     assert probe["registered"] is False
+
+
+def test_recover_guards_root_identity_source_digest_manifest_and_post_reporting(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    import resource_coordinator.installation as inst_mod
+
+    run_root = tmp_path / "h4-rc-recover-guards"
+    run_id = "9ea7312c8c"
+    phase_root = run_root / "runs" / f"{run_id}-install"
+    phase_root.mkdir(parents=True)
+    (phase_root / "config.yaml").write_text("service: {}\n", encoding="utf-8")
+    launcher = phase_root / "start-coordinator-managed.ps1"
+    launcher.write_text(f"# {inst_mod.TASK_MARKER}\n", encoding="utf-8")
+    task_names = [
+        f"ResourceCoordinator-H4-{run_id}-install-boot",
+        f"ResourceCoordinator-H4-{run_id}-install-logon",
+        f"ResourceCoordinator-H4-{run_id}-install-viewer",
+    ]
+    manifest = {
+        "schema_version": 1,
+        "phases": [{
+            "schema_version": 1,
+            "run_id": run_id,
+            "phase": "install",
+            "port": 49694,
+            "root": str(phase_root),
+            "source_tree_sha256": "a" * 64,
+            "task_names": task_names,
+        }],
+    }
+
+    # 1. Missing cleanup-manifest.json
+    with pytest.raises(windows_acceptance.GuestLifecycleError) as exc_missing:
+        windows_acceptance._recover_failed_guest_install(run_root, MODULE_ROOT.parents[1], apply=False)
+    assert exc_missing.value.reason_code == "recovery_manifest_missing"
+
+    (run_root / "cleanup-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(windows_acceptance, "_repository_roots", lambda *a, **kw: (MODULE_ROOT.parents[1], None, "a" * 64, None))
+
+    # 2. Mismatched .h4-test-root.json root_id prefix
+    (run_root / ".h4-test-root.json").write_text('{"root_id":"deadbeef00abcdef"}', encoding="utf-8")
+    with pytest.raises(windows_acceptance.GuestLifecycleError) as exc_root:
+        windows_acceptance._recover_failed_guest_install(run_root, MODULE_ROOT.parents[1], apply=False)
+    assert exc_root.value.reason_code == "recovery_root_identity_mismatch"
+
+    # Matching marker prefix
+    (run_root / ".h4-test-root.json").write_text(json.dumps({"root_id": f"{run_id}1122334455"}), encoding="utf-8")
+
+    # 3. Mismatched source_tree_sha256
+    monkeypatch.setattr(windows_acceptance, "_repository_roots", lambda *a, **kw: (MODULE_ROOT.parents[1], None, "b" * 64, None))
+    with pytest.raises(windows_acceptance.GuestLifecycleError) as exc_digest:
+        windows_acceptance._recover_failed_guest_install(run_root, MODULE_ROOT.parents[1], apply=False)
+    assert exc_digest.value.reason_code == "recovery_source_mismatch"
+
+    monkeypatch.setattr(windows_acceptance, "_repository_roots", lambda *a, **kw: (MODULE_ROOT.parents[1], None, "a" * 64, None))
+
+    # 4. Unavailable inventory fails closed
+    monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {
+        "queries": {"tasks": "available", "services": "available", "processes": "available", "listener": "error"},
+        "rc_tasks": [], "rc_services": [], "rc_processes": [], "listener_rows": [],
+    })
+    with pytest.raises(windows_acceptance.GuestLifecycleError) as exc_inv:
+        windows_acceptance._recover_failed_guest_install(run_root, MODULE_ROOT.parents[1], apply=False)
+    assert exc_inv.value.reason_code == "recovery_inventory_unavailable"
+
+    # 5. Live RC service refuses offline recovery
+    monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {
+        "queries": {"tasks": "available", "services": "available", "processes": "available", "listener": "available"},
+        "rc_tasks": [], "rc_services": [{"name": "ResourceCoordinator"}], "rc_processes": [], "listener_rows": [],
+    })
+    with pytest.raises(windows_acceptance.GuestLifecycleError) as exc_svc:
+        windows_acceptance._recover_failed_guest_install(run_root, MODULE_ROOT.parents[1], apply=False)
+    assert exc_svc.value.reason_code == "recovery_refused_live_process_or_listener"
+
+    # 6. Full apply verifies post-recovery reporting & evidence preservation
+    fake_tasks = [SimpleNamespace(name=task_names[1], owned=True, enabled=False)]
+    calls = []
+
+    class _FakeBackend:
+        def __init__(self, *, managed_root, task_names, guest_mutation_guard):
+            self.managed_root = managed_root
+        def status(self):
+            return list(fake_tasks)
+        def snapshot(self, task):
+            return {"definition": "<Task/>", "enabled": task.enabled}
+        def set_enabled(self, task, enabled, *, non_interactive=False):
+            calls.append(("set_enabled", task.name, enabled))
+        def uninstall(self, task, *, non_interactive=False):
+            calls.append(("uninstall", task.name))
+            fake_tasks[:] = [t for t in fake_tasks if t.name != task.name]
+
+    class _FakeManager:
+        def __init__(self, paths, backend, runtime=None):
+            pass
+        def _service_status(self):
+            return None
+
+    monkeypatch.setattr(inst_mod, "WindowsStartupTaskBackend", _FakeBackend)
+    monkeypatch.setattr(inst_mod, "ManagedInstallation", _FakeManager)
+    monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {
+        "queries": {"tasks": "available", "services": "available", "processes": "available", "listener": "available"},
+        "rc_tasks": (
+            [{"name": task_names[1], "state": "Disabled", "test_root_action": True}] if fake_tasks else []
+        ),
+        "rc_services": [], "rc_processes": [], "listener_rows": [],
+    })
+
+    applied = windows_acceptance._recover_failed_guest_install(run_root, MODULE_ROOT.parents[1], apply=True)
+    assert applied["status"] == "applied"
+    assert applied["evidence_preserved"] is True
+    assert calls == [("uninstall", task_names[1])]
+    assert applied["phases"][0]["phase_root"] == str(phase_root)
+    assert applied["phases"][0]["phase_root_preserved"] is True
+    assert applied["phases"][0]["remaining_tasks"] == []
+    assert applied["post_recovery_inventory"] == {
+        "rc_tasks_remaining": [],
+        "rc_services_remaining": 0,
+        "rc_processes_remaining": 0,
+        "listener_rows_remaining": 0,
+        "listener_port": 49694,
+        "phase_root_preserved": True,
+    }
+    # Phase root config.yaml preserved while marked launcher unlinked
+    assert (phase_root / "config.yaml").is_file()
+    assert not launcher.exists()
+
+
+def test_recover_cli_requires_manifest_and_keeps_dry_run_failure_readonly(tmp_path, monkeypatch, capsys):
+    import json
+
+    run_root = tmp_path / "h4-rc-recover-cli-err"
+    run_root.mkdir()
+    (run_root / ".h4-test-root.json").write_text('{"root_id":"9ea7312c8c112233"}', encoding="utf-8")
+    src_root = tmp_path / "sources" / "rc-1.0.0"
+    src_root.mkdir(parents=True)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(windows_acceptance.sys, "platform", "win32")
+    monkeypatch.setattr(windows_acceptance.os, "name", "nt")
+    monkeypatch.setattr(windows_acceptance, "_run_powershell", lambda **kw: {"queries": {"system": "available"}})
+    monkeypatch.setattr(windows_acceptance, "guard_reasons", lambda *a, **kw: ())
+    monkeypatch.setattr(windows_acceptance, "task_path_reasons", lambda *a, **kw: ())
+    monkeypatch.setattr(windows_acceptance, "_repository_roots", lambda *a, **kw: (src_root, None, "a" * 64, None))
+
+    # 1. Omitting --source-manifest must be rejected
+    rc_no_manifest = windows_acceptance.main([
+        "--test-root", str(run_root),
+        "--profile", "recover",
+        "--source-root", str(src_root),
+        "--json",
+    ])
+    assert rc_no_manifest == 3
+    err_out = json.loads(capsys.readouterr().err.strip())
+    assert "source_manifest_required" in err_out["guard_reasons"]
+
+    # 2. Dry-run failure (missing cleanup-manifest.json) returns 4 without writing recovery files
+    def _fail_recover(root, s_root, *, apply=False):
+        raise windows_acceptance.GuestLifecycleError(
+            "cleanup manifest is missing", stage="recover", reason_code="recovery_manifest_missing",
+        )
+
+    monkeypatch.setattr(windows_acceptance, "_recover_failed_guest_install", _fail_recover)
+    rc_dry_err = windows_acceptance.main([
+        "--test-root", str(run_root),
+        "--profile", "recover",
+        "--source-root", str(src_root),
+        "--source-manifest", str(manifest),
+        "--json",
+    ])
+    assert rc_dry_err == 4
+    err_payload = json.loads(capsys.readouterr().err.strip())
+    assert err_payload["reason_code"] == "recovery_manifest_missing"
+    assert not (run_root / "recovery-error.json").exists()
+    assert not (run_root / "recovery-result.json").exists()

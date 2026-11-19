@@ -1006,6 +1006,25 @@ def _recover_failed_guest_install(root: Path, source_root: Path, *, apply: bool 
             stage="recover",
             reason_code="recovery_manifest_missing",
         )
+    marker_path = root / ".h4-test-root.json"
+    expected_run_id: Optional[str] = None
+    if marker_path.is_file():
+        try:
+            marker_data = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise GuestLifecycleError(
+                "H4 test-root marker is unreadable; refusing recovery",
+                stage="recover",
+                reason_code="recovery_root_identity_mismatch",
+            ) from exc
+        raw_root_id = marker_data.get("root_id") if isinstance(marker_data, dict) else None
+        if not isinstance(raw_root_id, str) or len(raw_root_id) < 10:
+            raise GuestLifecycleError(
+                "H4 test-root marker root_id is invalid; refusing recovery",
+                stage="recover",
+                reason_code="recovery_root_identity_mismatch",
+            )
+        expected_run_id = raw_root_id[:10]
     new_root, _, source_digest, _ = _repository_roots(source_root, None)
     module_root = new_root / "modules" / "resource_coordinator"
     sys.path.insert(0, str(module_root))
@@ -1021,6 +1040,7 @@ def _recover_failed_guest_install(root: Path, source_root: Path, *, apply: bool 
         )
     snapshots_dir = root / "recovery-task-snapshots"
     results = []
+    post_inventory_summary: Optional[Dict[str, Any]] = None
     for manifest in reversed(manifests):
         _validate_cleanup_manifest(root, manifest)
         if manifest.get("source_tree_sha256") != source_digest:
@@ -1030,16 +1050,39 @@ def _recover_failed_guest_install(root: Path, source_root: Path, *, apply: bool 
                 reason_code="recovery_source_mismatch",
             )
         phase_root = Path(manifest["root"]).resolve(strict=True)
+        if expected_run_id is not None:
+            expected_phase_root = (root / "runs" / f"{expected_run_id}-{manifest['phase']}").resolve(strict=False)
+            if manifest.get("run_id") != expected_run_id or phase_root != expected_phase_root:
+                raise GuestLifecycleError(
+                    "cleanup manifest identity does not match H4 test-root marker",
+                    stage="recover",
+                    reason_code="recovery_root_identity_mismatch",
+                )
         names = manifest["task_names"]
         name_map = {"boot": names[0], "logon": names[1], "viewer": names[2]}
         port = manifest["port"]
         live_ev = _run_powershell(test_root=root, listener_port=port)
-        if live_ev.get("rc_processes") or live_ev.get("listener_rows"):
+        if isinstance(live_ev.get("queries"), dict):
+            for qkey in ("tasks", "services", "processes", "listener"):
+                if qkey in live_ev["queries"] and live_ev["queries"][qkey] != "available":
+                    raise GuestLifecycleError(
+                        f"required live inventory '{qkey}' is unavailable; refusing offline recovery",
+                        stage="recover",
+                        reason_code="recovery_inventory_unavailable",
+                    )
+        if live_ev.get("rc_services") or live_ev.get("rc_processes") or live_ev.get("listener_rows"):
             raise GuestLifecycleError(
-                "live coordinator process or listener detected; refusing offline recovery",
+                "live coordinator process, service, or listener detected; refusing offline recovery",
                 stage="recover",
                 reason_code="recovery_refused_live_process_or_listener",
             )
+        for live_task in live_ev.get("rc_tasks") or ():
+            if not isinstance(live_task, dict) or live_task.get("name") not in names or live_task.get("test_root_action") is not True:
+                raise GuestLifecycleError(
+                    "unexpected or unowned RC task detected; refusing offline recovery",
+                    stage="recover",
+                    reason_code="recovery_refused_unowned_task",
+                )
         gate = GuestMutationGate(root, names, listener_port=port)
         runtime = InstallationRuntime(
             task_names=name_map, coordinator_url=f"http://127.0.0.1:{port}",
@@ -1066,6 +1109,7 @@ def _recover_failed_guest_install(root: Path, source_root: Path, *, apply: bool 
                 )
         removed_launchers = []
         removed_tasks = []
+        remaining_tasks = [t.name for t in observed_tasks]
         if apply:
             snapshots_dir.mkdir(parents=True, exist_ok=True)
             for task in observed_tasks:
@@ -1086,25 +1130,62 @@ def _recover_failed_guest_install(root: Path, source_root: Path, *, apply: bool 
                     stage="recover",
                     reason_code="recovery_tasks_remain",
                 )
+            remaining_tasks = []
             post_ev = _run_powershell(test_root=root, listener_port=port)
-            if post_ev.get("rc_services") or post_ev.get("rc_processes") or post_ev.get("listener_rows"):
+            if isinstance(post_ev.get("queries"), dict):
+                for qkey in ("tasks", "services", "processes", "listener"):
+                    if qkey in post_ev["queries"] and post_ev["queries"][qkey] != "available":
+                        raise GuestLifecycleError(
+                            f"post-recovery inventory '{qkey}' is unavailable",
+                            stage="recover",
+                            reason_code="recovery_inventory_unavailable",
+                        )
+            residual_manifest_tasks = [
+                t.get("name") for t in (post_ev.get("rc_tasks") or ())
+                if isinstance(t, dict) and t.get("name") in names
+            ]
+            if residual_manifest_tasks or post_ev.get("rc_services") or post_ev.get("rc_processes") or post_ev.get("listener_rows"):
                 raise GuestLifecycleError(
-                    "residual service/process/listener detected after recovery",
+                    "residual task, service, process, or listener detected after recovery",
                     stage="recover",
                     reason_code="recovery_residual_inventory",
                 )
+            if not phase_root.is_dir():
+                raise GuestLifecycleError(
+                    "phase root evidence directory is missing after recovery",
+                    stage="recover",
+                    reason_code="recovery_evidence_missing",
+                )
+            post_inventory_summary = {
+                "rc_tasks_remaining": [t.get("name") for t in (post_ev.get("rc_tasks") or ()) if isinstance(t, dict)],
+                "rc_services_remaining": len(post_ev.get("rc_services") or ()),
+                "rc_processes_remaining": len(post_ev.get("rc_processes") or ()),
+                "listener_rows_remaining": len(post_ev.get("listener_rows") or ()),
+                "listener_port": port,
+                "phase_root_preserved": phase_root.is_dir(),
+            }
         results.append({
             "phase": manifest["phase"],
+            "phase_root": str(phase_root),
+            "phase_root_preserved": phase_root.is_dir(),
             "status": "applied" if apply else "planned",
+            "manifest_task_names": list(names),
             "tasks_observed": [t.name for t in observed_tasks],
             "tasks_removed": removed_tasks,
+            "remaining_tasks": remaining_tasks,
             "launchers_removed": removed_launchers,
         })
     return {
         "schema_version": 1,
         "profile": "recover",
         "status": "applied" if apply else "planned",
+        "test_root": str(root),
+        "evidence_preserved": bool(
+            root.is_dir() and (root / "cleanup-manifest.json").is_file() and
+            all(item["phase_root_preserved"] for item in results)
+        ),
         "phases": results,
+        "post_recovery_inventory": post_inventory_summary,
         "source_tree_sha256": source_digest,
         "completed_at": _now(),
     }
@@ -1259,11 +1340,11 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
                 "error": str(exc),
             }
             reasons.append(f"source_integrity:{exc.code}")
-    elif args.profile in lifecycle_profiles or (args.profile == "task" and args.apply):
+    elif args.profile in lifecycle_profiles | {"recover"} or (args.profile == "task" and args.apply):
         source_integrity = {
             "verified": False,
             "reason_code": "source_manifest_required",
-            "error": "Guest task and lifecycle profiles require a pinned --source-manifest",
+            "error": "Guest task, lifecycle, and recovery profiles require a pinned --source-manifest",
         }
         reasons.append("source_manifest_required")
     elif args.profile == "task":
@@ -1379,23 +1460,31 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
                 "completed_at": _now(),
             }
             if args.profile in {"cleanup", "recover"}:
-                err_name = "cleanup-error.json" if args.profile == "cleanup" else "recovery-error.json"
-                res_name = "cleanup-result.json" if args.profile == "cleanup" else "recovery-result.json"
-                _write_json(test_root / err_name, outcome)
-                _write_json(test_root / res_name, {
-                    "schema_version": 1,
-                    "profile": args.profile,
-                    "status": "failed",
-                    "automatic_cleanup_claimed": False,
-                    "exact_task_names": _manifest_task_names(test_root),
-                    "stage": diag_stage,
-                    "reason_code": diag_reason,
-                    "guard_reasons": diag_guards,
-                    "exception_chain": diag_chain,
-                    "completed_at": _now(),
-                })
+                try:
+                    exact_tasks = _manifest_task_names(test_root)
+                except (OSError, ValueError, TypeError, RuntimeError):
+                    exact_tasks = []
+                if args.profile == "cleanup" or args.apply:
+                    err_name = "cleanup-error.json" if args.profile == "cleanup" else "recovery-error.json"
+                    res_name = "cleanup-result.json" if args.profile == "cleanup" else "recovery-result.json"
+                    _write_json(test_root / err_name, outcome)
+                    _write_json(test_root / res_name, {
+                        "schema_version": 1,
+                        "profile": args.profile,
+                        "status": "failed",
+                        "automatic_cleanup_claimed": False,
+                        "exact_task_names": exact_tasks,
+                        "stage": diag_stage,
+                        "reason_code": diag_reason,
+                        "guard_reasons": diag_guards,
+                        "exception_chain": diag_chain,
+                        "completed_at": _now(),
+                    })
+                    detail = f"inspect {test_root / err_name}"
+                else:
+                    detail = "dry-run failed safely without modifying test_root"
                 print(json.dumps(outcome, sort_keys=True) if args.json else
-                      f"H4 {args.profile} profile: failed safely ({diag_reason}); inspect {test_root / err_name}",
+                      f"H4 {args.profile} profile: failed safely ({diag_reason}); {detail}",
                       file=sys.stderr)
                 return 4
             _write_json(test_root / "test-results.json", outcome)

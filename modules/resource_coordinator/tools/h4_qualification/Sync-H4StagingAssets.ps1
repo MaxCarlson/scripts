@@ -22,6 +22,7 @@ $snapshotScripts = Join-Path $moduleRoot 'h4_vm_staging_snapshot\scripts'
 
 $fileNames = @(
     'Invoke-H4GuestQualification.ps1',
+    'Invoke-H4GuestRecovery.ps1',
     'Bootstrap-H4GuestBundle.ps1',
     'Provision-H4TestVM.ps1'
 )
