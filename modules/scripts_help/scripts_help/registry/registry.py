@@ -287,6 +287,13 @@ REGISTRY: dict = {
         "desc": "Package repos for LLMs, apply AI patches, download datasets, automate AI web UIs",
         "items": [
             {
+                "name": "agents (module)",
+                "path": "modules/agent_continuity",
+                "desc": "Associate ChatGPT GUI workflows with native Codex and AGY sessions across Windows and WSL2",
+                "help_cmd": ["agents", "--help"],
+                "version": "0.1.0",
+            },
+            {
                 "name": "agent-bench (module)",
                 "path": "modules/agent_benchmark",
                 "desc": "Plan, execute, recover, and report persistent Harbor benchmark cohorts with monitored and compact CLI modes",
