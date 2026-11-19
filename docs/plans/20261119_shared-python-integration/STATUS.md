@@ -7,7 +7,8 @@ Updated: 2026-11-19
 - Integration worktree: `.worktrees/scripts-shared-package-integration-20261119`
 - Branch: `feat/scripts-shared-packages-20261119`
 - Base: `f57b22652dfc8cd67823a2a0d1d2792b3f09a320`
-- Current work is uncommitted and scoped to the scripts integration branch.
+- Local checkpoint: `6348b3bc` (`feat(scripts): install shared packages independently`); a follow-up documentation-only checkpoint records the final state.
+- All implementation changes are scoped to the scripts integration branch.
 - Primary `scripts/main` is unchanged. Retirement branch `audit/post-p6-source-retirement-20261119` remains at the supplied `cc3273f0` checkpoint; its quarantines, manifests, five raw JSON evidence files, and seven holds were not modified.
 - No source directories were removed, no quarantine was changed, and nothing was pushed or merged.
 
