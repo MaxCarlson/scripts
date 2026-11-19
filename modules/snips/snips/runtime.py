@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import csv
+import io
+import os
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
+
+from runtime_lifecycle import NamedMutex, spawn_detached
 
 from snips.config import atomic_write, parse_hotkey, template_payload, validate_config
 
@@ -36,7 +41,7 @@ def generate_script(config: dict[str, Any], data_dir: Path, status_path: Path) -
     registrations = "\n".join(rows)
     source = f"""#Requires AutoHotkey v2.0
 #SingleInstance Force
- Persistent()
+Persistent()
 
 global DATA_DIR := {ahk_string(str(data_dir))}
 global STATUS_PATH := {ahk_string(str(status_path))}
@@ -44,6 +49,8 @@ global BUILD_ID := {ahk_string(build_hash)}
 global PROCESS_ID := DllCall("GetCurrentProcessId", "UInt")
 global RESTORE_DELAY := {int(config["settings"].get("clipboard_restore_delay_ms", 250))}
 global VALIDATE_ONLY := A_Args.Length > 0 && A_Args[1] = "/validate"
+global EXIT_STATE := "stopped"
+global EXIT_DETAIL := ""
 
 try {{
 {registrations}
@@ -51,11 +58,13 @@ try {{
     if VALIDATE_ONLY
         ExitApp(0)
 }} catch Error as err {{
-    WriteStatus("error", err.Message)
+    EXIT_STATE := "error"
+    EXIT_DETAIL := err.Message
+    WriteStatus(EXIT_STATE, EXIT_DETAIL)
     ExitApp(2)
 }}
 
-OnExit((*) => WriteStatus("stopped"))
+OnExit((*) => WriteStatus(EXIT_STATE, EXIT_DETAIL))
 A_TrayMenu.Add("Reload snippets", (*) => Reload())
 A_TrayMenu.Add("Exit snippets", (*) => ExitApp())
 
@@ -221,7 +230,13 @@ def runtime_status(runtime_dir: Path) -> dict[str, Any]:
             result = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=4
             )
-            running = result.returncode == 0 and str(pid) in result.stdout
+            rows = list(csv.reader(io.StringIO(result.stdout))) if result.returncode == 0 else []
+            running = any(
+                len(row) >= 2
+                and row[0].casefold() in {"autohotkey.exe", "autohotkey64.exe"}
+                and row[1].strip() == str(pid)
+                for row in rows
+            )
         except (OSError, subprocess.TimeoutExpired):
             pass
     return {
@@ -237,9 +252,7 @@ def start_runtime(
     executable: Path, script: Path, runtime_dir: Path, expected_build: str, timeout: float = 5.0
 ) -> tuple[bool, str]:
     try:
-        process = subprocess.Popen(
-            [str(executable), str(script)], cwd=str(runtime_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+        process = spawn_detached([str(executable), str(script)], cwd=runtime_dir, hidden=True, breakaway=True)
     except OSError as exc:
         return False, f"Could not start AutoHotkey: {exc}"
     deadline = time.monotonic() + timeout
@@ -254,3 +267,48 @@ def start_runtime(
             return False, f"AutoHotkey exited during startup with code {code}"
         time.sleep(0.1)
     return False, "AutoHotkey did not confirm startup before the timeout"
+
+
+def _log_lifecycle(runtime_dir: Path, message: str) -> None:
+    """Append a bounded lifecycle record that never includes user text."""
+    log_path = runtime_dir / "lifecycle.log"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        if log_path.exists() and log_path.stat().st_size > 64 * 1024:
+            rotated = runtime_dir / "lifecycle.log.1"
+            rotated.unlink(missing_ok=True)
+            os.replace(log_path, rotated)
+        with log_path.open("a", encoding="utf-8", newline="\n") as stream:
+            from datetime import datetime, timezone
+
+            stream.write(f"{datetime.now(timezone.utc).isoformat()} | {message.replace(chr(10), ' ')}\n")
+    except OSError:
+        pass
+
+
+def ensure_runtime(
+    executable: Path,
+    script: Path,
+    runtime_dir: Path,
+    expected_build: str,
+    *,
+    timeout: float = 5.0,
+    mutex_timeout: float = 0.25,
+) -> tuple[bool, str]:
+    """Serialize watchdog checks and restore only a stopped or stale runtime."""
+    mutex = NamedMutex("snips-runtime-ensure", timeout_seconds=mutex_timeout)
+    if not mutex.acquire():
+        return True, "another ensure check is already running"
+    try:
+        existing = runtime_status(runtime_dir)
+        if existing["running"] and existing["build_id"] == expected_build:
+            return True, f"AutoHotkey is already running (PID {existing['pid']})"
+        outcome = "updated" if existing["running"] else "recovered"
+        ok, message = start_runtime(executable, script, runtime_dir, expected_build, timeout=timeout)
+        if ok:
+            _log_lifecycle(runtime_dir, f"{outcome}: {message}")
+        else:
+            _log_lifecycle(runtime_dir, f"recovery failed: {message}")
+        return ok, message
+    finally:
+        mutex.release()

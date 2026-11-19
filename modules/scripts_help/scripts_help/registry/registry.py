@@ -665,11 +665,18 @@ REGISTRY: dict = {
         "desc": "Manage reusable text snippets and Windows global keyboard shortcuts",
         "items": [
             {
+                "name": "runtime_lifecycle (module)",
+                "path": "modules/runtime_lifecycle",
+                "desc": "Preview and manage owned Windows Scheduled Tasks for user-session runtimes",
+                "help_cmd": ["python", "-m", "runtime_lifecycle", "--help"],
+                "version": "0.1.0",
+            },
+            {
                 "name": "snips (module)",
                 "path": "modules/snips",
                 "desc": "Manage versioned text templates, clipboard fencing, and AutoHotkey v2 hotkeys",
                 "help_cmd": ["python", "-m", "snips", "--help"],
-                "version": "0.1.1",
+                "version": "0.2.0",
             },
         ],
     },

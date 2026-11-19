@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "snips"
-version = "0.1.1"
+version = "0.2.0"
 description = "CLI-managed Windows snippets and hotkeys"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["runtime-lifecycle>=0.1.0"]
 
 [project.scripts]
 snips = "snips.cli:main"
