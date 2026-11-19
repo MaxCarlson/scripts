@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ytaedl"
-version = "2.17.1"
+version = "2.18.0"
 # 2.17.1 — PATCH: revalidate archived AEBN scene outputs and strengthen reconciliation A/V verification.
 # 2.17.0 — MINOR: add resumable AEBN historical scene reconciliation and guarded replacement review.
 # 2.16.0 — MINOR: accept durable runtime submissions and grow manager workers from the TUI.
@@ -47,7 +47,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ui = ["termdash>=0.5.0"]
+ui = ["termdash>=0.10.0,<0.11"]
 windows = ["psutil>=5.9.0"]
 
 [project.scripts]

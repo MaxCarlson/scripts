@@ -4,23 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "system_manager"
-version = "1.1.0"
+version = "1.2.0"
 description = "A comprehensive system management CLI leveraging cross_platform utilities."
 authors = [
     {name = "Your Name", email = "your.email@example.com"}
 ]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 
 dependencies = [
-    "cross_platform",
-    "resource-metrics>=0.3.0",
+    "cross-platform>=0.9.0,<0.10",
+    "resource-metrics>=0.3.0,<0.4",
     "psutil",
     "PyYAML",
     "requests",
     "rich>=13.0.0",
-    "termdash; python_version >= '3.9'",
+    "termdash>=0.10.0,<0.11; python_version >= '3.9'",
 ]
 
 [project.optional-dependencies]
