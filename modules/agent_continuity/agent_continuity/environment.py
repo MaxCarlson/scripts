@@ -195,7 +195,7 @@ def load_or_create_environment(home_dir: Path, *, persist: bool = True) -> Envir
                         ErrorCode.METADATA_INACCESSIBLE,
                         f"Timed out waiting for environment lock {lock_path}",
                         {"path": str(lock_path)},
-                    )
+                    ) from None
                 time.sleep(0.01)
                 continue
 
