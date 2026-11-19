@@ -48,6 +48,7 @@ Metadata requirements were confirmed: resource-metrics (Python >=3.8, psutil>=5.
 - Runmux web CLI and read-only adapter tests: 22 passed.
 - Runmux browser `TestClient` tests collected after installing test-only `httpx2` but blocked on the first request and were interrupted; direct Runmux FastAPI application construction from the installed `web-ui-tools` wheel passed. No persistent service was started.
 - TermDash installed CLI `--help` passed and exposed expected command groups.
+- A noninteractive TermDash `SimpleBoard` model build/update/read smoke passed under `python -I`; its renderer was not started.
 - Shared imports under `python -I` resolve only from this worktree `.venv`; `pip check` passed.
 - Both setup scripts' `--help` commands passed.
 - Latest bootstrap dry-run exited 0; it did not install packages or mutate wrappers. It omitted all five shared source directories from source-install candidates and discovered TermDash's installed CLI entry point. The clean worktree environment reports 56 missing applications and notes that the `pscripts` submodule would be initialized in a real install. Full bootstrap was not run to avoid submodule/network and broad application installation side effects.

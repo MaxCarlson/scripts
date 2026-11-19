@@ -27,6 +27,7 @@
 - [x] Construct Runmux ASGI app using installed `web-ui-tools` with temporary state and without starting a service.
 - [x] Verify installed shared import paths and distribution versions under `python -I`.
 - [x] Verify `pip check` and TermDash CLI help.
+- [x] Exercise TermDash dashboard model update/read without starting its renderer.
 - [x] Run latest bootstrap dry-run; no installation or wrapper mutation.
 - [ ] Complete Runmux browser TestClient HTTP suite (first request hangs in this environment).
 - [ ] Complete full clean scripts installation including `pscripts` and all applications.
