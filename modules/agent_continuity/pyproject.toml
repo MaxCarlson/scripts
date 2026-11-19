@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-continuity"
+version = "0.1.0"
+description = "Local-first GUI-agent session continuity registry for ChatGPT GUI workflows, Codex CLI, and Antigravity CLI."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Maxwell Carlson", email = "carlsonamax@gmail.com" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+agents = "agent_continuity.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "." }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent_continuity*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["*_test.py"]
+addopts = "-q --basetemp=.pytest_tmp_root/pytest"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
