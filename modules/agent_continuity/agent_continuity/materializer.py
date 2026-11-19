@@ -553,7 +553,7 @@ class SQLiteMaterializer:
         if not marker:
             return None
         row = conn.execute(
-            "SELECT workflow_id FROM workflows WHERE workflow_id = ? OR slug = ?",
+            "SELECT workflow_id FROM workflows WHERE (workflow_id = ? OR slug = ?) AND status = 'active'",
             (marker.strip(), marker.strip().lower()),
         ).fetchone()
         return str(row["workflow_id"]) if row else None
@@ -666,29 +666,45 @@ class SQLiteMaterializer:
                         (f"evd_{event.event_id}", target_assoc_id, event.event_id, json.dumps({"marker": marker, "turn_id": turn_id}), ts),
                     )
                 elif other_confirmed:
-                    # Preserve manual confirmation; surface conflict for review
-                    conflict_assoc_id = f"assoc_{event.event_id}"
+                    # Preserve manual confirmation; surface conflict for review (deduplicated)
+                    existing_conflict = [r for r in conflict_rows if r["workflow_id"] == wf_id]
+                    if existing_conflict:
+                        conflict_assoc_id = str(existing_conflict[0]["association_id"])
+                        conn.execute(
+                            "UPDATE associations SET last_turn_id = COALESCE(?, last_turn_id), updated_at = ? WHERE association_id = ?",
+                            (turn_id, ts, conflict_assoc_id),
+                        )
+                    else:
+                        conflict_assoc_id = f"assoc_{event.event_id}"
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO associations(
+                                association_id, workflow_id, provider, environment_id, native_session_id,
+                                evidence_level, association_method, evidence_summary, evidence_reference,
+                                status, first_turn_id, last_turn_id, confirmed_at, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, 'strong', 'workflow_marker_conflict', ?, ?, 'conflict', ?, ?, NULL, ?, ?)
+                            """,
+                            (
+                                conflict_assoc_id,
+                                wf_id,
+                                event.provider,
+                                event.environment_id,
+                                event.native_session_id,
+                                f"Hook marker {marker!r} conflicts with manual confirmation for {other_confirmed[0]['workflow_id']}",
+                                turn_id,
+                                turn_id,
+                                turn_id,
+                                ts,
+                                ts,
+                            ),
+                        )
                     conn.execute(
                         """
-                        INSERT OR IGNORE INTO associations(
-                            association_id, workflow_id, provider, environment_id, native_session_id,
-                            evidence_level, association_method, evidence_summary, evidence_reference,
-                            status, first_turn_id, last_turn_id, confirmed_at, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, 'strong', 'workflow_marker_conflict', ?, ?, 'conflict', ?, ?, NULL, ?, ?)
+                        INSERT OR IGNORE INTO association_evidence(
+                            evidence_id, association_id, event_id, evidence_level, evidence_type, detail_json, created_at
+                        ) VALUES (?, ?, ?, 'strong', 'workflow_marker_conflict', ?, ?)
                         """,
-                        (
-                            conflict_assoc_id,
-                            wf_id,
-                            event.provider,
-                            event.environment_id,
-                            event.native_session_id,
-                            f"Hook marker {marker!r} conflicts with manual confirmation for {other_confirmed[0]['workflow_id']}",
-                            turn_id,
-                            turn_id,
-                            turn_id,
-                            ts,
-                            ts,
-                        ),
+                        (f"evd_{event.event_id}", conflict_assoc_id, event.event_id, json.dumps({"marker": marker, "turn_id": turn_id}), ts),
                     )
                 else:
                     # Session repurposing (or first association): supersede prior strong links, create new strong link

@@ -292,11 +292,20 @@ def uninstall_hooks(
     }
 
 
+def _strip_managed(norm_provider: str, data: dict[str, Any]) -> dict[str, Any]:
+    if norm_provider == Provider.CODEX.value:
+        stripped, _ = _remove_codex_hooks(data)
+        return stripped
+    stripped, _ = _remove_agy_hooks(data)
+    return stripped
+
+
 def rollback_hooks(
     provider: str,
     *,
     config_dir: Path | str | None = None,
     backup_path: Path | str | None = None,
+    force: bool = False,
     apply: bool = False,
 ) -> dict[str, Any]:
     """Restore hooks.json from the latest (or specified) backup file."""
@@ -319,8 +328,28 @@ def rollback_hooks(
         raise ContinuityError(ErrorCode.METADATA_INACCESSIBLE, f"Backup file not found: {bak}")
 
     content = bak.read_text(encoding="utf-8")
-    # Validate JSON before restoring
-    json.loads(content)
+    try:
+        backup_data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ContinuityError(
+            ErrorCode.METADATA_INACCESSIBLE,
+            f"Backup file {bak} contains invalid JSON: {exc}",
+        ) from exc
+    if not isinstance(backup_data, dict):
+        raise ContinuityError(ErrorCode.HOOK_SCHEMA_MISMATCH, f"Backup file {bak} is not a JSON object.")
+
+    if hooks_path.exists() and not force:
+        current_data = _load_hooks_json(hooks_path)
+        if _strip_managed(norm, current_data) != _strip_managed(norm, backup_data):
+            raise ContinuityError(
+                ErrorCode.ASSOCIATION_CONFLICT,
+                (
+                    f"{hooks_path} has unrelated changes made after backup {bak.name}; "
+                    "pass --force (-f) to overwrite."
+                ),
+                {"hooks_path": str(hooks_path), "backup_path": str(bak)},
+            )
+
     if apply:
         _atomic_write_text(hooks_path, content)
 
@@ -328,6 +357,7 @@ def rollback_hooks(
         "action": "hooks.rollback",
         "provider": norm,
         "applied": apply,
+        "forced": force,
         "hooks_path": str(hooks_path),
         "restored_from": str(bak),
         "summary": (

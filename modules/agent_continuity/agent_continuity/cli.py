@@ -249,6 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
     h_roll.add_argument("-p", "--provider", required=True, choices=["codex", "agy"], help="Target provider.")
     h_roll.add_argument("-c", "--config-dir", help="Override provider config directory.")
     h_roll.add_argument("-b", "--backup", help="Specific backup file path.")
+    h_roll.add_argument("-f", "--force", action="store_true", help="Overwrite even if unrelated hooks changed since backup.")
     h_roll.add_argument("-a", "--apply", action="store_true", help="Restore backup (default: dry-run).")
 
     # ------------------------------------------------------------------
@@ -642,6 +643,7 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                 args.provider,
                 config_dir=args.config_dir,
                 backup_path=args.backup,
+                force=bool(args.force),
                 apply=bool(args.apply),
             )
             if json_mode:
