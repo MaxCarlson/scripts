@@ -26,6 +26,7 @@ internal static class Phase3Tests
             ("AtomicTryInsertHandlesConcurrentDuplicate", TestAtomicTryInsertHandlesConcurrentDuplicateAsync),
             ("PipeServerHandlesBadClientAndEarlyEofCleanly", TestPipeServerHandlesBadClientAndEarlyEofAsync),
             ("ProcessExecutorPinsChildTempInsideStateDir", TestProcessExecutorPinsChildTempAsync),
+            ("AccountDescriptionAndOwnershipMatching", TestAccountDescriptionAndOwnershipMatchingAsync),
         };
 
         foreach ((string name, Func<Task> fn) in tests)
@@ -290,5 +291,42 @@ internal static class Phase3Tests
         {
             Directory.Delete(dir, true);
         }
+    }
+
+    private static Task TestAccountDescriptionAndOwnershipMatchingAsync()
+    {
+        string runId = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..8];
+        Assert.Equal(24, runId.Length, "runId length is 24");
+
+        string agentTag = $"PE2:agent:{runId}";
+        string unauthTag = $"PE2:unauth:{runId}";
+        Assert.True(agentTag.Length <= 48, $"agent tag length {agentTag.Length} <= 48");
+        Assert.True(unauthTag.Length <= 48, $"unauth tag length {unauthTag.Length} <= 48");
+
+        string agentUser = "PrivExecAg_" + Guid.NewGuid().ToString("N")[..6];
+        string unauthUser = "PrivExecUn_" + Guid.NewGuid().ToString("N")[..6];
+        Assert.True(agentUser.Length <= 20, $"agent username length {agentUser.Length} <= 20");
+        Assert.True(unauthUser.Length <= 20, $"unauth username length {unauthUser.Length} <= 20");
+
+        // Old failing tag format would have failed 48-char check
+        string oldFailingTag = $"PrivExec Gate 2 temporary test account ({runId})";
+        Assert.True(oldFailingTag.Length > 48, $"old tag length {oldFailingTag.Length} > 48");
+
+        static bool MatchesOwnership(string desc, string targetRunId)
+        {
+            if (string.IsNullOrEmpty(desc) || desc.Length > 48) return false;
+            return desc == $"PE2:agent:{targetRunId}" ||
+                   desc == $"PE2:unauth:{targetRunId}" ||
+                   (desc.StartsWith("PE2:") && desc.EndsWith($":{targetRunId}"));
+        }
+
+        Assert.True(MatchesOwnership(agentTag, runId), "current agent matches");
+        Assert.True(MatchesOwnership(unauthTag, runId), "current unauth matches");
+        Assert.True(!MatchesOwnership($"PE2:agent:other-{runId[6..]}", runId), "other run agent rejected");
+        Assert.True(!MatchesOwnership("Built-in account for guest access", runId), "guest description rejected");
+        Assert.True(!MatchesOwnership(oldFailingTag, runId), "old tag rejected");
+        Assert.True(!MatchesOwnership("", runId), "empty description rejected");
+
+        return Task.CompletedTask;
     }
 }

@@ -35,7 +35,8 @@ if (-not $isAdmin) {
 $runId = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $opIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $createdUsers = [System.Collections.Generic.List[object]]::new()
-$ownedAccountTag = "PrivExec Gate 2 temporary test account ($runId)"
+$agentAccountTag = "PE2:agent:$runId"
+$unauthAccountTag = "PE2:unauth:$runId"
 
 $evidence = [ordered]@{
     run_id               = $runId
@@ -80,17 +81,26 @@ function Save-GateEvidence {
 }
 
 function New-TransientTestUser {
-    param([Parameter(Mandatory)][string]$Username)
+    param(
+        [Parameter(Mandatory)][string]$Username,
+        [Parameter(Mandatory)][string]$Description
+    )
+    if ($Username.Length -gt 20) {
+        throw "Cannot validate argument on parameter 'Username'. The character length of the '$Username' argument is $($Username.Length), which exceeds the Windows 20-character limit."
+    }
+    if ($Description.Length -gt 48) {
+        throw "Cannot validate argument on parameter 'Description'. The character length of the '$Description' argument is $($Description.Length), which exceeds the Windows 48-character limit."
+    }
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     $bytes = New-Object byte[] 24
     $rng.GetBytes($bytes)
     $raw = 'Px!' + [Convert]::ToBase64String($bytes) + '9a'
     $sec = ConvertTo-SecureString -String $raw -AsPlainText -Force
     $raw = $null
-    New-LocalUser -Name $Username -Password $sec -AccountNeverExpires -Description $ownedAccountTag | Out-Null
+    New-LocalUser -Name $Username -Password $sec -AccountNeverExpires -Description $Description | Out-Null
     Add-LocalGroupMember -Group 'Users' -Member $Username | Out-Null
     $sid = ([System.Security.Principal.NTAccount]"$env:COMPUTERNAME\$Username").Translate([System.Security.Principal.SecurityIdentifier]).Value
-    $createdUsers.Add([pscustomobject]@{ username = $Username; sid = $sid; tag = $ownedAccountTag })
+    $createdUsers.Add([pscustomobject]@{ username = $Username; sid = $sid; tag = $Description; description = $Description })
     return [pscredential]::new("$env:COMPUTERNAME\$Username", $sec)
 }
 
@@ -166,9 +176,14 @@ Save-GateEvidence
 
 try {
     $evidence['current_step'] = 'prepare_accounts'
+    if ($agentAccountTag.Length -gt 48 -or $unauthAccountTag.Length -gt 48) {
+        throw "Generated account description exceeds 48-character limit: agent='$agentAccountTag', unauth='$unauthAccountTag'."
+    }
     if ($CreateTempTestAccounts) {
-        $AgentCredential = New-TransientTestUser -Username ('PrivExecAg_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
-        $UnauthorizedCredential = New-TransientTestUser -Username ('PrivExecUn_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+        $agentUser = 'PrivExecAg_' + [guid]::NewGuid().ToString('N').Substring(0, 6)
+        $unauthUser = 'PrivExecUn_' + [guid]::NewGuid().ToString('N').Substring(0, 6)
+        $AgentCredential = New-TransientTestUser -Username $agentUser -Description $agentAccountTag
+        $UnauthorizedCredential = New-TransientTestUser -Username $unauthUser -Description $unauthAccountTag
         $AgentAccount = $AgentCredential.UserName
     } elseif ([string]::IsNullOrWhiteSpace($AgentAccount) -or -not $AgentCredential) {
         throw 'Supply -AgentAccount and -AgentCredential, or pass -CreateTempTestAccounts.'
@@ -337,12 +352,33 @@ finally {
     foreach ($u in $createdUsers) {
         try {
             $acct = Get-LocalUser -Name $u.username -ErrorAction SilentlyContinue
-            if ($acct -and $acct.Description -eq $ownedAccountTag) {
-                Remove-LocalUser -Name $u.username -ErrorAction Stop
-                $evidence['cleanup']['accounts_removed'] += $u.username
+            if ($acct) {
+                if ($acct.Description -eq $u.description -or $acct.Description -eq $u.tag -or $acct.Description -like "PE2:*:$runId") {
+                    Remove-LocalUser -Name $u.username -ErrorAction Stop
+                    $evidence['cleanup']['accounts_removed'] += $u.username
+                } else {
+                    $evidence['cleanup']['errors'] += "Refusing to remove '$($u.username)': description '$($acct.Description)' does not match run ownership tag for run '$runId'."
+                }
             }
         } catch {
             $evidence['cleanup']['errors'] += "Failed to remove '$($u.username)': $($_.Exception.Message)"
+        }
+    }
+    if ($CreateTempTestAccounts) {
+        try {
+            $orphans = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.Description -like "PE2:*:$runId" }
+            foreach ($orphan in $orphans) {
+                if ($evidence['cleanup']['accounts_removed'] -notcontains $orphan.Name) {
+                    try {
+                        Remove-LocalUser -Name $orphan.Name -ErrorAction Stop
+                        $evidence['cleanup']['accounts_removed'] += $orphan.Name
+                    } catch {
+                        $evidence['cleanup']['errors'] += "Failed to remove orphaned account '$($orphan.Name)': $($_.Exception.Message)"
+                    }
+                }
+            }
+        } catch {
+            $evidence['cleanup']['errors'] += "Failed during orphan account cleanup check: $($_.Exception.Message)"
         }
     }
     Save-GateEvidence

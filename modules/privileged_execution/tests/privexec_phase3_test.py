@@ -564,3 +564,66 @@ def test_cross_account_script_detects_mismatched_temp_and_reports_pipe_eof(tmp_p
     assert "Unexpected EOF reading pipe response header" in res_eof.stderr
     assert f"pipe='{pipe_name}'" in res_eof.stderr
     assert "bytes_read=0" in res_eof.stderr
+
+
+def test_gate2_account_description_length_and_cleanup_matching() -> None:
+    import uuid
+    from datetime import UTC, datetime
+
+    # 1. Verify standard runId and description length constraints
+    now_utc = datetime.now(UTC)
+    run_id = f"{now_utc.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    assert len(run_id) == 24
+
+    agent_desc = f"PE2:agent:{run_id}"
+    unauth_desc = f"PE2:unauth:{run_id}"
+
+    # Windows New-LocalUser -Description has a hard limit of 48 characters
+    assert len(agent_desc) <= 48
+    assert len(agent_desc) == 34
+    assert len(unauth_desc) <= 48
+    assert len(unauth_desc) == 35
+
+    # Windows SAM account name has a hard limit of 20 characters
+    agent_user = f"PrivExecAg_{uuid.uuid4().hex[:6]}"
+    unauth_user = f"PrivExecUn_{uuid.uuid4().hex[:6]}"
+    assert len(agent_user) <= 20
+    assert len(agent_user) == 17
+    assert len(unauth_user) <= 20
+    assert len(unauth_user) == 17
+
+    # Old failing description exceeded limit
+    old_failing_tag = f"PrivExec Gate 2 temporary test account ({run_id})"
+    assert len(old_failing_tag) == 65
+    assert len(old_failing_tag) > 48
+
+    # 2. Test ownership matching in PowerShell
+    ps_script = f"""
+    $runId = '{run_id}'
+    $agentDesc = '{agent_desc}'
+    $unauthDesc = '{unauth_desc}'
+    $oldTag = '{old_failing_tag}'
+
+    function Test-Ownership($desc, $targetRunId) {{
+        if ([string]::IsNullOrWhiteSpace($desc) -or $desc.Length -gt 48) {{ return $false }}
+        return ($desc -eq "PE2:agent:$targetRunId" -or $desc -eq "PE2:unauth:$targetRunId" -or ($desc -like "PE2:*:$targetRunId"))
+    }}
+
+    $checks = @(
+        (Test-Ownership $agentDesc $runId),
+        (Test-Ownership $unauthDesc $runId),
+        (-not (Test-Ownership "PE2:agent:otherRunId" $runId)),
+        (-not (Test-Ownership "Built-in account for guest" $runId)),
+        (-not (Test-Ownership $oldTag $runId)),
+        (-not (Test-Ownership "" $runId))
+    )
+    if ($checks -contains $false) {{ exit 1 }}
+    Write-Output "OWNERSHIP_OK"
+    """
+    res = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "OWNERSHIP_OK" in res.stdout
