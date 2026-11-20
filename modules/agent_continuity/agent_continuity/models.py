@@ -80,6 +80,15 @@ class EventType(StrEnum):
     ASSOCIATION_CANDIDATE_REJECTED = "association.candidate_rejected"
     HOOK_EVENT = "hook.event"
     CHECKPOINT_RECORDED = "checkpoint.recorded"
+    DISPATCHER_GUI_REGISTERED = "dispatcher.gui_registered"
+    DISPATCHER_GUI_RENAMED = "dispatcher.gui_renamed"
+    DISPATCHER_SLOT_CREATED = "dispatcher.slot_created"
+    DISPATCHER_SLOT_STATE_CHANGED = "dispatcher.slot_state_changed"
+    DISPATCHER_SESSION_ACTIVATED = "dispatcher.session_activated"
+    DISPATCHER_LAUNCH_REQUESTED = "dispatcher.launch_requested"
+    DISPATCHER_LAUNCH_RESOLVED = "dispatcher.launch_resolved"
+    DISPATCHER_LAUNCH_FAILED = "dispatcher.launch_failed"
+    DISPATCHER_PROCESS_OBSERVED = "dispatcher.process_observed"
 
 
 @dataclass(slots=True)

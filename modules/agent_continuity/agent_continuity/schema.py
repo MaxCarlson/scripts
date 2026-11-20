@@ -7,7 +7,7 @@ import sqlite3
 from .errors import ContinuityError, ErrorCode
 from .identifiers import now_utc_iso
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _DDL_V1 = """
 CREATE TABLE IF NOT EXISTS schema_metadata (
@@ -168,6 +168,53 @@ CREATE TABLE IF NOT EXISTS provider_capabilities (
     PRIMARY KEY (provider, environment_id)
 );
 
+CREATE TABLE IF NOT EXISTS dispatcher_gui_conversations (
+    gui_id TEXT PRIMARY KEY,
+    alias TEXT NOT NULL,
+    alias_key TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_activity_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS agent_slots (
+    slot_id TEXT PRIMARY KEY,
+    gui_id TEXT NOT NULL REFERENCES dispatcher_gui_conversations(gui_id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_activity_at TEXT,
+    UNIQUE(gui_id, name_key)
+);
+
+CREATE TABLE IF NOT EXISTS agent_slot_activations (
+    activation_id TEXT PRIMARY KEY,
+    slot_id TEXT NOT NULL REFERENCES agent_slots(slot_id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    environment_id TEXT NOT NULL,
+    native_session_id TEXT NOT NULL,
+    provenance TEXT NOT NULL,
+    activated_at TEXT NOT NULL,
+    UNIQUE(slot_id, sequence)
+);
+
+CREATE TABLE IF NOT EXISTS dispatcher_pending_launches (
+    launch_id TEXT PRIMARY KEY,
+    slot_id TEXT NOT NULL REFERENCES agent_slots(slot_id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    environment_id TEXT NOT NULL,
+    cwd TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    requested_at TEXT NOT NULL,
+    resolved_at TEXT,
+    resolved_session_id TEXT,
+    failure_detail TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_workflows_slug ON workflows(slug);
 CREATE INDEX IF NOT EXISTS idx_gui_workflow ON gui_conversations(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_gui_canonical_url ON gui_conversations(canonical_url);
@@ -175,6 +222,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_repo ON sessions(repository_identity);
 CREATE INDEX IF NOT EXISTS idx_associations_workflow ON associations(workflow_id, status);
 CREATE INDEX IF NOT EXISTS idx_associations_session ON associations(provider, environment_id, native_session_id, status);
 CREATE INDEX IF NOT EXISTS idx_activity_observed ON activity_events(observed_timestamp);
+CREATE INDEX IF NOT EXISTS idx_dispatcher_gui_activity ON dispatcher_gui_conversations(status, last_activity_at);
+CREATE INDEX IF NOT EXISTS idx_agent_slots_gui_state ON agent_slots(gui_id, state, last_activity_at);
+CREATE INDEX IF NOT EXISTS idx_agent_slot_activations_slot ON agent_slot_activations(slot_id, sequence);
 """
 
 
@@ -219,6 +269,19 @@ def ensure_schema(conn: sqlite3.Connection) -> int:
             )
             conn.execute(
                 "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('initialized_at', ?)",
+                (now,),
+            )
+        return SCHEMA_VERSION
+    if current == 1:
+        conn.executescript(_DDL_V1)
+        now = now_utc_iso()
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('schema_version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('migrated_at', ?)",
                 (now,),
             )
         return SCHEMA_VERSION

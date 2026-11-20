@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "1.1.0"
 
+from .dispatcher import DispatcherService
 from .errors import ContinuityError, ErrorCode
 from .models import (
     AssociationRecord,
@@ -28,6 +29,7 @@ __all__ = [
     "AssociationStatus",
     "ContinuityError",
     "ContinuityService",
+    "DispatcherService",
     "EnvironmentInfo",
     "ErrorCode",
     "EventEnvelope",
