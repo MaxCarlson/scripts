@@ -6,8 +6,8 @@ Updated: 2026-11-20 UTC
 
 - Reconciliation worktree: `.worktrees/scripts-mxc-main-reconcile-20261120`
 - Branch: `reconcile/scripts-mxc-main-20261120`
-- Current reconciliation commit: `cdef8d9acd108c708ad7170ca5c78cbeec15fb51`; pushed to `origin`.
-- Refreshed `origin/main`: `76bf32b70a9e6d1e3e9db914f0f98496b4aca157`; it is an ancestor of the branch. The branch is 34 commits ahead and zero behind.
+- Current branch HEAD: `d620fc8b3dd5ad1143dad902d9b5fe202ba05123`; pushed to `origin`. This is a documentation-only descendant of the qualified code commit `cdef8d9acd108c708ad7170ca5c78cbeec15fb51`.
+- Refreshed `origin/main`: `76bf32b70a9e6d1e3e9db914f0f98496b4aca157`; it is an ancestor of the branch. The branch is 35 commits ahead and zero behind.
 - Latest hosted qualification: [Ubuntu run 44697076606](https://github.com/MaxCarlson/scripts/actions/runs/44697076606), successful on this branch commit.
 - Scripts review PR: [#22](https://github.com/MaxCarlson/scripts/pull/22), open, targeting `main`; GitHub reports `MERGEABLE` and the latest workflow check is successful.
 - The original integration branch/worktree and retirement checkpoint `cc3273f0e1571816de4864af17ab2e1d36bde58e` remain unchanged. The primary checkout remains on `main`; its unrelated `diagnostics/` and this worktree's `.tmp_build/` are preserved.
