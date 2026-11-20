@@ -88,10 +88,10 @@ def test_start_privexec_session_dry_run_and_acl_audit(tmp_path: Path) -> None:
     assert plan["allowed_targets"] == ["synth-target-1"]
     assert len(plan["allowed_client_sids"]) == 1
 
-    # Verify Test-ProtectedInstallAcls detects non-admin write ACEs on staged dirs
+    # Verify Test-ProtectedInstallAcls detects non-admin write ACEs on root, client, and staged dirs
     dirty_dir = tmp_path / "acl_test"
-    (dirty_dir / "bin").mkdir(parents=True)
-    subprocess.run(["icacls", str(dirty_dir / "bin"), "/grant", "BUILTIN\\Users:(OI)(CI)(M)"], check=True, capture_output=True)
+    (dirty_dir / "client").mkdir(parents=True)
+    subprocess.run(["icacls", str(dirty_dir / "client"), "/grant", "BUILTIN\\Users:(OI)(CI)(M)"], check=True, capture_output=True)
     acl_check_cmd = f"""
     $ErrorActionPreference = 'Stop'
     . '{start_ps1}' -DryRun | Out-Null

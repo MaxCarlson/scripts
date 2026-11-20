@@ -62,8 +62,8 @@ function Test-ProtectedInstallAcls {
     )
 
     $violations = [System.Collections.Generic.List[string]]::new()
-    foreach ($sub in @('bin', 'descriptors', 'adapters', 'h4_scripts', 'state', 'work')) {
-        $dirPath = Join-Path $RootPath $sub
+    foreach ($sub in @('', 'bin', 'client', 'descriptors', 'adapters', 'h4_scripts', 'state', 'work')) {
+        $dirPath = if ([string]::IsNullOrEmpty($sub)) { $RootPath } else { Join-Path $RootPath $sub }
         if (-not (Test-Path -LiteralPath $dirPath -PathType Container)) { continue }
         $acl = Get-Acl -LiteralPath $dirPath
         foreach ($rule in $acl.Access) {
