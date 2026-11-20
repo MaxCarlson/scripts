@@ -47,18 +47,26 @@ function Assert-NoReparsePoint {
 }
 
 function Test-ProtectedInstallAcls {
-    param([Parameter(Mandatory)][string]$RootPath)
+    param(
+        [Parameter(Mandatory)][string]$RootPath,
+        [switch]$VerifyOwner
+    )
     $allowedWriteSids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $allowedWriteSids.Add('S-1-5-18')      # NT AUTHORITY\SYSTEM
-    $allowedWriteSids.Add('S-1-5-32-544')  # BUILTIN\Administrators
+    [void]$allowedWriteSids.Add('S-1-5-18')      # NT AUTHORITY\SYSTEM
+    [void]$allowedWriteSids.Add('S-1-5-32-544')  # BUILTIN\Administrators
 
-    $writeMask = (
-        [System.Security.AccessControl.FileSystemRights]::Write -bor
-        [System.Security.AccessControl.FileSystemRights]::Modify -bor
-        [System.Security.AccessControl.FileSystemRights]::FullControl -bor
-        [System.Security.AccessControl.FileSystemRights]::Delete -bor
-        [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-        [System.Security.AccessControl.FileSystemRights]::TakeOwnership
+    # Explicit atomic mutation bits only (never composite Modify/FullControl, which include ReadAndExecute bits).
+    [uint32]$writeMask = (
+        [uint32][System.Security.AccessControl.FileSystemRights]::WriteData -bor
+        [uint32][System.Security.AccessControl.FileSystemRights]::AppendData -bor
+        [uint32][System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+        [uint32][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [uint32][System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+        [uint32][System.Security.AccessControl.FileSystemRights]::Delete -bor
+        [uint32][System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [uint32][System.Security.AccessControl.FileSystemRights]::TakeOwnership -bor
+        [uint32]0x40000000 -bor  # GENERIC_WRITE
+        [uint32]0x10000000       # GENERIC_ALL
     )
 
     $violations = [System.Collections.Generic.List[string]]::new()
@@ -66,11 +74,18 @@ function Test-ProtectedInstallAcls {
         $dirPath = if ([string]::IsNullOrEmpty($sub)) { $RootPath } else { Join-Path $RootPath $sub }
         if (-not (Test-Path -LiteralPath $dirPath -PathType Container)) { continue }
         $acl = Get-Acl -LiteralPath $dirPath
+        if ($VerifyOwner) {
+            $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+            if (-not $allowedWriteSids.Contains($ownerSid)) {
+                $violations.Add("$dirPath is owned by non-admin SID '$ownerSid' ($($acl.Owner))")
+            }
+        }
         foreach ($rule in $acl.Access) {
             if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
             $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
             if ($allowedWriteSids.Contains($sid)) { continue }
-            if (($rule.FileSystemRights -band $writeMask) -ne 0) {
+            [uint32]$rightsBits = [uint32]$rule.FileSystemRights
+            if (($rightsBits -band $writeMask) -ne 0) {
                 $violations.Add("$dirPath grants '$($rule.IdentityReference)' ($sid) write rights '$($rule.FileSystemRights)'")
             }
         }
@@ -137,7 +152,7 @@ if (-not (Test-Path -LiteralPath $brokerDll -PathType Leaf)) {
     throw "Installed PrivExecBroker.dll not found at '$brokerDll'. Run Install-PrivExec.ps1 -Apply first."
 }
 
-$aclViolations = Test-ProtectedInstallAcls -RootPath $resolvedRoot
+$aclViolations = @(Test-ProtectedInstallAcls -RootPath $resolvedRoot -VerifyOwner)
 if ($aclViolations.Count -gt 0) {
     $joined = $aclViolations -join '; '
     throw "SECURITY FAILURE: Protected installation has non-admin write ACLs: $joined. Re-run Install-PrivExec.ps1 -Apply -Mode CrossAccountIsolated."

@@ -95,7 +95,7 @@ def test_start_privexec_session_dry_run_and_acl_audit(tmp_path: Path) -> None:
     acl_check_cmd = f"""
     $ErrorActionPreference = 'Stop'
     . '{start_ps1}' -DryRun | Out-Null
-    $v = Test-ProtectedInstallAcls -RootPath '{dirty_dir}'
+    $v = @(Test-ProtectedInstallAcls -RootPath '{dirty_dir}')
     if ($v.Count -eq 0) {{ throw 'Expected ACL violation for BUILTIN\\Users:(M)' }}
     Write-Output ($v -join '|')
     """
@@ -106,6 +106,77 @@ def test_start_privexec_session_dry_run_and_acl_audit(tmp_path: Path) -> None:
         text=True,
     )
     assert "S-1-5-32-545" in acl_res.stdout
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires Windows PowerShell 7")
+def test_protected_install_acl_validator_regression(tmp_path: Path) -> None:
+    start_ps1 = SCRIPTS_DIR / "Start-PrivExecSession.ps1"
+
+    ps_script = f"""
+    $ErrorActionPreference = 'Stop'
+    . '{start_ps1}' -DryRun | Out-Null
+
+    function Set-TestAcl([string]$Path, [string]$Account, [System.Security.AccessControl.FileSystemRights]$Rights, [bool]$Protect) {{
+        $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+        $acl.SetAccessRuleProtection($Protect, $false)
+        $inh = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+        $prp = [System.Security.AccessControl.PropagationFlags]'None'
+        $alw = [System.Security.AccessControl.AccessControlType]::Allow
+        foreach ($adminAcct in @('NT AUTHORITY\\SYSTEM', 'BUILTIN\\Administrators')) {{
+            $sid = ([System.Security.Principal.NTAccount]$adminAcct).Translate([System.Security.Principal.SecurityIdentifier])
+            $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+                $sid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inh, $prp, $alw))
+        }}
+        if ($Account) {{
+            $sid = ([System.Security.Principal.NTAccount]$Account).Translate([System.Security.Principal.SecurityIdentifier])
+            $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, $Rights, $inh, $prp, $alw))
+        }}
+        [System.IO.FileSystemAclExtensions]::SetAccessControl([System.IO.DirectoryInfo]::new($Path), $acl)
+    }}
+
+    try {{
+        # 1. ReadAndExecute + Synchronize + SYSTEM/Administrators FullControl -> ALLOWED (0 violations, no stray booleans)
+        $rxRoot = Join-Path '{tmp_path}' 'case_rx'
+        New-Item -ItemType Directory -Path (Join-Path $rxRoot 'bin') -Force | Out-Null
+        $rxRights = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [System.Security.AccessControl.FileSystemRights]::Synchronize
+        Set-TestAcl $rxRoot 'BUILTIN\\Users' $rxRights $true
+        Set-TestAcl (Join-Path $rxRoot 'bin') 'BUILTIN\\Users' $rxRights $true
+        $vRx = @(Test-ProtectedInstallAcls -RootPath $rxRoot)
+        if ($vRx.Count -ne 0) {{ throw "Expected 0 violations for ReadAndExecute+Synchronize, got: $($vRx -join '; ')" }}
+
+        # 2. Write, Modify, FullControl, Delete, ChangePermissions, TakeOwnership -> REJECTED
+        foreach ($badRightName in @('Write', 'Modify', 'FullControl', 'Delete', 'ChangePermissions', 'TakeOwnership')) {{
+            $badRoot = Join-Path '{tmp_path}' ("case_" + $badRightName)
+            New-Item -ItemType Directory -Path (Join-Path $badRoot 'bin') -Force | Out-Null
+            Set-TestAcl $badRoot 'BUILTIN\\Users' ([System.Security.AccessControl.FileSystemRights]::ReadAndExecute) $true
+            $badRights = [System.Security.AccessControl.FileSystemRights]::$badRightName
+            Set-TestAcl (Join-Path $badRoot 'bin') 'BUILTIN\\Users' $badRights $true
+            $vBad = @(Test-ProtectedInstallAcls -RootPath $badRoot)
+            if ($vBad.Count -ne 1) {{ throw "Expected 1 violation for $badRightName, got $($vBad.Count): $($vBad -join '; ')" }}
+        }}
+
+        # 3. Writable inherited ACE -> REJECTED
+        $inhRoot = Join-Path '{tmp_path}' 'case_inherited'
+        New-Item -ItemType Directory -Path (Join-Path $inhRoot 'adapters') -Force | Out-Null
+        Set-TestAcl $inhRoot 'BUILTIN\\Users' ([System.Security.AccessControl.FileSystemRights]::Write -bor [System.Security.AccessControl.FileSystemRights]::ReadAndExecute) $true
+        $vInh = @(Test-ProtectedInstallAcls -RootPath $inhRoot)
+        if ($vInh.Count -lt 2) {{ throw "Expected violations on both root and inherited adapters dir, got $($vInh.Count)" }}
+
+        Write-Output 'ACL_REGRESSION_PASS'
+    }} finally {{
+        $me = "$($env:USERDOMAIN)\\$($env:USERNAME)"
+        Get-ChildItem -LiteralPath '{tmp_path}' -Recurse -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {{
+            & icacls $_.FullName /grant "$me`:(OI)(CI)(F)" /Q 2>$null | Out-Null
+        }}
+    }}
+    """
+    res = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "ACL_REGRESSION_PASS" in res.stdout
 
 
 @pytest.mark.skipif(os.name != "nt" or not BROKER_DLL.is_file(), reason="Requires Windows and built PrivExecBroker.dll")
