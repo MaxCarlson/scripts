@@ -94,3 +94,23 @@
 - [ ] Publish the five distributions through the authorized package channel before claiming ordinary public-index installation independence.
 - [ ] Reconcile with current scripts `main` (`2edd3633`). At the last snapshot before this documentation update, integration was `76972eb9`, merge base was `f57b2265`, and each side had 26 unique commits; changed-path sets did not overlap. Recalculate after subsequent commits; no merge/rebase was performed under this task's boundary.
 - [ ] Integration readiness: BLOCKED pending full bootstrap after the pinned `pscripts` dependency update, a full clean Windows bootstrap with mxc wheels, package publication, and reconciliation with current `main`. Keep the old retirement branch and source holds unchanged.
+
+## Current-main reconciliation and pinned pscripts gate — 2026-11-20
+
+- [x] Refresh and inspect `origin/main` at `719e2e70a7fb9c3b3b530fe09b013ef3a6e3f0df`; preserve integration tip `7ee3c4c18a5a798b500941b84ad8979d8b0e1cb1` and retirement checkpoint `cc3273f0e1571816de4864af17ab2e1d36bde58e`.
+- [x] Create isolated worktree `.worktrees/scripts-mxc-main-reconcile-20261120` on `reconcile/scripts-mxc-main-20261120`; leave the original integration worktree, `.tmp_build/`, primary `diagnostics/`, and retirement evidence untouched.
+- [x] Merge refreshed `origin/main` into the isolated branch in ordinary two-parent commit `e7e2bda57bfe322b6c915bd5a773260e75f5b18e`; no conflicts, and main's changed path set had no pre-merge overlap with the integration branch's changes.
+- [x] Verify the mxc workflow, wheelhouse, shared-package ownership code, and scripts launcher adapter/generator remain identical to the original integration tip.
+- [x] Recompute all five wheel hashes and inspect their wheel `METADATA`; all names, versions, Python requirements, and hashes match the committed manifest.
+- [x] Verify installed mxc distribution versions and import provenance in the existing qualified scripts venv; no legacy shared distributions are installed; `python -I -m pip check` is clean.
+- [x] Reconciled-tree tests: setup/shared ownership/launcher/transferred registry 17 passed; clipboard 11 passed; Runmux CLI/adapter 22 passed; Scripts Help registry/CLI 46 passed; TermDash utility/SimpleBoard/CLI 9 passed.
+- [x] Audit exact pinned `pscripts` commit `70ba27dd9259eea44d3710691fb276573c26789a` metadata read-only. Only `modules/download_scanner/setup.py` and `modules/video_tools/setup.py` require old `termdash>=0.1.0`; six other packaging/setup metadata files contain no old shared distribution dependencies.
+- [x] Confirm `download_scanner` uses the existing `TermDash`, `Line`, and `Stat` imports plus `TermDash.update_stat`; the unchanged Python package/API remains compatible with mxc distribution rename. `video_tools` does not import or call TermDash.
+- [x] Prepare the minimal cross-repository fix: both affected requirements become `mxc-termdash>=0.10.0,<0.11`; no pscripts file was edited.
+- [ ] Obtain separate authorization for pscripts ownership to apply and validate the two-line dependency fix, merge it through its normal workflow, then advance this branch's Gitlink to that verified commit.
+- [ ] Run authenticated Ubuntu full Bash bootstrap, post-bootstrap launcher/setup/consumer tests, Runmux HTTP suite, and `pip check` against the fixed Gitlink; do not rerun the known-blocked full bootstrap against the unchanged pin.
+- [ ] Complete a representative full Windows bootstrap using the renamed wheels.
+- [ ] Publish the five mxc distributions through the authorized channel before claiming public-index installation independence.
+- [ ] Reconsider merge review only after the pscripts Gitlink and full bootstrap gates above pass. Do not merge into `main` or integrate retirement deletions in this task.
+
+**Current status: BLOCKED for merge review.** The isolated reconciliation branch is prepared and focused tests pass. The exact remaining code dependency is the two old TermDash requirements in pinned pscripts; the full mxc Ubuntu bootstrap and post-bootstrap checks must be rerun after a separately authorized pscripts commit. Full Windows mxc bootstrap and package publication are also still pending.

@@ -148,3 +148,51 @@ The handoff-provided `mxc-script-logging` digest had a typo; the value above is 
 - Revert the mxc-specific commit(s) on this task branch, or restore selected changed paths from the parent commit with `git restore --source=<parent> -- <paths>`.
 - The prior old-name wheelhouse is preserved locally under `.tmp_build/legacy-wheelhouse-before-mxc-20261120/`; verify its recorded hashes before restoring any wheel files.
 - No changes were made to the primary scripts checkout, shared-package source, toolkit, retirement branch, or persistent quarantine.
+
+## Current-main reconciliation and pinned pscripts dependency gate — 2026-11-20
+
+This section supersedes the earlier statements that reconciliation with current `main` was pending. The original mxc integration branch and retirement checkpoint remain unchanged.
+
+- Reconciliation worktree: `.worktrees/scripts-mxc-main-reconcile-20261120`
+- Reconciliation branch: `reconcile/scripts-mxc-main-20261120`
+- Integration parent: `7ee3c4c18a5a798b500941b84ad8979d8b0e1cb1` (`feat/scripts-shared-packages-20261119`)
+- Refreshed `origin/main`: `719e2e70a7fb9c3b3b530fe09b013ef3a6e3f0df`
+- Merge base: `f57b22652dfc8cd67823a2a0d1d2792b3f09a320`
+- Local merge rehearsal commit: `e7e2bda57bfe322b6c915bd5a773260e75f5b18e` (`merge: reconcile current scripts main into mxc integration`)
+- The merge had no conflicts. Before merging, the path sets changed on the two sides had no overlap. The merge brings current main's clipboard tools, privileged-execution module, Scripts Help changes, and cross-platform clipboard changes into the isolated reconciliation branch. Main is an ancestor of the merge result; at the merge checkpoint the branch was 28 commits ahead and zero behind `origin/main`.
+- The active mxc integration paths checked (`.github/qualified-wheelhouse/`, its Linux workflow, `scripts_setup/shared_packages.py`, and the scripts launcher adapter/generator) are identical to the preserved integration tip. The existing mxc dependency ranges and launcher interface were not rewritten by reconciliation.
+
+### Pinned pscripts audit
+
+Both this branch and `origin/main` pin the `pscripts` Gitlink to `70ba27dd9259eea44d3710691fb276573c26789a`. The exact pinned tree was inspected read-only through GitHub because the isolated local worktree does not contain `pscripts/modules/setup.py` and direct private-repository Git access is unavailable here.
+
+The recursive tree contains eight packaging/setup metadata files. The only old shared-distribution requirements found were:
+
+| Pinned file | Current requirement | Required minimal change |
+|---|---|---|
+| `modules/download_scanner/setup.py` | `termdash>=0.1.0` | `mxc-termdash>=0.10.0,<0.11` |
+| `modules/video_tools/setup.py` | `termdash>=0.1.0` | `mxc-termdash>=0.10.0,<0.11` |
+
+The other six metadata files in the pinned tree contain no old shared-library requirements. `download_scanner` imports `TermDash`, `Line`, and `Stat` from the existing `termdash` Python package and calls `TermDash.update_stat`; the distribution rename preserves that import package and API. `video_tools` has no TermDash imports or runtime calls. The required edits are limited to the two dependency declarations; the affected `pscripts` package tests should run after that repository's owner makes the change and supplies a verified commit. No `pscripts` files were modified.
+
+The scripts-side full Ubuntu bootstrap failure on Run `44682930075` is therefore a cross-repository metadata gate: `pip` cannot satisfy those old distribution requirements when only the approved mxc distributions are present. Do not install duplicate legacy TermDash distributions or weaken the mxc/no-legacy checks. After the separate `pscripts` change is reviewed, advance this branch's Gitlink only to its verified commit and rerun full authenticated Bash bootstrap, launcher/post-bootstrap tests, and dependency checks.
+
+### Reconciliation checks
+
+- Qualified wheelhouse SHA-256 and wheel `METADATA` were rechecked locally; all five match `.github/qualified-wheelhouse/SHA256SUMS.txt` and the expected `mxc-*` names/versions/Python requirements.
+- In the existing qualified integration venv, `python -I -m pip check` reported `No broken requirements found`. `importlib.metadata` reported the five expected versions, no legacy shared distributions installed, and all five imports resolving under that venv's `site-packages`.
+- On the reconciled tree, focused tests passed: scripts shared ownership/launcher/transferred-module selection (17); current-main clipboard tests (11); Runmux web CLI/adapter tests (22); Scripts Help registry/CLI tests (46); and TermDash utility/SimpleBoard/CLI tests (9).
+- Clipboard tests have a `conftest.py` that inserts `modules/` into `sys.path`; running them in the same pytest process as the installed-wheel launcher tests shadows the installed `script_logging` package with the retained source compatibility shim. The qualification suites were therefore run separately; the isolated installed-wheel launcher suite passed.
+- The setup-utils installer-version suite was attempted locally but did not complete: this new worktree has no populated `pscripts` checkout, and the pscripts-specific tests require `pscripts/modules/setup.py`. Do not count that attempt as passing. The complete setup-utils selection remains part of the hosted post-bootstrap gate.
+- Runmux HTTP request tests were not retried on this Windows host because the previously documented socket-pair/event-loop failure occurs before request dispatch. The hosted mxc run's 12 Runmux synthetic HTTP tests passed on Ubuntu; Runmux test files were not changed by the main reconciliation.
+- Earlier mxc integration evidence remains applicable for paths unchanged by this merge: 79 selected scripts consumer tests and 36 TermDash/cross-platform utility tests passed. Full Windows bootstrap with renamed wheels and full hosted Ubuntu bootstrap/post-bootstrap tests remain incomplete.
+
+### Current disposition
+
+**Reconciliation branch prepared; integration remains BLOCKED for merge review.** The branch now contains current `scripts/main` without conflicts, and focused reconciled-tree checks pass. The remaining dependency gate is the two `pscripts` declarations above, which cannot be changed in this scripts-only assignment. Full mxc Ubuntu bootstrap and post-bootstrap qualification must pass after a separately authorized, verified `pscripts` revision and Gitlink update. A full Windows bootstrap using the renamed wheels and public availability of the five packages are also outstanding. Do not merge this branch to `main`, modify the historical retirement branch, or retire primary-checkout source in this task.
+
+### Reconciliation rollback
+
+- The original `feat/scripts-shared-packages-20261119` branch and its `.tmp_build/` are preserved unchanged.
+- The rehearsal is isolated to `reconcile/scripts-mxc-main-20261120`. To abandon the rehearsal later, keep the branch/worktree as evidence; do not remove it without separate review. If only the docs update is to be reverted, revert that docs commit on this branch. The merge itself is an ordinary two-parent commit and can be reverted on this branch with `git revert -m 1 <merge-commit>` if a reviewed reversal is needed; do not rewrite history.
+- The primary checkout's untracked `diagnostics/`, the retirement branch at `cc3273f0e1571816de4864af17ab2e1d36bde58e`, all 16 quarantine records, seven holds, five untracked retirement JSON files, and persistent quarantine were not changed.
