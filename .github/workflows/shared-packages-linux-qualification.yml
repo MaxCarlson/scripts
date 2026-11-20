@@ -30,9 +30,7 @@ jobs:
       - name: Check out scripts at the dispatched ref
         uses: actions/checkout@v4
         with:
-          # pscripts is private; this optional read-only token must cover both
-          # scripts and pscripts. The repository GITHUB_TOKEN is the fallback.
-          token: ${{ secrets.PSCRIPTS_READ_TOKEN || github.token }}
+          # Keep the scripts checkout on its repository-scoped GITHUB_TOKEN.
           submodules: false
           fetch-depth: 1
 
@@ -155,11 +153,35 @@ jobs:
             modules/scheduler/tests/test_logger.py \
             modules/scheduler/tests/test_history.py
 
-      - name: Initialize and verify pinned private pscripts submodules
-        id: pscripts
-        continue-on-error: true
+      - name: Check whether scoped private-repository access is configured
+        id: pscripts-token
+        env:
+          PSCRIPTS_READ_TOKEN: ${{ secrets.PSCRIPTS_READ_TOKEN }}
         run: |
-          git submodule update --init --recursive -- pscripts
+          if [[ -n "$PSCRIPTS_READ_TOKEN" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PSCRIPTS_READ_TOKEN is not configured; full bootstrap will remain blocked."
+          fi
+
+      - name: Check out pinned private pscripts and nested submodules
+        id: pscripts
+        if: steps.pscripts-token.outputs.available == 'true'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: MaxCarlson/pscripts
+          ref: 70ba27dd9259eea44d3710691fb276573c26789a
+          token: ${{ secrets.PSCRIPTS_READ_TOKEN }}
+          path: pscripts
+          submodules: recursive
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify pinned private submodule revisions
+        if: steps.pscripts.outcome == 'success'
+        run: |
           test -f pscripts/setup.py
           test "$(git -C pscripts rev-parse HEAD)" = "70ba27dd9259eea44d3710691fb276573c26789a"
           test "$(git -C pscripts/modules/aebn-vod-downloader-custom rev-parse HEAD)" = "af6bb8b1db14c8434c0a9da446ec49bbf067ab9b"
@@ -236,7 +258,7 @@ jobs:
         run: .venv/bin/python -I -m pip check
 
       - name: Report blocked full bootstrap when private submodule access is unavailable
-        if: steps.pscripts.outcome != 'success'
+        if: steps.pscripts-token.outputs.available != 'true' || steps.pscripts.outcome != 'success'
         run: |
-          echo "::error::Ubuntu standalone shared-wheel and Runmux HTTP checks completed, but full scripts bootstrap is blocked because the private pscripts submodule could not be cloned. Configure a read-only PSCRIPTS_READ_TOKEN Actions secret with access to MaxCarlson/scripts and MaxCarlson/pscripts, then rerun this workflow."
+          echo "::error::Ubuntu standalone checks completed, but full bootstrap is blocked because the private pscripts and nested aebn-vod-downloader-custom repositories could not be checked out. Configure a read-only PSCRIPTS_READ_TOKEN Actions secret with Contents: Read access to MaxCarlson/pscripts and MaxCarlson/aebn-vod-downloader-custom, then rerun this workflow."
           exit 1
