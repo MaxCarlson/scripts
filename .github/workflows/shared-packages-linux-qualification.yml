@@ -33,6 +33,7 @@ jobs:
           # Keep the scripts checkout on its repository-scoped GITHUB_TOKEN.
           submodules: false
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -153,38 +154,114 @@ jobs:
             modules/scheduler/tests/test_logger.py \
             modules/scheduler/tests/test_history.py
 
-      - name: Check whether scoped private-repository access is configured
-        id: pscripts-token
+      - name: Check whether scoped private-repository deploy keys are configured
+        id: pscripts-ssh
         env:
-          PSCRIPTS_READ_TOKEN: ${{ secrets.PSCRIPTS_READ_TOKEN }}
+          PSCRIPTS_DEPLOY_KEY: ${{ secrets.PSCRIPTS_DEPLOY_KEY }}
+          AEBN_DEPLOY_KEY: ${{ secrets.AEBN_DEPLOY_KEY }}
         run: |
-          if [[ -n "$PSCRIPTS_READ_TOKEN" ]]; then
+          if [[ -n "$PSCRIPTS_DEPLOY_KEY" && -n "$AEBN_DEPLOY_KEY" ]]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::PSCRIPTS_READ_TOKEN is not configured; full bootstrap will remain blocked."
+            echo "::warning::Both read-only deploy-key secrets are required; full bootstrap will remain blocked."
           fi
 
-      - name: Check out pinned private pscripts and nested submodules
+      - name: Check out pinned private submodules using repository-scoped SSH identities
         id: pscripts
-        if: steps.pscripts-token.outputs.available == 'true'
+        if: steps.pscripts-ssh.outputs.available == 'true'
         continue-on-error: true
-        uses: actions/checkout@v4
-        with:
-          repository: MaxCarlson/pscripts
-          ref: 70ba27dd9259eea44d3710691fb276573c26789a
-          token: ${{ secrets.PSCRIPTS_READ_TOKEN }}
-          path: pscripts
-          submodules: recursive
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Verify pinned private submodule revisions
-        if: steps.pscripts.outcome == 'success'
+        env:
+          PSCRIPTS_DEPLOY_KEY: ${{ secrets.PSCRIPTS_DEPLOY_KEY }}
+          AEBN_DEPLOY_KEY: ${{ secrets.AEBN_DEPLOY_KEY }}
         run: |
+          set -euo pipefail
+          ssh_dir="$RUNNER_TEMP/private-submodule-ssh"
+          git_config="$RUNNER_TEMP/private-submodules.gitconfig"
+          meta_file="$RUNNER_TEMP/github-meta.json"
+          mkdir -m 700 -p "$ssh_dir"
+          chmod 700 "$ssh_dir"
+          trap 'rm -rf "$ssh_dir"; rm -f "$git_config" "$meta_file"' EXIT
+
+          printf '%s' "$PSCRIPTS_DEPLOY_KEY" > "$ssh_dir/pscripts_ed25519"
+          printf '%s' "$AEBN_DEPLOY_KEY" > "$ssh_dir/aebn_ed25519"
+          chmod 600 "$ssh_dir/pscripts_ed25519" "$ssh_dir/aebn_ed25519"
+
+          curl --fail --silent --show-error --location https://api.github.com/meta --output "$meta_file"
+          python - "$meta_file" "$ssh_dir/known_hosts" <<'PY'
+          import json
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          meta = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          known_hosts = Path(sys.argv[2])
+          algorithm_names = {
+              "ssh-ed25519": "SHA256_ED25519",
+              "ecdsa-sha2-nistp256": "SHA256_ECDSA",
+              "ssh-rsa": "SHA256_RSA",
+          }
+          entries = []
+          expected = set()
+          for key in meta.get("ssh_keys", []):
+              parts = key.split()
+              if len(parts) < 2 or parts[0] not in algorithm_names:
+                  continue
+              fingerprint_name = algorithm_names[parts[0]]
+              entries.append(f"github.com {parts[0]} {parts[1]}")
+              expected.add(meta["ssh_key_fingerprints"][fingerprint_name])
+          if len(expected) != 3:
+              raise SystemExit("GitHub SSH host-key metadata is incomplete")
+          known_hosts.write_text("\n".join(entries) + "\n", encoding="ascii")
+          actual_output = subprocess.run(
+              ["ssh-keygen", "-lf", str(known_hosts), "-E", "sha256"],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout
+          actual = set(re.findall(r"SHA256:([^\s]+)", actual_output))
+          if actual != expected:
+              raise SystemExit("GitHub SSH host keys did not match the HTTPS metadata fingerprints")
+          PY
+
+          cat > "$ssh_dir/config" <<EOF
+          Host github-pscripts
+            HostName github.com
+            User git
+            IdentityFile $ssh_dir/pscripts_ed25519
+            IdentitiesOnly yes
+            PreferredAuthentications publickey
+            BatchMode yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile $ssh_dir/known_hosts
+          Host github-aebn
+            HostName github.com
+            User git
+            IdentityFile $ssh_dir/aebn_ed25519
+            IdentitiesOnly yes
+            PreferredAuthentications publickey
+            BatchMode yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile $ssh_dir/known_hosts
+          EOF
+          chmod 600 "$ssh_dir/config" "$ssh_dir/known_hosts"
+
+          : > "$git_config"
+          git config --file "$git_config" --add \
+            'url.git@github-pscripts:MaxCarlson/pscripts.insteadOf' \
+            'https://github.com/MaxCarlson/pscripts'
+          git config --file "$git_config" --add \
+            'url.git@github-aebn:MaxCarlson/aebn-vod-downloader-custom.insteadOf' \
+            'https://github.com/MaxCarlson/aebn-vod-downloader-custom'
+
+          GIT_CONFIG_GLOBAL="$git_config" \
+          GIT_SSH_COMMAND="ssh -F $ssh_dir/config -o BatchMode=yes" \
+            git submodule update --init --recursive pscripts
           test -f pscripts/setup.py
           test "$(git -C pscripts rev-parse HEAD)" = "70ba27dd9259eea44d3710691fb276573c26789a"
           test "$(git -C pscripts/modules/aebn-vod-downloader-custom rev-parse HEAD)" = "af6bb8b1db14c8434c0a9da446ec49bbf067ab9b"
+          echo "Pinned pscripts and nested Gitlink revisions verified; temporary SSH credentials will be removed."
 
       - name: Run the Bash latest bootstrap in a clean scripts environment
         if: steps.pscripts.outcome == 'success'
@@ -203,6 +280,8 @@ jobs:
           .venv/bin/python -I - <<'PY'
           import importlib
           import importlib.metadata as metadata
+          import re
+          import subprocess
           import sys
           from pathlib import Path
 
@@ -227,6 +306,33 @@ jobs:
                   assert "shared-python-modules" not in lowered and "llm-agent-toolkit" not in lowered, direct_url
               print(f"{distribution}=={version} -> {origin}")
           assert not any("shared-python-modules" in path.lower() or "llm-agent-toolkit" in path.lower() for path in sys.path)
+
+          inventory = subprocess.run(
+              [sys.executable, "-I", "bootstrap_latest.py", "--dry-run"],
+              check=False,
+              capture_output=True,
+              text=True,
+              timeout=600,
+          )
+          if inventory.returncode:
+              raise SystemExit(f"Linux bootstrap inventory check failed:\n{inventory.stdout}\n{inventory.stderr}")
+          for line in inventory.stdout.splitlines():
+              if line.startswith(("Packages: ", "Script launchers: ", "Console commands: ", "Summary: ")):
+                  print(line)
+          package_match = re.search(r"^Packages: (\d+) found, (\d+) missing, (\d+) with unreadable/unknown names$", inventory.stdout, re.MULTILINE)
+          launcher_match = re.search(r"^Script launchers: (\d+) found, (\d+) missing$", inventory.stdout, re.MULTILINE)
+          console_match = re.search(r"^Console commands: (\d+) found, (\d+) missing proxies$", inventory.stdout, re.MULTILINE)
+          assert package_match and int(package_match.group(1)) > 0, "Linux package inventory was not reported"
+          assert int(package_match.group(2)) == 0 and int(package_match.group(3)) == 0, package_match.groups()
+          assert launcher_match and int(launcher_match.group(1)) > 0, "Linux script-launcher inventory was not reported"
+          assert int(launcher_match.group(2)) == 0, launcher_match.groups()
+          assert console_match and int(console_match.group(2)) == 0, "Linux console proxies are missing"
+          print(
+              "Verified Linux inventory: "
+              f"{package_match.group(1)} application packages, "
+              f"{launcher_match.group(1)} script launchers, "
+              f"{console_match.group(1)} console commands; no missing packages or launchers."
+          )
           PY
           ./bin/termdash --help
           ./bin/runmux --help
@@ -238,6 +344,7 @@ jobs:
             --timeout=60 \
             --basetemp="$RUNNER_TEMP/scripts-pytest-tmp" \
             scripts_setup/tests/shared_packages_test.py \
+            scripts_setup/tests/launcher_test.py \
             scripts_setup/tests/transferred_modules_test.py \
             modules/setup_utils/tests \
             modules/backup_module/tests/test_backup_module.py \
@@ -258,7 +365,7 @@ jobs:
         run: .venv/bin/python -I -m pip check
 
       - name: Report blocked full bootstrap when private submodule access is unavailable
-        if: steps.pscripts-token.outputs.available != 'true' || steps.pscripts.outcome != 'success'
+        if: always() && (steps.pscripts-ssh.outputs.available != 'true' || steps.pscripts.outcome != 'success')
         run: |
-          echo "::error::Ubuntu standalone checks completed, but full bootstrap is blocked because the private pscripts and nested aebn-vod-downloader-custom repositories could not be checked out. Configure a read-only PSCRIPTS_READ_TOKEN Actions secret with Contents: Read access to MaxCarlson/pscripts and MaxCarlson/aebn-vod-downloader-custom, then rerun this workflow."
+          echo "::error::Ubuntu standalone checks completed, but authenticated checkout and pinned Gitlink verification did not complete. Check the deploy-key preflight and private-submodule checkout logs above."
           exit 1
