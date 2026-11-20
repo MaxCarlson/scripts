@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-continuity"
-version = "0.2.0"
+version = "1.1.0"
 description = "Local-first GUI-agent session continuity registry for ChatGPT GUI workflows, Codex CLI, and Antigravity CLI."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Maxwell Carlson", email = "carlsonamax@gmail.com" }]
-dependencies = []
+dependencies = ["terminal-launcher>=0.1.1,<0.2"]
 
 [project.optional-dependencies]
 dev = [
@@ -19,6 +19,8 @@ dev = [
 
 [project.scripts]
 agents = "agent_continuity.cli:main"
+llmd = "agent_continuity.dispatcher_cli:main"
+llm-dispatcher = "agent_continuity.dispatcher_cli:main"
 
 [tool.setuptools]
 package-dir = { "" = "." }
@@ -30,6 +32,7 @@ include = ["agent_continuity*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["*_test.py"]
+pythonpath = [".."]
 addopts = "-q --basetemp=.pytest_tmp_root/pytest"
 
 [tool.ruff]
