@@ -140,6 +140,7 @@ jobs:
           timeout --signal=TERM --kill-after=15s 25m .ci-venv/bin/python -I -m pytest -q \
             --timeout=60 \
             --basetemp="$RUNNER_TEMP/scripts-consumer-pytest-tmp" \
+            -k 'not test_pscripts_duplicate_aebndl_skips_when_canonical_module_exists' \
             scripts_setup/tests/shared_packages_test.py \
             scripts_setup/tests/transferred_modules_test.py \
             modules/setup_utils/tests \

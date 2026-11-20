@@ -45,7 +45,9 @@
 - [x] Update the Runmux route assertion to inspect public OpenAPI paths and rerun the previously failing test locally (1 passed).
 - [x] Third hosted run `44655686691`: all five wheel hashes/metadata, isolated installation, provenance, `pip check`, TermDash/Runmux CLI help and 12 Runmux synthetic-state HTTP tests passed. The private `pscripts` clone still failed; the workflow reported the blocker explicitly.
 - [x] Extend the pre-bootstrap CI path to install selected scripts consumer packages directly and run their safe regression tests without requiring `pscripts`.
-- [ ] Push the expanded consumer qualification and review its hosted Ubuntu results.
+- [x] Fourth hosted run `44656360846`: wheel and Runmux HTTP checks passed; consumer package installation passed; consumer tests yielded 104 passed and one failure caused by missing `pscripts/modules/setup.py`.
+- [x] Exclude only `test_pscripts_duplicate_aebndl_skips_when_canonical_module_exists` before submodule checkout; keep `modules/setup_utils/tests` fully enabled after the authenticated bootstrap path.
+- [ ] Push this narrow test-selection correction and review the expanded hosted Ubuntu results.
 - [ ] Configure a read-only `PSCRIPTS_READ_TOKEN` Actions secret for `MaxCarlson/scripts` and private `MaxCarlson/pscripts`, then rerun full bootstrap and broader consumer tests. The repository `GITHUB_TOKEN` was verified insufficient.
 - [x] Attempt local wheel reproduction in `.tmp_build/ci-wheel-repro-ff134131`; sandbox DNS could not resolve PyPI while fetching build-isolation requirement `wheel`. The attempt failed before package build; shared source was not modified. Since the pinned shared Git tree does not contain the qualified wheel artifacts and wheel ZIP file timestamps are not represented by Git, CI uses the exact committed artifact fixture rather than rebuilding and assuming identical bytes.
 - [ ] Run Runmux TestClient request tests in a compatible Windows environment if required. Proactor and SelectorEventLoop both fail before dispatch in this host; Ubuntu successfully ran the synthetic-state HTTP-only tests.
