@@ -122,6 +122,38 @@ jobs:
             modules/runmux/tests/telemetry_history_api_test.py \
             modules/runmux/tests/historical_runs_api_test.py
 
+      - name: Install selected scripts consumers without pscripts
+        run: |
+          .ci-venv/bin/python -m pip install \
+            --find-links="$GITHUB_WORKSPACE/.github/qualified-wheelhouse" \
+            --editable modules/backup_module \
+            --editable modules/compresser \
+            --editable modules/rrbackup \
+            --editable modules/sysmon \
+            --editable modules/system_manager \
+            --editable modules/standard_ui \
+            --editable modules/scheduler
+          .ci-venv/bin/python -I -m pip check
+
+      - name: Run selected scripts consumer regressions without pscripts
+        run: |
+          timeout --signal=TERM --kill-after=15s 25m .ci-venv/bin/python -I -m pytest -q \
+            --timeout=60 \
+            --basetemp="$RUNNER_TEMP/scripts-consumer-pytest-tmp" \
+            scripts_setup/tests/shared_packages_test.py \
+            scripts_setup/tests/transferred_modules_test.py \
+            modules/setup_utils/tests \
+            modules/backup_module/tests/test_backup_module.py \
+            modules/compresser/tests/measurement_test.py \
+            modules/compresser/tests/ui_test.py \
+            modules/rrbackup/tests/viewer_test.py \
+            modules/rrbackup/tests/viewer_dashboard_test.py \
+            modules/rrbackup/tests/schedule_math_test.py \
+            modules/sysmon/tests/test_sampler.py \
+            modules/system_manager/tests/process_watch_sampler_test.py \
+            modules/scheduler/tests/test_logger.py \
+            modules/scheduler/tests/test_history.py
+
       - name: Initialize and verify pinned private pscripts submodules
         id: pscripts
         continue-on-error: true

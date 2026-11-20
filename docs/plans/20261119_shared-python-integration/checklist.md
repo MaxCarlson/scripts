@@ -35,17 +35,20 @@
 - [ ] Complete Runmux browser TestClient HTTP suite. **Blocked before request dispatch** by Windows Proactor `_fallback_socketpair`/`socket.accept`; same stall reproduced with minimal FastAPI in baseline primary environment. Runmux app construction passes; no application regression identified. Retry under a Windows environment where asyncio socket pairs work.
 - [x] Compare the Runmux HTTP hang against a baseline minimal FastAPI app and capture bounded faulthandler evidence; no scripts-owned fix justified.
 - [x] Make one bounded Python 3.12 SelectorEventLoop TestClient attempt using AnyIO's supported `loop_factory`; faulthandler confirms the same `_fallback_socketpair`/`socket.accept` stall before request dispatch. Stop Windows workarounds; no production event-loop changes.
-- [ ] Run Linux/Ubuntu qualification. WSL Ubuntu and docker-desktop are stopped; startup service state is unknown, so neither distro was started. Use isolated Linux CI/WSL with confirmed safe startup configuration.
+- [x] Run Ubuntu package and HTTP qualification on GitHub-hosted Ubuntu 24.04 / Python 3.12.10; WSL Ubuntu and docker-desktop were not started.
 - [x] Prepare an Ubuntu GitHub Actions workflow using the five committed CI-only wheel fixtures under `.github/qualified-wheelhouse/`; it checks exact hashes/metadata, initializes pinned `pscripts`, runs Bash bootstrap, verifies imports/launchers/`pip check`, and runs selected bounded consumer and Runmux HTTP tests. Added a push trigger scoped to `feat/scripts-shared-packages-20261119` while retaining manual dispatch and `contents: read` permissions.
-- [x] Verify `MaxCarlson/pscripts` is private through the GitHub repository API. Workflow checkout accepts optional read-only `PSCRIPTS_READ_TOKEN`, falling back to `GITHUB_TOKEN`; hosted execution must verify whether the fallback has private submodule access.
+- [x] Verify `MaxCarlson/pscripts` is private through the GitHub repository API. Workflow checkout accepts optional read-only `PSCRIPTS_READ_TOKEN`, falling back to `GITHUB_TOKEN`; hosted execution confirmed the fallback cannot read the private submodule.
 - [x] Parse the workflow with PyYAML and verify the branch trigger, Ubuntu job, least-privilege permissions, wheel filenames, metadata, and all five SHA-256 hashes.
 - [x] Push the integration branch; first hosted run `44654625788` confirmed that the scripts repository `GITHUB_TOKEN` cannot clone private `MaxCarlson/pscripts` and therefore did not reach wheel verification or tests.
 - [x] Reorder qualification so independent Linux wheel/import/dependency/CLI/Runmux HTTP checks run before the private-submodule gate; retain an explicit failed workflow result if full bootstrap cannot proceed.
 - [x] Second hosted run `44655256163`: wheel checks, wheel installation, `pip check`, import provenance and both CLI help checks passed; HTTP selection exposed a FastAPI 0.165.0 internal-route test incompatibility.
 - [x] Update the Runmux route assertion to inspect public OpenAPI paths and rerun the previously failing test locally (1 passed).
-- [ ] Push the route-contract repair and review hosted Ubuntu package/HTTP results. Full bootstrap and broader consumer tests require a configured read-only `PSCRIPTS_READ_TOKEN` secret.
+- [x] Third hosted run `44655686691`: all five wheel hashes/metadata, isolated installation, provenance, `pip check`, TermDash/Runmux CLI help and 12 Runmux synthetic-state HTTP tests passed. The private `pscripts` clone still failed; the workflow reported the blocker explicitly.
+- [x] Extend the pre-bootstrap CI path to install selected scripts consumer packages directly and run their safe regression tests without requiring `pscripts`.
+- [ ] Push the expanded consumer qualification and review its hosted Ubuntu results.
+- [ ] Configure a read-only `PSCRIPTS_READ_TOKEN` Actions secret for `MaxCarlson/scripts` and private `MaxCarlson/pscripts`, then rerun full bootstrap and broader consumer tests. The repository `GITHUB_TOKEN` was verified insufficient.
 - [x] Attempt local wheel reproduction in `.tmp_build/ci-wheel-repro-ff134131`; sandbox DNS could not resolve PyPI while fetching build-isolation requirement `wheel`. The attempt failed before package build; shared source was not modified. Since the pinned shared Git tree does not contain the qualified wheel artifacts and wheel ZIP file timestamps are not represented by Git, CI uses the exact committed artifact fixture rather than rebuilding and assuming identical bytes.
-- [ ] Run actual Runmux TestClient request tests in a compatible Windows environment; Proactor and SelectorEventLoop both fail before dispatch in this host. Ubuntu workflow selects the synthetic-state HTTP-only tests.
+- [ ] Run Runmux TestClient request tests in a compatible Windows environment if required. Proactor and SelectorEventLoop both fail before dispatch in this host; Ubuntu successfully ran the synthetic-state HTTP-only tests.
 
 ## Retirement/integration
 
