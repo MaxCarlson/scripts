@@ -15,6 +15,7 @@ Privileged execution session broker (`PrivExecBroker`, C# / .NET 10) and non-ele
 
 ## Doc Map
 
+- [docs/AGENT_INTEGRATION.md](AGENT_INTEGRATION.md) — Normal-agent invocation, ACLs, and broker session lifecycle
 - [docs/HANDOFF.md](HANDOFF.md) — Current module state and next action
 - [docs/plans/HANDOFF.md](plans/HANDOFF.md) — Plan index
 - [00_implementation-plan.md](plans/20261119-privexec-session-broker/00_implementation-plan.md) — Master implementation plan

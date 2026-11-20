@@ -22,6 +22,7 @@ from .protocol import (
     build_status_request,
     build_stop_request,
     load_params_file,
+    parse_params_json,
 )
 from .transport import (
     BrokerNotRunningError,
@@ -101,8 +102,15 @@ def _cmd_status(args: argparse.Namespace, client_factory: Callable[[str], Any] |
 def _cmd_run(args: argparse.Namespace, client_factory: Callable[[str], Any] | None) -> int:
     if args.dry_run and args.apply:
         raise ProtocolValidationError("Cannot combine -n/--dry-run and -A/--apply.")
+    if args.params_file and args.params_json is not None:
+        raise ProtocolValidationError("Cannot combine -p/--params-file and -J/--params-json.")
     mode = "apply" if args.apply else "dry_run"
-    params = load_params_file(Path(args.params_file)) if args.params_file else {}
+    if args.params_file:
+        params = load_params_file(Path(args.params_file))
+    elif args.params_json is not None:
+        params = parse_params_json(args.params_json, source="--params-json")
+    else:
+        params = {}
     req = build_run_request(
         capability=args.capability,
         target_id=args.target,
@@ -217,6 +225,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("-t", "--target", required=True, help="Exact target ID authorized for the operation.")
     p_run.add_argument("-T", "--target-type", default="hyperv_vm", help="Target resource type (default: hyperv_vm).")
     p_run.add_argument("-p", "--params-file", help="Path to JSON file containing untrusted capability parameters.")
+    p_run.add_argument("-J", "--params-json", help="Inline JSON object string containing untrusted capability parameters.")
     p_run.add_argument("-n", "--dry-run", action="store_true", help="Request dry-run execution (default).")
     p_run.add_argument("-A", "--apply", action="store_true", help="Request mutating execution (requires grant).")
     p_run.add_argument("-r", "--request-id", help="Client-generated idempotency request ID.")

@@ -100,19 +100,27 @@ def _reject_forbidden_keys(obj: Any, *, context: str) -> None:
             _reject_forbidden_keys(item, context=f"{context}[{idx}]")
 
 
+def parse_params_json(raw_text: str, *, source: str = "parameters JSON") -> dict[str, Any]:
+    """Parse and validate an untrusted JSON parameter object string."""
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise ProtocolValidationError(f"Failed to parse {source}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ProtocolValidationError("Parameters JSON root must be an object.")
+    _reject_forbidden_keys(data, context="parameters")
+    return data
+
+
 def load_params_file(params_file: Path) -> dict[str, Any]:
     """Load an untrusted JSON parameter object from disk."""
     if not params_file.is_file():
         raise ProtocolValidationError(f"Parameters file not found: {params_file}")
     try:
         raw_text = params_file.read_text(encoding="utf-8")
-        data = json.loads(raw_text)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ProtocolValidationError(f"Failed to parse parameters JSON '{params_file}': {exc}") from exc
-    if not isinstance(data, dict):
-        raise ProtocolValidationError("Parameters JSON root must be an object.")
-    _reject_forbidden_keys(data, context="parameters")
-    return data
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ProtocolValidationError(f"Failed to read parameters JSON '{params_file}': {exc}") from exc
+    return parse_params_json(raw_text, source=f"parameters JSON '{params_file}'")
 
 
 def build_status_request() -> dict[str, Any]:

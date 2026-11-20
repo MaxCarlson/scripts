@@ -137,7 +137,8 @@ function Set-StrictDirectoryAcl {
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$OperatorAccount,
-        [string]$ReadOnlyAgentAccount = '',
+        [string[]]$ReadOnlyAccounts = @(),
+        [switch]$IncludeOperatorFullControl,
         [switch]$DirectFilesOnly
     )
     $acl = [System.Security.AccessControl.DirectorySecurity]::new()
@@ -146,15 +147,27 @@ function Set-StrictDirectoryAcl {
     $prop = [System.Security.AccessControl.PropagationFlags]'None'
     $allow = [System.Security.AccessControl.AccessControlType]::Allow
 
-    foreach ($adminAcct in @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators', $OperatorAccount)) {
-        $sid = ([System.Security.Principal.NTAccount]$adminAcct).Translate([System.Security.Principal.SecurityIdentifier])
-        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
-            $sid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $prop, $allow))
+    $fullControlAccounts = [System.Collections.Generic.List[string]]@('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')
+    if ($IncludeOperatorFullControl -and -not [string]::IsNullOrWhiteSpace($OperatorAccount)) {
+        $fullControlAccounts.Add($OperatorAccount)
     }
-    if (-not [string]::IsNullOrWhiteSpace($ReadOnlyAgentAccount)) {
-        $agentSid = ([System.Security.Principal.NTAccount]$ReadOnlyAgentAccount).Translate([System.Security.Principal.SecurityIdentifier])
+
+    $seenFullSids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($adminAcct in $fullControlAccounts) {
+        $sid = ([System.Security.Principal.NTAccount]$adminAcct).Translate([System.Security.Principal.SecurityIdentifier])
+        if ($seenFullSids.Add($sid.Value)) {
+            $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+                $sid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, $prop, $allow))
+        }
+    }
+
+    $seenReadSids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($roAcct in $ReadOnlyAccounts) {
+        if ([string]::IsNullOrWhiteSpace($roAcct)) { continue }
+        $sid = ([System.Security.Principal.NTAccount]$roAcct).Translate([System.Security.Principal.SecurityIdentifier])
+        if ($seenFullSids.Contains($sid.Value) -or -not $seenReadSids.Add($sid.Value)) { continue }
         $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
-            $agentSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, $inherit, $prop, $allow))
+            $sid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, $inherit, $prop, $allow))
     }
 
     [System.IO.FileSystemAclExtensions]::SetAccessControl([System.IO.DirectoryInfo]::new($Path), $acl)
@@ -183,29 +196,31 @@ try {
     $clientParentDir = Split-Path -Parent $subDirs.client
     $leafReadOnlyDirs = @($subDirs.bin, $subDirs.client, $subDirs.descriptors, $subDirs.adapters, $subDirs.h4_scripts)
     $privateDirs = @($subDirs.state, $subDirs.work)
-    $agentForReadOnly = if ($Mode -eq 'CrossAccountIsolated') { $AgentAccount } else { '' }
+    $includeOpFull = ($Mode -eq 'SameUserDev')
+    $readOnlyAccounts = if ($Mode -eq 'CrossAccountIsolated') { @($AgentAccount, $OperatorAccount) } else { @() }
 
     # Create directories and apply restrictive ACLs BEFORE staging binaries/scripts (closes partial-install window).
     # Parent directories use -DirectFilesOnly so private subdirectories (state, work) never inherit agent RX even transiently.
+    # In CrossAccountIsolated mode, FullControl is restricted to SYSTEM and BUILTIN\Administrators so non-elevated operator sessions cannot modify staged binaries/scripts.
     $installStage = 'reconcile_parent_acls'
     foreach ($parentDir in @($resolvedRoot, $clientParentDir)) {
         New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
         Assert-NoReparsePoint -FullPath $parentDir
-        Set-StrictDirectoryAcl -Path $parentDir -OperatorAccount $OperatorAccount -ReadOnlyAgentAccount $agentForReadOnly -DirectFilesOnly
+        Set-StrictDirectoryAcl -Path $parentDir -OperatorAccount $OperatorAccount -ReadOnlyAccounts $readOnlyAccounts -IncludeOperatorFullControl:$includeOpFull -DirectFilesOnly
     }
 
     $installStage = 'reconcile_private_acls'
     foreach ($d in $privateDirs) {
         New-Item -ItemType Directory -Path $d -Force | Out-Null
         Assert-NoReparsePoint -FullPath $d
-        Set-StrictDirectoryAcl -Path $d -OperatorAccount $OperatorAccount
+        Set-StrictDirectoryAcl -Path $d -OperatorAccount $OperatorAccount -IncludeOperatorFullControl:$includeOpFull
     }
 
     $installStage = 'reconcile_readonly_acls'
     foreach ($d in $leafReadOnlyDirs) {
         New-Item -ItemType Directory -Path $d -Force | Out-Null
         Assert-NoReparsePoint -FullPath $d
-        Set-StrictDirectoryAcl -Path $d -OperatorAccount $OperatorAccount -ReadOnlyAgentAccount $agentForReadOnly
+        Set-StrictDirectoryAcl -Path $d -OperatorAccount $OperatorAccount -ReadOnlyAccounts $readOnlyAccounts -IncludeOperatorFullControl:$includeOpFull
     }
 
     $installStage = 'stage_binaries'
@@ -216,9 +231,11 @@ try {
     Get-ChildItem -LiteralPath $clientSrcDir -Filter '*.py' -File | ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $subDirs.client $_.Name) -Force
     }
-    $crossAcctScript = Join-Path $PSScriptRoot 'Test-PrivExecCrossAccount.ps1'
-    if (Test-Path -LiteralPath $crossAcctScript -PathType Leaf) {
-        Copy-Item -LiteralPath $crossAcctScript -Destination (Join-Path $clientParentDir 'Test-PrivExecCrossAccount.ps1') -Force
+    foreach ($wrapperName in @('privexec.cmd', 'privexec.ps1', 'Test-PrivExecCrossAccount.ps1')) {
+        $wrapperSrc = Join-Path $PSScriptRoot $wrapperName
+        if (Test-Path -LiteralPath $wrapperSrc -PathType Leaf) {
+            Copy-Item -LiteralPath $wrapperSrc -Destination (Join-Path $clientParentDir $wrapperName) -Force
+        }
     }
 
     $installStage = 'stage_adapters'
