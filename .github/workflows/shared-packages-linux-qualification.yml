@@ -41,13 +41,6 @@ jobs:
         with:
           python-version: "3.12.10"
 
-      - name: Initialize and verify pinned pscripts submodules
-        run: |
-          git submodule update --init --recursive -- pscripts
-          test -f pscripts/setup.py
-          test "$(git -C pscripts rev-parse HEAD)" = "70ba27dd9259eea44d3710691fb276573c26789a"
-          test "$(git -C pscripts/modules/aebn-vod-downloader-custom rev-parse HEAD)" = "af6bb8b1db14c8434c0a9da446ec49bbf067ab9b"
-
       - name: Verify committed qualified wheel artifacts and metadata
         run: |
           cd .github/qualified-wheelhouse
@@ -83,15 +76,73 @@ jobs:
               print(f"{expected_name}=={expected_version} sha256={digest}")
           PY
 
+      - name: Install qualified wheels and Runmux web extra in an isolated environment
+        run: |
+          python -m venv .ci-venv
+          .ci-venv/bin/python -m pip install \
+            --find-links="$GITHUB_WORKSPACE/.github/qualified-wheelhouse" \
+            .github/qualified-wheelhouse/*.whl \
+            'modules/runmux[web]' \
+            "pytest==8.3.5" "pytest-timeout==2.4.0" "httpx==0.28.1"
+
+      - name: Verify standalone wheel imports, CLI and dependencies
+        run: |
+          .ci-venv/bin/python -I -m pip check
+          .ci-venv/bin/python -I - <<'PY'
+          import importlib
+          import importlib.metadata as metadata
+          import sys
+          from pathlib import Path
+
+          expected = {
+              "resource-metrics": ("resource_metrics", "0.3.0"),
+              "script-logging": ("script_logging", "0.1.1"),
+              "web-ui-tools": ("web_ui_tools", "0.2.0"),
+              "termdash": ("termdash", "0.10.0"),
+              "cross-platform": ("cross_platform", "0.9.0"),
+          }
+          site_dirs = [Path(path).resolve() for path in sys.path if path.endswith("site-packages")]
+          assert site_dirs, f"no site-packages entries in isolated sys.path: {sys.path}"
+          for distribution, (module_name, version) in expected.items():
+              dist = metadata.distribution(distribution)
+              module = importlib.import_module(module_name)
+              origin = Path(module.__file__).resolve()
+              assert dist.version == version, (distribution, dist.version)
+              assert any(origin.is_relative_to(site) for site in site_dirs), (module_name, origin)
+              print(f"{distribution}=={version} -> {origin}")
+          PY
+          .ci-venv/bin/termdash --help
+          .ci-venv/bin/runmux --help
+
+      - name: Run Runmux synthetic-state HTTP tests without pscripts
+        run: |
+          timeout --signal=TERM --kill-after=15s 10m .ci-venv/bin/python -I -m pytest -q \
+            --timeout=60 \
+            --basetemp="$RUNNER_TEMP/runmux-http-pytest-tmp" \
+            modules/runmux/tests/telemetry_history_api_test.py \
+            modules/runmux/tests/historical_runs_api_test.py
+
+      - name: Initialize and verify pinned private pscripts submodules
+        id: pscripts
+        continue-on-error: true
+        run: |
+          git submodule update --init --recursive -- pscripts
+          test -f pscripts/setup.py
+          test "$(git -C pscripts rev-parse HEAD)" = "70ba27dd9259eea44d3710691fb276573c26789a"
+          test "$(git -C pscripts/modules/aebn-vod-downloader-custom rev-parse HEAD)" = "af6bb8b1db14c8434c0a9da446ec49bbf067ab9b"
+
       - name: Run the Bash latest bootstrap in a clean scripts environment
+        if: steps.pscripts.outcome == 'success'
         run: |
           export PIP_FIND_LINKS="$GITHUB_WORKSPACE/.github/qualified-wheelhouse"
           timeout --signal=TERM --kill-after=15s 50m ./bootstrap_latest.sh
 
       - name: Install test-only HTTP and pytest tools
+        if: steps.pscripts.outcome == 'success'
         run: .venv/bin/python -I -m pip install "pytest==8.3.5" "pytest-timeout==2.4.0" "httpx==0.28.1"
 
       - name: Check installation, provenance, and generated launchers
+        if: steps.pscripts.outcome == 'success'
         run: |
           .venv/bin/python -I -m pip check
           .venv/bin/python -I - <<'PY'
@@ -126,6 +177,7 @@ jobs:
           ./bin/runmux --help
 
       - name: Run selected scripts consumer regressions
+        if: steps.pscripts.outcome == 'success'
         run: |
           timeout --signal=TERM --kill-after=15s 25m .venv/bin/python -I -m pytest -q \
             --timeout=60 \
@@ -147,4 +199,11 @@ jobs:
             modules/scheduler/tests/test_history.py
 
       - name: Recheck dependency health after test dependencies
+        if: steps.pscripts.outcome == 'success'
         run: .venv/bin/python -I -m pip check
+
+      - name: Report blocked full bootstrap when private submodule access is unavailable
+        if: steps.pscripts.outcome != 'success'
+        run: |
+          echo "::error::Ubuntu standalone shared-wheel and Runmux HTTP checks completed, but full scripts bootstrap is blocked because the private pscripts submodule could not be cloned. Configure a read-only PSCRIPTS_READ_TOKEN Actions secret with access to MaxCarlson/scripts and MaxCarlson/pscripts, then rerun this workflow."
+          exit 1
