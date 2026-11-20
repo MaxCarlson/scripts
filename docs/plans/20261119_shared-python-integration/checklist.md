@@ -41,7 +41,9 @@
 - [x] Parse the workflow with PyYAML and verify the branch trigger, Ubuntu job, least-privilege permissions, wheel filenames, metadata, and all five SHA-256 hashes.
 - [x] Push the integration branch; first hosted run `44654625788` confirmed that the scripts repository `GITHUB_TOKEN` cannot clone private `MaxCarlson/pscripts` and therefore did not reach wheel verification or tests.
 - [x] Reorder qualification so independent Linux wheel/import/dependency/CLI/Runmux HTTP checks run before the private-submodule gate; retain an explicit failed workflow result if full bootstrap cannot proceed.
-- [ ] Push the follow-up workflow and review its hosted Ubuntu package/HTTP results. Full bootstrap and broader consumer tests require a configured read-only `PSCRIPTS_READ_TOKEN` secret.
+- [x] Second hosted run `44655256163`: wheel checks, wheel installation, `pip check`, import provenance and both CLI help checks passed; HTTP selection exposed a FastAPI 0.165.0 internal-route test incompatibility.
+- [x] Update the Runmux route assertion to inspect public OpenAPI paths and rerun the previously failing test locally (1 passed).
+- [ ] Push the route-contract repair and review hosted Ubuntu package/HTTP results. Full bootstrap and broader consumer tests require a configured read-only `PSCRIPTS_READ_TOKEN` secret.
 - [x] Attempt local wheel reproduction in `.tmp_build/ci-wheel-repro-ff134131`; sandbox DNS could not resolve PyPI while fetching build-isolation requirement `wheel`. The attempt failed before package build; shared source was not modified. Since the pinned shared Git tree does not contain the qualified wheel artifacts and wheel ZIP file timestamps are not represented by Git, CI uses the exact committed artifact fixture rather than rebuilding and assuming identical bytes.
 - [ ] Run actual Runmux TestClient request tests in a compatible Windows environment; Proactor and SelectorEventLoop both fail before dispatch in this host. Ubuntu workflow selects the synthetic-state HTTP-only tests.
 
