@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-continuity"
-version = "0.2.0"
+version = "1.0.0"
 description = "Local-first GUI-agent session continuity registry for ChatGPT GUI workflows, Codex CLI, and Antigravity CLI."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,6 +19,8 @@ dev = [
 
 [project.scripts]
 agents = "agent_continuity.cli:main"
+llmd = "agent_continuity.dispatcher_cli:main"
+llm-dispatcher = "agent_continuity.dispatcher_cli:main"
 
 [tool.setuptools]
 package-dir = { "" = "." }

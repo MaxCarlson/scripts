@@ -1,13 +1,51 @@
 # agent_continuity
 
-Local-first GUI–Agent Session Continuity Module (`agents` CLI) for associating long-lived consumer ChatGPT GUI workflows with native OpenAI Codex CLI and Google Antigravity CLI (`agy`) sessions across Windows 11 and WSL2.
+Local-first GUI–Agent Session Continuity Module with the backward-compatible `agents` CLI and the named-session dispatcher (`llmd` / `llm-dispatcher`) for native OpenAI Codex CLI and Google Antigravity CLI (`agy`) sessions across Windows 11 and WSL2.
 
 See [docs/agent-session-continuity-master-plan.md](./docs/agent-session-continuity-master-plan.md) for the governing Master Implementation Plan (v3.0) and [docs/adr/ADR-001-phase0-architecture-decisions.md](./docs/adr/ADR-001-phase0-architecture-decisions.md) for Phase 0 architecture decisions.
 
+## Named Agent Dispatcher
+
+`llmd` stores local GUI aliases, named agent slots, lifecycle state, pending launches, and ordered session activations in the same durable event spool and rebuildable SQLite index used by `agents`. A local GUI alias does not create a conversation in ChatGPT.
+
+Install the module to generate both dispatcher executables:
+
+```powershell
+llmd
+llm-dispatcher --help
+```
+
+With an interactive terminal, `llmd` opens the selector. Type to filter names, use Up/Down and Enter to select, Esc to go back, Ctrl+N to register an alias or slot, and Ctrl+A on the agent list to open all selected sessions. Ctrl shortcuts avoid conflicting with incremental text search. Noninteractive no-argument calls print help and do not open a menu.
+
+Mutations and provider launches are dry-run by default. Review the preview, then add `-a` / `--apply`:
+
+```powershell
+llmd gui add -n AgentImprovement -a
+llmd gui rename -g AgentImprovement -n AgentPerformance -a
+llmd slot create -g AgentImprovement -n AgentPerf -a
+llmd start -g AgentImprovement -n AgentPerf -p agy -a
+llmd attach -g AgentImprovement -n AgentPerf -p agy -i <native-session-id> -a
+llmd switch -g AgentImprovement -n AgentPerf -p codex -a
+llmd switch -g AgentImprovement -n AgentPerf -p agy -r -a
+llmd list -g AgentImprovement
+llmd history -g AgentImprovement -n AgentPerf
+llmd pending -g AgentImprovement
+llmd open -g AgentImprovement -k 2
+llmd slot disable -g AgentImprovement -n AgentPerf -a
+```
+
+Provider starts create recoverable pending-launch records. The dispatcher does not infer a native ID from process timing: after startup, use the provider's supported identity or native metadata and attach the exact ID with `llmd attach`; `llmd pending` lists unresolved launches. Repeated selections of a previously bound native session remain separate entries in activation history. A later verified user-prompt hook can reactivate a session already bound to exactly one slot.
+
+`llmd open` creates opaque per-slot `PaneSpec` requests and delegates grouping and execution to the separate `terminal_launcher` package. If that package is unavailable, it prints the dispatcher-side preview and reports that execution is pending. The dispatcher does not construct `wt.exe` commands itself.
+
+The pane wrapper prompts after a normal zero exit. Keep active is the default; a nonzero exit or an unexpected wrapper/terminal shutdown leaves the current session and slot state unchanged.
+
 ## Current Status
 
-- **Phase 0 (Capability Verification & Repository Audit):** Complete
-- **Phase 1 (M1 — Manual Continuity & Durable Event Foundation):** In progress / initial release
+- **M1/M2 continuity foundation:** Integrated and preserved
+- **Named dispatcher:** Implemented on `feature/llmd-agent-dispatcher-20261119`
+- **Terminal launch integration:** Dispatcher-side `terminal_launcher` contract is implemented; real backend execution awaits the separate `modules/terminal_launcher/` workstream.
+- **Live provider correlation:** Not verified; no provider session or global hook was installed or launched for validation.
 
 ## Installation
 
