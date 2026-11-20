@@ -86,7 +86,11 @@ def test_c2c_literal_text_and_file_compatibility(tmp_path: Path, monkeypatch):
     assert rc_file == 0
     assert captured[-1] == "from file\n"
 
-    rc_missing = entrypoints._run_copy([str(tmp_path / "missing.txt"), "--no-stats"])
+    rc_lit_auto = entrypoints._run_copy(["hello single literal", "--no-stats"])
+    assert rc_lit_auto == 0
+    assert captured[-1] == "hello single literal"
+
+    rc_missing = entrypoints._run_copy(["-r", str(tmp_path / "missing.txt"), "--no-stats"])
     assert rc_missing == 1
 
 

@@ -11,6 +11,8 @@ from typing import Optional
 
 
 def _log(level: str, msg: str):
+    if level == "Debug" and not os.environ.get("CROSS_PLATFORM_DEBUG"):
+        return
     prefix = {
         "Debug": "[Debug]",
         "Information": "[Information]",
@@ -18,7 +20,7 @@ def _log(level: str, msg: str):
         "Error": "[Error]",
         "SUCCESS": "[SUCCESS]",
     }.get(level, "[Info]")
-    print(f"{prefix} {msg}")
+    print(f"{prefix} {msg}", file=sys.stderr)
 
 
 class ClipboardUtils:

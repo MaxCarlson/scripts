@@ -14,3 +14,8 @@ def test_output_to_clipboard_wrap(monkeypatch):
     # emulate script invocation through parser
     rc = otc.main(["-w", "echo", "hello"])
     assert rc == 0
+
+
+def test_build_shell_wrapped_command_pwsh_executes_not_scriptblock_literal():
+    wrapped, _ = otc.build_shell_wrapped_command("Write-Output ok", shell_choice="pwsh")
+    assert wrapped == 'pwsh -NoProfile -NoLogo -Command "Write-Output ok"'

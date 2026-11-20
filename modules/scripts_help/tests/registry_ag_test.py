@@ -144,3 +144,10 @@ def test_shell_integration_dry_run_apply_idempotent_and_rollback(tmp_path: Path)
     assert "$myVar = 1" in ps1.read_text(encoding="utf-8")
     assert shell_integration.MANAGED_START not in ps1.read_text(encoding="utf-8")
     assert not sh.exists()
+
+
+def test_posix_adapter_has_no_pipe_heredoc_conflict():
+    posix_src = shell_integration.render_posix_adapter()
+    assert "| python3" not in posix_src
+    assert "$_ag_raw" in posix_src
+    assert "$_ag_fn_raw" in posix_src
