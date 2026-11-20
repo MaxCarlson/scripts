@@ -85,8 +85,9 @@
 - [x] Confirm no active scripts-owned `pyproject.toml` declares an old shared distribution. Old-name references remain only in legacy-uninstall checks, historical/transferred metadata, and protected transferred applications.
 - [x] Confirm prior hosted Ubuntu runner availability before qualification; private read-only deploy-key workflow remains unchanged.
 - [x] Inspect the pinned private `pscripts` dependency metadata read-only and identify two old `termdash>=0.1.0` requirements in `download_scanner` and `video_tools`.
-- [ ] Run mxc-specific hosted Ubuntu wheel, install, import, CLI, HTTP, and consumer qualification.
-- [ ] Complete full authenticated Bash bootstrap with all legacy shared distributions absent and `pip check` clean. Blocked until a qualified `pscripts` revision stops requiring old `termdash`; scripts cannot update that repository under this assignment.
+- [x] Run mxc-specific hosted Ubuntu qualification (`44682930075`): five wheel hashes/metadata, install, imports/provenance, CLI, no legacy distributions, and `pip check` passed; the Runmux synthetic-state HTTP step passed; consumer regressions passed (106 passed, 1 deselected).
+- [x] Verify authenticated checkout of the exact pinned `pscripts` and nested Gitlink commits in hosted CI.
+- [ ] Complete full authenticated Bash bootstrap with all legacy shared distributions absent and `pip check` clean. Hosted run `44682930075` failed on pinned `pscripts` requirements `termdash>=0.1.0` for `download_scanner` and `video_tools` (no matching distribution); bootstrap reported 62 missing packages, 155 missing launchers, and 2 failures. Blocked until a qualified `pscripts` revision stops requiring old `termdash`; scripts cannot update that repository under this assignment.
 - [ ] Complete a full representative Windows bootstrap with the renamed wheels; the previous clean-copy dry-run was 62 packages, 69 script launchers, and 87 console commands with none missing, while full old-name checkpoint counts were 62/157/88.
 - [ ] Publish the five distributions through the authorized package channel before claiming ordinary public-index installation independence.
-- [ ] Integration readiness: BLOCKED pending mxc hosted qualification and the pinned `pscripts` dependency update. Keep the old retirement branch and source holds unchanged.
+- [ ] Integration readiness: BLOCKED pending full bootstrap after the pinned `pscripts` dependency update and a full clean Windows bootstrap with mxc wheels. Keep the old retirement branch and source holds unchanged.
