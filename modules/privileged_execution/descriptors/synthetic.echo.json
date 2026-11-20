@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "capability_id": "synthetic.echo",
+  "version": "1.0.0",
+  "runner_type": "synthetic",
+  "executable_path": null,
+  "executable_sha256": null,
+  "script_path": null,
+  "script_sha256": null,
+  "working_directory": null,
+  "target_types": ["synthetic"],
+  "allowed_targets": ["synth-target-1", "synth-target-2"],
+  "supports_dry_run": true,
+  "supports_apply": false,
+  "is_mutating": false,
+  "max_duration_seconds": 30,
+  "requires_guest_credential": false,
+  "fixed_args": [],
+  "parameter_schema": {
+    "message": {
+      "type": "string",
+      "required": false,
+      "pattern": "^[A-Za-z0-9 _.-]{0,128}$",
+      "cli_flag": "--message",
+      "mode_scope": "any"
+    }
+  }
+}

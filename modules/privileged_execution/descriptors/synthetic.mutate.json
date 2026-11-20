@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "capability_id": "synthetic.mutate",
+  "version": "1.0.0",
+  "runner_type": "powershell",
+  "executable_path": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+  "executable_sha256": null,
+  "script_path": "C:\\ProgramData\\PrivExec\\adapters\\Invoke-SyntheticMutationAdapter.ps1",
+  "script_sha256": "1eddeac805b6e52dec19ab07116eb3ef73f9e3a93c4225bd7426e30bb31949a0",
+  "working_directory": "C:\\ProgramData\\PrivExec\\work",
+  "target_types": ["synthetic"],
+  "allowed_targets": ["synth-target-1", "synth-target-2"],
+  "supports_dry_run": true,
+  "supports_apply": true,
+  "is_mutating": true,
+  "max_duration_seconds": 30,
+  "requires_guest_credential": false,
+  "fixed_args": [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    "{script_path}",
+    "-OperationId",
+    "{operation_id}",
+    "-TargetId",
+    "{target_id}"
+  ],
+  "dry_run_args": [],
+  "apply_args": ["-Apply"],
+  "parameter_schema": {
+    "marker": {
+      "type": "string",
+      "required": false,
+      "pattern": "^[A-Za-z0-9._-]{1,64}$",
+      "cli_flag": "-Marker",
+      "mode_scope": "any"
+    },
+    "sleep_seconds": {
+      "type": "int",
+      "required": false,
+      "min": 0,
+      "max": 20,
+      "cli_flag": "-SleepSeconds",
+      "mode_scope": "any"
+    }
+  }
+}
