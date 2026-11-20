@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import sys
 import argparse
-import re
+from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
@@ -15,6 +15,13 @@ except ImportError as e:
     print(f"[CRITICAL ERROR] Failed to import a required cross_platform module: {e}", file=sys.stderr)
     print("Please ensure the cross_platform package is installed and accessible.", file=sys.stderr)
     sys.exit(1)
+
+from clipboard_tools.terminal_capture import (
+    capture_session_log,
+    capture_tmux_buffer,
+    resolve_session_log_path,
+    unsupported_native_terminal_result,
+)
 
 console_stderr = Console(stderr=True)
 console_stdout = Console()
@@ -38,66 +45,53 @@ parser.add_argument(
     help="Copy the entire scrollback buffer, ignoring the last clear command."
 )
 parser.add_argument(
-    "--no-stats",
+    "-n", "--no-stats",
     action="store_true",
     help="Suppress statistics output."
 )
+parser.add_argument(
+    "-l", "--session-log",
+    default=None,
+    help="Path to a recorded session log file (or set CLIPBOARD_SESSION_LOG)."
+)
 
-def copy_buffer_to_clipboard_main(full: bool, no_stats: bool):
+def copy_buffer_to_clipboard_main(full: bool, no_stats: bool, session_log: str | None = None):
     stats_data = {}
     exit_code = 0
 
     try:
         system_utils = SystemUtils()
-        if not system_utils.is_tmux():
-            stats_data["Environment"] = "Not a tmux session"
-            error_msg = "This script is designed to run inside a tmux session to capture the scrollback buffer."
-            console_stderr.print(f"[bold red][ERROR] {error_msg}[/]")
-            stats_data["Error"] = error_msg
-            exit_code = 1
-            raise RuntimeError(error_msg)
-
-        stats_data["Environment"] = "tmux session detected"
-        tmux_manager = TmuxManager()
-        
-        # Capture a large amount of history. tmux default is 2000 lines.
-        # Capturing with '-' can be slow if history is massive. '-5000' is a good balance.
-        full_buffer = tmux_manager.capture_pane(start_line='-10000')
-
-        if full_buffer is None:
-            error_msg = "Failed to capture tmux pane buffer."
-            stats_data["Buffer Capture"] = "Failed"
-            stats_data["Error"] = error_msg
-            console_stderr.print(f"[bold red][ERROR] {error_msg}[/]")
-            exit_code = 1
-            raise RuntimeError(error_msg)
-
-        stats_data["Buffer Capture"] = "Success"
-        stats_data["Raw Buffer Chars"] = len(full_buffer)
-        stats_data["Raw Buffer Lines"] = len(full_buffer.splitlines())
-
-        text_to_copy = ""
-        if full:
-            stats_data["Mode"] = "Full Buffer"
-            text_to_copy = full_buffer
+        if system_utils.is_tmux():
+            stats_data["Environment"] = "tmux session detected"
+            tmux_manager = TmuxManager()
+            cap = capture_tmux_buffer(lambda sl: tmux_manager.capture_pane(start_line=sl), full=full)
         else:
-            stats_data["Mode"] = "Since Last Clear (Smart)"
-            # The `clear` command typically sends an escape sequence to clear the visible
-            # screen (CSI 2 J) and move the cursor to the home position (CSI H).
-            # We search for the last occurrence of this combined sequence.
-            clear_sequence = "\x1b[H\x1b[2J"
-            last_clear_pos = full_buffer.rfind(clear_sequence)
-
-            if last_clear_pos != -1:
-                # Take everything after the sequence.
-                text_to_copy = full_buffer[last_clear_pos + len(clear_sequence):]
-                stats_data["Clear Sequence Found"] = f"Yes (at index {last_clear_pos})"
+            log_path = resolve_session_log_path(session_log)
+            if log_path is not None:
+                stats_data["Environment"] = f"session log ({log_path})"
+                cap = capture_session_log(log_path, full=full)
             else:
-                text_to_copy = full_buffer
-                stats_data["Clear Sequence Found"] = "No"
+                stats_data["Environment"] = "Not a tmux session (no session log configured)"
+                cap = unsupported_native_terminal_result()
+
+        if not cap.ok:
+            stats_data["Buffer Capture"] = "Failed"
+            stats_data["Error"] = cap.error or "Capture failed."
+            console_stderr.print(f"[bold red][ERROR] {stats_data['Error']}[/]")
+            if cap.guidance:
+                console_stderr.print(f"[yellow][HINT] {cap.guidance}[/]")
+                stats_data["Guidance"] = cap.guidance
+            exit_code = 1
+            raise RuntimeError(stats_data["Error"])
+
+        stats_data["Buffer Capture"] = f"Success ({cap.backend})"
+        stats_data["Mode"] = "Full Buffer" if full else "Since Last Clear (Smart)"
+        if not full:
+            stats_data["Clear Sequence Found"] = f"Yes (at index {cap.clear_index})" if cap.clear_found else "No"
+            if not cap.clear_found:
                 console_stderr.print("[yellow][WARNING] Could not find a standard 'clear' sequence. Copying entire captured buffer.[/yellow]")
 
-        final_text = text_to_copy.strip()
+        final_text = cap.text
         stats_data["Final Text Chars"] = len(final_text)
         stats_data["Final Text Lines"] = len(final_text.splitlines())
 
@@ -136,7 +130,7 @@ def copy_buffer_to_clipboard_main(full: bool, no_stats: bool):
 def main(argv: list[str] | None = None):
     """Entry point for the copy_buffer_to_clipboard command."""
     args = parser.parse_args(argv)
-    exit_code = copy_buffer_to_clipboard_main(args.full, args.no_stats)
+    exit_code = copy_buffer_to_clipboard_main(args.full, args.no_stats, session_log=args.session_log)
     return exit_code
 
 

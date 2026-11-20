@@ -53,19 +53,30 @@ The pane wrapper prompts after a normal zero exit. Keep active is the default; a
 
 ## Installation
 
-From `modules/agent_continuity`:
+`agent-continuity` requires the reusable `terminal-launcher` package at runtime. The repository setup workflow reads package metadata and installs local modules in dependency order, so it installs `terminal-launcher` before `agent-continuity`. Windows Terminal itself is not a Python dependency and is only needed when submitting a real Windows Terminal launch.
+
+For a local development install from the repository root, install both source packages in one pip invocation so the local dependency satisfies the requirement without relying on a package index:
 
 ```powershell
-python -m pip install -e ..\terminal_launcher -e ".[dev]"
+python -m pip install -e .\modules\terminal_launcher -e ".\modules\agent_continuity[dev]"
 ```
 
-The terminal library and dispatcher are separate packages; both must be installed for `llmd open` to submit Windows Terminal requests.
+For wheel deployment, build both packages from the repository root and install both wheels in one invocation. The dependency metadata still requires `terminal-launcher`; installing only the dispatcher wheel without a compatible terminal-launcher distribution will fail clearly.
 
-Or invoke directly without installation:
+```powershell
+python -m pip wheel --no-deps --wheel-dir .\dist .\modules\terminal_launcher .\modules\agent_continuity
+python -m pip install .\dist\terminal_launcher-0.1.1-py3-none-any.whl .\dist\agent_continuity-1.1.0-py3-none-any.whl
+```
+
+The two packages remain independently installable: `terminal-launcher` has no dependency on `agent-continuity`. Running source directly without installing the dispatcher remains available for non-terminal commands, but `llmd open` requires the declared dependency:
 
 ```powershell
 python -m agent_continuity --help
 ```
+
+## Windows Terminal acceptance (manual desktop check)
+
+The automated suite captures `wt.exe` arguments and does not verify real pane geometry or child startup. When a Windows desktop session with Windows Terminal is available, run `llmd open` with harmless Python processes and explicitly authorize submission with `-a`. Verify two side-by-side panes, the three-pane left-plus-stacked-right arrangement, and the four-pane grid; check composite titles, pane working directories, Unicode/space-containing paths, argument preservation, explicit `--window` targeting, and a missing/invalid target failure. A harmless pane command can be `python.exe -c "import time; print('pane smoke'); time.sleep(8)"`. Use a temporary directory and a dedicated test window; do not use provider sessions for this acceptance check.
 
 ## Quick Start (Phase 1 M1)
 

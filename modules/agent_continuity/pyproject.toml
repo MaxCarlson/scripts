@@ -9,7 +9,7 @@ description = "Local-first GUI-agent session continuity registry for ChatGPT GUI
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Maxwell Carlson", email = "carlsonamax@gmail.com" }]
-dependencies = []
+dependencies = ["terminal-launcher>=0.1.1,<0.2"]
 
 [project.optional-dependencies]
 dev = [

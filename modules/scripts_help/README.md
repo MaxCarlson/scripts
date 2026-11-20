@@ -1,16 +1,28 @@
-<!-- version: 0.5.1 -->
+<!-- version: 1.0.0 -->
 # scripts-help
 
-Interactive help browser and registry/README sync for the scripts repository.
+Interactive help browser, command registry, `ag` discovery, and shell integration for the scripts repository.
 
 ## Usage
 
 ```
-scripts-help              # interactive browser (default)
-scripts-help browse       # interactive browser (explicit)
-scripts-help drift        # print drift report
-scripts-help sync         # launch AI to fix drift
+scripts-help                        # interactive browser (default)
+scripts-help browse                 # interactive browser (explicit)
+scripts-help drift                  # print drift report
+scripts-help sync                   # launch AI to fix drift
+scripts-help registry list [--json] # list/search/resolve/collisions/validate
+scripts-help integrate [-a|-c|-r]   # dry-run-first shell adapter installer
+ag [pattern]                        # search registered commands & live shell aliases/functions
 ```
+
+## Command Registry, `ag`, and Shell Integration
+- **Canonical registry** (`scripts_help/command_registry.py`): Aggregates `scripts_manifest.json`, `scripts_help.registry.REGISTRY`, and `modules/*/pyproject.toml` `[project.scripts]` without duplicating metadata, using `script_logging`'s `program_id` / `invoked_name` contract.
+- **`ag`** (`scripts_help/ag.py`): Case-insensitive regex search over command names and definitions (`Name`/`Definition` table or `--json`), with `--type`, `--source`, `--executables`, `--shell-inventory`, and Silver Searcher `ag` PATH collision detection.
+- **Installer & Rollback** (`scripts-help integrate`):
+  - Dry-run by default: `scripts-help integrate`
+  - Apply managed snippets (`ag_integration.ps1` / `ag_integration.sh` in `dotfiles/dynamic/`): `scripts-help integrate --apply`
+  - Verify installation: `scripts-help integrate --check`
+  - Rollback (preserves any user-authored lines outside managed markers): `scripts-help integrate --apply --rollback`
 
 ## Interactive browser
 

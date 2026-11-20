@@ -517,6 +517,13 @@ REGISTRY: dict = {
                 "version": "0.1.0",
             },
             {
+                "name": "privileged_execution (module)",
+                "path": "modules/privileged_execution",
+                "desc": "Least-privilege local Windows session broker and privexec CLI for narrowly authorized admin ops",
+                "help_cmd": ["privexec", "--help"],
+                "version": "0.1.0",
+            },
+            {
                 "name": "monitor-disks.py",
                 "path": "pyscripts/monitor-disks.py",
                 "desc": "Real-time disk usage monitoring with interactive Rich terminal UI",

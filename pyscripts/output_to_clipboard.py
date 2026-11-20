@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-__version__ = "0.1.0"
-
 from __future__ import annotations
+
+__version__ = "0.1.2"
 
 import sys
 import subprocess
@@ -122,7 +122,7 @@ def build_shell_wrapped_command(user_command: str, shell_choice: str | None = No
         # Use -NoProfile to avoid profile loading overhead and side effects.
         # Use -NoLogo to reduce noise.
         # Wrap command in a script block {} to avoid cmd.exe escaping issues with trailing backslashes.
-        wrapped = f'{exe} -NoProfile -NoLogo -Command {{ {user_command} }}'
+        wrapped = f'{exe} -NoProfile -NoLogo -Command {_quote_ps_command(user_command)}'
         meta["Alias/Function Support"] = "none (NoProfile)"
         return wrapped, meta
 

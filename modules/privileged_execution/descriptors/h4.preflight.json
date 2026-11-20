@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "capability_id": "h4.preflight",
+  "version": "1.0.0",
+  "runner_type": "powershell",
+  "executable_path": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+  "executable_sha256": null,
+  "script_path": "C:\\ProgramData\\PrivExec\\adapters\\Invoke-H4PreflightAdapter.ps1",
+  "script_sha256": "cc5f1c4d5c839ca33ad3c52becea3bc7709052ce2ec687949289e6f6bae7ff4f",
+  "working_directory": "C:\\ProgramData\\PrivExec\\work",
+  "target_types": ["hyperv_vm"],
+  "allowed_targets": ["d8483f98-8884-4758-abd1-cd6107c83c03"],
+  "supports_dry_run": true,
+  "supports_apply": false,
+  "is_mutating": false,
+  "max_duration_seconds": 120,
+  "requires_guest_credential": true,
+  "fixed_args": [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    "{script_path}",
+    "-H4QualificationScript",
+    "C:\\ProgramData\\PrivExec\\h4_scripts\\Invoke-H4GuestQualification.ps1",
+    "-OperationId",
+    "{operation_id}",
+    "-VmId",
+    "{target_id}"
+  ],
+  "dry_run_args": [],
+  "apply_args": [],
+  "parameter_schema": {
+    "vm_name": {
+      "type": "enum",
+      "required": false,
+      "allowed_values": ["RC-H4-Windows-Acceptance"],
+      "cli_flag": "-VmName",
+      "mode_scope": "any"
+    },
+    "expected_guest_host": {
+      "type": "enum",
+      "required": false,
+      "allowed_values": ["DESKTOP-1ITSJV0"],
+      "cli_flag": "-ExpectedGuestHost",
+      "mode_scope": "any"
+    }
+  }
+}
