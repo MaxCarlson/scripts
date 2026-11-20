@@ -292,7 +292,18 @@ class DispatcherService:
         launch = self._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?", (launch_id,))
         if launch is None or launch["status"] != "pending":
             raise ContinuityError(ErrorCode.INVALID_INPUT, f"Pending launch not found: {launch_id!r}.")
-        return launch
+        return self._with_captured_bootstrap_id(launch)
+
+    def _with_captured_bootstrap_id(self, launch: dict[str, Any]) -> dict[str, Any]:
+        captured = self._rows(
+            """SELECT DISTINCT native_session_id FROM activity_events
+               WHERE event_type = ? AND json_extract(payload_json, '$.launch_id') = ?
+                 AND json_extract(payload_json, '$.outcome') = 'bootstrap_id_captured'
+                 AND native_session_id IS NOT NULL""",
+            (EventType.DISPATCHER_PROCESS_OBSERVED.value, launch["launch_id"]),
+        )
+        return {**launch, "captured_session_id": captured[0]["native_session_id"] if len(captured) == 1 else None,
+                "captured_session_conflict": len(captured) > 1}
 
     def current_working_directory(self, slot: dict[str, Any]) -> str:
         current = slot.get("current")
@@ -345,7 +356,10 @@ class DispatcherService:
         return {
             "action": "launch-request",
             "applied": apply,
-            "summary": f"{'Created' if apply else 'Dry-run: would create'} pending {provider_name} launch for {slot['name']}; attach its exact native session ID when known.",
+            "summary": (
+                f"{'Created' if apply else 'Dry-run: would create'} pending {provider_name} launch for {slot['name']}. "
+                "A new session uses one short model initialization turn to capture its exact native ID, then resumes that ID interactively."
+            ),
             "details": {"launch_id": launch_id, "slot_id": slot["slot_id"], "provider": provider_name,
                         "environment_id": env.environment_id, "cwd": cwd, "status": "pending"},
             "events": [event.to_dict()],
@@ -355,14 +369,16 @@ class DispatcherService:
         self._sync()
         if gui:
             conversation = self._gui(gui)
-            return self._rows(
+            launches = self._rows(
                 """SELECT l.*, s.name AS agent_name, g.alias AS gui_alias
                    FROM dispatcher_pending_launches l JOIN agent_slots s USING(slot_id)
                    JOIN dispatcher_gui_conversations g USING(gui_id)
                    WHERE g.gui_id = ? AND l.status = 'pending' ORDER BY l.requested_at""",
                 (conversation["gui_id"],),
             )
-        return self._rows("SELECT * FROM dispatcher_pending_launches WHERE status = 'pending' ORDER BY requested_at")
+        else:
+            launches = self._rows("SELECT * FROM dispatcher_pending_launches WHERE status = 'pending' ORDER BY requested_at")
+        return [self._with_captured_bootstrap_id(launch) for launch in launches]
 
     def mark_launch_failed(self, *, launch_id: str, detail: str, apply: bool = True) -> dict[str, Any]:
         self._sync()
@@ -386,14 +402,15 @@ class DispatcherService:
                 "details": {"launch_id": launch_id, "status": "failed"}, "events": [event.to_dict()]}
 
     def record_process_observation(
-        self, *, slot_id: str, launch_id: str | None, return_code: int, outcome: str
+        self, *, slot_id: str, launch_id: str | None, return_code: int, outcome: str,
+        detail: str | None = None, native_session_id: str | None = None,
     ) -> None:
         slot = self.get_slot_by_id(slot_id)
         current = slot["current"]
         pending = self.get_pending_launch(launch_id) if launch_id else None
         provider = pending["provider"] if pending else (current["provider"] if current else None)
         environment_id = pending["environment_id"] if pending else (current["environment_id"] if current else None)
-        session_id = None if pending else (current["native_session_id"] if current else None)
+        session_id = native_session_id or (None if pending else (current["native_session_id"] if current else None))
         if not provider or not environment_id:
             return
         event = self._event(
@@ -401,7 +418,8 @@ class DispatcherService:
             environment_id=environment_id,
             provider=provider,
             session_id=session_id,
-            payload={"slot_id": slot_id, "launch_id": launch_id, "return_code": return_code, "outcome": outcome},
+            payload={"slot_id": slot_id, "launch_id": launch_id, "return_code": return_code,
+                     "outcome": outcome, "detail": detail, "native_session_id": native_session_id},
         )
         with _mutation_lock(self.home_dir):
             self.continuity._emit_and_materialize([event])

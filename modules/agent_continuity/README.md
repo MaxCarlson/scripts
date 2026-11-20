@@ -36,7 +36,9 @@ llmd open -g AgentImprovement -k 4 -a
 llmd slot disable -g AgentImprovement -n AgentPerf -a
 ```
 
-Provider starts create recoverable pending-launch records. The dispatcher does not infer a native ID from process timing: after startup, use the provider's supported identity or native metadata and attach the exact ID with `llmd attach`; `llmd pending` lists unresolved launches. Repeated selections of a previously bound native session remain separate entries in activation history. A later verified user-prompt hook can reactivate a session already bound to exactly one slot.
+Starting a new provider session uses a bounded two-stage bootstrap. The dispatcher first persists a pending launch, then runs one fixed initialization-only model turn in a read-only/headless provider invocation. Codex's JSONL `thread.started.thread_id` or AGY's JSON `conversation_id` is captured from that specific child process, associated with the intended slot, and immediately resumed in the interactive pane. The user's actual assignment is not sent during bootstrap. A new slot start therefore uses one initialization model turn; continuing or reusing an existing session does not.
+
+If the bootstrap exits unexpectedly or cannot return one successful, unambiguous ID, the dispatcher records that the attempt has already started and will not repeat a potentially billable initialization automatically. `llmd pending` shows any captured ID and recovery detail. If the exact ID is known, resolve the pending launch with `llmd attach -g GUI -n AGENT -p PROVIDER -i SESSION_ID -L LAUNCH_ID -a`; otherwise inspect the native provider's session list and attach only after verifying the intended session. Repeated selections of a previously bound native session remain separate entries in activation history.
 
 `llmd open` creates opaque per-slot `PaneSpec` requests and delegates grouping and execution to the reusable `terminal_launcher` package. Preview is dry-run; pass `-a` to submit it to Windows Terminal. Unresolved or pending session IDs are listed for manual recovery and are never turned into a guessed resume command. The dispatcher does not construct `wt.exe` commands itself.
 
@@ -47,7 +49,7 @@ The pane wrapper prompts after a normal zero exit. Keep active is the default; a
 - **M1/M2 continuity foundation:** Integrated and preserved
 - **Named dispatcher:** Integrated from `feature/llmd-agent-dispatcher-20261119` at `db8d5779`.
 - **Terminal launch integration:** `llmd open` uses `terminal_launcher` for immutable launch planning, previews, layout grouping, and request submission. Real pane geometry remains unverified without a live Windows Terminal smoke test.
-- **Session-ID correlation:** New provider sessions remain pending until the user explicitly attaches a verified native session ID. M2 hook events do not carry the dispatcher launch ID, so concurrent launches cannot be matched deterministically. No provider session or global hook was installed or launched for validation.
+- **Session-ID correlation:** New Codex and AGY sessions use per-process structured bootstrap output and explicit resume-by-ID; no global hook installation is required for initial association. Failed or interrupted bootstrap attempts stay recoverable and are not repeated automatically. Manual attachment remains available for interrupted attempts and pre-existing sessions.
 
 ## Installation
 

@@ -20,6 +20,9 @@ from .dispatcher import DispatcherService
 from .environment import detect_runtime_kind
 from .errors import ContinuityError, ErrorCode
 
+_BOOTSTRAP_PROMPT = "Session initialization only. Reply READY and await further instructions."
+_BOOTSTRAP_TIMEOUT_SECONDS = 180
+
 
 def _json_default(value: Any) -> Any:
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
@@ -188,6 +191,65 @@ def _native_argv(
     return [installation.executable_path, *provider_args[1:]]
 
 
+def _bootstrap_native_argv(
+    dispatcher: DispatcherService,
+    provider: str,
+    *,
+    environment_id: str,
+    cwd: str | None,
+) -> list[str]:
+    """Build a controlled, machine-readable provider invocation that creates one resumable session."""
+    if provider not in {"codex", "agy"}:
+        raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported bootstrap provider {provider!r}.")
+    argv = _native_argv(dispatcher, provider, None, environment_id=environment_id, cwd=cwd)
+    if provider == "codex":
+        return [*argv, "exec", "--json", "--sandbox", "read-only", _BOOTSTRAP_PROMPT]
+    return [*argv, "--print", _BOOTSTRAP_PROMPT, "--output-format", "json", "--sandbox"]
+
+
+def _extract_bootstrap_session_id(provider: str, stdout: str) -> str | None:
+    """Return an ID only when the provider reports a successful invocation with one unambiguous ID."""
+    if provider == "codex":
+        session_ids: set[str] = set()
+        completed = False
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "thread.started":
+                value = event.get("thread_id")
+                if isinstance(value, str) and value.strip():
+                    session_ids.add(value.strip())
+            elif event.get("type") == "turn.completed":
+                completed = True
+        if len(session_ids) > 1:
+            raise ValueError("Codex bootstrap output reported conflicting session IDs.")
+        return next(iter(session_ids)) if completed and session_ids else None
+    if provider == "agy":
+        try:
+            result = json.loads(stdout)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(result, dict) or result.get("status") != "SUCCESS":
+            return None
+        value = result.get("conversation_id")
+        return value.strip() if isinstance(value, str) and value.strip() else None
+    raise ValueError(f"Unsupported bootstrap provider {provider!r}.")
+
+
+def _bootstrap_attempt_error(dispatcher: DispatcherService, *, slot_id: str, launch_id: str, detail: str) -> None:
+    dispatcher.record_process_observation(
+        slot_id=slot_id,
+        launch_id=launch_id,
+        return_code=1,
+        outcome="bootstrap_capture_failed",
+        detail=detail,
+    )
+
+
 def _run_pane(
     dispatcher: DispatcherService,
     *,
@@ -201,6 +263,11 @@ def _run_pane(
         pending = dispatcher.get_pending_launch(launch_id)
         if pending["slot_id"] != slot_id:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch belongs to a different agent slot.")
+        if pending.get("failure_detail"):
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "This launch already has an incomplete bootstrap attempt. It was not retried automatically; inspect the provider session and attach its exact ID, or create a new launch.",
+            )
         provider = pending["provider"]
         environment_id = pending["environment_id"]
         target_environment = next(
@@ -230,10 +297,121 @@ def _run_pane(
     if launch_id:
         process_cwd = None if cross_wsl else cwd
     try:
-        argv = _native_argv(dispatcher, provider, session_id, environment_id=environment_id, cwd=cwd)
+        if launch_id:
+            dispatcher.record_process_observation(
+                slot_id=slot_id,
+                launch_id=launch_id,
+                return_code=0,
+                outcome="bootstrap_attempt_started",
+                detail="Provider bootstrap started; automatic retry is disabled until this launch is resolved.",
+            )
+            bootstrap_argv = _bootstrap_native_argv(
+                dispatcher, provider, environment_id=environment_id, cwd=cwd
+            )
+            try:
+                bootstrap = subprocess.run(
+                    bootstrap_argv,
+                    cwd=process_cwd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=_BOOTSTRAP_TIMEOUT_SECONDS,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                _bootstrap_attempt_error(
+                    dispatcher, slot_id=slot_id, launch_id=launch_id,
+                    detail=f"{provider} bootstrap exceeded {_BOOTSTRAP_TIMEOUT_SECONDS} seconds; automatic retry is disabled.",
+                )
+                print(
+                    f"{provider} bootstrap timed out. The pending launch was preserved and will not be retried automatically; inspect provider sessions, then use `llmd attach` with the exact ID.",
+                    file=output_stream,
+                )
+                return 124
+            except OSError as exc:
+                _bootstrap_attempt_error(
+                    dispatcher, slot_id=slot_id, launch_id=launch_id,
+                    detail=f"Provider bootstrap could not start ({type(exc).__name__}); do not retry automatically.",
+                )
+                print(
+                    f"{provider} bootstrap could not start. This launch was preserved without automatic retry; inspect provider state before attaching or starting again.",
+                    file=output_stream,
+                )
+                return 1
+            try:
+                captured_session_id = _extract_bootstrap_session_id(provider, bootstrap.stdout or "")
+            except ValueError as exc:
+                captured_session_id = None
+                capture_detail = f"{provider} bootstrap reported conflicting IDs ({exc}); automatic retry is disabled."
+            else:
+                if bootstrap.returncode != 0:
+                    capture_detail = (
+                        f"{provider} bootstrap exited with code {bootstrap.returncode}; any captured ID was not accepted and automatic retry is disabled."
+                    )
+                else:
+                    capture_detail = (
+                        f"{provider} bootstrap completed without a successful, unambiguous session ID; automatic retry is disabled."
+                    )
+            if bootstrap.returncode != 0 or not captured_session_id:
+                _bootstrap_attempt_error(
+                    dispatcher, slot_id=slot_id, launch_id=launch_id, detail=capture_detail
+                )
+                print(
+                    f"{provider} session ID was not safely captured. The pending launch was preserved and will not be retried automatically; inspect provider sessions, then use `llmd attach` with the exact ID.",
+                    file=output_stream,
+                )
+                return bootstrap.returncode or 1
+
+            dispatcher.record_process_observation(
+                slot_id=slot_id,
+                launch_id=launch_id,
+                return_code=0,
+                outcome="bootstrap_id_captured",
+                detail="Exact native session ID captured from this provider invocation; persisting slot association.",
+                native_session_id=captured_session_id,
+            )
+            other_slot = dispatcher._row(
+                """SELECT slot_id FROM agent_slot_activations
+                   WHERE provider = ? AND environment_id = ? AND native_session_id = ?
+                     AND slot_id != ? LIMIT 1""",
+                (provider, environment_id, captured_session_id, slot_id),
+            )
+            if other_slot:
+                _bootstrap_attempt_error(
+                    dispatcher, slot_id=slot_id, launch_id=launch_id,
+                    detail="Provider bootstrap returned a native ID already associated with another slot; automatic retry is disabled.",
+                )
+                print(
+                    "The captured native session is already assigned to another slot. The current selection was preserved; resolve the conflict explicitly.",
+                    file=output_stream,
+                )
+                return 1
+
+            dispatcher.attach_session(
+                gui=slot["gui_alias"],
+                name=slot["name"],
+                provider=provider,
+                session_id=captured_session_id,
+                environment_selector=environment_id,
+                cwd=cwd,
+                launch_id=launch_id,
+                apply=True,
+                provenance="provider_bootstrap_output",
+            )
+            session_id = captured_session_id
+            launch_id = None
+            argv = _native_argv(dispatcher, provider, session_id, environment_id=environment_id, cwd=cwd)
+        else:
+            argv = _native_argv(dispatcher, provider, session_id, environment_id=environment_id, cwd=cwd)
     except ContinuityError as exc:
         if launch_id:
-            dispatcher.mark_launch_failed(launch_id=launch_id, detail=str(exc), apply=True)
+            pending_now = dispatcher._row(
+                "SELECT failure_detail FROM dispatcher_pending_launches WHERE launch_id = ? AND status = 'pending'",
+                (launch_id,),
+            )
+            if pending_now is not None and not pending_now["failure_detail"]:
+                dispatcher.mark_launch_failed(launch_id=launch_id, detail=str(exc), apply=True)
         raise
     print(f"Launching {slot['name']}: {provider} {session_id or '(new session)'}", file=output_stream)
     try:
@@ -413,7 +591,14 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
                 print(f"{index}. {item['provider']} {item['native_session_id']} [{item['environment_id']}] ({item['provenance']})", file=output_stream)
         if result.get("action") == "pending":
             for launch in result["launches"]:
-                print(f"{launch['launch_id']}\t{launch.get('gui_alias', '')}\t{launch.get('agent_name', '')}\t{launch['provider']}\t{launch['environment_id']}", file=output_stream)
+                captured_id = launch.get("captured_session_id") or "unresolved"
+                print(
+                    f"{launch['launch_id']}\t{launch.get('gui_alias', '')}\t{launch.get('agent_name', '')}\t"
+                    f"{launch['provider']}\t{launch['environment_id']}\t{captured_id}",
+                    file=output_stream,
+                )
+                if launch.get("failure_detail"):
+                    print(f"  Recovery: {launch['failure_detail']}", file=output_stream)
         if result.get("action") == "open":
             print(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default), file=output_stream)
         if not result.get("applied", True) and result.get("events"):

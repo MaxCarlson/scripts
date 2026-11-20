@@ -575,7 +575,7 @@ class SQLiteMaterializer:
             conn.execute(
                 """
                 UPDATE dispatcher_pending_launches
-                SET status = 'resolved', resolved_at = ?, resolved_session_id = ?
+                SET status = 'resolved', resolved_at = ?, resolved_session_id = ?, failure_detail = NULL
                 WHERE launch_id = ? AND status = 'pending'
                 """,
                 (ts, str(p["native_session_id"]), str(p["launch_id"])),
@@ -590,6 +590,21 @@ class SQLiteMaterializer:
                 """,
                 (ts, str(p.get("detail") or "launch failed"), str(p["launch_id"])),
             )
+
+        elif etype == EventType.DISPATCHER_PROCESS_OBSERVED.value:
+            launch_id = p.get("launch_id")
+            outcome = str(p.get("outcome") or "")
+            if launch_id and outcome in {
+                "bootstrap_attempt_started", "bootstrap_id_captured", "bootstrap_capture_failed"
+            }:
+                conn.execute(
+                    """UPDATE dispatcher_pending_launches SET failure_detail = ?
+                       WHERE launch_id = ? AND status = 'pending'""",
+                    (
+                        str(p.get("detail") or "A provider bootstrap was attempted; automatic retry is disabled."),
+                        str(launch_id),
+                    ),
+                )
 
         elif etype == EventType.CHECKPOINT_RECORDED.value:
             conn.execute(
