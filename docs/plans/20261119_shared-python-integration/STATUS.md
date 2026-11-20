@@ -6,9 +6,9 @@ Updated: 2026-11-20 UTC
 
 - Reconciliation worktree: `.worktrees/scripts-mxc-main-reconcile-20261120`
 - Branch: `reconcile/scripts-mxc-main-20261120`
-- Qualification code checkpoint: `306a8bf3be2eece2f9f55693bc03a1e3257c0548`; the source code is unchanged from the fully tested merged tree at `cdef8d9acd108c708ad7170ca5c78cbeec15fb51`.
+- Qualification code checkpoint: `cdef8d9acd108c708ad7170ca5c78cbeec15fb51`; later commits only updated the existing status/checklist documents.
 - Refreshed `origin/main`: `76bf32b70a9e6d1e3e9db914f0f98496b4aca157`; it is an ancestor of the branch with no main-only commits remaining.
-- Hosted qualification at that checkpoint: [Ubuntu run 44701286218](https://github.com/MaxCarlson/scripts/actions/runs/44701286218), successful on `306a8bf3be2eece2f9f55693bc03a1e3257c0548`.
+- Hosted qualifications on the unchanged source tree: [Ubuntu run 44701286218](https://github.com/MaxCarlson/scripts/actions/runs/44701286218) on `306a8bf3be2eece2f9f55693bc03a1e3257c0548`, then [final PR-head run 44702243421](https://github.com/MaxCarlson/scripts/actions/runs/44702243421) on `2bdef7dbe7ab9ef65dc86f3a28942c672bd8a3ff`; both succeeded.
 - Scripts review PR: [#22](https://github.com/MaxCarlson/scripts/pull/22), open, targeting `main`; GitHub reports `MERGEABLE` and the latest workflow check is successful.
 - The original integration branch/worktree and retirement checkpoint `cc3273f0e1571816de4864af17ab2e1d36bde58e` remain unchanged. The primary checkout remains on `main`; its unrelated `diagnostics/` and this worktree's `.tmp_build/` are preserved.
 - No source directories were retired, no package was published, and neither PR was merged.
@@ -29,7 +29,7 @@ This is the latest status-of-record and supersedes earlier pending qualification
 
 **Disposition: READY FOR MERGE REVIEW.** The reconciliation PR is based on current `main`, and the exact merged tree passed hosted Ubuntu full-bootstrap/HTTP/consumer qualification and a fresh disposable Windows full bootstrap plus focused tests. This does not authorize either PR merge or package publication. Merging scripts `main` remains dependent on review and separate approval to merge pscripts PR #1, plus publication of the mxc distributions through the authorized channel. Keep source retirement on a new post-integration branch; do not merge the historical retirement branch.
 
-The final-head workflow completed after these checkpoint updates were pushed. Run `44701286218` again passed the full authenticated Ubuntu bootstrap, import/no-legacy checks, Runmux HTTP and consumer stages, launcher tests, post-bootstrap regressions, and dependency recheck. Its log is retained at `.tmp_build/ubuntu-run-44701286218.log`.
+The final-head workflow completed after these checkpoint updates were pushed. Run `44702243421` again passed the full authenticated Ubuntu bootstrap, import/no-legacy checks, Runmux HTTP and consumer stages, launcher tests, post-bootstrap regressions, and dependency recheck. Its log is retained at `.tmp_build/ubuntu-run-44702243421.log`.
 
 ## Artifact qualification
 
