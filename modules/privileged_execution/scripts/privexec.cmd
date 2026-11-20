@@ -13,14 +13,16 @@ if defined PYTHONPATH (
     set "PYTHONPATH=%PRIVEXEC_ROOT%"
 )
 where python >nul 2>nul
-if %ERRORLEVEL%==0 (
-    python -m privexec.cli %*
-    exit /b %ERRORLEVEL%
-)
+if errorlevel 1 goto try_py
+python -m privexec.cli %*
+exit /b %ERRORLEVEL%
+
+:try_py
 where py >nul 2>nul
-if %ERRORLEVEL%==0 (
-    py -3 -m privexec.cli %*
-    exit /b %ERRORLEVEL%
-)
+if errorlevel 1 goto no_python
+py -3 -m privexec.cli %*
+exit /b %ERRORLEVEL%
+
+:no_python
 echo {"ok":false,"error":"Python 3.11+ was not found on PATH."} 1>&2
 exit /b 1

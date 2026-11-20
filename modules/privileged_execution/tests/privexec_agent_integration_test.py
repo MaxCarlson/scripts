@@ -327,14 +327,12 @@ def test_install_stages_agent_wrappers_and_normal_agent_workflow(tmp_path: Path)
         assert res_json["operation_id"] == run_json["operation_id"]
         assert res_json["result"]["echo"] == "normal-agent-ok"
 
-        # 4. Denied unauthorized capability
+        # 4. Denied unauthorized capability (also verify privexec.cmd propagates non-zero exit code)
         denied_cap = subprocess.run(
             [
-                "pwsh",
-                "-NoProfile",
-                "-NonInteractive",
-                "-File",
-                str(staged_ps1),
+                "cmd",
+                "/c",
+                str(staged_cmd),
                 "run",
                 "synthetic.mutate",
                 "-t",
