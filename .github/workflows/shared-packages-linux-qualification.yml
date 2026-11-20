@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feat/scripts-shared-packages-20261119
+      - reconcile/scripts-mxc-main-20261120
   workflow_dispatch:
 
 permissions:
@@ -285,7 +286,7 @@ jobs:
           GIT_SSH_COMMAND="ssh -F $ssh_dir/config -o BatchMode=yes" \
             git submodule update --init --recursive pscripts
           test -f pscripts/setup.py
-          test "$(git -C pscripts rev-parse HEAD)" = "70ba27dd9259eea44d3710691fb276573c26789a"
+          test "$(git -C pscripts rev-parse HEAD)" = "1640d1b80e60116aab74c9e89be67a83090a3727"
           test "$(git -C pscripts/modules/aebn-vod-downloader-custom rev-parse HEAD)" = "af6bb8b1db14c8434c0a9da446ec49bbf067ab9b"
           echo "Pinned pscripts and nested Gitlink revisions verified; temporary SSH credentials will be removed."
 
