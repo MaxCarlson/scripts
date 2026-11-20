@@ -92,5 +92,5 @@
 - [ ] Complete post-bootstrap generated launcher and regression checks with mxc distributions; hosted run skipped them after the bootstrap failure above.
 - [ ] Complete a full representative Windows bootstrap with the renamed wheels; the previous clean-copy dry-run was 62 packages, 69 script launchers, and 87 console commands with none missing, while full old-name checkpoint counts were 62/157/88.
 - [ ] Publish the five distributions through the authorized package channel before claiming ordinary public-index installation independence.
-- [ ] Reconcile with current scripts `main` (`2edd3633`): current branch is 24 commits ahead / 26 behind from merge base `f57b2265`; path sets do not overlap, but no merge/rebase was performed under this task's boundary.
+- [ ] Reconcile with current scripts `main` (`2edd3633`). At the last snapshot before this documentation update, integration was `76972eb9`, merge base was `f57b2265`, and each side had 26 unique commits; changed-path sets did not overlap. Recalculate after subsequent commits; no merge/rebase was performed under this task's boundary.
 - [ ] Integration readiness: BLOCKED pending full bootstrap after the pinned `pscripts` dependency update, a full clean Windows bootstrap with mxc wheels, package publication, and reconciliation with current `main`. Keep the old retirement branch and source holds unchanged.
