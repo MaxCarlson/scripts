@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 from typing import Literal
 
-
 Layout = Literal["auto", "single", "two-column", "three-left", "grid"]
 LAYOUT_PANE_COUNTS: dict[str, int] = {
     "single": 1,
@@ -43,7 +42,7 @@ class PaneSpec:
             _require_text(arg, "argv item", allow_empty=True)
         object.__setattr__(self, "argv", argv)
         if self.cwd is not None:
-            _require_text(self.cwd, "cwd", allow_empty=True)
+            _require_text(self.cwd, "cwd")
 
 
 @dataclass(frozen=True, slots=True)

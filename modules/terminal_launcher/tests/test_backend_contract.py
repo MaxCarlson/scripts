@@ -1,8 +1,14 @@
 from dataclasses import FrozenInstanceError
 
 import pytest
-
-from terminal_launcher.backend import LaunchPreview, LaunchResult, LaunchStatus, PlannedOperation, ProcessState, TerminalBackend
+from terminal_launcher.backend import (
+    LaunchPreview,
+    LaunchResult,
+    LaunchStatus,
+    PlannedOperation,
+    ProcessState,
+    TerminalBackend,
+)
 from terminal_launcher.models import PaneSpec, TabSpec, TerminalLaunchPlan
 
 

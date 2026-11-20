@@ -1,5 +1,4 @@
 import pytest
-
 from terminal_launcher.models import PaneSpec, TabSpec, TerminalLaunchPlan
 
 
@@ -16,6 +15,8 @@ def test_pane_spec_rejects_empty_or_invalid_executable_arguments():
         PaneSpec("empty", ())
     with pytest.raises(ValueError, match="executable"):
         PaneSpec("empty executable", ("", "arg"))
+    with pytest.raises(ValueError, match="cwd"):
+        PaneSpec("empty cwd", ("worker",), "")
 
 
 def test_tab_spec_rejects_invalid_pane_counts_and_layouts():

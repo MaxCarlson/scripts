@@ -10,6 +10,7 @@ from .models import TerminalLaunchPlan
 class LaunchStatus(str, Enum):
     SUBMITTED = "submitted"
     FAILED = "failed"
+    NOOP = "no_op"
 
 
 class ProcessState(str, Enum):

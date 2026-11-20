@@ -8,7 +8,8 @@ Implement a terminal-independent immutable plan/layout API and a Windows Termina
 
 - Keep the package dependency-free and module-root importable, following adjacent flat package conventions.
 - Represent layouts as `auto`, `single`, `two-column`, `three-left`, and `grid`; use deterministic Windows Terminal command sequences for the documented 1–4 pane layouts.
-- Build `wt.exe` calls as argument vectors with explicit Windows Terminal command separators; never use a shell.
+- Build `wt.exe` calls as argument vectors with explicit Windows Terminal command separators; use a package-local Python relay and URL-safe payload to preserve original child argv/cwd across WT's command grammar; never use a shell.
+- Reject semicolons in tab titles and target-window names because WT's own delimiter handling cannot safely preserve these metadata values.
 - Treat a successful `wt.exe` process exit as submission only. Child process state remains unknown.
 - Keep `target_window=None` mapped to Windows Terminal's documented default window selection and report that policy in preview warnings.
 - Do not modify global terminal settings or depend on `agent_continuity`.
