@@ -136,3 +136,21 @@ This section supersedes the preceding pending pscripts/full-bootstrap items. Rem
 **Current status: READY FOR MERGE REVIEW.** The scripts reconciliation branch contains current `origin/main` and is 31 commits ahead / zero behind. Full hosted Ubuntu qualification passed on the launcher-fix commit; the disposable Windows bootstrap and managed-wrapper checks passed; all five mxc wheel hashes match the committed manifest. The pscripts dependency patch remains in open PR #1 and the mxc distributions remain unpublished, so merge into scripts `main` stays gated on those cross-repository release steps. No merge or package publication is authorized in this task.
 
 Historical checkpoint status above is superseded by the final pscripts and full-install qualification section.
+
+## Current-main merged-tree qualification — 2026-11-20
+
+- [x] Fetch current `origin/main` at `76bf32b70a9e6d1e3e9db914f0f98496b4aca157`; verify it is an ancestor of reconciliation commit `cdef8d9acd108c708ad7170ca5c78cbeec15fb51` (34 ahead, zero behind) and preserve the ordinary merge without conflicts.
+- [x] Run focused tests for newly merged packages from their package roots: `agent_continuity` 90 passed; `terminal_launcher` 41 passed; `scripts_setup` 18 passed.
+- [x] Initialize exact Windows disposable-worktree submodules: `pscripts` `1640d1b80e60116aab74c9e89be67a83090a3727` and nested AEBN `af6bb8b1db14c8434c0a9da446ec49bbf067ab9b`.
+- [x] Run full Windows `bootstrap_latest.ps1` at the merged tree using `PIP_FIND_LINKS=.github/qualified-wheelhouse`; exit 0. Post-bootstrap dry-run: 64 packages, 69 script launchers, 95 console commands, zero missing/failures.
+- [x] Verify on Windows: all five mxc distributions/versions and import provenance inside the disposable `.venv`; no legacy distribution identities; `pip check` clean; seven managed `--help` wrappers exit 0.
+- [x] Run Windows package tests at the merged tree: `agent_continuity` 90, `terminal_launcher` 41, `scripts_setup` 18, `download_scanner` 4, and `video_tools` 12 passed.
+- [x] Push reconciliation merge `cdef8d9acd108c708ad7170ca5c78cbeec15fb51`; hosted Ubuntu [run 44697076606](https://github.com/MaxCarlson/scripts/actions/runs/44697076606) passed: full authenticated Bash bootstrap, 64 packages / 69 script launchers / 95 console commands / zero missing, five mxc provenance checks, no legacy shared distributions, clean `pip check`, 12 Runmux HTTP tests, 107 selected consumer tests (1 deselected), 3 launcher tests, and 120 post-bootstrap regression tests.
+- [x] Confirm scripts PR [#22](https://github.com/MaxCarlson/scripts/pull/22) remains open against `main`; GitHub reported `MERGEABLE` and the latest Ubuntu check succeeded. The working PR head at qualification was `cdef8d9acd108c708ad7170ca5c78cbeec15fb51`.
+- [x] Preserve the first Windows attempt and successful retry logs, current wheelhouse, all prior Windows qualification evidence, original integration and retirement branches, raw retirement evidence, and primary-checkout diagnostics.
+- [ ] Obtain separate review/authorization to merge pscripts PR [#1](https://github.com/MaxCarlson/pscripts/pull/1) and verify its resulting main commit. Do not merge it under this assignment.
+- [ ] Publish the five mxc distributions through the authorized package channel before claiming public package-index installation independence.
+- [ ] After the separate cross-repository gates, review and merge scripts PR #22 only with explicit authorization; do not merge it here.
+- [ ] Reconcile source retirement on a fresh branch from the eventual updated `main`; preserve all 16 quarantines and seven ownership/data holds. Do not merge the historical retirement branch wholesale.
+
+**Current disposition: READY FOR MERGE REVIEW.** The current-main reconciled tree is pushed and all Linux and Windows qualification gates for the staging artifacts pass. Remaining items are cross-repository release/merge approvals and later source-retirement reconciliation; they do not block review of scripts PR #22. No merge, package publication, or source retirement was performed.

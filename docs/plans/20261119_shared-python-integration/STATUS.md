@@ -2,18 +2,32 @@
 
 Updated: 2026-11-20 UTC
 
-## Checkpoint
+## Current checkpoint
 
-- Integration worktree: `.worktrees/scripts-shared-package-integration-20261119`
-- Branch: `feat/scripts-shared-packages-20261119`
-- mxc implementation checkpoint: `4940b106803d4f17fcffec17e9d8049412d9c0c9`, pushed to `origin`; it includes the mxc distribution-name migration and updated qualified wheelhouse. The qualification record below is a later documentation-only checkpoint.
-- Latest hosted qualification: mxc run `44682930075` completed on Ubuntu 24.04 / Python 3.12. Independent wheel, import, HTTP, and consumer checks passed; the full bootstrap failed on pinned `pscripts` requirements for the removed legacy `termdash` distribution. Run 13 (`44675121304`) remains the successful old-name full-bootstrap baseline.
-- Base: `f57b22652dfc8cd67823a2a0d1d2792b3f09a320`
-- Local checkpoint before this qualification: `f808c24e` (`docs(scripts): record shared package qualification`).
-- Final qualification workflow and wheelhouse checkpoint: `e71ec54b` (`ci(scripts): add shared package Linux qualification`).
-- All implementation changes are scoped to the scripts integration branch.
-- Primary `scripts/main` is unchanged. Retirement branch `audit/post-p6-source-retirement-20261119` remains at the supplied `cc3273f0` checkpoint; its quarantines, manifests, five raw JSON evidence files, and seven holds were not modified.
-- The primary checkout still has its unrelated untracked `diagnostics/`; integration `.tmp_build/` remains untracked and preserved. No source directories were removed, no quarantine was changed, and nothing was merged.
+- Reconciliation worktree: `.worktrees/scripts-mxc-main-reconcile-20261120`
+- Branch: `reconcile/scripts-mxc-main-20261120`
+- Current reconciliation commit: `cdef8d9acd108c708ad7170ca5c78cbeec15fb51`; pushed to `origin`.
+- Refreshed `origin/main`: `76bf32b70a9e6d1e3e9db914f0f98496b4aca157`; it is an ancestor of the branch. The branch is 34 commits ahead and zero behind.
+- Latest hosted qualification: [Ubuntu run 44697076606](https://github.com/MaxCarlson/scripts/actions/runs/44697076606), successful on this branch commit.
+- Scripts review PR: [#22](https://github.com/MaxCarlson/scripts/pull/22), open, targeting `main`; GitHub reports `MERGEABLE` and the latest workflow check is successful.
+- The original integration branch/worktree and retirement checkpoint `cc3273f0e1571816de4864af17ab2e1d36bde58e` remain unchanged. The primary checkout remains on `main`; its unrelated `diagnostics/` and this worktree's `.tmp_build/` are preserved.
+- No source directories were retired, no package was published, and neither PR was merged.
+
+## Current-main qualification — 2026-11-20
+
+This is the latest status-of-record and supersedes earlier pending qualification statements below.
+
+- Refetched `origin/main` at `76bf32b70a9e6d1e3e9db914f0f98496b4aca157`; it remains an ancestor of reconciliation HEAD `cdef8d9acd108c708ad7170ca5c78cbeec15fb51`. The reconciliation branch is 34 commits ahead and zero behind. The main update added current `agent_continuity`, `terminal_launcher`, and related Scripts Help changes; no merge conflicts occurred.
+- Reconciliation PR [#22](https://github.com/MaxCarlson/scripts/pull/22) is open against `main`. GitHub reported `MERGEABLE` with the Ubuntu check successful at the qualified code commit `cdef8d9acd108c708ad7170ca5c78cbeec15fb51`.
+- Hosted Ubuntu run [44697076606](https://github.com/MaxCarlson/scripts/actions/runs/44697076606) passed on that commit in 4m18s. It authenticated and checked out the exact private submodule pins (`pscripts` `1640d1b80e60116aab74c9e89be67a83090a3727`; nested AEBN `af6bb8b1db14c8434c0a9da446ec49bbf067ab9b`), completed the full Bash bootstrap, and then verified 64 application packages, 69 scripts launchers, and 95 console commands with zero missing items or failures. The five approved mxc versions/import paths resolved inside scripts `.venv`, no legacy shared distributions were installed, and all `pip check` runs were clean.
+- The same hosted run passed the 12 Runmux synthetic HTTP tests, 107 pre-bootstrap consumer tests (one intentionally deselected by the existing selection), 3 isolated launcher tests, and 120 post-bootstrap setup/consumer/Runmux tests. Full logs are preserved locally at `.tmp_build/ubuntu-run-44697076606.log`; the workflow emitted only the existing Node 20 deprecation annotation.
+- A fresh disposable Windows worktree at exact merged commit `cdef8d9acd108c708ad7170ca5c78cbeec15fb51` initialized the same pinned private submodules and completed `bootstrap_latest.ps1` with exit 0 using `PIP_FIND_LINKS` pointed at the qualified wheelhouse. Its post-bootstrap dry-run found 64 packages, 69 scripts launchers, and 95 console commands, with zero missing items or failures. All five mxc imports resolved from that worktree's `.venv`, legacy identities were absent, and `pip check` was clean. Seven managed wrappers (`download-scanner`, `video-tools`, `llmd`, `agents`, `termdash`, `runmux`, `scripts-help`) returned 0 for `--help`.
+- Focused tests on that exact Windows worktree passed: `agent_continuity` 90, `terminal_launcher` 41, `scripts_setup` 18, `pscripts/modules/download_scanner` 4, and `pscripts/modules/video_tools` 12. The two setup.py dependency declarations select `mxc-termdash==0.10.0`; no legacy `termdash` is required.
+- The first Windows attempt is retained as `.tmp_build/bootstrap-main-merge.log`; it failed before package installation because this standalone invocation omitted the workflow's `PIP_FIND_LINKS` staging variable. The corrected attempt and complete output are in `.tmp_build/bootstrap-main-merge-retry.log`; this was an environment invocation correction, not a source change.
+- The five wheel hashes continue to match the committed checksum manifest. The pscripts dependency patch remains isolated in open [pscripts PR #1](https://github.com/MaxCarlson/pscripts/pull/1) at `1640d1b80e60116aab74c9e89be67a83090a3727`. The five mxc distributions remain unpublished.
+- Windows qualification files, package artifacts, and logs remain in the new disposable worktree `.worktrees/win-mxc-main-bootstrap-20261120`; the earlier Windows worktree and its `.tmp_build/` remain untouched. The original integration worktree, retirement branch/evidence, primary diagnostics, and all ownership holds are preserved.
+
+**Disposition: READY FOR MERGE REVIEW.** The reconciliation PR is based on current `main`, and the exact merged tree passed hosted Ubuntu full-bootstrap/HTTP/consumer qualification and a fresh disposable Windows full bootstrap plus focused tests. This does not authorize either PR merge or package publication. Merging scripts `main` remains dependent on review and separate approval to merge pscripts PR #1, plus publication of the mxc distributions through the authorized channel. Keep source retirement on a new post-integration branch; do not merge the historical retirement branch.
 
 ## Artifact qualification
 
