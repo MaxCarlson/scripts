@@ -183,8 +183,8 @@ jobs:
           chmod 700 "$ssh_dir"
           trap 'rm -rf "$ssh_dir"; rm -f "$git_config" "$meta_file"' EXIT
 
-          printf '%s' "$PSCRIPTS_DEPLOY_KEY" > "$ssh_dir/pscripts_ed25519"
-          printf '%s' "$AEBN_DEPLOY_KEY" > "$ssh_dir/aebn_ed25519"
+          printf '%s' "$PSCRIPTS_DEPLOY_KEY" | base64 --decode > "$ssh_dir/pscripts_ed25519"
+          printf '%s' "$AEBN_DEPLOY_KEY" | base64 --decode > "$ssh_dir/aebn_ed25519"
           chmod 600 "$ssh_dir/pscripts_ed25519" "$ssh_dir/aebn_ed25519"
           ssh-keygen -y -P '' -f "$ssh_dir/pscripts_ed25519" > /dev/null
           ssh-keygen -y -P '' -f "$ssh_dir/aebn_ed25519" > /dev/null
