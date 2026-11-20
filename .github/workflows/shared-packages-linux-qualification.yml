@@ -318,6 +318,10 @@ jobs:
                   lowered = direct_url.lower()
                   assert "shared-python-modules" not in lowered and "llm-agent-toolkit" not in lowered, direct_url
               print(f"{distribution}=={version} -> {origin}")
+          launcher = importlib.import_module("script_logging.launcher")
+          launcher_origin = Path(launcher.__file__).resolve()
+          assert any(launcher_origin.is_relative_to(site) for site in site_dirs), launcher_origin
+          print(f"script_logging.launcher -> {launcher_origin}")
           assert not any("shared-python-modules" in path.lower() or "llm-agent-toolkit" in path.lower() for path in sys.path)
 
           inventory = subprocess.run(
@@ -350,6 +354,14 @@ jobs:
           ./bin/termdash --help
           ./bin/runmux --help
 
+      - name: Run scripts-owned launcher tests in an isolated collector process
+        if: steps.pscripts.outcome == 'success'
+        run: |
+          timeout --signal=TERM --kill-after=15s 5m .venv/bin/python -I -m pytest -q \
+            --timeout=60 \
+            --basetemp="$RUNNER_TEMP/scripts-launcher-pytest-tmp" \
+            scripts_setup/tests/launcher_test.py
+
       - name: Run selected scripts consumer regressions
         if: steps.pscripts.outcome == 'success'
         run: |
@@ -357,7 +369,6 @@ jobs:
             --timeout=60 \
             --basetemp="$RUNNER_TEMP/scripts-pytest-tmp" \
             scripts_setup/tests/shared_packages_test.py \
-            scripts_setup/tests/launcher_test.py \
             scripts_setup/tests/transferred_modules_test.py \
             modules/setup_utils/tests \
             modules/backup_module/tests/test_backup_module.py \
