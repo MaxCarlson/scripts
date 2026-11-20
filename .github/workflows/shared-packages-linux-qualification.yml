@@ -186,6 +186,8 @@ jobs:
           printf '%s' "$PSCRIPTS_DEPLOY_KEY" > "$ssh_dir/pscripts_ed25519"
           printf '%s' "$AEBN_DEPLOY_KEY" > "$ssh_dir/aebn_ed25519"
           chmod 600 "$ssh_dir/pscripts_ed25519" "$ssh_dir/aebn_ed25519"
+          ssh-keygen -y -P '' -f "$ssh_dir/pscripts_ed25519" > /dev/null
+          ssh-keygen -y -P '' -f "$ssh_dir/aebn_ed25519" > /dev/null
 
           curl --fail --silent --show-error --location https://api.github.com/meta --output "$meta_file"
           python - "$meta_file" "$ssh_dir/known_hosts" <<'PY'
@@ -254,6 +256,17 @@ jobs:
           git config --file "$git_config" --add \
             'url.git@github-aebn:MaxCarlson/aebn-vod-downloader-custom.insteadOf' \
             'https://github.com/MaxCarlson/aebn-vod-downloader-custom'
+
+          for host in github-pscripts github-aebn; do
+            probe_log="$ssh_dir/$host-probe.log"
+            ssh -F "$ssh_dir/config" -o BatchMode=yes -T "$host" > "$probe_log" 2>&1 || true
+            if ! grep -Fq 'successfully authenticated' "$probe_log"; then
+              echo "::error::SSH authentication probe failed for $host."
+              grep -E 'Permission denied|Load key|No more authentication methods|Bad permissions|invalid format' "$probe_log" || true
+              exit 1
+            fi
+            echo "Read-only SSH authentication verified for $host."
+          done
 
           GIT_CONFIG_GLOBAL="$git_config" \
           GIT_SSH_COMMAND="ssh -F $ssh_dir/config -o BatchMode=yes" \
