@@ -6,11 +6,11 @@ Integrate the verified dispatcher commit into a fresh branch based on current `m
 
 ## Ordered work
 
-1. Preserve and inspect current refs/worktrees; merge verified integration commit `4cddb9a60c92e59a61740eee6f4fee416df06cc9` into the new branch based on `2edd36334d7d34074e03830b8896e8c9c8377da5`.
+1. Preserve and inspect current refs/worktrees; merge verified integration commit `4cddb9a60c92e59a61740eee6f4fee416df06cc9` into the new branch based on `2edd36334d7d34074e03830b8896e8c9c8377da5`, then incorporate the newly advanced `main` commit `719e2e70a7fb9c3b3b530fe09b013ef3a6e3f0df`.
 2. Confirm help registry registrations from both sides, required dependency ordering, and candidate differences from the earlier integration.
 3. Add regression coverage for dependency and version metadata; update package metadata, implementation version, installation docs, and smoke-test instructions.
 4. Run requested suites, static checks, CLI/import/discovery checks, wheel and disposable-environment install checks, and pseudo-TTY no-argument selector check. Do not launch Windows Terminal or providers.
-5. Review task-only diff and worktree statuses; create one merge commit on the release-candidate branch.
+5. Review task-only diff and worktree statuses; create the final merge checkpoint on the release-candidate branch with current `main` in its ancestry.
 
 ## Constraints and decisions
 

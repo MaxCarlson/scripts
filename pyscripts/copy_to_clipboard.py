@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 import sys
 import os
@@ -155,6 +155,11 @@ def copy_files_to_clipboard(
     except ValueError as buffer_err:
         console_info.print(f"[bold red][ERROR] {buffer_err}[/]")
         return 1
+
+    if not literal_text and not from_stdin and len(file_paths_str) == 1:
+        if not (raw_copy or wrap or whole_wrap or show_full_path or override_append_wrapping):
+            if not Path(file_paths_str[0]).exists():
+                literal_text = True
 
     if literal_text or from_stdin:
         payload = sys.stdin.read() if from_stdin else " ".join(file_paths_str)
