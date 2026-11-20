@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cli_tui"
-version = "0.2.1"
+version = "0.3.0"
 description = "Reusable argparse-to-termdash TUI engine with real-time streaming process runner and side-by-side image viewer."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Scripts Project Authors" }]
 
 dependencies = [
-  "termdash>=0.8.0",
+  "mxc-termdash>=0.10.0,<0.11",
   "pillow>=10.0",
 ]
 

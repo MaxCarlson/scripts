@@ -22,7 +22,7 @@ except ImportError:  # pragma: no cover - supported by the shell bootstraps
 
 
 ROOT = Path(__file__).resolve().parent
-CORE = ("standard_ui", "cross_platform", "python_setup")
+CORE = ("standard_ui", "python_setup")
 
 
 def normalized(name: str) -> str:
@@ -54,9 +54,12 @@ def package_sources(root: Path) -> tuple[list[tuple[str, Path]], list[Path]]:
             is_transferred_distribution,
             is_transferred_module_dir,
         )
+        from scripts_setup.shared_packages import is_shared_distribution, is_shared_module_dir
     except ImportError:
         is_transferred_module_dir = lambda _p: False  # noqa: E731
         is_transferred_distribution = lambda _d: False  # noqa: E731
+        is_shared_module_dir = lambda _p: False  # noqa: E731
+        is_shared_distribution = lambda _d: False  # noqa: E731
 
     module_dir = root / "modules"
     candidates = [module_dir / name for name in CORE] + [root / "scripts_setup"]
@@ -72,12 +75,19 @@ def package_sources(root: Path) -> tuple[list[tuple[str, Path]], list[Path]]:
             order = sorted(path.name for path in module_dir.iterdir() if path.is_dir() and not path.name.startswith("."))
         finally:
             sys.path.remove(str(resolver_path))
-        candidates.extend(module_dir / name for name in order if name not in CORE and not is_transferred_module_dir(name))
+        candidates.extend(
+            module_dir / name for name in order
+            if name not in CORE and not is_transferred_module_dir(name) and not is_shared_module_dir(name)
+        )
     elif module_dir.is_dir():
         candidates.extend(
             sorted(
                 path for path in module_dir.iterdir()
-                if path.is_dir() and path.name not in CORE and not path.name.startswith(".") and not is_transferred_module_dir(path)
+                if path.is_dir()
+                and path.name not in CORE
+                and not path.name.startswith(".")
+                and not is_transferred_module_dir(path)
+                and not is_shared_module_dir(path)
             )
         )
     pscripts_modules = root / "pscripts" / "modules"
@@ -88,7 +98,7 @@ def package_sources(root: Path) -> tuple[list[tuple[str, Path]], list[Path]]:
     sources: list[tuple[str, Path]] = []
     unknown: list[Path] = []
     for path in candidates:
-        if path.parent == module_dir and is_transferred_module_dir(path):
+        if path.parent == module_dir and (is_transferred_module_dir(path) or is_shared_module_dir(path)):
             continue
         if not ((path / "pyproject.toml").is_file() or (path / "setup.py").is_file()):
             continue
@@ -101,7 +111,7 @@ def package_sources(root: Path) -> tuple[list[tuple[str, Path]], list[Path]]:
         if not name:
             unknown.append(path)
             continue
-        if path.parent == module_dir and is_transferred_distribution(name):
+        if path.parent == module_dir and (is_transferred_distribution(name) or is_shared_distribution(name)):
             continue
         key = normalized(name)
         if key not in seen:
@@ -267,6 +277,18 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
     if not ensure_pscripts(root, dry_run):
         print("[ERROR] pscripts submodule is missing and could not be initialized", file=sys.stderr)
         return 1
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from scripts_setup.shared_packages import (
+            SHARED_DISTRIBUTION_REQUIREMENTS,
+            ensure_shared_distributions,
+        )
+    except ImportError as exc:
+        print(f"[ERROR] Shared-package installer is unavailable: {exc}", file=sys.stderr)
+        return 1
+    if not ensure_shared_distributions(dry_run=dry_run, verbose=verbose):
+        return 1
     sources, unknown = package_sources(root)
     present = installed_names()
     missing = [(name, path) for name, path in sources if normalized(name) not in present]
@@ -351,7 +373,8 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
     except ImportError:
         classify_vm_launcher = None  # type: ignore[assignment]
 
-    for name, owner in console_scripts([name for name, _ in sources]):
+    shared_names = list(SHARED_DISTRIBUTION_REQUIREMENTS)
+    for name, owner in console_scripts([name for name, _ in sources] + shared_names):
         console_count += 1
         owner_key = normalized(owner)
         owner_path = local_sources.get(owner_key)

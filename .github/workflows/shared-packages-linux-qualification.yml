@@ -1,0 +1,417 @@
+name: Shared Packages Linux Qualification
+
+on:
+  push:
+    branches:
+      - feat/scripts-shared-packages-20261119
+      - reconcile/scripts-mxc-main-20261120
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shared-packages-linux-qualification-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Ubuntu 24.04 / Python 3.12
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONNOUSERSITE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_INPUT: "1"
+
+    steps:
+      - name: Check out scripts at the dispatched ref
+        uses: actions/checkout@v4
+        with:
+          # Keep the scripts checkout on its repository-scoped GITHUB_TOKEN.
+          submodules: false
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+
+      - name: Verify committed qualified wheel artifacts and metadata
+        run: |
+          cd .github/qualified-wheelhouse
+          sha256sum --check SHA256SUMS.txt
+          python -I - "$GITHUB_WORKSPACE/.github/qualified-wheelhouse" <<'PY'
+          import hashlib
+          import sys
+          from email.parser import BytesParser
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheelhouse = Path(sys.argv[1])
+          expected = {
+              "mxc_resource_metrics-0.3.0-py3-none-any.whl": ("mxc-resource-metrics", "0.3.0", "1512d9e9ab1a1d603c2dc244d1459baff1abcc738d82c4ee2a5fac835a04189a"),
+              "mxc_script_logging-0.1.1-py3-none-any.whl": ("mxc-script-logging", "0.1.1", "7554f367067123e2369b12996af2593adb4437a79667b53528d2e7bdd90b7f45"),
+              "mxc_web_ui_tools-0.2.0-py3-none-any.whl": ("mxc-web-ui-tools", "0.2.0", "0171dfa984eb9d521bb340a0d0241056fdea8be685fe0c3a26bc7cc2c7f54341"),
+              "mxc_termdash-0.10.0-py3-none-any.whl": ("mxc-termdash", "0.10.0", "34c69cd508753001cda19882c99aea17fcac558679c4274e6d68874065081c9b"),
+              "mxc_platform_utils-0.9.0-py3-none-any.whl": ("mxc-platform-utils", "0.9.0", "8d64a0553776065a12d1fd3342199e9f68d13bb6a18e834a4c39b6d6c41df7dc"),
+          }
+          actual_wheels = {path.name for path in wheelhouse.glob("*.whl")}
+          if actual_wheels != set(expected):
+              raise SystemExit(f"wheel set mismatch: expected {sorted(expected)}, got {sorted(actual_wheels)}")
+          for filename, (expected_name, expected_version, expected_hash) in expected.items():
+              path = wheelhouse / filename
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if digest != expected_hash:
+                  raise SystemExit(f"{filename}: expected SHA-256 {expected_hash}, got {digest}")
+              with ZipFile(path) as archive:
+                  metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+                  metadata = BytesParser().parsebytes(archive.read(metadata_name))
+              if metadata["Name"] != expected_name or metadata["Version"] != expected_version:
+                  raise SystemExit(f"{filename}: unexpected metadata Name/Version {metadata['Name']}/{metadata['Version']}")
+              print(f"{expected_name}=={expected_version} sha256={digest}")
+          PY
+
+      - name: Install qualified wheels and Runmux web extra in an isolated environment
+        run: |
+          python -m venv .ci-venv
+          .ci-venv/bin/python -m pip install \
+            --find-links="$GITHUB_WORKSPACE/.github/qualified-wheelhouse" \
+            .github/qualified-wheelhouse/*.whl \
+            'modules/runmux[web]' \
+            "pytest==8.3.5" "pytest-timeout==2.4.0" "httpx==0.28.1"
+
+      - name: Verify standalone wheel imports, CLI and dependencies
+        run: |
+          .ci-venv/bin/python -I -m pip check
+          .ci-venv/bin/python -I - <<'PY'
+          import importlib
+          import importlib.metadata as metadata
+          import sys
+          from pathlib import Path
+
+          expected = {
+              "mxc-resource-metrics": ("resource_metrics", "0.3.0"),
+              "mxc-script-logging": ("script_logging", "0.1.1"),
+              "mxc-web-ui-tools": ("web_ui_tools", "0.2.0"),
+              "mxc-termdash": ("termdash", "0.10.0"),
+              "mxc-platform-utils": ("cross_platform", "0.9.0"),
+          }
+          site_dirs = [Path(path).resolve() for path in sys.path if path.endswith("site-packages")]
+          assert site_dirs, f"no site-packages entries in isolated sys.path: {sys.path}"
+          for distribution, (module_name, version) in expected.items():
+              dist = metadata.distribution(distribution)
+              module = importlib.import_module(module_name)
+              origin = Path(module.__file__).resolve()
+              assert dist.version == version, (distribution, dist.version)
+              assert any(origin.is_relative_to(site) for site in site_dirs), (module_name, origin)
+              print(f"{distribution}=={version} -> {origin}")
+          legacy = ("resource-metrics", "script-logging", "web-ui-tools", "termdash", "cross-platform")
+          for distribution in legacy:
+              try:
+                  metadata.distribution(distribution)
+              except metadata.PackageNotFoundError:
+                  continue
+              raise SystemExit(f"legacy distribution must not coexist in the qualification environment: {distribution}")
+          print("Verified no legacy shared distributions are installed.")
+          PY
+          .ci-venv/bin/termdash --help
+          .ci-venv/bin/runmux --help
+
+      - name: Run Runmux synthetic-state HTTP tests without pscripts
+        run: |
+          timeout --signal=TERM --kill-after=15s 10m .ci-venv/bin/python -I -m pytest -q \
+            --timeout=60 \
+            --basetemp="$RUNNER_TEMP/runmux-http-pytest-tmp" \
+            modules/runmux/tests/telemetry_history_api_test.py \
+            modules/runmux/tests/historical_runs_api_test.py
+
+      - name: Install selected scripts consumers without pscripts
+        run: |
+          .ci-venv/bin/python -m pip install \
+            --find-links="$GITHUB_WORKSPACE/.github/qualified-wheelhouse" \
+            --editable modules/backup_module \
+            --editable modules/compresser \
+            --editable modules/rrbackup \
+            --editable modules/sysmon \
+            --editable modules/system_manager \
+            --editable modules/standard_ui \
+            --editable modules/scheduler
+          .ci-venv/bin/python -I -m pip check
+
+      - name: Run selected scripts consumer regressions without pscripts
+        run: |
+          timeout --signal=TERM --kill-after=15s 25m .ci-venv/bin/python -I -m pytest -q \
+            --timeout=60 \
+            --basetemp="$RUNNER_TEMP/scripts-consumer-pytest-tmp" \
+            -k 'not test_pscripts_duplicate_aebndl_skips_when_canonical_module_exists' \
+            scripts_setup/tests/shared_packages_test.py \
+            scripts_setup/tests/transferred_modules_test.py \
+            modules/setup_utils/tests \
+            modules/backup_module/tests/test_backup_module.py \
+            modules/compresser/tests/measurement_test.py \
+            modules/compresser/tests/ui_test.py \
+            modules/rrbackup/tests/viewer_test.py \
+            modules/rrbackup/tests/viewer_dashboard_test.py \
+            modules/rrbackup/tests/schedule_math_test.py \
+            modules/sysmon/tests/test_sampler.py \
+            modules/system_manager/tests/process_watch_sampler_test.py \
+            modules/scheduler/tests/test_logger.py \
+            modules/scheduler/tests/test_history.py
+
+      - name: Check whether scoped private-repository deploy keys are configured
+        id: pscripts-ssh
+        env:
+          PSCRIPTS_DEPLOY_KEY: ${{ secrets.PSCRIPTS_DEPLOY_KEY }}
+          AEBN_DEPLOY_KEY: ${{ secrets.AEBN_DEPLOY_KEY }}
+        run: |
+          if [[ -n "$PSCRIPTS_DEPLOY_KEY" && -n "$AEBN_DEPLOY_KEY" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Both read-only deploy-key secrets are required; full bootstrap will remain blocked."
+          fi
+
+      - name: Check out pinned private submodules using repository-scoped SSH identities
+        id: pscripts
+        if: steps.pscripts-ssh.outputs.available == 'true'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PSCRIPTS_DEPLOY_KEY: ${{ secrets.PSCRIPTS_DEPLOY_KEY }}
+          AEBN_DEPLOY_KEY: ${{ secrets.AEBN_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          ssh_dir="$RUNNER_TEMP/private-submodule-ssh"
+          git_config="$RUNNER_TEMP/private-submodules.gitconfig"
+          meta_file="$RUNNER_TEMP/github-meta.json"
+          mkdir -m 700 -p "$ssh_dir"
+          chmod 700 "$ssh_dir"
+          trap 'rm -rf "$ssh_dir"; rm -f "$git_config" "$meta_file"' EXIT
+
+          printf '%s' "$PSCRIPTS_DEPLOY_KEY" | base64 --decode > "$ssh_dir/pscripts_ed25519"
+          printf '%s' "$AEBN_DEPLOY_KEY" | base64 --decode > "$ssh_dir/aebn_ed25519"
+          chmod 600 "$ssh_dir/pscripts_ed25519" "$ssh_dir/aebn_ed25519"
+          ssh-keygen -y -P '' -f "$ssh_dir/pscripts_ed25519" > /dev/null
+          ssh-keygen -y -P '' -f "$ssh_dir/aebn_ed25519" > /dev/null
+
+          curl --fail --silent --show-error --location \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/meta --output "$meta_file"
+          python - "$meta_file" "$ssh_dir/known_hosts" <<'PY'
+          import json
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          meta = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          known_hosts = Path(sys.argv[2])
+          algorithm_names = {
+              "ssh-ed25519": "SHA256_ED25519",
+              "ecdsa-sha2-nistp256": "SHA256_ECDSA",
+              "ssh-rsa": "SHA256_RSA",
+          }
+          entries = []
+          expected = set()
+          for key in meta.get("ssh_keys", []):
+              parts = key.split()
+              if len(parts) < 2 or parts[0] not in algorithm_names:
+                  continue
+              fingerprint_name = algorithm_names[parts[0]]
+              entries.append(f"github.com {parts[0]} {parts[1]}")
+              expected.add(meta["ssh_key_fingerprints"][fingerprint_name])
+          if len(expected) != 3:
+              raise SystemExit("GitHub SSH host-key metadata is incomplete")
+          known_hosts.write_text("\n".join(entries) + "\n", encoding="ascii")
+          actual_output = subprocess.run(
+              ["ssh-keygen", "-lf", str(known_hosts), "-E", "sha256"],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout
+          actual = set(re.findall(r"SHA256:([^\s]+)", actual_output))
+          if actual != expected:
+              raise SystemExit("GitHub SSH host keys did not match the HTTPS metadata fingerprints")
+          PY
+
+          cat > "$ssh_dir/config" <<EOF
+          Host github-pscripts
+            HostName github.com
+            User git
+            IdentityFile $ssh_dir/pscripts_ed25519
+            IdentitiesOnly yes
+            PreferredAuthentications publickey
+            BatchMode yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile $ssh_dir/known_hosts
+          Host github-aebn
+            HostName github.com
+            User git
+            IdentityFile $ssh_dir/aebn_ed25519
+            IdentitiesOnly yes
+            PreferredAuthentications publickey
+            BatchMode yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile $ssh_dir/known_hosts
+          EOF
+          chmod 600 "$ssh_dir/config" "$ssh_dir/known_hosts"
+
+          : > "$git_config"
+          git config --file "$git_config" --add \
+            'url.git@github-pscripts:MaxCarlson/pscripts.insteadOf' \
+            'https://github.com/MaxCarlson/pscripts'
+          git config --file "$git_config" --add \
+            'url.git@github-aebn:MaxCarlson/aebn-vod-downloader-custom.insteadOf' \
+            'https://github.com/MaxCarlson/aebn-vod-downloader-custom'
+
+          for host in github-pscripts github-aebn; do
+            probe_log="$ssh_dir/$host-probe.log"
+            ssh -F "$ssh_dir/config" -o BatchMode=yes -T "$host" > "$probe_log" 2>&1 || true
+            if ! grep -Fq 'successfully authenticated' "$probe_log"; then
+              echo "::error::SSH authentication probe failed for $host."
+              grep -E 'Permission denied|Load key|No more authentication methods|Bad permissions|invalid format' "$probe_log" || true
+              exit 1
+            fi
+            echo "Read-only SSH authentication verified for $host."
+          done
+
+          GIT_CONFIG_GLOBAL="$git_config" \
+          GIT_SSH_COMMAND="ssh -F $ssh_dir/config -o BatchMode=yes" \
+            git submodule update --init --recursive pscripts
+          test -f pscripts/setup.py
+          test "$(git -C pscripts rev-parse HEAD)" = "1640d1b80e60116aab74c9e89be67a83090a3727"
+          test "$(git -C pscripts/modules/aebn-vod-downloader-custom rev-parse HEAD)" = "af6bb8b1db14c8434c0a9da446ec49bbf067ab9b"
+          echo "Pinned pscripts and nested Gitlink revisions verified; temporary SSH credentials will be removed."
+
+      - name: Run the Bash latest bootstrap in a clean scripts environment
+        if: steps.pscripts.outcome == 'success'
+        run: |
+          export PIP_FIND_LINKS="$GITHUB_WORKSPACE/.github/qualified-wheelhouse"
+          timeout --signal=TERM --kill-after=15s 50m ./bootstrap_latest.sh
+
+      - name: Install test-only HTTP and pytest tools
+        if: steps.pscripts.outcome == 'success'
+        run: .venv/bin/python -I -m pip install "pytest==8.3.5" "pytest-timeout==2.4.0" "httpx==0.28.1"
+
+      - name: Check installation, provenance, and generated launchers
+        if: steps.pscripts.outcome == 'success'
+        run: |
+          .venv/bin/python -I -m pip check
+          .venv/bin/python -I - <<'PY'
+          import importlib
+          import importlib.metadata as metadata
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          expected = {
+              "mxc-resource-metrics": ("resource_metrics", "0.3.0"),
+              "mxc-script-logging": ("script_logging", "0.1.1"),
+              "mxc-web-ui-tools": ("web_ui_tools", "0.2.0"),
+              "mxc-termdash": ("termdash", "0.10.0"),
+              "mxc-platform-utils": ("cross_platform", "0.9.0"),
+          }
+          site_dirs = [Path(path).resolve() for path in sys.path if path.endswith("site-packages")]
+          assert site_dirs, f"no site-packages entries in isolated sys.path: {sys.path}"
+          for distribution, (module_name, version) in expected.items():
+              dist = metadata.distribution(distribution)
+              module = importlib.import_module(module_name)
+              origin = Path(module.__file__).resolve()
+              assert dist.version == version, (distribution, dist.version)
+              assert any(origin.is_relative_to(site) for site in site_dirs), (module_name, origin)
+              direct_url = dist.read_text("direct_url.json")
+              if direct_url:
+                  lowered = direct_url.lower()
+                  assert "shared-python-modules" not in lowered and "llm-agent-toolkit" not in lowered, direct_url
+              print(f"{distribution}=={version} -> {origin}")
+          legacy = ("resource-metrics", "script-logging", "web-ui-tools", "termdash", "cross-platform")
+          for distribution in legacy:
+              try:
+                  metadata.distribution(distribution)
+              except metadata.PackageNotFoundError:
+                  continue
+              raise SystemExit(f"legacy distribution must not coexist after bootstrap: {distribution}")
+          print("Verified no legacy shared distributions are installed after bootstrap.")
+          launcher = importlib.import_module("script_logging.launcher")
+          launcher_origin = Path(launcher.__file__).resolve()
+          assert any(launcher_origin.is_relative_to(site) for site in site_dirs), launcher_origin
+          print(f"script_logging.launcher -> {launcher_origin}")
+          assert not any("shared-python-modules" in path.lower() or "llm-agent-toolkit" in path.lower() for path in sys.path)
+
+          inventory = subprocess.run(
+              [sys.executable, "-I", "bootstrap_latest.py", "--dry-run"],
+              check=False,
+              capture_output=True,
+              text=True,
+              timeout=600,
+          )
+          if inventory.returncode:
+              raise SystemExit(f"Linux bootstrap inventory check failed:\n{inventory.stdout}\n{inventory.stderr}")
+          for line in inventory.stdout.splitlines():
+              if line.startswith(("Packages: ", "Script launchers: ", "Console commands: ", "Summary: ")):
+                  print(line)
+          package_match = re.search(r"^Packages: (\d+) found, (\d+) missing, (\d+) with unreadable/unknown names$", inventory.stdout, re.MULTILINE)
+          launcher_match = re.search(r"^Script launchers: (\d+) found, (\d+) missing$", inventory.stdout, re.MULTILINE)
+          console_match = re.search(r"^Console commands: (\d+) found, (\d+) missing proxies$", inventory.stdout, re.MULTILINE)
+          assert package_match and int(package_match.group(1)) > 0, "Linux package inventory was not reported"
+          assert int(package_match.group(2)) == 0 and int(package_match.group(3)) == 0, package_match.groups()
+          assert launcher_match and int(launcher_match.group(1)) > 0, "Linux script-launcher inventory was not reported"
+          assert int(launcher_match.group(2)) == 0, launcher_match.groups()
+          assert console_match and int(console_match.group(2)) == 0, "Linux console proxies are missing"
+          print(
+              "Verified Linux inventory: "
+              f"{package_match.group(1)} application packages, "
+              f"{launcher_match.group(1)} script launchers, "
+              f"{console_match.group(1)} console commands; no missing packages or launchers."
+          )
+          PY
+          ./bin/termdash --help
+          ./bin/runmux --help
+
+      - name: Run scripts-owned launcher tests in an isolated collector process
+        if: steps.pscripts.outcome == 'success'
+        run: |
+          timeout --signal=TERM --kill-after=15s 5m .venv/bin/python -I -m pytest -q \
+            --timeout=60 \
+            --basetemp="$RUNNER_TEMP/scripts-launcher-pytest-tmp" \
+            scripts_setup/tests/launcher_test.py
+
+      - name: Run selected scripts consumer regressions
+        if: steps.pscripts.outcome == 'success'
+        run: |
+          timeout --signal=TERM --kill-after=15s 25m .venv/bin/python -I -m pytest -q \
+            --timeout=60 \
+            --basetemp="$RUNNER_TEMP/scripts-pytest-tmp" \
+            scripts_setup/tests/shared_packages_test.py \
+            scripts_setup/tests/transferred_modules_test.py \
+            modules/setup_utils/tests \
+            modules/backup_module/tests/test_backup_module.py \
+            modules/compresser/tests/measurement_test.py \
+            modules/compresser/tests/ui_test.py \
+            modules/rrbackup/tests/viewer_test.py \
+            modules/rrbackup/tests/viewer_dashboard_test.py \
+            modules/rrbackup/tests/schedule_math_test.py \
+            modules/runmux/tests/telemetry_history_api_test.py \
+            modules/runmux/tests/historical_runs_api_test.py \
+            modules/sysmon/tests/test_sampler.py \
+            modules/system_manager/tests/process_watch_sampler_test.py \
+            modules/scheduler/tests/test_logger.py \
+            modules/scheduler/tests/test_history.py
+
+      - name: Recheck dependency health after test dependencies
+        if: steps.pscripts.outcome == 'success'
+        run: .venv/bin/python -I -m pip check
+
+      - name: Report blocked full bootstrap when private submodule access is unavailable
+        if: always() && (steps.pscripts-ssh.outputs.available != 'true' || steps.pscripts.outcome != 'success')
+        run: |
+          echo "::error::Ubuntu standalone checks completed, but authenticated checkout and pinned Gitlink verification did not complete. Check the deploy-key preflight and private-submodule checkout logs above."
+          exit 1
