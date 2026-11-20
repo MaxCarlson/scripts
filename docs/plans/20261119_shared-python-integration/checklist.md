@@ -155,3 +155,18 @@ Historical checkpoint status above is superseded by the final pscripts and full-
 - [ ] Reconcile source retirement on a fresh branch from the eventual updated `main`; preserve all 16 quarantines and seven ownership/data holds. Do not merge the historical retirement branch wholesale.
 
 **Current disposition: READY FOR MERGE REVIEW.** The current-main reconciled tree is pushed and all Linux and Windows qualification gates for the staging artifacts pass. Remaining items are cross-repository release/merge approvals and later source-retirement reconciliation; they do not block review of scripts PR #22. No merge, package publication, or source retirement was performed.
+
+## Final qualification checkpoint — 2026-11-20
+
+- [x] Verify the final tested code commit `6d886c3d287144e9873d7d3fa87ba0bcb70710c0` includes current `origin/main` `76bf32b70a9e6d1e3e9db914f0f98496b4aca157`; current main is an ancestor and the branch is pushed.
+- [x] Rerun the complete hosted Ubuntu workflow on the final tested code commit: [run 44700224745](https://github.com/MaxCarlson/scripts/actions/runs/44700224745), successful in 5m11s. Authenticated pscripts and nested AEBN pins, full Bash bootstrap, five mxc wheel hashes/metadata, imports/provenance, no legacy distributions, and `pip check` passed.
+- [x] Record hosted Linux inventory: 64 packages, 69 script launchers, 95 console commands, zero missing; 12 Runmux HTTP tests; 107 pre-bootstrap consumer tests (one deselected); 3 launcher tests; 120 post-bootstrap setup/consumer/Runmux tests.
+- [x] Preserve the fresh Windows bootstrap at the same merged source tree (code commit `cdef8d9acd108c708ad7170ca5c78cbeec15fb51`): 64 packages, 69 script launchers, 95 console commands, zero missing; all five mxc imports/provenance; no legacy identities; `pip check` clean; seven wrapper help checks exit 0.
+- [x] Record merged-tree Windows tests: agent_continuity 90, terminal_launcher 41, scripts_setup 18, download_scanner 4, video_tools 12 passed. All test processes used mocks/disposable state; no local inference or production services ran.
+- [x] Preserve the full Windows logs and final hosted Ubuntu log in their isolated `.tmp_build/` directories. The first Windows attempt's omitted `PIP_FIND_LINKS` failure remains documented as setup evidence; the corrected retry passed.
+- [x] Confirm PR #22 is open against `main`, and pscripts PR #1 remains open/unmerged at tested fix `1640d1b80e60116aab74c9e89be67a83090a3727`.
+- [ ] Merge pscripts PR #1 only after separate review/approval; then verify resulting main pin and update scripts Gitlink if needed.
+- [ ] Publish the five mxc distributions through the authorized channel before relying on standard public-index installation.
+- [ ] Merge scripts PR #22 only after its review and explicit approval. Source retirement remains a separate post-integration branch; keep the historical retirement branch and all holds intact.
+
+**Final disposition: READY FOR MERGE REVIEW.** The reconciled branch has passed the required Linux and Windows staging qualification. The independent cross-repository merge and publication gates remain visible; this task did not merge either PR or publish packages.

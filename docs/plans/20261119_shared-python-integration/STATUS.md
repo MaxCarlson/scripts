@@ -6,9 +6,9 @@ Updated: 2026-11-20 UTC
 
 - Reconciliation worktree: `.worktrees/scripts-mxc-main-reconcile-20261120`
 - Branch: `reconcile/scripts-mxc-main-20261120`
-- Current branch HEAD: `d620fc8b3dd5ad1143dad902d9b5fe202ba05123`; pushed to `origin`. This is a documentation-only descendant of the qualified code commit `cdef8d9acd108c708ad7170ca5c78cbeec15fb51`.
-- Refreshed `origin/main`: `76bf32b70a9e6d1e3e9db914f0f98496b4aca157`; it is an ancestor of the branch. The branch is 35 commits ahead and zero behind.
-- Latest hosted qualification: [Ubuntu run 44697076606](https://github.com/MaxCarlson/scripts/actions/runs/44697076606), successful on this branch commit.
+- Latest qualification code commit: `6d886c3d287144e9873d7d3fa87ba0bcb70710c0`; pushed to `origin`. It contains the tested source at `cdef8d9acd108c708ad7170ca5c78cbeec15fb51` plus documentation-only checkpoints.
+- Refreshed `origin/main`: `76bf32b70a9e6d1e3e9db914f0f98496b4aca157`; it is an ancestor of the branch with no main-only commits remaining.
+- Latest hosted qualification: [Ubuntu run 44700224745](https://github.com/MaxCarlson/scripts/actions/runs/44700224745), successful on qualification commit `6d886c3d287144e9873d7d3fa87ba0bcb70710c0`.
 - Scripts review PR: [#22](https://github.com/MaxCarlson/scripts/pull/22), open, targeting `main`; GitHub reports `MERGEABLE` and the latest workflow check is successful.
 - The original integration branch/worktree and retirement checkpoint `cc3273f0e1571816de4864af17ab2e1d36bde58e` remain unchanged. The primary checkout remains on `main`; its unrelated `diagnostics/` and this worktree's `.tmp_build/` are preserved.
 - No source directories were retired, no package was published, and neither PR was merged.
@@ -28,6 +28,8 @@ This is the latest status-of-record and supersedes earlier pending qualification
 - Windows qualification files, package artifacts, and logs remain in the new disposable worktree `.worktrees/win-mxc-main-bootstrap-20261120`; the earlier Windows worktree and its `.tmp_build/` remain untouched. The original integration worktree, retirement branch/evidence, primary diagnostics, and all ownership holds are preserved.
 
 **Disposition: READY FOR MERGE REVIEW.** The reconciliation PR is based on current `main`, and the exact merged tree passed hosted Ubuntu full-bootstrap/HTTP/consumer qualification and a fresh disposable Windows full bootstrap plus focused tests. This does not authorize either PR merge or package publication. Merging scripts `main` remains dependent on review and separate approval to merge pscripts PR #1, plus publication of the mxc distributions through the authorized channel. Keep source retirement on a new post-integration branch; do not merge the historical retirement branch.
+
+The final-head workflow completed after these checkpoint updates were pushed. It again passed the full authenticated Ubuntu bootstrap, import/no-legacy checks, Runmux HTTP and consumer stages, launcher tests, post-bootstrap regressions, and dependency recheck. Complete run evidence is linked above; the log is retained at `.tmp_build/ubuntu-run-44700224745.log`.
 
 ## Artifact qualification
 
