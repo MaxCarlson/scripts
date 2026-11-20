@@ -9,9 +9,9 @@ State directory resolution (in order):
   - macOS: ~/Library/Application Support/clipboard_tools
   - Windows: %LOCALAPPDATA%\\clipboard_tools
 """
-__version__ = "0.1.0"
-
 from __future__ import annotations
+
+__version__ = "0.2.0"
 
 import sys
 import os
@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 from cross_platform.clipboard_utils import get_clipboard
+from clipboard_tools.compare import compare_clipboard_to_file, EXIT_EQUAL, EXIT_DIFFERENT, EXIT_ERROR
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
@@ -115,6 +116,26 @@ parser.add_argument(
     action="store_true",
     help="Suppress statistics output."
 )
+parser.add_argument(
+    "-s", "-S", "--strict",
+    action="store_true",
+    help="Compare strictly without normalizing LF/CRLF or trailing newlines."
+)
+parser.add_argument(
+    "-z", "--trim-trailing-newline",
+    action="store_true",
+    help="Ignore trailing newline differences in normalized comparison mode."
+)
+parser.add_argument(
+    "-k", "-K", "--check",
+    action="store_true",
+    help="Equality check mode: exit 0 if equal, 1 if different, 2 on error/empty clipboard."
+)
+parser.add_argument(
+    "-E", "--encoding",
+    default="utf-8",
+    help="File encoding to use when reading target file (default: utf-8)."
+)
 
 # ------------- Core -------------
 
@@ -125,117 +146,94 @@ def diff_clipboard_with_file(
     loc_diff_warning_threshold: int,
     no_stats: bool,
     *,
+    strict: bool = False,
+    ignore_trailing_newline: bool = False,
+    check: bool = False,
+    encoding: str = "utf-8",
     state_dir_override: Path | None = None
-) -> None:
+) -> int:
     stats_data: dict[str, str | int | float] = {}
-    operation_successful = False
     exit_code = 0
 
     try:
         file_path_obj = Path(file_path_str)
         stats_data["File Path"] = str(file_path_obj.resolve())
+        stats_data["Mode"] = "Strict" if strict else "Normalized"
+        stats_data["Encoding"] = encoding
 
-        # Read file
-        try:
-            with open(file_path_obj, 'r', encoding='utf-8') as f:
-                file_lines = f.read().splitlines()
-            stats_data["File Read"] = "Successful"
-            stats_data["File LOC"] = len(file_lines)
-        except Exception as e:
-            stats_data["File Read"] = f"Error: {e}"
-            console_stderr.print(f"[bold red][ERROR] Could not read file '{file_path_obj}': {e}[/]")
-            exit_code = 1
-            raise
+        result = compare_clipboard_to_file(
+            file_path_obj,
+            get_clipboard,
+            strict=strict,
+            ignore_trailing_newline=ignore_trailing_newline,
+            encoding=encoding,
+            context_lines=context_lines,
+        )
 
-        # Get clipboard
-        try:
-            clipboard_text = get_clipboard()
-        except NotImplementedError:
-            stats_data["Error"] = "Clipboard functionality (get_clipboard) not implemented."
-            console_stderr.print("[bold red][ERROR] Clipboard functionality (get_clipboard) not implemented. Ensure clipboard utilities are installed and accessible.[/]")
-            exit_code = 1
-            raise
-        except Exception as e_get_clip:
-            stats_data["Error"] = f"Failed to get clipboard content: {e_get_clip}"
-            console_stderr.print(f"[bold red][ERROR] {stats_data['Error']}[/]")
-            exit_code = 1
-            raise
+        if result.error:
+            stats_data["Error"] = result.error
+            console_stderr.print(f"[bold red][ERROR] {result.error}[/]")
+            exit_code = EXIT_ERROR if check else 1
+            return exit_code
 
-        if clipboard_text is None or clipboard_text.strip() == "":
-            stats_data["Clipboard Status"] = "Empty or whitespace"
-            console_stderr.print("[bold red][CRITICAL WARNING] Clipboard is empty or contains only whitespace![/]")
-            exit_code = 1
-        else:
-            stats_data["Clipboard Status"] = "Content retrieved"
-            clipboard_lines = clipboard_text.splitlines()
-            stats_data["Clipboard LOC"] = len(clipboard_lines)
+        stats_data["File Read"] = "Successful"
+        stats_data["File LOC"] = result.file_lines
+        stats_data["Clipboard Status"] = "Content retrieved"
+        stats_data["Clipboard LOC"] = result.clipboard_lines
+        stats_data["Line Ending Mismatch"] = "Yes" if result.line_ending_mismatch else "No"
+        stats_data["Trailing Newline Mismatch"] = "Yes" if result.trailing_newline_mismatch else "No"
 
-            # Save snapshot for rwcp/rwc integration
-            meta_path, data_path = save_last_cld_snapshot(file_path_obj, clipboard_text, state_dir_override)
-            stats_data["CLD Snapshot"] = f"Saved snapshot → meta: {meta_path.name}, data: {data_path.name}"
-            console_stdout.print(
-                f"[cyan]CLD Snapshot:[/] Saved snapshot → meta: [bold]{meta_path.name}[/], data: [bold]{data_path.name}[/]"
-            )
+        clipboard_text = get_clipboard()
+        meta_path, data_path = save_last_cld_snapshot(file_path_obj, clipboard_text, state_dir_override)
+        stats_data["CLD Snapshot"] = f"Saved snapshot → meta: {meta_path.name}, data: {data_path.name}"
+        console_stdout.print(
+            f"[cyan]CLD Snapshot:[/] Saved snapshot → meta: [bold]{meta_path.name}[/], data: [bold]{data_path.name}[/]"
+        )
 
-            # Diff (colored)
-            diff_gen = difflib.unified_diff(
-                file_lines,
-                clipboard_lines,
-                fromfile=f"file: {file_path_obj}",
-                tofile="clipboard",
-                lineterm="",
-                n=context_lines
-            )
+        for diag in result.diagnostics:
+            console_stderr.print(f"[yellow][NOTE] {diag}[/]")
 
-            has_diff = False
-            diff_output_lines_count = 0
-            for line in diff_gen:
-                has_diff = True
-                diff_output_lines_count += 1
-                if line.startswith('---') or line.startswith('+++'):
-                    console_stdout.print(line)
-                elif line.startswith('@@'):
-                    console_stdout.print(Text(line, style="cyan"))
-                elif line.startswith('-'):
-                    console_stdout.print(Text(line, style="red"))
-                elif line.startswith('+'):
-                    console_stdout.print(Text(line, style="green"))
-                else:
-                    console_stdout.print(line)
-
-            stats_data["Diff Lines Generated"] = diff_output_lines_count
-            if not has_diff and diff_output_lines_count == 0:
-                console_stdout.print("No differences found between file and clipboard.")
-                stats_data["Differences Found"] = "No"
+        diff_output_lines_count = len(result.diff_lines)
+        for line in result.diff_lines:
+            if line.startswith('---') or line.startswith('+++'):
+                console_stdout.print(line)
+            elif line.startswith('@@'):
+                console_stdout.print(Text(line, style="cyan"))
+            elif line.startswith('-'):
+                console_stdout.print(Text(line, style="red"))
+            elif line.startswith('+'):
+                console_stdout.print(Text(line, style="green"))
             else:
-                stats_data["Differences Found"] = "Yes"
+                console_stdout.print(line)
 
-            operation_successful = True
+        stats_data["Diff Lines Generated"] = diff_output_lines_count
+        if result.equal:
+            console_stdout.print("No differences found between file and clipboard.")
+            stats_data["Differences Found"] = "No"
+        else:
+            stats_data["Differences Found"] = "Yes"
 
-            loc_difference = abs(len(file_lines) - len(clipboard_lines))
-            stats_data["LOC Difference"] = loc_difference
-            if loc_difference > loc_diff_warning_threshold:
-                warning_msg = f"Large LOC difference detected ({loc_difference} lines). The sources may be significantly different in length."
-                console_stdout.print(f"[orange3]{warning_msg}[/]")
-                stats_data["LOC Difference Warning"] = "Issued"
+        loc_difference = abs(result.file_lines - result.clipboard_lines)
+        stats_data["LOC Difference"] = loc_difference
+        if loc_difference > loc_diff_warning_threshold:
+            warning_msg = f"Large LOC difference detected ({loc_difference} lines). The sources may be significantly different in length."
+            console_stdout.print(f"[orange3]{warning_msg}[/]")
+            stats_data["LOC Difference Warning"] = "Issued"
 
-            seq = difflib.SequenceMatcher(None, "\n".join(file_lines), "\n".join(clipboard_lines))
-            ratio = seq.ratio()
-            stats_data["Similarity Ratio"] = f"{ratio:.2f}"
-            if ratio < similarity_threshold:
-                note_msg = f"The contents are very dissimilar (similarity ratio: {ratio:.2f}). They might not be the same source."
-                console_stdout.print(f"[yellow]Note: {note_msg}[/]")
-                stats_data["Dissimilarity Note"] = "Issued"
+        stats_data["Similarity Ratio"] = f"{result.similarity_ratio:.2f}"
+        if result.similarity_ratio < similarity_threshold:
+            note_msg = f"The contents are very dissimilar (similarity ratio: {result.similarity_ratio:.2f}). They might not be the same source."
+            console_stdout.print(f"[yellow]Note: {note_msg}[/]")
+            stats_data["Dissimilarity Note"] = "Issued"
 
-        if exit_code == 0 and not operation_successful:
-            stats_data.setdefault("Warning", "Operation did not complete as expected but no specific error caught.")
-            exit_code = 1
+        if check:
+            exit_code = EXIT_EQUAL if result.equal else EXIT_DIFFERENT
+        else:
+            exit_code = 0
 
-    except Exception:
-        if exit_code == 0:
-            exit_code = 1
-        if ("Error" not in stats_data) and ("File Read" not in stats_data):
-            stats_data["Error"] = f"An unexpected error occurred during diff: {sys.exc_info()[1]}"
+    except Exception as exc:
+        exit_code = EXIT_ERROR if check else 1
+        stats_data.setdefault("Error", f"An unexpected error occurred during diff: {exc}")
 
     finally:
         if not no_stats:
@@ -246,16 +244,23 @@ def diff_clipboard_with_file(
                 table.add_row(str(key), str(value))
             console_stdout.print(table)
 
-        sys.exit(exit_code)
+    return exit_code
 
 # ------------- Entry -------------
 
-if __name__ == "__main__":
-    args = parser.parse_args()
-    diff_clipboard_with_file(
+def main(argv: list[str] | None = None) -> int:
+    args = parser.parse_args(argv)
+    return diff_clipboard_with_file(
         args.file,
         args.context_lines,
         args.similarity_threshold,
         args.loc_diff_warn,
-        args.no_stats
+        args.no_stats,
+        strict=args.strict,
+        ignore_trailing_newline=args.trim_trailing_newline,
+        check=args.check,
+        encoding=args.encoding,
     )
+
+if __name__ == "__main__":
+    sys.exit(main())

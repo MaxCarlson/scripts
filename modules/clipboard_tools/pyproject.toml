@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clipboard_tools"
-version = "0.2.0"
+version = "1.0.0"
 description = "Clipboard command suite with multi-buffer support and tmux/Windows bridge."
 authors = [
     {name = "Scripts Repo"}
@@ -22,7 +22,10 @@ c2cd = "clipboard_tools.entrypoints:copy_default_main"
 c2cr = "clipboard_tools.entrypoints:copy_recursive_main"
 c2ca = "clipboard_tools.entrypoints:copy_append_main"
 pclip = "clipboard_tools.entrypoints:print_clipboard_main"
+gcb = "clipboard_tools.entrypoints:get_clipboard_short_main"
+scb = "clipboard_tools.entrypoints:set_clipboard_short_main"
 rwc = "clipboard_tools.entrypoints:replace_with_clipboard_main"
+sfcb = "clipboard_tools.entrypoints:replace_with_clipboard_main"
 rwcp = "clipboard_tools.entrypoints:replace_with_clipboard_from_last_main"
 cld = "clipboard_tools.entrypoints:clipboard_diff_main"
 apc = "clipboard_tools.entrypoints:append_clipboard_main"
@@ -36,5 +39,8 @@ otcwa = "clipboard_tools.entrypoints:output_to_clipboard_wrap_append_main"
 tmux2winclip = "clipboard_tools.tmux_bridge:cli_main"
 tmuxcp = "clipboard_tools.tmux_bridge:cli_main"
 
-[tool.setuptools.packages.find]
-where = ["."]
+[tool.setuptools]
+packages = ["clipboard_tools"]
+
+[tool.setuptools.package-dir]
+clipboard_tools = "."

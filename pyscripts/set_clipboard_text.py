@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # pyscripts/set_clipboard_text.py
 import sys
@@ -17,38 +17,44 @@ p = argparse.ArgumentParser(
 )
 p.add_argument("-t", "--text", help="Text to copy. If omitted, read from stdin.")
 p.add_argument("-a", "--append", action="store_true", help="Append to current clipboard.")
-p.add_argument("--no-stats", action="store_true", help="Suppress stats table output.")
-args = p.parse_args()
+p.add_argument("-n", "--no-stats", action="store_true", help="Suppress stats table output.")
 
-try:
-    new_text = args.text
-    if new_text is None:
-        if sys.stdin.isatty():
-            err.print("[bold red]No --text provided and stdin is a TTY. Nothing to copy.[/]")
-            sys.exit(1)
-        new_text = sys.stdin.read()
 
-    if args.append:
-        try:
-            existing = get_clipboard() or ""
-        except Exception:
-            existing = ""
-        payload = (existing.rstrip("\r\n ") + " " + new_text.lstrip("\r\n ")) if existing else new_text
-    else:
-        payload = new_text
+def main(argv: list[str] | None = None) -> int:
+    args = p.parse_args(argv)
+    try:
+        new_text = args.text
+        if new_text is None:
+            if sys.stdin.isatty():
+                err.print("[bold red]No --text provided and stdin is a TTY. Nothing to copy.[/]")
+                return 1
+            new_text = sys.stdin.read()
 
-    set_clipboard(payload)
+        if args.append:
+            try:
+                existing = get_clipboard() or ""
+            except Exception:
+                existing = ""
+            payload = (existing.rstrip("\r\n ") + " " + new_text.lstrip("\r\n ")) if existing else new_text
+        else:
+            payload = new_text
 
-    if not args.no_stats:
-        tbl = Table(title="set_clipboard_text.py Statistics")
-        tbl.add_column("Metric", style="cyan")
-        tbl.add_column("Value", overflow="fold")
-        tbl.add_row("Mode", "Append" if args.append else "Replace")
-        tbl.add_row("Chars", str(len(payload)))
-        tbl.add_row("Lines", str(len(payload.splitlines())))
-        out.print(tbl)
+        set_clipboard(payload)
 
-    sys.exit(0)
-except Exception as e:
-    err.print(f"[bold red]Error:[/] {e}")
-    sys.exit(1)
+        if not args.no_stats:
+            tbl = Table(title="set_clipboard_text.py Statistics")
+            tbl.add_column("Metric", style="cyan")
+            tbl.add_column("Value", overflow="fold")
+            tbl.add_row("Mode", "Append" if args.append else "Replace")
+            tbl.add_row("Chars", str(len(payload)))
+            tbl.add_row("Lines", str(len(payload.splitlines())))
+            out.print(tbl)
+
+        return 0
+    except Exception as e:
+        err.print(f"[bold red]Error:[/] {e}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
