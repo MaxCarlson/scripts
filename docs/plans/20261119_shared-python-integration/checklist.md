@@ -115,7 +115,7 @@
 
 ## Final pscripts and full-install qualification — 2026-11-20
 
-This section supersedes the preceding pending pscripts/full-bootstrap items. Remaining gates are the generated pscripts managed-wrapper gap, public package publication, and separate merge approvals.
+This section supersedes the preceding pending pscripts/full-bootstrap items. Remaining gates are public package publication and the separate pscripts/scripts merge approvals.
 
 - [x] Create isolated pscripts fix branch `fix/mxc-termdash-deps-20261120` from exact pin `70ba27dd9259eea44d3710691fb276573c26789a`; change only `modules/download_scanner/setup.py` and `modules/video_tools/setup.py` to require `mxc-termdash>=0.10.0,<0.11`.
 - [x] Run affected pscripts tests: 4 download_scanner tests and 12 video_tools tests passed; dry-run dependency resolution selected `mxc-termdash==0.10.0` without legacy `termdash`.
@@ -127,12 +127,12 @@ This section supersedes the preceding pending pscripts/full-bootstrap items. Rem
 - [x] Run Windows focused tests: `scripts_setup/tests` (17 passed) and pscripts download_scanner/video_tools tests (16 passed). Direct installed `.venv\Scripts\download-scanner.exe --help` and `video-tools.exe --help` passed.
 - [x] Fix the manifest gap by reading literal distribution/version/console-script fields from pscripts setup.py with AST parsing (without executing setup.py); add a regression test that failed before and passed after the fix.
 - [x] Focused validation after the fix: `scripts_setup/tests` (18 passed), targeted Ruff checks (`E4,E7,E9,F`), and compileall passed. In the preserved full Windows install, regenerate the manifest from the fixed scanner; `download-scanner.cmd --help` and `video-tools.cmd --help` both returned exit 0.
-- [ ] Push the scripts-owned manifest fix and rerun hosted Ubuntu qualification; do not close the launcher gate before the hosted run completes successfully.
+- [x] Push scripts launcher-manifest fix `7cd5fdb4212398aea81a6cf2ac147ca591735751` and rerun hosted Ubuntu qualification: [run 44694590618](https://github.com/MaxCarlson/scripts/actions/runs/44694590618) passed. It authenticated both private submodules, completed the full Bash bootstrap (63 packages, 69 script launchers, 93 console commands; zero missing), passed the mxc/no-legacy/import-provenance checks and `pip check`, then passed 3 launcher tests, 120 post-bootstrap setup/consumer/Runmux tests, 12 Runmux HTTP tests, and CLI checks.
 - [ ] Publish the five mxc distributions through the authorized channel before claiming ordinary package-index installation independence.
 - [ ] Obtain separate approval before merging pscripts PR #1; after merge, verify the resulting main SHA and update the scripts Gitlink only if that approved SHA differs from the tested fix commit.
 - [ ] Review the scripts PR targeting `main`; do not merge it in this task. Keep the original integration and retirement branches preserved.
 - [ ] Preserve all 16 quarantines, seven retirement holds, five untracked raw evidence files, original integration `.tmp_build/`, and primary-checkout diagnostics.
 
-**Current status: BLOCKED for merge approval pending hosted verification.** Hosted Ubuntu and full Windows bootstraps passed. The two generated Windows managed wrappers now pass locally after the scripts-owned manifest fix; a hosted run on the fix commit must pass before this gate is closed. The branch includes current `origin/main` as ancestor and is 30 commits ahead / zero behind before the fix commit. mxc publication and PR merges remain separate gates.
+**Current status: READY FOR MERGE REVIEW.** The scripts reconciliation branch contains current `origin/main` and is 31 commits ahead / zero behind. Full hosted Ubuntu qualification passed on the launcher-fix commit; the disposable Windows bootstrap and managed-wrapper checks passed; all five mxc wheel hashes match the committed manifest. The pscripts dependency patch remains in open PR #1 and the mxc distributions remain unpublished, so merge into scripts `main` stays gated on those cross-repository release steps. No merge or package publication is authorized in this task.
 
 Historical checkpoint status above is superseded by the final pscripts and full-install qualification section.
