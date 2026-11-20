@@ -1,0 +1,9 @@
+# Status
+
+Current milestone: 4 — documentation and final validation.
+
+Milestones 1–3 are complete. Immutable models validate argument vectors, pane counts and layout names. `group_panes` preserves source order, produces composite titles, returns an empty plan for zero panes, and chooses the canonical layout for each produced tab. The typed protocol separates preview, request submission, and unknown child process state; preview operations deliberately omit process arguments. The Windows Terminal backend builds multi-tab operations for all four supported layouts, applies persistent titles, sets child working directories, targets requested windows, and reports failed/no-op/unknown states. A package-local Python relay receives base64url JSON so shell metacharacters, Unicode, semicolons, and cwd values reach the child unchanged without shell interpretation. Semicolons in tab titles and target window values are rejected because WT's CLI grammar cannot safely preserve them. The 2×2 layout uses documented `move-focus` navigation because the current command-line reference does not list `split-pane --target`. The complete package suite passes (40 tests) and Ruff passes.
+
+The isolated worktree is based on `f57b22652dfc8cd67823a2a0d1d2792b3f09a320`. Microsoft's current Windows Terminal CLI docs and current command-line parser source were checked; the host's `wt.exe --help`/`--version` probe returned no captured output, so the installed version remains unknown. Package tests (40), Ruff, `git diff --check`, module discovery, module setup help, source import smoke, and wheel build/import checks passed. The wheel contains the pane relay and imports without `agent_continuity`. No launch plan or pane geometry smoke test was attempted; those behaviors remain unverified on an actual Windows Terminal window.
+
+No launch plan was submitted and no pane geometry was observed. No `agent_continuity` files were changed.
