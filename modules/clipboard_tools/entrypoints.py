@@ -6,11 +6,18 @@ This keeps aliases consistent across installs.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
-# Ensure repo root (pyscripts, cross_platform, etc.) is importable when installed in editable mode.
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# Ensure repo root (pyscripts, cross_platform, etc.) is importable in both editable and wheel installs.
+_CANDIDATE_ROOTS: list[Path] = [Path(__file__).resolve().parents[2]]
+for _env_key in ("SCRIPTS", "SCRIPTS_REPO"):
+    _env_val = os.environ.get(_env_key)
+    if _env_val:
+        _CANDIDATE_ROOTS.append(Path(_env_val).expanduser())
+
+REPO_ROOT = next((p for p in _CANDIDATE_ROOTS if (p / "pyscripts").is_dir()), _CANDIDATE_ROOTS[0])
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 MODULES_DIR = REPO_ROOT / "modules"
