@@ -21,9 +21,9 @@ classifiers = [
 dependencies = [
   "pillow>=10.0",
   "numpy>=1.20",
-  "termdash>=0.10.0,<0.11",
-  "cross-platform>=0.9.0,<0.10",
-  "resource-metrics>=0.3.0,<0.4",
+  "mxc-termdash>=0.10.0,<0.11",
+  "mxc-platform-utils>=0.9.0,<0.10",
+  "mxc-resource-metrics>=0.3.0,<0.4",
 ]
 
 [project.scripts]

@@ -67,7 +67,7 @@ def test_launcher_generator_scan_excludes_all_transferred_commands() -> None:
         if entry.distribution:
             assert not is_transferred_distribution(entry.distribution)
     assert "termdash" in commands
-    assert commands["termdash"].source_path == "installed-distribution:termdash"
+    assert commands["termdash"].source_path == "installed-distribution:mxc-termdash"
     assert "scripts-help" in commands
 
 

@@ -28,7 +28,7 @@ dependencies = [
   "torchvision>=0.20",
   "numpy>=1.26",
   "PyNvVideoCodec>=2.1",
-  "resource-metrics>=0.3.0,<0.4",
+  "mxc-resource-metrics>=0.3.0,<0.4",
 ]
 
 [project.optional-dependencies]

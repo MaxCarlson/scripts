@@ -47,7 +47,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ui = ["termdash>=0.10.0,<0.11"]
+ui = ["mxc-termdash>=0.10.0,<0.11"]
 windows = ["psutil>=5.9.0"]
 
 [project.scripts]

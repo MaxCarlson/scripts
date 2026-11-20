@@ -36,7 +36,7 @@ classifiers = [
 ]
 dependencies = [
     "psutil>=5.9",
-    "resource-metrics>=0.3.0,<0.4",
+    "mxc-resource-metrics>=0.3.0,<0.4",
     "pywinpty>=3.0.0; sys_platform == 'win32'",
 ]
 
@@ -45,7 +45,7 @@ tui = [
     "cli_tui>=0.2.1",
     "windows-curses>=2.4; sys_platform == 'win32'",
 ]
-web = ["web-ui-tools>=0.2.0,<0.3"]
+web = ["mxc-web-ui-tools>=0.2.0,<0.3"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6"

@@ -12,8 +12,8 @@ authors = [{ name = "Max", email = "max@example.com" }]
 license = { text = "MIT" }
 dependencies = [
     "psutil>=5.9",
-    "resource-metrics>=0.3.0,<0.4",
-    "termdash>=0.10.0,<0.11",
+    "mxc-resource-metrics>=0.3.0,<0.4",
+    "mxc-termdash>=0.10.0,<0.11",
     "tomli; python_version < '3.11'",
     "tomli-w",
     "windows-curses; platform_system == 'Windows'",

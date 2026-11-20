@@ -33,9 +33,9 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-ui = ["termdash>=0.10.0,<0.11"]
+ui = ["mxc-termdash>=0.10.0,<0.11"]
 dev = ["pytest>=8", "ruff>=0.6"]
-local = ["cross-platform>=0.9.0,<0.10", "termdash>=0.10.0,<0.11"]
+local = ["mxc-platform-utils>=0.9.0,<0.10", "mxc-termdash>=0.10.0,<0.11"]
 
 [project.scripts]
 drive-manager = "drive_manager.cli:main"

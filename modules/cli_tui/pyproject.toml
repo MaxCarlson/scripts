@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Scripts Project Authors" }]
 
 dependencies = [
-  "termdash>=0.10.0,<0.11",
+  "mxc-termdash>=0.10.0,<0.11",
   "pillow>=10.0",
 ]
 

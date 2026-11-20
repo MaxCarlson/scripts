@@ -73,3 +73,20 @@
 - [ ] Apply retirement deletions or merge retirement work (explicitly out of scope for this phase).
 - [ ] Review five raw JSON files for sensitivity before any future publication.
 - [ ] Obtain later cleanup/integration authorization; do not merge, push, publish or retire primary-checkout source in this task.
+
+## mxc-* distribution rename — 2026-11-20
+
+- [x] Verify canonical mxc wheel filenames, versions, metadata, and SHA-256 values against the shared repository manifest; correct the handoff typo for the `mxc-script-logging` digest.
+- [x] Replace the five old wheel fixtures in `.github/qualified-wheelhouse/`; preserve the prior wheelhouse under local `.tmp_build/` evidence.
+- [x] Update scripts-owned shared dependency requirements, consumer `pyproject.toml` declarations, optional Runmux web-extra guidance, distribution checks, and workflow metadata assertions while preserving all import and CLI names.
+- [x] Ensure the installer removes old shared distributions and refreshes only scripts-owned editable consumers whose installed metadata still lists old distribution names.
+- [x] Run focused shared-installer/launcher/transferred-module tests (17 passed).
+- [x] Run selected Windows consumer tests (79 passed); verify all five mxc imports/provenance and `pip check` in the worktree environment.
+- [x] Confirm no active scripts-owned `pyproject.toml` declares an old shared distribution. Old-name references remain only in legacy-uninstall checks, historical/transferred metadata, and protected transferred applications.
+- [x] Confirm prior hosted Ubuntu runner availability before qualification; private read-only deploy-key workflow remains unchanged.
+- [x] Inspect the pinned private `pscripts` dependency metadata read-only and identify two old `termdash>=0.1.0` requirements in `download_scanner` and `video_tools`.
+- [ ] Run mxc-specific hosted Ubuntu wheel, install, import, CLI, HTTP, and consumer qualification.
+- [ ] Complete full authenticated Bash bootstrap with all legacy shared distributions absent and `pip check` clean. Blocked until a qualified `pscripts` revision stops requiring old `termdash`; scripts cannot update that repository under this assignment.
+- [ ] Complete a full representative Windows bootstrap with the renamed wheels; the previous clean-copy dry-run was 62 packages, 69 script launchers, and 87 console commands with none missing, while full old-name checkpoint counts were 62/157/88.
+- [ ] Publish the five distributions through the authorized package channel before claiming ordinary public-index installation independence.
+- [ ] Integration readiness: BLOCKED pending mxc hosted qualification and the pinned `pscripts` dependency update. Keep the old retirement branch and source holds unchanged.

@@ -98,3 +98,48 @@ Metadata requirements were confirmed: resource-metrics (Python >=3.8, psutil>=5.
 - The integration branch starts at the clean main commit above; the primary checkout remains unchanged.
 - For a disposable test venv, remove this worktree's ignored `.venv` only after confirming no test process uses it; no external environment was modified.
 - If a future authorized integration removes source copies, use the existing checksum-verified quarantine restore instructions. Do not restore by copying over the primary checkout without checking its current state.
+
+## Namespaced shared-distribution migration — 2026-11-20
+
+This section supersedes the earlier “READY FOR MERGE REVIEW” line for the old distribution identities. It records the follow-up migration to the canonical `mxc-*` distribution names; the earlier Windows and Ubuntu results remain evidence for the old-name checkpoint only.
+
+- Worktree: `.worktrees/scripts-shared-package-integration-20261119`
+- Branch: `feat/scripts-shared-packages-20261119`
+- Base before this continuation: `6dd67349f2fde8ceb13e3c8cc9b8fd3c0fd81b6a`, equal to `origin/feat/scripts-shared-packages-20261119` at preflight.
+- The five Python import packages and public APIs remain unchanged: `resource_metrics`, `script_logging`, `web_ui_tools`, `termdash`, and `cross_platform`. The installed CLI command remains `termdash`.
+- Active scripts-owned dependency manifests and Runmux's optional web-extra guidance now refer to the namespaced distributions. The historical P6 transferred-module mapping and protected transferred application manifests were not renamed.
+- The active CI wheelhouse now contains only the five intended `mxc-*` wheel identities. The previous five old-name wheels and their checksum file are preserved under untracked `.tmp_build/legacy-wheelhouse-before-mxc-20261120/`; this local evidence is not staged.
+- The installer removes the five old distribution identities before installing the new wheels. It also refreshes only scripts-owned editable consumer metadata that still declares the old shared requirements, without reinstalling dependencies or changing imports.
+
+### Canonical wheel verification
+
+The five local artifacts were rehashed and their wheel `METADATA` names, versions, and Python requirements were checked against the shared repository manifest and integration contract:
+
+| Distribution | Version | SHA-256 |
+|---|---:|---|
+| `mxc-resource-metrics` | 0.3.0 | `1512d9e9ab1a1d603c2dc244d1459baff1abcc738d82c4ee2a5fac835a04189a` |
+| `mxc-script-logging` | 0.1.1 | `7554f367067123e2369b12996af2593adb4437a79667b53528d2e7bdd90b7f45` |
+| `mxc-web-ui-tools` | 0.2.0 | `0171dfa984eb9d521bb340a0d0241056fdea8be685fe0c3a26bc7cc2c7f54341` |
+| `mxc-termdash` | 0.10.0 | `34c69cd508753001cda19882c99aea17fcac558679c4274e6d68874065081c9b` |
+| `mxc-platform-utils` | 0.9.0 | `8d64a0553776065a12d1fd3342199e9f68d13bb6a18e834a4c39b6d6c41df7dc` |
+
+The handoff-provided `mxc-script-logging` digest had a typo; the value above is the recomputed wheel hash and the value in the canonical manifest. The wheelhouse checksum manifest uses the verified value.
+
+### mxc validation and remaining gate
+
+- Focused shared-installer, launcher, and transferred-module tests: 17 passed.
+- Selected local consumer regression tests: 79 passed across backup_module, compresser, rrbackup, sysmon, system_manager, and scheduler. `pip check` passed after the tests.
+- In the integration worktree environment, all five new distributions installed offline from the qualified wheelhouse; import provenance resolved to this worktree's `.venv\Lib\site-packages`, all five old distribution identities were absent, and `pip check` passed. TermDash `--help` passed.
+- Runmux Windows HTTP tests remain unexecuted because the previously reproduced host socket-pair failure occurs before request dispatch. This is not new mxc-specific evidence; the final Ubuntu workflow still needs to rerun the HTTP tests with the renamed wheels.
+- A representative copied Windows checkout dry-run found 62 packages, 69 script launchers, and 87 console commands, with zero missing. The previous clean bootstrap's 62/157/88 counts apply to the old-name checkpoint. A full new-name clean bootstrap has not passed: the isolated local copy's editable package rebuild was blocked by sandbox temporary-path/network restrictions, and the pinned `pscripts` metadata has a separate legacy dependency described below.
+- Read-only inspection of the pinned `pscripts` source identified `termdash>=0.1.0` in `modules/download_scanner/setup.py` and `modules/video_tools/setup.py`. These are outside the scripts repository, and the user explicitly restricted other repositories to read-only. The hosted full bootstrap also asserts legacy distribution absence and runs `pip check`; installing those packages with their current metadata is incompatible with the new `mxc-termdash`-only contract. Do not weaken the check or reintroduce the old `termdash` distribution. Full bootstrap qualification requires a qualified `pscripts` commit that declares `mxc-termdash` (or removes those requirements), then updating the scripts Gitlink in a separately reviewed scripts change.
+- The prior hosted Ubuntu Run 13 passed on the old distribution names. Hosted runners were available at the latest prior check (`44676035357`); the mxc-specific workflow has not yet run. Even if the independent wheel/HTTP/consumer stages pass, the full bootstrap is expected to stop at the pinned `pscripts` dependency incompatibility until that upstream contract is fixed.
+- Shared packages are not yet published to PyPI. The committed CI wheelhouse qualifies staging only and does not satisfy eventual public installation from the package index.
+
+**Current readiness: BLOCKED for merge review.** The scripts-owned namespaced migration and local offline qualification are complete, but mxc-specific Ubuntu qualification has not run and the current pinned `pscripts` metadata prevents the required full bootstrap without violating the read-only boundary or the prohibition on old-name distributions. Windows clean-bootstrap qualification after the rename and public package publication remain pending. Do not merge, publish, or retire source in this state.
+
+### mxc rollback
+
+- Revert the mxc-specific commit(s) on this task branch, or restore selected changed paths from the parent commit with `git restore --source=<parent> -- <paths>`.
+- The prior old-name wheelhouse is preserved locally under `.tmp_build/legacy-wheelhouse-before-mxc-20261120/`; verify its recorded hashes before restoring any wheel files.
+- No changes were made to the primary scripts checkout, shared-package source, toolkit, retirement branch, or persistent quarantine.

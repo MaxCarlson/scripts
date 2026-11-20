@@ -8,10 +8,10 @@ version = "0.9.0"
 description = "A robust Python scheduling and task execution module with CLI and interactive TUI."
 requires-python = ">=3.9"
 dependencies = [
-    "cross-platform>=0.9.0,<0.10",
-    "script-logging>=0.1.1,<0.2",
+    "mxc-platform-utils>=0.9.0,<0.10",
+    "mxc-script-logging>=0.1.1,<0.2",
     "standard_ui",
-    "termdash>=0.10.0,<0.11",
+    "mxc-termdash>=0.10.0,<0.11",
     "python-dateutil",
     "psutil>=5.9",
     "windows-curses; sys_platform == 'win32'",
