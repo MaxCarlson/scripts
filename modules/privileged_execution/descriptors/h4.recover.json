@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "capability_id": "h4.recover",
+  "version": "1.0.0",
+  "runner_type": "powershell",
+  "executable_path": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+  "executable_sha256": null,
+  "script_path": "C:\\ProgramData\\PrivExec\\adapters\\Invoke-H4RecoverAdapter.ps1",
+  "script_sha256": "f9c604eb790406b12624eef8f7301e52473cbdfc6df528487ee3cd65e1985a97",
+  "working_directory": "C:\\ProgramData\\PrivExec\\work",
+  "target_types": ["hyperv_vm"],
+  "allowed_targets": ["d8483f98-8884-4758-abd1-cd6107c83c03"],
+  "supports_dry_run": true,
+  "supports_apply": true,
+  "is_mutating": true,
+  "max_duration_seconds": 900,
+  "requires_guest_credential": true,
+  "fixed_args": [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    "{script_path}",
+    "-H4RecoveryScript",
+    "C:\\ProgramData\\PrivExec\\h4_scripts\\Invoke-H4GuestRecovery.ps1",
+    "-OperationId",
+    "{operation_id}",
+    "-VmId",
+    "{target_id}"
+  ],
+  "dry_run_args": [],
+  "apply_args": ["-Apply"],
+  "parameter_schema": {
+    "authorize_guest_mutation": {
+      "type": "bool",
+      "required": false,
+      "cli_flag": "-AuthorizeGuestMutation",
+      "mode_scope": "apply"
+    },
+    "stage_bundle": {
+      "type": "bool",
+      "required": false,
+      "cli_flag": "-StageBundle",
+      "mode_scope": "apply"
+    },
+    "post_inventory": {
+      "type": "bool",
+      "required": false,
+      "cli_flag": "-PostInventory",
+      "mode_scope": "any"
+    },
+    "protected_checkpoint_id": {
+      "type": "enum",
+      "required": false,
+      "allowed_values": ["9f45b469-382c-4be0-a50e-7a71384c7922"],
+      "cli_flag": "-ProtectedCheckpointId",
+      "mode_scope": "any"
+    }
+  }
+}

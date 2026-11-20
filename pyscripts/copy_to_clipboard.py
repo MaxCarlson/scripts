@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-__version__ = "0.1.0"
+__version__ = "0.2.1"
 
 import sys
 import os
@@ -47,8 +47,18 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     'files',
     metavar='FILE',
-    nargs='+',
-    help="Path to one or more files."
+    nargs='*',
+    help="Path to one or more files (or literal text when -t/--text is used)."
+)
+parser.add_argument(
+    '-t', '--text',
+    action='store_true',
+    help="Treat positional arguments as literal text (instead of file paths)."
+)
+parser.add_argument(
+    '-I', '--stdin',
+    action='store_true',
+    help="Read literal text to copy from stdin."
 )
 
 format_group = parser.add_mutually_exclusive_group()
@@ -133,6 +143,9 @@ def copy_files_to_clipboard(
     override_append_wrapping: bool,
     no_stats: bool,
     buffer_id: int,
+    *,
+    literal_text: bool = False,
+    from_stdin: bool = False,
 ):
     stats_data = {} 
     exit_code = 0 
@@ -141,6 +154,46 @@ def copy_files_to_clipboard(
         buffer_id = validate_buffer_id(buffer_id)
     except ValueError as buffer_err:
         console_info.print(f"[bold red][ERROR] {buffer_err}[/]")
+        return 1
+
+    if not literal_text and not from_stdin and len(file_paths_str) == 1:
+        if not (raw_copy or wrap or whole_wrap or show_full_path or override_append_wrapping):
+            if not Path(file_paths_str[0]).exists():
+                literal_text = True
+
+    if literal_text or from_stdin:
+        payload = sys.stdin.read() if from_stdin else " ".join(file_paths_str)
+        if not payload and not from_stdin:
+            console_info.print("[bold red][ERROR] No text provided for -t/--text mode.[/]")
+            return 1
+        if append:
+            try:
+                existing = get_clipboard() or ""
+            except Exception:
+                existing = ""
+            final_text = (existing.rstrip("\n") + "\n\n" + payload) if existing else payload
+        else:
+            final_text = payload
+        try:
+            set_clipboard(final_text)
+            save_buffer(buffer_id, final_text, set_active=True)
+        except Exception as exc:
+            console_info.print(f"[bold red][ERROR] Failed to set clipboard: {exc}[/]")
+            return 1
+        if not no_stats:
+            table = Table(title="copy_to_clipboard.py Statistics", title_style="bold magenta")
+            table.add_column("Metric", style="cyan", overflow="fold")
+            table.add_column("Value", overflow="fold")
+            table.add_row("Mode", "Literal text (stdin)" if from_stdin else "Literal text (-t)")
+            table.add_row("Append Mode", "Enabled" if append else "Disabled")
+            table.add_row("Characters in Clipboard Payload", str(len(final_text)))
+            table.add_row("Lines in Clipboard Payload", str(len(final_text.splitlines())))
+            table.add_row("Buffer", str(buffer_id))
+            console_stats.print(table)
+        return 0
+
+    if not file_paths_str:
+        console_info.print("[bold red][ERROR] At least one FILE is required unless -t/--text or -I/--stdin is used.[/]")
         return 1
     
     file_paths = [Path(p) for p in file_paths_str]
@@ -420,6 +473,8 @@ if __name__ == '__main__':
             override_append_wrapping=args.override_append_wrapping,
             no_stats=args.no_stats,
             buffer_id=args.buffer,
+            literal_text=args.text,
+            from_stdin=args.stdin,
         )
     except SystemExit as e: 
         script_exit_code = e.code if e.code is not None else 1

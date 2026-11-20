@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 import sys
 import argparse
@@ -103,8 +103,11 @@ def append_clipboard_to_file(file_path_str: str, no_stats: bool):
                 table.add_row(str(key), str(value))
             console_stdout.print(table) 
 
-        sys.exit(exit_code)
+        return exit_code
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser.parse_args(argv)
+    return append_clipboard_to_file(args.file, args.no_stats)
 
 if __name__ == "__main__":
-    args = parser.parse_args()
-    append_clipboard_to_file(args.file, args.no_stats)
+    sys.exit(main())
