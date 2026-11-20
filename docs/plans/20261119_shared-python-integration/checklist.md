@@ -2,7 +2,7 @@
 
 ## Prerequisite and ownership
 
-- [x] Commit the local qualification workflow and wheelhouse at `e71ec54b` on `feat/scripts-shared-packages-20261119`; do not push or merge.
+- [x] Commit the local qualification workflow and wheelhouse at `e71ec54b` on `feat/scripts-shared-packages-20261119`; subsequent continuation authorizes pushing this branch only, with no merge.
 - [x] Inspect supplied shared-package contract and package metadata.
 - [x] Match all five wheel hashes against `dist/SHA256SUMS.txt`.
 - [x] Install the wheels into a separate scripts integration worktree environment.
@@ -36,8 +36,10 @@
 - [x] Compare the Runmux HTTP hang against a baseline minimal FastAPI app and capture bounded faulthandler evidence; no scripts-owned fix justified.
 - [x] Make one bounded Python 3.12 SelectorEventLoop TestClient attempt using AnyIO's supported `loop_factory`; faulthandler confirms the same `_fallback_socketpair`/`socket.accept` stall before request dispatch. Stop Windows workarounds; no production event-loop changes.
 - [ ] Run Linux/Ubuntu qualification. WSL Ubuntu and docker-desktop are stopped; startup service state is unknown, so neither distro was started. Use isolated Linux CI/WSL with confirmed safe startup configuration.
-- [x] Prepare a manual-only Ubuntu GitHub Actions workflow using the five committed CI-only wheel fixtures under `.github/qualified-wheelhouse/`; it checks exact hashes/metadata, initializes pinned `pscripts`, runs Bash bootstrap, verifies imports/launchers/`pip check`, and runs selected bounded consumer and Runmux HTTP tests.
-- [ ] Dispatch the hosted Ubuntu workflow and review its results. Not run here; all Linux test results remain pending. No YAML/actionlint parser is installed locally, and Git Bash was blocked from starting by sandbox object permissions; both embedded Python heredocs pass AST parsing.
+- [x] Prepare an Ubuntu GitHub Actions workflow using the five committed CI-only wheel fixtures under `.github/qualified-wheelhouse/`; it checks exact hashes/metadata, initializes pinned `pscripts`, runs Bash bootstrap, verifies imports/launchers/`pip check`, and runs selected bounded consumer and Runmux HTTP tests. Added a push trigger scoped to `feat/scripts-shared-packages-20261119` while retaining manual dispatch and `contents: read` permissions.
+- [x] Verify `MaxCarlson/pscripts` is private through the GitHub repository API. Workflow checkout accepts optional read-only `PSCRIPTS_READ_TOKEN`, falling back to `GITHUB_TOKEN`; hosted execution must verify whether the fallback has private submodule access.
+- [x] Parse the workflow with PyYAML and verify the branch trigger, Ubuntu job, least-privilege permissions, wheel filenames, metadata, and all five SHA-256 hashes.
+- [ ] Push the integration branch and review hosted Ubuntu workflow results. All Linux test results remain pending until the hosted run completes.
 - [x] Attempt local wheel reproduction in `.tmp_build/ci-wheel-repro-ff134131`; sandbox DNS could not resolve PyPI while fetching build-isolation requirement `wheel`. The attempt failed before package build; shared source was not modified. Since the pinned shared Git tree does not contain the qualified wheel artifacts and wheel ZIP file timestamps are not represented by Git, CI uses the exact committed artifact fixture rather than rebuilding and assuming identical bytes.
 - [ ] Run actual Runmux TestClient request tests in a compatible Windows environment; Proactor and SelectorEventLoop both fail before dispatch in this host. Ubuntu workflow selects the synthetic-state HTTP-only tests.
 

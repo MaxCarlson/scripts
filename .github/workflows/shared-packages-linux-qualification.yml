@@ -1,6 +1,9 @@
 name: Shared Packages Linux Qualification
 
 on:
+  push:
+    branches:
+      - feat/scripts-shared-packages-20261119
   workflow_dispatch:
 
 permissions:
@@ -27,6 +30,9 @@ jobs:
       - name: Check out scripts at the dispatched ref
         uses: actions/checkout@v4
         with:
+          # pscripts is private; this optional read-only token must cover both
+          # scripts and pscripts. The repository GITHUB_TOKEN is the fallback.
+          token: ${{ secrets.PSCRIPTS_READ_TOKEN || github.token }}
           submodules: false
           fetch-depth: 1
 
