@@ -88,12 +88,19 @@ $evidence = [ordered]@{
     post_rebind_acl_state     = $null
     post_rebind_acl_desc      = $null
     broker_dll_sha256         = $null
+    broker_pid                = $null
+    broker_exit_code          = $null
+    broker_startup_stage      = $null
+    pipe_ready                = $false
+    timeout_category          = $null
     vm_before                 = $null
     checkpoint_before         = $null
     gate3_preflight           = $null
     vm_after                  = $null
     checkpoint_after          = $null
     pipe_closed_verified      = $false
+    temp_dir_created          = $false
+    broker_killed_on_cleanup  = $false
     cleanup                   = [ordered]@{ temp_dir_removed = $false; grant_removed = $false; errors = @() }
     h4_mutations_executed     = $false
 }
@@ -274,27 +281,38 @@ try {
         '--grant-file', $tempGrant,
         '--ttl-seconds', '300',
         '--prompt-guest-credential'
-    ) -PassThru
+    ) -NoNewWindow -PassThru
+    $evidence['broker_pid'] = $brokerProc.Id
+    $evidence['broker_startup_stage'] = 'awaiting_guest_credential_and_pipe'
+    Save-Gate3Evidence
 
     $pipeDeadline = (Get-Date).AddSeconds($BrokerReadyTimeoutSeconds)
     $pipeReady = $false
     while ((Get-Date) -lt $pipeDeadline) {
         if ($brokerProc.HasExited) {
-            throw "PrivExecBroker exited early ($($brokerProc.ExitCode))."
+            $evidence['broker_exit_code'] = $brokerProc.ExitCode
+            $evidence['broker_startup_stage'] = 'exited_before_pipe_ready'
+            throw "PrivExecBroker exited early (exit_code=$($brokerProc.ExitCode))."
         }
         if (Test-Path "\\.\pipe\$pipeName") {
             $pipeReady = $true
+            $evidence['pipe_ready'] = $true
+            $evidence['broker_startup_stage'] = 'pipe_ready'
+            Save-Gate3Evidence
             break
         }
         Start-Sleep -Milliseconds 250
     }
     if (-not $pipeReady) {
+        $evidence['timeout_category'] = 'broker_pipe_ready_timeout'
+        $evidence['broker_startup_stage'] = 'pipe_wait_timed_out'
         throw "Timed out waiting ${BrokerReadyTimeoutSeconds}s for PrivExecBroker named pipe '$pipeName'."
     }
 
     # 5. Execute single read-only h4.preflight under XERES\PrivExecAgent
     $evidence['current_step'] = 'gate3_preflight'
     New-Item -ItemType Directory -Path $isolatedRunRoot -Force | Out-Null
+    $evidence['temp_dir_created'] = $true
     $agProfile = Join-Path $isolatedRunRoot 'agent_profile'
     $agTemp = Join-Path $isolatedRunRoot 'agent_temp'
     $agEnv = New-IsolatedAgentEnv -TempDir $agTemp -ProfileDir $agProfile -Account "$env:COMPUTERNAME\$AgentUsername"
@@ -390,8 +408,14 @@ catch {
     throw
 }
 finally {
-    if ($brokerProc -and -not $brokerProc.HasExited) {
-        Stop-BrokerOverPipe -Pipe $pipeName -Proc $brokerProc
+    if ($brokerProc) {
+        if (-not $brokerProc.HasExited) {
+            Stop-BrokerOverPipe -Pipe $pipeName -Proc $brokerProc
+            $evidence['broker_killed_on_cleanup'] = $true
+        }
+        if ($brokerProc.HasExited -and $null -eq $evidence['broker_exit_code']) {
+            $evidence['broker_exit_code'] = $brokerProc.ExitCode
+        }
     }
     if ($tempGrant -and (Test-Path -LiteralPath $tempGrant)) {
         Remove-Item -LiteralPath $tempGrant -Force -ErrorAction SilentlyContinue

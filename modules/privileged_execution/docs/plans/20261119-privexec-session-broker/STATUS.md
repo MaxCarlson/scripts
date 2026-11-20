@@ -1,6 +1,6 @@
 # Status — `20261119-privexec-session-broker`
 
-- **Current Phase:** **Gates 1–2 PASSED** (`run_id: 20261119-193433-fb3d1c6e`, commit `288ee8a3`); **Gate 3 BLOCKED** at client identity verification (`XERES\CodexSandboxOffline`) & interactive elevation/guest-credential boundary.
+- **Current Phase:** **Gates 1–2 PASSED** (`run_id: 20261119-193433-fb3d1c6e`, commit `288ee8a3`); **Gate 3 BLOCKED** awaiting operator re-run of `Invoke-Gate3Elevated.ps1` (without `-CreateAgentAccount`) after fixing interactive broker console attachment.
 - **Branch:** `feat/privexec-session-broker-20261119`
 - **Worktree:** `C:\Users\mcarls\src\scripts-privexec`
 - **Base Commit:** `e7b9f36d5296d8b8fe301ef47e9f35adc64f886b`
@@ -13,9 +13,11 @@
   - **Hyper-V VM & Checkpoint (operator-verified 2026-11-19 ~12:06 PST):** **PASS** (`RC-H4-Windows-Acceptance` / `d8483f98-8884-4758-abd1-cd6107c83c03` `Running` / `Operating normally`; checkpoint `H4-Win11-Clean-Prerequisites-20261115` / `9f45b469-382c-4be0-a50e-7a71384c7922`).
   - **H4 Preflight Path & Guest Credential Handoff:** **PASS** (staged hashes verified; `Invoke-H4GuestQualification.ps1 -Stage Preflight` verified read-only; `--prompt-guest-credential` / stdin `SecureString` verified).
   - **Privileged Launch-Chain Audit:** **RESOLVED** — `C:\Users\mcarls\src\scripts\.venv` grants `XERES\CodexSandboxUsers:(I)(OI)(CI)(M)` (agent-writable) and `Python312` has legacy SIDs with `(M,DC)`. Elevated broker startup MUST use `C:\Program Files\dotnet\dotnet.exe` (`TrustedInstaller`/`SYSTEM`/`Administrators`-only write) directly on `C:\ProgramData\PrivExec\bin\PrivExecBroker.dll`, eliminating Python from the elevated launch chain.
-  - **Codex Sandbox Identity Probe (`XERES\CodexSandboxOffline`, SID `...1007`):** **BLOCKED** — `C:\Users\mcarls\.codex\config.toml` is configured with `prefer_mxc = true` and `windows.sandbox = "unelevated"`; `.codex\.sandbox\setup_error.json` reports `helper_unknown_error`. Probing `codex.exe sandbox` (`codex-cli 0.169.1`) with `whoami.exe /user` under default, `prefer_mxc=false`/`unelevated`, and `prefer_mxc=false`/`elevated` all exited `-1073741502` (`0xC0000142`, `STATUS_DLL_INIT_FAILED`). This Antigravity session runs as non-elevated `XERES\mcarls` and cannot spawn a `CodexSandboxOffline` token.
+  - **Gate 3 First Elevated Run (`20261120-013059-be2a5298`):** **PARTIAL / FAILED AT `broker_start`** — Created standard user `XERES\PrivExecAgent` (`SID=S-1-5-21-4067329743-3279872635-954170557-1021`, `Users` only), rebound `C:\ProgramData\PrivExec` ACLs, passed Hyper-V VM & checkpoint prechecks (`h4_mutations_executed: false`), then timed out after 120s waiting for `\\.\pipe\privexec-gate3-e80ace0a`. Root cause: `Invoke-Gate3Elevated.ps1` launched `dotnet.exe` via `Start-Process` without `-NoNewWindow`, detaching the synchronous `--prompt-guest-credential` console prompt (`PromptInConsole()` runs before `server.RunAsync`) from the operator's active PowerShell 7 console. Fixed by adding `-NoNewWindow` to `Start-Process`, failing fast in `CredentialProvider.cs` when `Console.IsInputRedirected` is true, and recording `broker_pid`, `broker_exit_code`, `broker_startup_stage`, `pipe_ready`, `timeout_category`, `temp_dir_created`, and `broker_killed_on_cleanup` in `gate3-evidence.json`.
 
 ## Next Actionable Step
-- Operator chooses either:
-  1. Run the PrivExec client from a working interactive Codex Windows-sandboxed session (if `whoami /user` in that session resolves to `S-1-5-21-4067329743-3279872635-954170557-1007`), **or**
-  2. Authorize binding `C:\ProgramData\PrivExec` ACLs to a dedicated standard-user PrivExec agent account whose execution path is directly verifiable, then launch the elevated broker via `C:\Program Files\dotnet\dotnet.exe C:\ProgramData\PrivExec\bin\PrivExecBroker.dll ... --prompt-guest-credential`.
+- From an **elevated Administrator PowerShell 7** terminal (reusing existing `XERES\PrivExecAgent`, **without** `-CreateAgentAccount`), run:
+  ```powershell
+  Set-Location C:\Users\mcarls\src\scripts-privexec\modules\privileged_execution
+  pwsh -NoProfile -File .\scripts\Invoke-Gate3Elevated.ps1
+  ```

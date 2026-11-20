@@ -27,6 +27,10 @@ public sealed class OperatorMemoryCredentialProvider : IOperatorCredentialProvid
 
     public static OperatorMemoryCredentialProvider PromptInConsole(string defaultUsername = @"DESKTOP-1ITSJV0\mcarls")
     {
+        if (Console.IsInputRedirected)
+        {
+            throw new InvalidOperationException("Interactive console input is required for --prompt-guest-credential (stdin is redirected).");
+        }
         Console.Write($"Enter guest username [{defaultUsername}]: ");
         string? inputUser = Console.ReadLine();
         string username = string.IsNullOrWhiteSpace(inputUser) ? defaultUsername : inputUser.Trim();

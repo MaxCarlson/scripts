@@ -993,3 +993,66 @@ def test_gate3_runner_fail_closed_guards(tmp_path: Path) -> None:
     )
     assert res_exists.returncode != 0
     assert "already exists; refusing to overwrite" in res_exists.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires Windows .NET runtime")
+def test_broker_prompt_guest_credential_rejects_redirected_stdin(tmp_path: Path) -> None:
+    desc_dir = tmp_path / "descriptors"
+    state_dir = tmp_path / "state"
+    desc_dir.mkdir(parents=True)
+    state_dir.mkdir(parents=True)
+    grant_file = tmp_path / "grant.json"
+    grant_file.write_text(
+        json.dumps(
+            {
+                "allowed_client_sids": ["S-1-5-32-545"],
+                "allowed_capabilities": ["h4.preflight"],
+                "allowed_targets": ["d8483f98-8884-4758-abd1-cd6107c83c03"],
+                "allow_mutation": False,
+                "allowed_mutation_capabilities": [],
+                "ttl_seconds": 60,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    broker_dll = MODULE_ROOT / "broker" / "bin" / "PrivExecBroker.dll"
+    res = subprocess.run(
+        [
+            "dotnet",
+            str(broker_dll),
+            "--pipe",
+            f"privexec-redirect-test-{os.getpid()}",
+            "--descriptors-dir",
+            str(desc_dir),
+            "--state-dir",
+            str(state_dir),
+            "--grant-file",
+            str(grant_file),
+            "--prompt-guest-credential",
+        ],
+        input="ignored\n",
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res.returncode != 0
+    combined = (res.stdout or "") + "\n" + (res.stderr or "")
+    assert "stdin is redirected" in combined
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires Windows PowerShell 7")
+def test_gate3_runner_console_attachment_and_observability_contract() -> None:
+    gate3_text = (SCRIPTS_DIR / "Invoke-Gate3Elevated.ps1").read_text(encoding="utf-8")
+    assert "-NoNewWindow -PassThru" in gate3_text
+    for field in (
+        "broker_pid",
+        "broker_exit_code",
+        "broker_startup_stage",
+        "pipe_ready",
+        "timeout_category",
+        "temp_dir_created",
+        "broker_killed_on_cleanup",
+    ):
+        assert field in gate3_text
