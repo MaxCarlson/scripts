@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import hashlib
 import json
 import os
@@ -18,6 +19,14 @@ from . import __version__
 from .dispatcher import DispatcherService
 from .environment import detect_runtime_kind
 from .errors import ContinuityError, ErrorCode
+
+
+def _json_default(value: Any) -> Any:
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    if isinstance(value, (set, frozenset)):
+        return sorted(value)
+    return str(value)
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
@@ -272,7 +281,9 @@ def _open(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[str, 
     request = dispatcher.open_request(gui=args.gui)
     try:
         from terminal_launcher import PaneSpec, WindowsTerminalBackend, group_panes
-    except ImportError:
+    except ModuleNotFoundError as exc:
+        if exc.name != "terminal_launcher":
+            raise
         return {
             "action": "open",
             "applied": False,
@@ -294,6 +305,8 @@ def _open(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[str, 
         "applied": bool(args.apply),
         "request": request,
         "preview": preview,
+        "panes_per_tab": args.panes_per_tab,
+        "target_window": args.window,
     }
     if args.apply:
         result["launch"] = backend.launch(plan)
@@ -373,7 +386,7 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
     elif args.command == "open":
         result = _open(dispatcher, args)
         if args.apply and result.get("terminal_launcher_available") is False:
-            print(json.dumps(result, indent=2, ensure_ascii=False, default=str) if args.json_output else result["summary"], file=output_stream)
+            print(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default) if args.json_output else result["summary"], file=output_stream)
             return 2
     elif args.command == "pane-run":
         return _run_pane(dispatcher, slot_id=args.slot_id, launch_id=args.launch_id,
@@ -384,7 +397,7 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
 
     json_mode = bool(args.json_output)
     if json_mode:
-        print(json.dumps(result, indent=2, ensure_ascii=False, default=str), file=output_stream)
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default), file=output_stream)
     else:
         if "summary" in result:
             print(result["summary"], file=output_stream)
@@ -402,9 +415,12 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
             for launch in result["launches"]:
                 print(f"{launch['launch_id']}\t{launch.get('gui_alias', '')}\t{launch.get('agent_name', '')}\t{launch['provider']}\t{launch['environment_id']}", file=output_stream)
         if result.get("action") == "open":
-            print(json.dumps(result, indent=2, ensure_ascii=False, default=str), file=output_stream)
+            print(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default), file=output_stream)
         if not result.get("applied", True) and result.get("events"):
             print("Preview only. Pass -a / --apply to persist this operation.", file=output_stream)
+    launch = result.get("launch") if result.get("action") == "open" and args.apply else None
+    if getattr(getattr(launch, "status", None), "value", None) == "failed":
+        return 1
     return 0
 
 

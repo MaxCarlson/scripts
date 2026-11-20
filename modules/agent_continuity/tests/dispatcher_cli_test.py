@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import sys
 import tomllib
 import types
@@ -8,6 +9,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
+
+import pytest
 
 from agent_continuity.dispatcher import DispatcherService
 from agent_continuity.dispatcher_cli import _open, build_parser, dispatch
@@ -118,7 +121,29 @@ def test_open_creates_pane_specs_and_delegates_layout_and_launch(tmp_path, monke
 def test_open_without_terminal_library_returns_pending_integration_preview(tmp_path, monkeypatch):
     dispatcher = DispatcherService(ContinuityService(tmp_path / "registry"))
     dispatcher.create_gui("Empty", apply=True)
-    monkeypatch.delitem(sys.modules, "terminal_launcher", raising=False)
+    import_fn = builtins.__import__
+
+    def import_without_terminal(name, *args, **kwargs):
+        if name == "terminal_launcher":
+            raise ModuleNotFoundError("No module named 'terminal_launcher'", name="terminal_launcher")
+        return import_fn(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_terminal)
     result = _open(dispatcher, Namespace(gui="Empty", terminal="windows-terminal", panes_per_tab=2, window=None, apply=False))
     assert result["terminal_launcher_available"] is False
     assert result["request"]["panes"] == []
+
+
+def test_open_does_not_hide_internal_terminal_library_import_errors(tmp_path, monkeypatch):
+    dispatcher = DispatcherService(ContinuityService(tmp_path / "registry"))
+    dispatcher.create_gui("Empty", apply=True)
+    import_fn = builtins.__import__
+
+    def import_with_broken_terminal_submodule(name, *args, **kwargs):
+        if name == "terminal_launcher":
+            raise ModuleNotFoundError("missing terminal_launcher.backend", name="terminal_launcher.backend")
+        return import_fn(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_with_broken_terminal_submodule)
+    with pytest.raises(ModuleNotFoundError, match="terminal_launcher.backend"):
+        _open(dispatcher, Namespace(gui="Empty", terminal="windows-terminal", panes_per_tab=2, window=None, apply=False))

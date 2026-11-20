@@ -200,6 +200,15 @@ def test_empty_plan_is_a_noop_and_does_not_invoke_the_runner():
     assert runner.calls == []
 
 
+def test_empty_plan_preview_does_not_require_windows_terminal(monkeypatch):
+    monkeypatch.setattr("terminal_launcher.backends.windows_terminal.shutil.which", lambda _: None)
+
+    preview = WindowsTerminalBackend().preview(TerminalLaunchPlan(()))
+
+    assert preview.operations == ()
+    assert preview.warnings == ()
+
+
 def test_custom_executable_path_is_kept_as_one_argument():
     executable = str(Path("C:/Program Files/Windows Terminal/wt.exe"))
     command = WindowsTerminalBackend(executable=executable).build_command(make_plan())

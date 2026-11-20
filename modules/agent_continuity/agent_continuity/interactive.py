@@ -147,7 +147,7 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
     """Run the four-step menu using the same durable service operations as CLI commands."""
     from argparse import Namespace
 
-    from .dispatcher_cli import _open, _run_pane
+    from .dispatcher_cli import _json_default, _open, _run_pane
 
     while True:
         action, gui = select_item(
@@ -195,12 +195,18 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
                 preview = _open(dispatcher, namespace)
                 import json
 
-                output_stream.write(f"\nOpen All preview:\n{json.dumps(preview, indent=2, ensure_ascii=False, default=str)}\n")
+                output_stream.write(f"\nOpen All preview:\n{json.dumps(preview, indent=2, ensure_ascii=False, default=_json_default)}\n")
                 if preview.get("terminal_launcher_available") is False:
                     output_stream.write("terminal_launcher is not installed or integrated; request was not launched.\n")
                 elif _confirm(output_stream, input_stream, "Launch the active selected sessions?"):
                     namespace.apply = True
-                    _open(dispatcher, namespace)
+                    result = _open(dispatcher, namespace)
+                    launch = result.get("launch")
+                    status = getattr(getattr(launch, "status", None), "value", None)
+                    if status == "failed":
+                        output_stream.write(f"Open All launch failed: {launch.diagnostic or 'unknown terminal error'}\n")
+                    elif status == "submitted":
+                        output_stream.write("Launch request submitted; pane process state is unknown.\n")
                 continue
             if action != "selected" or slot is None:
                 continue

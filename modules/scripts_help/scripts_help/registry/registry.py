@@ -291,14 +291,14 @@ REGISTRY: dict = {
                 "path": "modules/agent_continuity",
                 "desc": "Manage legacy workflow associations and durable Codex/AGY session continuity",
                 "help_cmd": ["agents", "--help"],
-                "version": "1.0.0",
+                "version": "1.1.0",
             },
             {
                 "name": "llmd / llm-dispatcher (module)",
                 "path": "modules/agent_continuity",
                 "desc": "Select GUI conversations and named Codex/AGY agent slots, inspect history, and request grouped terminal launches",
                 "help_cmd": ["llmd", "--help"],
-                "version": "1.0.0",
+                "version": "1.1.0",
             },
             {
                 "name": "agent-bench (module)",

@@ -1,11 +1,13 @@
-# Checklist — Named Agent Dispatcher
+# Checklist — Dispatcher and Terminal Launcher Integration
 
-- [x] Verify M2 integrated base and establish isolated feature worktree.
-- [x] Extend durable event model, SQLite materialization, replay, and idempotency for GUI aliases, slots, activation history, and pending launches.
-- [x] Add service operations for creation, activation, state changes, explicit session attachment, and current-session queries.
-- [x] Add `llmd` and `llm-dispatcher` entry points with dry-run mutations, JSON, and interactive mode.
-- [x] Add provider command construction and dispatcher-owned pane process supervision.
-- [x] Test dispatcher service, CLI, interactive harness, provider wrapper, concurrency, and rebuild behavior.
-- [x] Complete regression suites, Ruff, disposable packaging smoke checks, and `git diff --check`.
-- [x] Review task-only diff, update this status, and create the authorized dispatcher checkpoint commit.
-- [ ] Integrate and validate the separate `terminal_launcher` package; actual layouts are outside this branch's ownership.
+- [x] Verify the M2 base, dispatcher and terminal-launcher tips, common ancestry, and existing worktrees.
+- [x] Preserve the already-created two-merge integration ancestry for both exact feature commits.
+- [x] Wire `llmd open` and interactive Open All to the real `terminal_launcher` package.
+- [x] Validate active-slot ordering, `PaneSpec` arguments, cwd propagation, grouped layouts, window targeting, and titles with a captured backend.
+- [x] Add dispatcher integration acceptance for default 2-pane grouping, 4-pane grouping, `-k 4`, completed slots, pending identities, and backend failures.
+- [x] Fix JSON serialization and exit-status propagation for structured terminal launch results.
+- [x] Fix empty-plan preview so unresolved-only opens do not require an installed `wt.exe`.
+- [x] Inspect M2 hooks and launch events for deterministic session-ID correlation; document why manual attachment remains necessary.
+- [x] Run module suites, Ruff, compile checks, package-wheel builds, disposable combined installation, CLI help and JSON smoke.
+- [x] Review and commit the final integration diff.
+- [x] Leave live Windows Terminal layout verification unrun; it needs separate authorization and is explicitly reported as pending.

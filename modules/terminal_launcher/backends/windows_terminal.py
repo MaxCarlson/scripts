@@ -127,7 +127,8 @@ class WindowsTerminalBackend:
     def preview(self, plan: TerminalLaunchPlan) -> LaunchPreview:
         self._require_windows()
         tabs = self._validated_tabs(plan)
-        self._resolve_executable()
+        if tabs:
+            self._resolve_executable()
         operations = []
         for tab_index, (tab, layout) in enumerate(tabs):
             operations.append(

@@ -31,29 +31,33 @@ llmd list -g AgentImprovement
 llmd history -g AgentImprovement -n AgentPerf
 llmd pending -g AgentImprovement
 llmd open -g AgentImprovement -k 2
+llmd open -g AgentImprovement -k 2 -a
+llmd open -g AgentImprovement -k 4 -a
 llmd slot disable -g AgentImprovement -n AgentPerf -a
 ```
 
 Provider starts create recoverable pending-launch records. The dispatcher does not infer a native ID from process timing: after startup, use the provider's supported identity or native metadata and attach the exact ID with `llmd attach`; `llmd pending` lists unresolved launches. Repeated selections of a previously bound native session remain separate entries in activation history. A later verified user-prompt hook can reactivate a session already bound to exactly one slot.
 
-`llmd open` creates opaque per-slot `PaneSpec` requests and delegates grouping and execution to the separate `terminal_launcher` package. If that package is unavailable, it prints the dispatcher-side preview and reports that execution is pending. The dispatcher does not construct `wt.exe` commands itself.
+`llmd open` creates opaque per-slot `PaneSpec` requests and delegates grouping and execution to the reusable `terminal_launcher` package. Preview is dry-run; pass `-a` to submit it to Windows Terminal. Unresolved or pending session IDs are listed for manual recovery and are never turned into a guessed resume command. The dispatcher does not construct `wt.exe` commands itself.
 
 The pane wrapper prompts after a normal zero exit. Keep active is the default; a nonzero exit or an unexpected wrapper/terminal shutdown leaves the current session and slot state unchanged.
 
 ## Current Status
 
 - **M1/M2 continuity foundation:** Integrated and preserved
-- **Named dispatcher:** Implemented on `feature/llmd-agent-dispatcher-20261119`
-- **Terminal launch integration:** Dispatcher-side `terminal_launcher` contract is implemented; real backend execution awaits the separate `modules/terminal_launcher/` workstream.
-- **Live provider correlation:** Not verified; no provider session or global hook was installed or launched for validation.
+- **Named dispatcher:** Integrated from `feature/llmd-agent-dispatcher-20261119` at `db8d5779`.
+- **Terminal launch integration:** `llmd open` uses `terminal_launcher` for immutable launch planning, previews, layout grouping, and request submission. Real pane geometry remains unverified without a live Windows Terminal smoke test.
+- **Session-ID correlation:** New provider sessions remain pending until the user explicitly attaches a verified native session ID. M2 hook events do not carry the dispatcher launch ID, so concurrent launches cannot be matched deterministically. No provider session or global hook was installed or launched for validation.
 
 ## Installation
 
 From `modules/agent_continuity`:
 
 ```powershell
-python -m pip install -e ".[dev]"
+python -m pip install -e ..\terminal_launcher -e ".[dev]"
 ```
+
+The terminal library and dispatcher are separate packages; both must be installed for `llmd open` to submit Windows Terminal requests.
 
 Or invoke directly without installation:
 
