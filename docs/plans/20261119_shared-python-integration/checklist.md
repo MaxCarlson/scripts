@@ -113,4 +113,26 @@
 - [ ] Publish the five mxc distributions through the authorized channel before claiming public-index installation independence.
 - [ ] Reconsider merge review only after the pscripts Gitlink and full bootstrap gates above pass. Do not merge into `main` or integrate retirement deletions in this task.
 
-**Current status: BLOCKED for merge review.** The isolated reconciliation branch is prepared and focused tests pass. The exact remaining code dependency is the two old TermDash requirements in pinned pscripts; the full mxc Ubuntu bootstrap and post-bootstrap checks must be rerun after a separately authorized pscripts commit. Full Windows mxc bootstrap and package publication are also still pending.
+## Final pscripts and full-install qualification — 2026-11-20
+
+This section supersedes the preceding pending pscripts/full-bootstrap items. Remaining gates are the generated pscripts managed-wrapper gap, public package publication, and separate merge approvals.
+
+- [x] Create isolated pscripts fix branch `fix/mxc-termdash-deps-20261120` from exact pin `70ba27dd9259eea44d3710691fb276573c26789a`; change only `modules/download_scanner/setup.py` and `modules/video_tools/setup.py` to require `mxc-termdash>=0.10.0,<0.11`.
+- [x] Run affected pscripts tests: 4 download_scanner tests and 12 video_tools tests passed; dry-run dependency resolution selected `mxc-termdash==0.10.0` without legacy `termdash`.
+- [x] Commit/push pscripts fix `1640d1b80e60116aab74c9e89be67a83090a3727`; open [pscripts PR #1](https://github.com/MaxCarlson/pscripts/pull/1), currently open/unmerged. Separate authorization is required to merge it.
+- [x] Advance only the reconciliation branch's pscripts Gitlink to `1640d1b80e60116aab74c9e89be67a83090a3727`; keep nested AEBN pin `af6bb8b1db14c8434c0a9da446ec49bbf067ab9b` and read-only deploy-key authentication.
+- [x] Verify all five committed mxc wheel SHA-256 values against `.github/qualified-wheelhouse/SHA256SUMS.txt`; all matched.
+- [x] Run hosted Ubuntu workflow [44690102265](https://github.com/MaxCarlson/scripts/actions/runs/44690102265) on scripts commit `fa8c34526a2988cbd9db5a19f3d866ce2141a046`: private pinned checkouts passed; 63 application packages installed; 69 script launchers and 93 console proxies generated; post-bootstrap inventory had zero missing items; mxc versions/import provenance and no-legacy checks passed; 3 managed-launcher tests, 119 post-bootstrap setup/consumer/Runmux tests, 12 Runmux HTTP tests, TermDash/Runmux CLI checks, and `pip check` passed.
+- [x] Run full bootstrap in detached disposable Windows worktree `.worktrees/win-mxc-bootstrap-20261120`; bootstrap exit 0. Fresh post-bootstrap inventory: 63 package sources / 0 missing, 69 script launchers / 0 missing, 93 console commands / 0 missing proxies, zero failures (162 wrappers total). All five mxc distributions/imports resolved under that worktree's `.venv`, legacy distributions were absent, and `pip check` passed.
+- [x] Run Windows focused tests: `scripts_setup/tests` (17 passed) and pscripts download_scanner/video_tools tests (16 passed). Direct installed `.venv\Scripts\download-scanner.exe --help` and `video-tools.exe --help` passed.
+- [x] Fix the manifest gap by reading literal distribution/version/console-script fields from pscripts setup.py with AST parsing (without executing setup.py); add a regression test that failed before and passed after the fix.
+- [x] Focused validation after the fix: `scripts_setup/tests` (18 passed), targeted Ruff checks (`E4,E7,E9,F`), and compileall passed. In the preserved full Windows install, regenerate the manifest from the fixed scanner; `download-scanner.cmd --help` and `video-tools.cmd --help` both returned exit 0.
+- [ ] Push the scripts-owned manifest fix and rerun hosted Ubuntu qualification; do not close the launcher gate before the hosted run completes successfully.
+- [ ] Publish the five mxc distributions through the authorized channel before claiming ordinary package-index installation independence.
+- [ ] Obtain separate approval before merging pscripts PR #1; after merge, verify the resulting main SHA and update the scripts Gitlink only if that approved SHA differs from the tested fix commit.
+- [ ] Review the scripts PR targeting `main`; do not merge it in this task. Keep the original integration and retirement branches preserved.
+- [ ] Preserve all 16 quarantines, seven retirement holds, five untracked raw evidence files, original integration `.tmp_build/`, and primary-checkout diagnostics.
+
+**Current status: BLOCKED for merge approval pending hosted verification.** Hosted Ubuntu and full Windows bootstraps passed. The two generated Windows managed wrappers now pass locally after the scripts-owned manifest fix; a hosted run on the fix commit must pass before this gate is closed. The branch includes current `origin/main` as ancestor and is 30 commits ahead / zero behind before the fix commit. mxc publication and PR merges remain separate gates.
+
+Historical checkpoint status above is superseded by the final pscripts and full-install qualification section.

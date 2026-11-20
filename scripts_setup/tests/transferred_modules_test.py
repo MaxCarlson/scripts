@@ -71,6 +71,25 @@ def test_launcher_generator_scan_excludes_all_transferred_commands() -> None:
     assert "scripts-help" in commands
 
 
+def test_launcher_generator_includes_console_scripts_from_pscripts_setup_py(tmp_path: Path) -> None:
+    module = tmp_path / "pscripts" / "modules" / "legacy_cli"
+    module.mkdir(parents=True)
+    (module / "setup.py").write_text(
+        "from setuptools import setup\n"
+        "setup(name='legacy_cli', version='1.2.3', entry_points={"
+        "'console_scripts': ['legacy-cli=legacy_cli.cli:main']})\n",
+        encoding="utf-8",
+    )
+
+    commands = scan_repository_programs(tmp_path)
+
+    assert commands["legacy-cli"].program_id == "module:legacy_cli"
+    assert commands["legacy-cli"].source_path == "pscripts/modules/legacy_cli"
+    assert commands["legacy-cli"].distribution == "legacy_cli"
+    assert commands["legacy-cli"].entry_point == "legacy_cli.cli:main"
+    assert commands["legacy-cli"].version == "1.2.3"
+
+
 def test_setup_skills_excludes_transferred_modules() -> None:
     skills = discover_skills(REPO_ROOT / "modules")
     for skill_dir in skills:

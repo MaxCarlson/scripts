@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.metadata as metadata
 import json
 import os
@@ -113,6 +114,51 @@ def _read_embedded_version(path: Path) -> str:
     return match.group(1).strip() if match else "0.1.0"
 
 
+def _read_setup_py_console_scripts(path: Path) -> tuple[str, str, list[tuple[str, str]]] | None:
+    """Read literal package identity and console entry points without executing setup.py."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return None
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if not (
+            isinstance(function, ast.Name) and function.id == "setup"
+            or isinstance(function, ast.Attribute) and function.attr == "setup"
+        ):
+            continue
+
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg}
+        try:
+            distribution = ast.literal_eval(keywords["name"])
+            version = ast.literal_eval(keywords.get("version", ast.Constant("0.1.0")))
+            entry_points = ast.literal_eval(keywords.get("entry_points", ast.Constant({})))
+        except (KeyError, ValueError, TypeError):
+            continue
+        if (
+            not isinstance(distribution, str)
+            or not isinstance(version, str)
+            or not isinstance(entry_points, dict)
+        ):
+            continue
+
+        scripts = entry_points.get("console_scripts", [])
+        parsed_scripts: list[tuple[str, str]] = []
+        if isinstance(scripts, (list, tuple)):
+            for specification in scripts:
+                if isinstance(specification, str) and "=" in specification:
+                    name, target = specification.split("=", 1)
+                    name = name.strip()
+                    target = target.strip()
+                    if name and target:
+                        parsed_scripts.append((name, target))
+        return distribution, version, parsed_scripts
+    return None
+
+
 def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
     """Scan repo-owned modules, pyscripts, and shell scripts.
     
@@ -219,6 +265,29 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
         for mod in sorted(pscripts_mod_dir.iterdir()):
             pyproject = mod / "pyproject.toml"
             if not pyproject.is_file():
+                setup_py = mod / "setup.py"
+                setup_metadata = _read_setup_py_console_scripts(setup_py) if setup_py.is_file() else None
+                if setup_metadata is None:
+                    continue
+                dist_name, dist_version, scripts = setup_metadata
+                source_rel = str(mod.relative_to(root)).replace("\\", "/")
+                for script_name, entry_point in scripts:
+                    commands[script_name] = CommandEntry(
+                        name=script_name,
+                        program_id=f"module:{dist_name}",
+                        kind="console_script",
+                        source_path=source_rel,
+                        target=(
+                            f".venv/Scripts/{script_name}.exe"
+                            if os.name == "nt"
+                            else f".venv/bin/{script_name}"
+                        ),
+                        target_windows=f".venv/Scripts/{script_name}.exe",
+                        target_posix=f".venv/bin/{script_name}",
+                        version=dist_version,
+                        distribution=dist_name,
+                        entry_point=entry_point,
+                    )
                 continue
             try:
                 with pyproject.open("rb") as f:
