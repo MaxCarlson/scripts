@@ -485,6 +485,111 @@ class SQLiteMaterializer:
 
         elif etype == EventType.HOOK_EVENT.value:
             self._apply_hook_event_in_tx(conn, event, ts)
+            self._select_slot_from_user_prompt_in_tx(conn, event, ts)
+
+        elif etype == EventType.DISPATCHER_GUI_REGISTERED.value:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO dispatcher_gui_conversations(
+                    gui_id, alias, alias_key, status, created_at, updated_at, last_activity_at
+                ) VALUES (?, ?, ?, 'active', ?, ?, NULL)
+                """,
+                (str(p["gui_id"]), str(p["alias"]), str(p["alias_key"]), ts, ts),
+            )
+
+        elif etype == EventType.DISPATCHER_GUI_RENAMED.value:
+            conn.execute(
+                "UPDATE dispatcher_gui_conversations SET alias = ?, alias_key = ?, updated_at = ? WHERE gui_id = ?",
+                (str(p["alias"]), str(p["alias_key"]), ts, str(p["gui_id"])),
+            )
+
+        elif etype == EventType.DISPATCHER_SLOT_CREATED.value:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO agent_slots(
+                    slot_id, gui_id, name, name_key, state, created_at, updated_at, last_activity_at
+                ) VALUES (?, ?, ?, ?, 'active', ?, ?, NULL)
+                """,
+                (str(p["slot_id"]), str(p["gui_id"]), str(p["name"]), str(p["name_key"]), ts, ts),
+            )
+
+        elif etype == EventType.DISPATCHER_SLOT_STATE_CHANGED.value:
+            conn.execute(
+                "UPDATE agent_slots SET state = ?, updated_at = ? WHERE slot_id = ?",
+                (str(p["state"]), ts, str(p["slot_id"])),
+            )
+
+        elif etype == EventType.DISPATCHER_SESSION_ACTIVATED.value:
+            slot_id = str(p["slot_id"])
+            sequence = int(p["sequence"])
+            activation_id = str(p["activation_id"])
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO agent_slot_activations(
+                    activation_id, slot_id, sequence, provider, environment_id,
+                    native_session_id, provenance, activated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    activation_id,
+                    slot_id,
+                    sequence,
+                    str(event.provider),
+                    event.environment_id,
+                    str(event.native_session_id),
+                    str(p["provenance"]),
+                    ts,
+                ),
+            )
+            conn.execute(
+                "UPDATE agent_slots SET updated_at = ?, last_activity_at = ? WHERE slot_id = ?",
+                (ts, ts, slot_id),
+            )
+            conn.execute(
+                """
+                UPDATE dispatcher_gui_conversations SET updated_at = ?, last_activity_at =
+                    CASE WHEN last_activity_at IS NULL OR last_activity_at < ? THEN ? ELSE last_activity_at END
+                WHERE gui_id = (SELECT gui_id FROM agent_slots WHERE slot_id = ?)
+                """,
+                (ts, ts, ts, slot_id),
+            )
+
+        elif etype == EventType.DISPATCHER_LAUNCH_REQUESTED.value:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO dispatcher_pending_launches(
+                    launch_id, slot_id, provider, environment_id, cwd, status, requested_at
+                ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+                """,
+                (
+                    str(p["launch_id"]),
+                    str(p["slot_id"]),
+                    str(event.provider),
+                    event.environment_id,
+                    p.get("cwd"),
+                    ts,
+                ),
+            )
+
+        elif etype == EventType.DISPATCHER_LAUNCH_RESOLVED.value:
+            conn.execute(
+                """
+                UPDATE dispatcher_pending_launches
+                SET status = 'resolved', resolved_at = ?, resolved_session_id = ?
+                WHERE launch_id = ? AND status = 'pending'
+                """,
+                (ts, str(p["native_session_id"]), str(p["launch_id"])),
+            )
+
+        elif etype == EventType.DISPATCHER_LAUNCH_FAILED.value:
+            conn.execute(
+                """
+                UPDATE dispatcher_pending_launches
+                SET status = 'failed', resolved_at = ?, failure_detail = ?
+                WHERE launch_id = ? AND status = 'pending'
+                """,
+                (ts, str(p.get("detail") or "launch failed"), str(p["launch_id"])),
+            )
 
         elif etype == EventType.CHECKPOINT_RECORDED.value:
             conn.execute(
@@ -814,6 +919,82 @@ class SQLiteMaterializer:
                         "UPDATE turns SET completed_at = ? WHERE turn_id = ?",
                         (ts, latest_open["turn_id"]),
                     )
+
+    def _select_slot_from_user_prompt_in_tx(self, conn: sqlite3.Connection, event: EventEnvelope, ts: str) -> None:
+        """A verified user-prompt hook can reactivate a session already bound to a slot."""
+        if (
+            event.payload.get("normalized_event_type") != "turn.submitted"
+            or not event.provider
+            or not event.native_session_id
+        ):
+            return
+        rows = conn.execute(
+            """
+            SELECT s.slot_id,
+                   (SELECT MAX(all_a.sequence) FROM agent_slot_activations all_a WHERE all_a.slot_id = s.slot_id) AS last_sequence,
+                   current.provider AS current_provider,
+                   current.environment_id AS current_environment_id,
+                   current.native_session_id AS current_session_id
+            FROM agent_slot_activations a
+            JOIN agent_slots s ON s.slot_id = a.slot_id
+            LEFT JOIN agent_slot_activations current
+              ON current.activation_id = (
+                 SELECT cur.activation_id FROM agent_slot_activations cur
+                 WHERE cur.slot_id = s.slot_id ORDER BY cur.sequence DESC LIMIT 1
+              )
+            WHERE a.provider = ? AND a.environment_id = ? AND a.native_session_id = ?
+            GROUP BY s.slot_id
+            """,
+            (event.provider, event.environment_id, event.native_session_id),
+        ).fetchall()
+        if len(rows) != 1:
+            return
+        for row in rows:
+            if (
+                row["current_provider"], row["current_environment_id"], row["current_session_id"]
+            ) == (event.provider, event.environment_id, event.native_session_id):
+                conn.execute(
+                    "UPDATE agent_slots SET updated_at = ?, last_activity_at = ? WHERE slot_id = ?",
+                    (ts, ts, str(row["slot_id"])),
+                )
+                conn.execute(
+                    "UPDATE dispatcher_gui_conversations SET updated_at = ?, last_activity_at = ? "
+                    "WHERE gui_id = (SELECT gui_id FROM agent_slots WHERE slot_id = ?)",
+                    (ts, ts, str(row["slot_id"])),
+                )
+                continue
+            sequence = int(row["last_sequence"]) + 1
+            activation_id = f"act_{event.event_id}_{row['slot_id']}"
+            inserted = conn.execute(
+                """
+                INSERT OR IGNORE INTO agent_slot_activations(
+                    activation_id, slot_id, sequence, provider, environment_id,
+                    native_session_id, provenance, activated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'verified_user_prompt', ?)
+                """,
+                (
+                    activation_id,
+                    str(row["slot_id"]),
+                    sequence,
+                    event.provider,
+                    event.environment_id,
+                    event.native_session_id,
+                    ts,
+                ),
+            )
+            if inserted.rowcount == 0:
+                continue
+            conn.execute(
+                "UPDATE agent_slots SET updated_at = ?, last_activity_at = ? WHERE slot_id = ?",
+                (ts, ts, str(row["slot_id"])),
+            )
+            conn.execute(
+                """
+                UPDATE dispatcher_gui_conversations SET updated_at = ?, last_activity_at = ?
+                WHERE gui_id = (SELECT gui_id FROM agent_slots WHERE slot_id = ?)
+                """,
+                (ts, ts, str(row["slot_id"])),
+            )
 
     def _upsert_environment(
         self,

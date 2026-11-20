@@ -289,9 +289,16 @@ REGISTRY: dict = {
             {
                 "name": "agents (module)",
                 "path": "modules/agent_continuity",
-                "desc": "Associate ChatGPT GUI workflows with native Codex and AGY sessions across Windows and WSL2",
+                "desc": "Manage legacy workflow associations and durable Codex/AGY session continuity",
                 "help_cmd": ["agents", "--help"],
-                "version": "0.2.0",
+                "version": "1.0.0",
+            },
+            {
+                "name": "llmd / llm-dispatcher (module)",
+                "path": "modules/agent_continuity",
+                "desc": "Select GUI conversations and named Codex/AGY agent slots, inspect history, and request grouped terminal launches",
+                "help_cmd": ["llmd", "--help"],
+                "version": "1.0.0",
             },
             {
                 "name": "agent-bench (module)",
