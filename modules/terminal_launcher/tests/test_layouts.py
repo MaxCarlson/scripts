@@ -1,5 +1,4 @@
 import pytest
-
 from terminal_launcher.layouts import group_panes
 from terminal_launcher.models import PaneSpec
 
