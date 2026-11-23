@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import math
+
 from procparsers.yt_dlp import parse_line
+
 
 def test_meta_line_parsing():
     d = parse_line("TDMETA\tabc123\tCool Title Here")
@@ -35,7 +37,8 @@ def test_progress_eta_form_mib():
     assert d["total"] == 50 * 1024 * 1024
     assert d["downloaded"] == 5 * 1024 * 1024  # 10% of 50 MiB
     assert d["speed_bps"] == 2 * 1024 * 1024
-    # For yt-dlp we interpret ETA as MM:SS, so 00:37 -> 37s (downloader uses this for progress)
+    # For yt-dlp, ETA is MM:SS; 00:37 means 37 seconds.
+    # The downloader uses this value for progress.
     assert d["eta_s"] == 37
 
 def test_progress_eta_form_lowercase_units():
@@ -64,7 +67,7 @@ def test_noise_lines_return_log_event():
         "[Merger] Merging formats into \"title.mp4\"",
         "WARNING: something something",
         "[subtitle] Downloading",
-        "[PornHub] 64ea0d6ce46e4: Downloading m3u8 information",
+        "[SampleSite] item-123: Downloading m3u8 information",
         "Extracting cookies from firefox",
     ):
         d = parse_line(line)

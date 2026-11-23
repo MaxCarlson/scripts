@@ -45,6 +45,22 @@ def source_name(directory: Path) -> str | None:
     return None
 
 
+def source_version(directory: Path) -> str | None:
+    """Return the source distribution version when its metadata declares one."""
+    project_file = directory / "pyproject.toml"
+    if project_file.is_file():
+        with project_file.open("rb") as handle:
+            version = tomllib.load(handle).get("project", {}).get("version")
+        if isinstance(version, str) and version.strip():
+            return version.strip()
+    setup_file = directory / "setup.py"
+    if setup_file.is_file():
+        match = re.search(r"\bversion\s*=\s*['\"]([^'\"]+)['\"]", setup_file.read_text(encoding="utf-8"))
+        if match:
+            return match.group(1)
+    return None
+
+
 def package_sources(root: Path) -> tuple[list[tuple[str, Path]], list[Path]]:
     """Return unique package sources in core/dependency order and unknown metadata."""
     if str(root) not in sys.path:
@@ -84,6 +100,9 @@ def package_sources(root: Path) -> tuple[list[tuple[str, Path]], list[Path]]:
     if pscripts_modules.is_dir():
         candidates.extend(sorted(path for path in pscripts_modules.iterdir() if path.is_dir() and not path.name.startswith(".")))
 
+    canonical_aebndl = [root / "modules" / "aebndl_module", pscripts_modules / "aebndl_module"]
+    has_canonical_aebndl = any(source_name(path) == "aebndl" for path in canonical_aebndl if path.is_dir())
+
     seen: set[str] = set()
     sources: list[tuple[str, Path]] = []
     unknown: list[Path] = []
@@ -101,6 +120,8 @@ def package_sources(root: Path) -> tuple[list[tuple[str, Path]], list[Path]]:
         if not name:
             unknown.append(path)
             continue
+        if normalized(name) == "aebndl" and has_canonical_aebndl and path.name != "aebndl_module":
+            continue
         if path.parent == module_dir and is_transferred_distribution(name):
             continue
         key = normalized(name)
@@ -112,6 +133,17 @@ def package_sources(root: Path) -> tuple[list[tuple[str, Path]], list[Path]]:
 
 def installed_names() -> set[str]:
     return {normalized(dist.metadata["Name"]) for dist in metadata.distributions() if dist.metadata.get("Name")}
+
+
+def installed_versions() -> dict[str, str]:
+    """Return normalized distribution names and their installed versions."""
+    versions: dict[str, str] = {}
+    for dist in metadata.distributions():
+        name = dist.metadata.get("Name")
+        version = dist.version
+        if name and version:
+            versions[normalized(name)] = version
+    return versions
 
 
 def ensure_pscripts(root: Path, dry_run: bool) -> bool:
@@ -175,7 +207,7 @@ def console_scripts(package_names: list[str]) -> list[tuple[str, str]]:
         is_transferred_distribution = lambda _d: False  # noqa: E731
         is_transferred_cli_command = lambda _c: False  # noqa: E731
 
-    names: dict[str, str] = {}
+    names: dict[str, tuple[str, str]] = {}
     for package_name in package_names:
         if is_transferred_distribution(package_name):
             continue
@@ -192,8 +224,15 @@ def console_scripts(package_names: list[str]) -> list[tuple[str, str]]:
                 and entry_point.name
                 and not is_transferred_cli_command(entry_point.name)
             ):
-                names[entry_point.name] = owner
-    return sorted(names.items())
+                key = entry_point.name.casefold()
+                previous = names.get(key)
+                if previous and normalized(previous[1]) != normalized(owner):
+                    raise ValueError(
+                        f"Console command '{entry_point.name}' is declared by both "
+                        f"'{previous[1]}' and '{owner}'"
+                    )
+                names[key] = (entry_point.name, owner)
+    return sorted(names.values())
 
 
 def package_kind(path: Path, root: Path) -> str:
@@ -230,8 +269,16 @@ def write_console_proxy(
     *,
     overwrite_legacy: bool = False,
 ) -> None:
-    if (destination.exists() or destination.is_symlink()) and not overwrite_legacy:
-        raise FileExistsError(destination)
+    if destination.exists() or destination.is_symlink():
+        if not overwrite_legacy:
+            if str(destination.parent.parent) not in sys.path:
+                sys.path.insert(0, str(destination.parent.parent))
+            try:
+                from scripts_setup.launcher_generator import is_managed_wrapper
+            except ImportError:
+                is_managed_wrapper = lambda _path: False  # noqa: E731
+            if not is_managed_wrapper(destination):
+                raise FileExistsError(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     target = venv_dir / ("Scripts" if windows else "bin") / (name + ".exe" if windows else name)
     if not target.is_file():
@@ -243,9 +290,11 @@ def write_console_proxy(
     try:
         from scripts_setup.launcher_generator import generate_windows_wrapper, generate_posix_wrapper
         if windows:
-            destination.write_text(generate_windows_wrapper(name), encoding="utf-8", newline="\r\n")
+            content = generate_windows_wrapper(name).replace("\r\n", "\n")
+            destination.write_text(content, encoding="utf-8", newline="\r\n")
         else:
-            destination.write_text(generate_posix_wrapper(name), encoding="utf-8", newline="\n")
+            content = generate_posix_wrapper(name).replace("\r\n", "\n")
+            destination.write_text(content, encoding="utf-8", newline="\n")
             try:
                 destination.chmod(0o755)
             except Exception:
@@ -268,14 +317,23 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
         print("[ERROR] pscripts submodule is missing and could not be initialized", file=sys.stderr)
         return 1
     sources, unknown = package_sources(root)
-    present = installed_names()
-    missing = [(name, path) for name, path in sources if normalized(name) not in present]
+    present = installed_versions()
+    missing = [
+        (name, path)
+        for name, path in sources
+        if normalized(name) not in present
+        or (source_version(path) is not None and present[normalized(name)] != source_version(path))
+    ]
     print(f"Mode: {'dry run' if dry_run else 'install missing only'}")
     print(f"Python: {sys.executable}")
     print(f"Packages: {len(sources)} found, {len(missing)} missing, {len(unknown)} with unreadable/unknown names")
     print("Package inventory:")
     for name, path in sources:
-        state = "missing; will install" if normalized(name) not in present else "already installed"
+        installed = present.get(normalized(name))
+        source = source_version(path)
+        state = "missing; will install" if installed is None else (
+            f"version {installed} installed; source {source}; will upgrade" if source and installed != source else "already installed"
+        )
         print(f"  [{state}] {package_kind(path, root)}: {name} ({path.relative_to(root)})")
     for path in unknown:
         print(f"[WARN] Skipped unknown package name: {path}")
@@ -351,7 +409,14 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
     except ImportError:
         classify_vm_launcher = None  # type: ignore[assignment]
 
-    for name, owner in console_scripts([name for name, _ in sources]):
+    try:
+        discovered_console_scripts = console_scripts([name for name, _ in sources])
+    except ValueError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        failures += 1
+        discovered_console_scripts = []
+
+    for name, owner in discovered_console_scripts:
         console_count += 1
         owner_key = normalized(owner)
         owner_path = local_sources.get(owner_key)
@@ -363,19 +428,34 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
         destination = launcher_path(bin_dir, name, windows)
         exists = destination.exists() or destination.is_symlink()
         migrate_legacy = False
+        managed_stale = False
+        unmanaged_existing = False
+        if exists and classify_vm_launcher is not None:
+            try:
+                from scripts_setup.launcher_generator import classify_wrapper, generate_windows_wrapper, generate_posix_wrapper
+                classification = classify_wrapper(destination)
+                if classification.status == "unmanaged":
+                    unmanaged_existing = True
+                    print(f"[WARN] Preserving unmanaged launcher at {destination}; not overwriting.")
+                else:
+                    expected = generate_windows_wrapper(name) if windows else generate_posix_wrapper(name)
+                    current = destination.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
+                    managed_stale = current != expected.replace("\r\n", "\n")
+            except (OSError, ImportError):
+                pass
         if exists and name in {"vm", "vm-lab"} and classify_vm_launcher is not None:
             cls = classify_vm_launcher(destination)
             if cls == "legacy_vm_lab_powershell":
                 migrate_legacy = True
             elif cls in {"unmanaged", "ambiguous"}:
                 print(f"[WARN] Preserving {cls} launcher at {destination}; not overwriting.")
-        missing_proxy = (not exists) or migrate_legacy
+        missing_proxy = (not exists) or migrate_legacy or managed_stale
         group = console_inventory.setdefault(owner_key, (owner_description, []))[1]
-        tag = " [migrate legacy]" if migrate_legacy else (" [missing proxy]" if not exists else "")
+        tag = " [migrate legacy]" if migrate_legacy else (" [missing proxy]" if not exists else (" [repair stale]" if managed_stale else ""))
         group.append(name + tag)
-        if missing_proxy:
+        if missing_proxy and not unmanaged_existing:
             missing_console.append((name, owner, owner_path, destination, migrate_legacy))
-        else:
+        elif not missing_proxy or unmanaged_existing:
             existing += 1
     print(f"Console commands: {console_count} found, {len(missing_console)} missing proxies")
     for owner_description, commands in sorted(console_inventory.values(), key=lambda item: item[0].lower()):

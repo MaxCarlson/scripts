@@ -52,7 +52,7 @@ module suites below before committing; no live external service/production input
 
 ```powershell
 .venv/Scripts/python.exe -m pytest modules/compresser/tests -q -p no:cacheprovider --basetemp=modules/compresser/.pytest_tmp_root/reports-N --tb=short
-.venv/Scripts/python.exe -m pytest modules/mangadl/tests -o addopts= -q -p no:cacheprovider --tb=short
+.venv/Scripts/python.exe -m pytest pscripts/modules/mangadl/tests -o addopts= -q -p no:cacheprovider --tb=short
 .venv/Scripts/python.exe -m pytest modules/scripts_help/tests -q -p no:cacheprovider --basetemp=modules/scripts_help/.pytest_tmp_root/reports-N --tb=short
 ```
 
@@ -189,7 +189,7 @@ UTC timestamp+unique runID+operation; schema/method/status recorded in content.
 **Files:** Both CLI adapters/builders; `inventory_ui.py`, `file_inventory.py`,
 `preview.py`, `snapshots.py` (if print facade needed); extend
 `tests/cli_test.py`, `file_inventory_test.py`, `preview_test.py`,
-`modules/mangadl/tests/compress_test.py`.
+`pscripts/modules/mangadl/tests/compress_test.py`.
 Both READMEs/API docs/handoffs, active status/checklist, registry/dependencies.
 
 **Interfaces:** Task3 report builders `build_inventory_report(payload: dict, *,

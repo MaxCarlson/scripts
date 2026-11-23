@@ -13,9 +13,8 @@
 Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) revealed:
 - **Remotes**:
   - `origin`: `git@github.com:MaxCarlson/scripts.git`
-  - `aebndl-upstream`: `https://github.com/estellaarrieta/aebn-vod-downloader.git`
 - **Active Branches & Worktrees**:
-  - Multiple concurrent worktrees exist under `C:/Users/mcarls/src/scripts/.worktrees/` and `C:/Users/mcarls/.codex/worktrees/`, including active work on `resource-coordinator`, `llm_monitor`, `aebn`, `runmux`, and `snips`.
+  - Multiple concurrent worktrees exist under `C:/Users/mcarls/src/scripts/.worktrees/` and `C:/Users/mcarls/.codex/worktrees/`, including active work on `resource-coordinator`, `llm_monitor`, `runmux`, and `snips`.
   - The main branch is at `91028159` ("docs(resource-coordinator): compare target validation stalls").
   - The isolated worktree `C:\Users\mcarls\src\scripts-notifications-p00-p01` was created directly off `91028159` without modifying or disrupting any existing worktrees or uncommitted changes.
 - **Resource Coordinator Ownership**:

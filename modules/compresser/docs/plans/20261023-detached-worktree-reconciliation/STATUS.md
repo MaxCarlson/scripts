@@ -16,7 +16,7 @@ The 24 hash-identical paths are duplicate copies of `main` and should be left in
 
 - `modules/compresser/compresser/distribution.py`, `preview_pipeline.py`, `sampling.py`
 - `modules/compresser/tests/cache_diagnostics_test.py`, `cache_policy_test.py`, `cancellation_test.py`, `confirmation_test.py`, `distribution_test.py`, `file_inventory_test.py`, `inventory_summary_test.py`, `inventory_test.py`, `memory_policy_test.py`, `multi_quality_test.py`, `pipeline_benchmark.py`, `preview_test.py`, `read_ownership_test.py`, `recovery_test.py`, `safety_test.py`, `sampling_test.py`, `scheduler_test.py`, `scratch_and_admission_test.py`, `selection_test.py`, `snapshot_test.py`
-- `modules/mangadl/tests/library_guard_test.py`
+- `pscripts/modules/mangadl/tests/library_guard_test.py`
 
 The 25 content-different paths are also superseded by current `main`; do not copy them wholesale:
 
@@ -24,10 +24,10 @@ The 25 content-different paths are also superseded by current `main`; do not cop
 | --- | --- |
 | `modules/compresser/compresser/arguments.py`, `estimation_models.py`, `plan_store.py`, `sampling_plan.py` | Earlier versions of modules now tracked and evolved on `main`; retain none of these snapshots. |
 | `modules/compresser/compresser/cli.py`, `inventory_ui.py`, `preview.py`, `report_session.py`, `reporting.py` | Earlier command/report implementations. The detached CLI explicitly rejects `estimate`; current `main` dispatches to the estimate executor. Plan reports and multi-format preview are already present on `main`. |
-| `modules/mangadl/mangadl/cli_core.py`, `compress.py` | Earlier MangaDL adapter; it also rejects estimate execution that current `main` supports. |
-| `modules/compresser/compresser/__init__.py`, `modules/compresser/pyproject.toml`, `modules/mangadl/mangadl/__init__.py`, `modules/mangadl/pyproject.toml`, `modules/scripts_help/scripts_help/registry/registry.py` | Older versions/entry descriptions; current versions and command descriptions remain authoritative. |
-| `modules/compresser/README.md`, `modules/mangadl/README.md` | Earlier documentation snapshot; current docs already describe the operation-oriented CLI. Do not roll them back. |
-| `modules/compresser/tests/arguments_test.py`, `estimation_plan_test.py`, `cli_test.py`, `operation_reports_test.py`, `pipeline_diagnostics_test.py`, `modules/mangadl/tests/compress_test.py`, `modules/compresser/tests/cli_test_support.py` | No new test function names in the compared suites. Detached counts are lower than current `main` for arguments (10 vs 18), plan (9 vs 11), CLI (5 vs 8), operation reports (7 vs 10), and MangaDL compression (29 vs 31). No matching detached test had a higher assertion count. Current MangaDL tests already cover multiple explicit preview formats. |
+| `pscripts/modules/mangadl/mangadl/cli_core.py`, `compress.py` | Earlier MangaDL adapter; it also rejects estimate execution that current `main` supports. |
+| `modules/compresser/compresser/__init__.py`, `modules/compresser/pyproject.toml`, `pscripts/modules/mangadl/mangadl/__init__.py`, `pscripts/modules/mangadl/pyproject.toml`, `modules/scripts_help/scripts_help/registry/registry.py` | Older versions/entry descriptions; current versions and command descriptions remain authoritative. |
+| `modules/compresser/README.md`, `pscripts/modules/mangadl/README.md` | Earlier documentation snapshot; current docs already describe the operation-oriented CLI. Do not roll them back. |
+| `modules/compresser/tests/arguments_test.py`, `estimation_plan_test.py`, `cli_test.py`, `operation_reports_test.py`, `pipeline_diagnostics_test.py`, `pscripts/modules/mangadl/tests/compress_test.py`, `modules/compresser/tests/cli_test_support.py` | No new test function names in the compared suites. Detached counts are lower than current `main` for arguments (10 vs 18), plan (9 vs 11), CLI (5 vs 8), operation reports (7 vs 10), and MangaDL compression (29 vs 31). No matching detached test had a higher assertion count. Current MangaDL tests already cover multiple explicit preview formats. |
 
 ## Completion and Next Action
 

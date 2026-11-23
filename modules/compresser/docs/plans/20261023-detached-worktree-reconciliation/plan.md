@@ -8,7 +8,7 @@
 
 **Tech Stack:** Git worktrees, PowerShell, Python, pytest, Ruff, Black.
 
-**Scope:** `modules/compresser`, the compression adapter in `modules/mangadl`, and their plan/handoff documentation. The detached worktree is `C:\Users\mcarls\src\scripts\.worktrees\compression-inventory-estimation-20261017`.
+**Scope:** `modules/compresser`, the compression adapter in `pscripts/modules/mangadl`, and their plan/handoff documentation. The detached worktree is `C:\Users\mcarls\src\scripts\.worktrees\compression-inventory-estimation-20261017`.
 
 ## Current Evidence
 
@@ -45,8 +45,8 @@
 
 - `modules/compresser/compresser/arguments.py`, `sampling_plan.py`, `plan_store.py`, `estimation_models.py`: detached operation parsing and persisted-plan code to compare with the current implementation.
 - `modules/compresser/compresser/cli.py`, `estimation.py`, `measurement.py`, and `mangadl/mangadl/compress.py`: current command and execution paths; preserve the working `estimate` dispatch.
-- `modules/compresser/tests/` and `modules/mangadl/tests/compress_test.py`: compare regression coverage; add tests only for a demonstrated gap.
-- `modules/compresser/README.md`, `modules/mangadl/README.md`, package metadata, and help registry: documentation/metadata candidates; do not copy old version numbers.
+- `modules/compresser/tests/` and `pscripts/modules/mangadl/tests/compress_test.py`: compare regression coverage; add tests only for a demonstrated gap.
+- `modules/compresser/README.md`, `pscripts/modules/mangadl/README.md`, package metadata, and help registry: documentation/metadata candidates; do not copy old version numbers.
 - This plan's `STATUS.md` and `checklist.md`, plus `modules/compresser/docs/plans/HANDOFF.md`: record review and any approved follow-up.
 
 ## Tasks
