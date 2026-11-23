@@ -187,3 +187,14 @@ Historical checkpoint status above is superseded by the final pscripts and full-
 - [ ] Recheck scripts PR #22 and obtain explicit merge authorization. Reconcile source retirement later on a fresh branch; preserve the 16 quarantine records and seven holds.
 
 **Current disposition: code review may proceed, but merge/integration and public-install readiness are BLOCKED by the unpublished packages, unverified publisher/environment configuration, shared release-guide mismatch, hosted shared qualification, and open pscripts PR #1.**
+
+## Scripts hosted qualification after release-readiness refresh — 2026-11-23
+
+- [x] Verify the current documentation-only branch checkpoint with full hosted scripts qualification: [Ubuntu run 45159425500](https://github.com/MaxCarlson/scripts/actions/runs/45159425500) completed successfully on `e6df2e6c2950ce5d0673b3fd8100c5bf89051a38`.
+- [x] Verify wheel hashes/metadata and all five installed mxc versions/import origins; no legacy shared distributions; `pip check` clean.
+- [x] Verify authenticated pinned pscripts and nested AEBN submodules: `1640d1b80e60116aab74c9e89be67a83090a3727` and `af6bb8b1db14c8434c0a9da446ec49bbf067ab9b`.
+- [x] Full Bash bootstrap: 64 application packages, 69 launchers, 95 console commands; zero missing or failed.
+- [x] Runmux synthetic HTTP suite: 12 cases passed; selected pre-bootstrap consumer/setup selection: 107 passed, 1 deselected; launcher suite: 3 passed; post-bootstrap setup/consumer/Runmux selection: 120 passed; final `pip check` clean.
+- [ ] This qualification used staging wheels. Clean public-index installation remains blocked until the five exact versions are published and their provenance/metadata are checked.
+
+**Scripts staging qualification is green on the updated PR head; release, pscripts-merge, and public-install gates remain as above.**
