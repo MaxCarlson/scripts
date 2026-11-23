@@ -221,3 +221,15 @@ Historical checkpoint status above is superseded by the final pscripts and full-
 - [ ] Require separate explicit approval for physical source removal and for merging the resulting retirement PR.
 
 **Disposition:** release guide correction is open for review in shared PR #3. Scripts staging qualification is green, while public PyPI installation and merge/release remain blocked by the gates above. Source retirement remains a later, separately approved phase covering both catalogs.
+
+## Post-merge hygiene reconciliation — 2026-11-23
+
+- [x] Fetch and verify current scripts main at `fcd7cd3f45d453ab8c6a55b0bb2a7ad228948a27` (PR #24). Preserve the primary checkout's untracked `diagnostics/`; do not fast-forward this dirty checkout.
+- [x] Use `pwsh/Sync-LocalRepos.ps1 -Apply -Json` against the two clean local dependency `main` checkouts. Both returned `already_current`, clean, 0 ahead/behind; no checkout was moved.
+- [x] Merge current `scripts/main` into the existing PR #22 worktree. Merge commit: `16636226d933e31cd327907d9b869c583f79ec5c`; no conflicts; main is an ancestor; `pscripts` pin stays at `1640d1b80e60116aab74c9e89be67a83090a3727`.
+- [x] Complete hosted qualification on pre-PR-24 merge head `b98ee1221b91425c2a96486e2870f7e1071089cd`: run [45176168715](https://github.com/MaxCarlson/scripts/actions/runs/45176168715) succeeded, including 64 packages, 69 script launchers, 95 console commands, zero missing, 12 Runmux HTTP tests, 3 launcher tests, 120 post-bootstrap tests, and clean `pip check`.
+- [x] Preserve local `scripts_setup/tests` result (18 passed) and record the Windows sandbox limitation for the root-hygiene utility's own local-Git fixture tests; actual utility synchronization completed successfully for both targeted clean repos.
+- [x] Confirm pscripts PR #1 is merged as `11b5e200b4c94e7307d8f788ac5443faac01ff21`; the pinned fix commit `1640d1b80e60116aab74c9e89be67a83090a3727` remains in the scripts Gitlink.
+- [ ] Commit/push this status and checklist update; run the hosted workflow on the final post-PR-24 head; update PR #22 description with merged hygiene and pscripts status.
+- [ ] Preserve the five unpublished-package, Trusted Publisher/environment, shared hosted qualification, and public-index validation gates. Do not publish packages or merge PR #22 without explicit authorization.
+- [ ] Keep source retirement as a later phase on a fresh branch from integrated `scripts/main`; preserve the historical retirement checkpoint and both module catalogs/ownership holds.
