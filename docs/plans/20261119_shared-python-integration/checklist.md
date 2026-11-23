@@ -171,3 +171,19 @@ Historical checkpoint status above is superseded by the final pscripts and full-
 - [ ] Merge scripts PR #22 only after its review and explicit approval. Source retirement remains a separate post-integration branch; keep the historical retirement branch and all holds intact.
 
 **Final disposition: READY FOR MERGE REVIEW.** The reconciled branch has passed the required Linux and Windows staging qualification. The independent cross-repository merge and publication gates remain visible; this task did not merge either PR or publish packages.
+
+## Release-readiness refresh — 2026-11-23
+
+- [x] Recheck remote `main` refs and open PRs: shared `5e288c393de066d19c98c33ac8ab2e6bc9b0ce5d`; toolkit `a99fa875a90a3e36e90f5167f97a90a2039bc040`; pscripts `70ba27dd9259eea44d3710691fb276573c26789a`; scripts `76bf32b70a9e6d1e3e9db914f0f98496b4aca157`; pscripts PR #1 remains open at `1640d1b80e60116aab74c9e89be67a83090a3727`; scripts PR #22 remains open at `8abb9f8530d220de2998d6b6c7eb1356fc525e50`.
+- [x] Query public PyPI JSON for all five exact project names; each project endpoint returned HTTP 404. The approved versions are not published and no clean public-index install can be claimed.
+- [x] Recompute all ten local shared wheel/sdist hashes against `dist/SHA256SUMS.txt`; all matched, including corrected `mxc-script-logging` wheel hash `7554f367067123e2369b12996af2593adb4437a79667b53528d2e7bdd90b7f45`.
+- [x] Review current shared release workflow: namespaced tags map to correct package directories; publishing job uses `pypi`, `id-token: write`, and PyPA's trusted-publishing action.
+- [ ] Verify the five Pending Trusted Publisher registrations and actual GitHub `pypi` environment protections. The available authenticated interfaces do not expose those settings. Required publisher fields: owner `MaxCarlson`, repository `shared-python-modules`, workflow `.github/workflows/release.yml`, environment `pypi`, one exact pending project name per distribution.
+- [ ] Correct shared `docs/RELEASE_PROCESS.md`: it still shows old-name tag examples that do not match current `mxc-*/v*` workflow triggers.
+- [ ] Obtain/verify a successful current-main shared-package hosted qualification. The latest queried qualification attempt has failed jobs without steps/logs; the successful Dependabot graph-update run is not qualification evidence. Manual dispatch was unavailable because local `gh` authentication is invalid and the connected GitHub interface is read-only.
+- [ ] Merge pscripts PR #1 after separate review/authorization; scripts PR #22 currently pins its unmerged head.
+- [ ] Obtain explicit release approval, publish the five exact versions, and verify PyPI metadata and attestations.
+- [ ] Run focused clean-index installs from PyPI for scripts and toolkit after publication.
+- [ ] Recheck scripts PR #22 and obtain explicit merge authorization. Reconcile source retirement later on a fresh branch; preserve the 16 quarantine records and seven holds.
+
+**Current disposition: code review may proceed, but merge/integration and public-install readiness are BLOCKED by the unpublished packages, unverified publisher/environment configuration, shared release-guide mismatch, hosted shared qualification, and open pscripts PR #1.**
