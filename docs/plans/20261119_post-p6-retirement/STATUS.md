@@ -3,6 +3,7 @@
 Date: 2026-11-23
 Branch: `retire/toolkit-sources-20261123`
 Base: scripts `main` at `c87db5b68ae14ce5398c4a8cd16ed23289bcfacf`
+Reconciled with current scripts `main` at `7b9f596ac1abebd5be8395962bfb8124379b082e`; that advance changed only Runmux chart rendering and its JavaScript test, both retained unchanged.
 Historical checkpoint: `audit/post-p6-source-retirement-20261119` at `cc3273f0e1571816de4864af17ab2e1d36bde58e`
 
 ## Summary
