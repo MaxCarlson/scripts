@@ -3,7 +3,7 @@ Scheduler module: robust Python scheduling, automation, and command execution.
 """
 from __future__ import annotations
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 from .models import Schedule, ScheduleTiming, Task, ExecutionResult, TimingType
 from .config import ConfigManager

@@ -1,8 +1,12 @@
-"""Canonical ownership boundary for modules transferred to MaxCarlson/llm-agent-toolkit.
+"""Historical P6 inventory for modules originally transferred to llm-agent-toolkit.
 
 Original source directories under ``scripts/modules/`` remain untouched on disk for
 historical continuity, but must not be installed into ``scripts/.venv``, included in
 ``scripts_manifest.json``, or exposed through ``scripts/bin`` launchers.
+
+The five shared libraries have since moved to the independent shared-package
+distribution registry. Check that registry before using this historical transfer
+inventory to report current installation ownership.
 """
 from __future__ import annotations
 
@@ -80,7 +84,7 @@ TRANSFERRED_NORMALIZED_DISTRIBUTIONS: frozenset[str] = frozenset(
     normalize_distribution_name(dist) for dist in TRANSFERRED_MODULE_DIRECTORY_TO_DISTRIBUTION.values()
 )
 
-# Modules that remain scripts-owned even if consumed as pinned external archives by llm-agent-toolkit
+# Modules that remain scripts-owned even though they are installed from shared distributions.
 SCRIPTS_OWNED_SHARED_MODULES: frozenset[str] = frozenset({"termdash", "cross_platform"})
 
 
