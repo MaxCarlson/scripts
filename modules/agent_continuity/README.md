@@ -144,3 +144,17 @@ python -m pytest
 `llmd continue` opens a flat searchable picker across registered conversations; `llmd continue "Project"` or `-g "Project"` scopes it. Type to filter GUI, agent, provider, or native session ID; use arrows and Enter to choose, Backspace to edit, and Esc to cancel. Active agents sort first by recent activity. Inactive agents remain visible and require confirmation to reactivate. Completed agents are hidden unless `-A` is supplied, and the picker will not resume completed agents. A missing session association never starts a provider.
 
 Runtime status is independent of registry lifecycle. `IN USE` means the same-runtime LLMD session lock is currently held; `PENDING` marks an unresolved launch; `NOT OBSERVED` means that lock was not observed; `UNKNOWN` means runtime identity is unavailable or belongs to a different environment. Windows and WSL use separate local lock visibility, so the status cannot establish activity across those boundaries. Managed `continue -a` atomically acquires the session lock before launching and rejects contention. The lock is held while the provider subprocess runs and released on exit or spawn failure.
+
+## Starting and selecting historical sessions
+
+A positional start is preview-only unless both `--new` and `-a/--apply` are present. It creates missing local GUI and agent records, refuses a slot with an already selected session, and creates a new native conversation only after that explicit authorization. Existing named `start -g/-n` keeps its legacy dry-run default and authorization semantics.
+
+```powershell
+llmd start "Project" "Agent" -p codex                    # preview; no provider call
+llmd start "Project" "Agent" -p codex --new -a          # explicit new conversation
+llmd continue "Project" "Agent" -p agy                  # preview historical selection
+llmd continue "Project" "Agent" -i "SESSION_ID" -a      # select and resume exact history ID
+llmd switch -g "Project" -n "Agent" -p agy -r -a        # reuse latest known AGY session
+```
+
+`continue -p` selects a historical session only when that provider has one unambiguous session in the agent history. If multiple sessions match, use `-i/--session-id`; unknown IDs are rejected and never trigger a new session. Selecting a historical session records an activation transition, while selecting the already current session remains a no-op. Inactive direct targets require `--reactivate`; completed agents require a separate lifecycle change. Legacy direct `continue` remains preview-by-default. Allowing an explicit target to resume without `-a` is a future product decision and is not enabled here.

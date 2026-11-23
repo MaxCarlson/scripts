@@ -180,3 +180,62 @@ def test_runtime_lease_is_nonblocking_and_lifetime_scoped(tmp_path):
     with _session_runtime_lock(dispatcher, "session-test.lock"):
         assert _try_session_runtime_lock(dispatcher, "session-test.lock")
     assert not _try_session_runtime_lock(dispatcher, "session-test.lock")
+
+
+def test_positional_start_requires_explicit_authorization_without_launch(tmp_path):
+    home = tmp_path / "registry"
+    parser = build_parser()
+    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "codex"])
+    assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+    assert DispatcherService(home_dir=home).list_guis() == []
+
+
+def test_positional_start_new_apply_creates_pending_without_mocked_provider_call(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    parser = build_parser()
+    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "codex", "--new", "-a"])
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane", lambda *a, **k: 0)
+    assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+    service = DispatcherService(home_dir=home)
+    assert service.get_slot(gui="P", name="A")["state"] == "active"
+    assert service.list_pending_launches(gui="P")
+
+
+def test_continue_historical_provider_and_exact_id_selection(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.register("P", "A", provider="agy", session_id="agy-one")
+    service.register("P", "A", provider="codex", session_id="cx-two", select=True)
+    parser = build_parser()
+    seen = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane", lambda dispatcher, **kw: seen.append(kw["slot_id"]) or 0)
+    args = parser.parse_args(["-H", str(home), "continue", "P", "A", "-p", "agy", "-a"])
+    assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+    assert service.get_slot(gui="P", name="A")["current"]["native_session_id"] == "agy-one"
+    args = parser.parse_args(["-H", str(home), "continue", "P", "A", "-i", "cx-two", "-a"])
+    assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+    assert service.get_slot(gui="P", name="A")["current"]["native_session_id"] == "cx-two"
+    assert len(seen) == 2
+
+
+def test_continue_missing_historical_id_never_starts_a_new_session(tmp_path):
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.register("P", "A", provider="agy", session_id="known")
+    parser = build_parser()
+    args = parser.parse_args(["-H", str(home), "continue", "P", "A", "-i", "missing"])
+    with pytest.raises(ContinuityError, match="not in this agent's activation history"):
+        dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())
+    assert len(service.get_slot(gui="P", name="A")["history"]) == 1
+
+
+def test_continue_provider_ambiguity_requires_exact_id(tmp_path):
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.register("P", "A", provider="agy", session_id="one")
+    service.register("P", "A", provider="codex", session_id="middle", select=True)
+    service.register("P", "A", provider="agy", session_id="two", select=True)
+    parser = build_parser()
+    args = parser.parse_args(["-H", str(home), "continue", "P", "A", "-p", "agy"])
+    with pytest.raises(ContinuityError, match="Multiple historical agy sessions"):
+        dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())

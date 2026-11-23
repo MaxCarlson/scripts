@@ -1,11 +1,9 @@
-# LLMD CLI v2 phases 1-2
+# LLMD CLI v2 phases 1-4
 
-Status: implemented and validated on feature/llmd-cli-v2-20261123; implemented and validated; local commit recorded.
+Status: Phase 4 implemented; validated; local commit pending on feature/llmd-cli-v2-20261123.
 
-Scope: global and scoped listings, composite registration, positional forms, compatibility, and documentation. Phases 3-4 and live provider or terminal launches remain deferred.
+Positional start is preview-only by default and requires --new plus --apply before provider initialization. Legacy named start and direct continue preserve their existing authorization defaults. Historical continuation resolves only IDs present in activation history; provider matching refuses ambiguity, exact IDs disambiguate. Switch reuse uses the same resolver and preserves latest-provider behavior.
 
-Implementation uses existing events and the dispatcher mutation lock, with ordered event timestamps for replay. A partial registration can be retried. Registration selection changes have no runtime observation in this phase.
+Validation: python -m pytest -q --basetemp=.pytest_tmp_root/phase4-final-full; python -m ruff check agent_continuity/dispatcher.py agent_continuity/dispatcher_cli.py tests/dispatcher_v2_test.py; git diff --check.
 
-Validation: python -m pytest -q --basetemp=.pytest_tmp_root/llmd-v2-full; python -m ruff check agent_continuity/dispatcher.py agent_continuity/dispatcher_cli.py tests/dispatcher_v2_test.py.
-
-Next: independently review deferred phases 3-4; do not push.
+Next: review and commit locally. No push or merge.

@@ -133,15 +133,20 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("-r", "--reuse-previous", action="store_true")
         command.add_argument("-C", "--cwd")
         command.add_argument("-a", "--apply", action="store_true")
+        if command_name == "start":
+            command.add_argument("-N", "--new", action="store_true", help="Explicitly authorize a new native conversation.")
 
     cont = sub.add_parser("continue", help="Resume the currently selected native session.")
     _add_common_options(cont)
     cont.add_argument("gui_pos", nargs="?")
     cont.add_argument("agent_pos", nargs="?")
     cont.add_argument("-g", "--gui")
-    cont.add_argument("-n", "--agent-name")
+    cont.add_argument("-n", "--agent-name", "--name")
     cont.add_argument("-a", "--apply", action="store_true")
     cont.add_argument("-A", "--all", action="store_true", help="Include completed agents in the interactive picker.")
+    cont.add_argument("-p", "--provider", choices=("agy", "codex"), help="Select the most recently activated matching historical provider session.")
+    cont.add_argument("-i", "--session-id", help="Select this exact session from the agent's existing history.")
+    cont.add_argument("-R", "--reactivate", action="store_true", help="Explicitly reactivate an inactive agent before resuming.")
 
     opening = sub.add_parser("open", help="Open active selected sessions through terminal_launcher.")
     _add_common_options(opening)
@@ -617,6 +622,29 @@ def _resolve_name(positional: str | None, named: str | None, label: str) -> str 
     return named if named is not None else positional
 
 
+def _resolve_historical_session(dispatcher: DispatcherService, *, gui: str, name: str,
+                                provider: str | None, session_id: str | None,
+                                allow_latest: bool = False) -> dict[str, Any] | None:
+    slot = dispatcher.get_slot(gui=gui, name=name)
+    history = slot["history"]
+    if session_id:
+        matches = [row for row in history if row["native_session_id"] == session_id]
+        if provider:
+            matches = [row for row in matches if row["provider"] == provider]
+        if not matches:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Requested session ID is not in this agent's activation history.")
+        return matches[-1]
+    if provider:
+        matches = dispatcher.sessions_for_provider(gui=gui, name=name, provider=provider)
+        if not matches:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, f"No historical {provider} session exists for this agent.")
+        if len(matches) > 1 and not allow_latest:
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                f"Multiple historical {provider} sessions exist; specify --session-id from `llmd history`.")
+        return matches[0]
+    return None
+
+
 def _listing(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[str, Any]:
     if args.limit is not None and args.limit < 1:
         raise ContinuityError(ErrorCode.INVALID_INPUT, "Limit must be a positive integer.")
@@ -730,14 +758,28 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
                                            session_id=args.session_id, environment_selector=args.environment,
                                            cwd=args.cwd, launch_id=args.launch_id, apply=args.apply)
     elif args.command in {"start", "switch"}:
-        if args.command == "switch" and args.reuse_previous:
-            old = dispatcher.latest_session_for_provider(gui=args.gui, name=args.agent_name, provider=args.provider)
-            if old is None:
-                raise ContinuityError(ErrorCode.INVALID_INPUT, f"No previous {args.provider} session exists in this slot.")
-            result = dispatcher.attach_session(gui=args.gui, name=args.agent_name, provider=args.provider,
-                                               session_id=old["native_session_id"],
-                                               environment_selector=old["environment_id"], apply=args.apply,
-                                               provenance="dispatcher_reuse")
+        positional_start = args.command == "start" and args.gui_pos is not None
+        if positional_start:
+            if not args.apply:
+                preview = dispatcher.register(args.gui, args.agent_name, apply=False)
+                print(f"{preview['summary']} New provider session preview only; execution requires --new -a.", file=output_stream)
+                return 0
+            if not args.new:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                    "Positional start execution requires --new and -a/--apply to authorize a provider launch.")
+            dispatcher.register(args.gui, args.agent_name, apply=True)
+            slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
+            if slot["current"]:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                    f"{args.gui!r} / {args.agent_name!r} already selects {slot['current']['provider']} session "
+                    f"{slot['current']['native_session_id']}; use continue or switch explicitly.")
+        reuse = args.command == "switch" and args.reuse_previous
+        if reuse:
+            old = _resolve_historical_session(dispatcher, gui=args.gui, name=args.agent_name,
+                                              provider=args.provider, session_id=None, allow_latest=True)
+            result = dispatcher.attach_session(gui=args.gui, name=args.agent_name, provider=old["provider"],
+                session_id=old["native_session_id"], environment_selector=old["environment_id"],
+                apply=args.apply, provenance="dispatcher_reuse")
             if args.apply:
                 slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
                 return _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
@@ -753,12 +795,34 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
         if not args.agent_name:
             return _run_picker(dispatcher, args, input_stream, output_stream)
         slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
-        if slot["current"] is None:
+        target = _resolve_historical_session(dispatcher, gui=args.gui, name=args.agent_name,
+            provider=args.provider, session_id=args.session_id) if (args.provider or args.session_id) else slot["current"]
+        if target is None:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "This slot has no selected session; use `llmd start`.")
-        result = {"action": "continue", "applied": False, "slot": slot,
-                  "summary": "Dry-run: pass -a/--apply to resume the current session."}
+        if slot["state"] == "completed":
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Completed agents require an explicit lifecycle change before resumption.")
+        if slot["state"] == "inactive":
+            if not args.reactivate:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                    "This agent is inactive; pass --reactivate to confirm its lifecycle change.")
+            if args.apply:
+                dispatcher.set_slot_state(gui=args.gui, name=args.agent_name, state="active", apply=True)
+        if target != slot["current"]:
+            if args.apply and _session_in_use(dispatcher, target["provider"], target["environment_id"], target["native_session_id"]):
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Requested historical session is already in use.")
+            if not args.apply:
+                result = {"action": "continue", "applied": False, "slot": slot,
+                          "summary": f"Dry-run: would select historical {target['provider']} session {target['native_session_id']}."}
+            else:
+                dispatcher.attach_session(gui=args.gui, name=args.agent_name, provider=target["provider"],
+                    session_id=target["native_session_id"], environment_selector=target["environment_id"],
+                    apply=True, provenance="dispatcher_reuse")
+        else:
+            result = {"action": "continue", "applied": False, "slot": slot,
+                      "summary": "Dry-run: pass -a/--apply to resume the selected session."}
         if args.apply:
-            return _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
+            current_slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
+            return _run_pane(dispatcher, slot_id=current_slot["slot_id"], launch_id=None,
                              input_stream=input_stream, output_stream=output_stream)
     elif args.command == "open":
         result = _open(dispatcher, args)
