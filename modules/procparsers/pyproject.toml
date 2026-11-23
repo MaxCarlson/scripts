@@ -23,13 +23,15 @@ Homepage = "https://github.com/your-org/procparsers"
 Issues = "https://github.com/your-org/procparsers/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["procparsers"]
+packages = ["src/procparsers"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "procparsers",
+  "src/procparsers",
   "tests",
   "pyproject.toml",
+  "README.md",
+  "API_DOC.md",
 ]
 
 # ------------------------
