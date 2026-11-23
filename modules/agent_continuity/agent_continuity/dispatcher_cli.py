@@ -17,7 +17,7 @@ from typing import Any, TextIO
 
 from . import __version__
 from .dispatcher import DispatcherService
-from .environment import detect_runtime_kind
+from .environment import detect_runtime_kind, environment_is_locally_owned
 from .errors import ContinuityError, ErrorCode
 
 _BOOTSTRAP_PROMPT = "Session initialization only. Reply READY and await further instructions."
@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="llmd",
         description="Resume named Codex and AGY sessions associated with local GUI conversation aliases.",
-        epilog="Mutations and provider launches are dry-run by default. Pass -a/--apply to proceed.",
+        epilog="Register applies by default; legacy mutations and launches require -a/--apply.",
     )
     parser.add_argument("-H", "--home", help="Override the shared agent_continuity registry directory.")
     parser.add_argument("-j", "--json", dest="json_output", action="store_true", help="Output JSON.")
@@ -79,9 +79,25 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("-n", "--agent-name", required=True)
         command.add_argument("-a", "--apply", action="store_true")
 
-    listing = sub.add_parser("list", help="List active named agents for a GUI conversation.")
+    listing = sub.add_parser("list", help="List conversations and their agents.")
     _add_common_options(listing)
-    listing.add_argument("-g", "--gui", required=True)
+    listing.add_argument("gui_pos", nargs="?")
+    listing.add_argument("-g", "--gui")
+    listing.add_argument("-l", "--limit", type=int, help="Maximum records (default 10, or unlimited with --all).")
+    listing.add_argument("-A", "--all", action="store_true")
+    listing.add_argument("-c", "--color", choices=("auto", "always", "never"), default="auto")
+
+    register = sub.add_parser("register", help="Register a GUI, agent, and optional existing session.")
+    _add_common_options(register)
+    register.add_argument("gui_pos", nargs="?")
+    register.add_argument("agent_pos", nargs="?")
+    register.add_argument("-g", "--gui")
+    register.add_argument("-n", "--agent-name")
+    register.add_argument("-p", "--provider", choices=("agy", "codex"))
+    register.add_argument("-i", "--session-id")
+    register.add_argument("-d", "--dry-run", action="store_true")
+    register.add_argument("-a", "--apply", action="store_true", help="Compatibility option; registration applies by default.")
+    register.add_argument("-s", "--select", action="store_true", help="Select a different session, preserving history.")
 
     history = sub.add_parser("history", help="Show the full session activation history for one agent.")
     _add_common_options(history)
@@ -91,6 +107,17 @@ def build_parser() -> argparse.ArgumentParser:
     pending = sub.add_parser("pending", help="List unresolved provider launches for recovery.")
     _add_common_options(pending)
     pending.add_argument("-g", "--gui", help="Filter to one GUI conversation.")
+
+    doctor = sub.add_parser("doctor", help="Read-only registry, launch, and runtime diagnostics.")
+    _add_common_options(doctor)
+    doctor.add_argument("-g", "--gui")
+    doctor.add_argument("-n", "--agent-name")
+
+    recover = sub.add_parser("recover", help="Reconcile a captured pending session association.")
+    _add_common_options(recover)
+    recover.add_argument("-g", "--gui", required=True)
+    recover.add_argument("-n", "--agent-name", required=True)
+    recover.add_argument("-a", "--apply", action="store_true", help="Apply the metadata-only recovery.")
 
     attach = sub.add_parser("attach", help="Explicitly attach a known native session to a named slot.")
     _add_common_options(attach)
@@ -106,20 +133,31 @@ def build_parser() -> argparse.ArgumentParser:
     for command_name in ("start", "switch"):
         command = sub.add_parser(command_name, help="Start a native session for a named agent slot.")
         _add_common_options(command)
-        command.add_argument("-g", "--gui", required=True)
-        command.add_argument("-n", "--agent-name", required=True)
+        if command_name == "start":
+            command.add_argument("gui_pos", nargs="?")
+            command.add_argument("agent_pos", nargs="?")
+        command.add_argument("-g", "--gui", required=command_name != "start")
+        command.add_argument("-n", "--agent-name", required=command_name != "start")
         command.add_argument("-p", "--provider", required=True, choices=("agy", "codex"))
         command.add_argument("-e", "--environment", help="Target environment ID or alias (default: local).")
         if command_name == "switch":
             command.add_argument("-r", "--reuse-previous", action="store_true")
         command.add_argument("-C", "--cwd")
         command.add_argument("-a", "--apply", action="store_true")
+        if command_name == "start":
+            command.add_argument("-N", "--new", action="store_true", help="Explicitly authorize a new native conversation.")
 
     cont = sub.add_parser("continue", help="Resume the currently selected native session.")
     _add_common_options(cont)
-    cont.add_argument("-g", "--gui", required=True)
-    cont.add_argument("-n", "--agent-name", required=True)
+    cont.add_argument("gui_pos", nargs="?")
+    cont.add_argument("agent_pos", nargs="?")
+    cont.add_argument("-g", "--gui")
+    cont.add_argument("-n", "--agent-name", "--name")
     cont.add_argument("-a", "--apply", action="store_true")
+    cont.add_argument("-A", "--all", action="store_true", help="Include completed agents in the interactive picker.")
+    cont.add_argument("-p", "--provider", choices=("agy", "codex"), help="Select the most recently activated matching historical provider session.")
+    cont.add_argument("-i", "--session-id", help="Select this exact session from the agent's existing history.")
+    cont.add_argument("-R", "--reactivate", action="store_true", help="Explicitly reactivate an inactive agent before resuming.")
 
     opening = sub.add_parser("open", help="Open active selected sessions through terminal_launcher.")
     _add_common_options(opening)
@@ -296,6 +334,7 @@ def _run_pane(
             process_cwd = cwd
     if launch_id:
         process_cwd = None if cross_wsl else cwd
+    bootstrap_completed = False
     try:
         if launch_id:
             dispatcher.record_process_observation(
@@ -363,14 +402,20 @@ def _run_pane(
                 )
                 return bootstrap.returncode or 1
 
-            dispatcher.record_process_observation(
-                slot_id=slot_id,
-                launch_id=launch_id,
-                return_code=0,
-                outcome="bootstrap_id_captured",
+            bootstrap_completed = True
+            try:
+                dispatcher.record_process_observation(
+                    slot_id=slot_id,
+                    launch_id=launch_id,
+                    return_code=0,
+                    outcome="bootstrap_id_captured",
                 detail="Exact native session ID captured from this provider invocation; persisting slot association.",
-                native_session_id=captured_session_id,
-            )
+                    native_session_id=captured_session_id,
+                )
+            except ContinuityError as exc:
+                print(f"Bootstrap created session {captured_session_id}, but LLMD could not persist its ID. Do not retry the launch; inspect provider state and use `llmd attach` with this exact ID if verified.", file=output_stream)
+                raise ContinuityError(ErrorCode.METADATA_INACCESSIBLE,
+                    f"Provider bootstrap succeeded with session {captured_session_id}, but its metadata was not persisted; do not relaunch blindly. Run `llmd doctor`.") from exc
             other_slot = dispatcher._row(
                 """SELECT slot_id FROM agent_slot_activations
                    WHERE provider = ? AND environment_id = ? AND native_session_id = ?
@@ -405,7 +450,7 @@ def _run_pane(
         else:
             argv = _native_argv(dispatcher, provider, session_id, environment_id=environment_id, cwd=cwd)
     except ContinuityError as exc:
-        if launch_id:
+        if launch_id and not bootstrap_completed:
             pending_now = dispatcher._row(
                 "SELECT failure_detail FROM dispatcher_pending_launches WHERE launch_id = ? AND status = 'pending'",
                 (launch_id,),
@@ -418,19 +463,27 @@ def _run_pane(
         session_lock = contextlib.nullcontext()
         if session_id:
             lock_key = hashlib.sha256(f"{provider}\0{environment_id}\0{session_id}".encode()).hexdigest()[:24]
-            session_lock = _session_runtime_lock(dispatcher, f"session-{lock_key}.lock")
+            session_lock = _session_runtime_lock(dispatcher, f"session-{lock_key}.lock", blocking=False)
         with session_lock:
             result = subprocess.run(argv, cwd=process_cwd, check=False)
     except OSError as exc:
         if launch_id:
             dispatcher.mark_launch_failed(launch_id=launch_id, detail=str(exc), apply=True)
         elif session_id:
-            dispatcher.record_process_observation(slot_id=slot_id, launch_id=None, return_code=-1, outcome="spawn_failed")
+            dispatcher.record_process_observation(
+                slot_id=slot_id, launch_id=None, return_code=-1, outcome="spawn_failed",
+                session_identity=(provider, environment_id, session_id),
+            )
         raise ContinuityError(ErrorCode.PROVIDER_UNAVAILABLE, f"Failed to launch {provider}: {exc}") from exc
-    dispatcher.record_process_observation(
-        slot_id=slot_id, launch_id=launch_id, return_code=result.returncode,
-        outcome="normal_exit" if result.returncode == 0 else "nonzero_exit",
-    )
+    try:
+        dispatcher.record_process_observation(
+            slot_id=slot_id, launch_id=launch_id, return_code=result.returncode,
+            outcome="normal_exit" if result.returncode == 0 else "nonzero_exit",
+            session_identity=(provider, environment_id, session_id) if session_id else None,
+        )
+    except ContinuityError as exc:
+        raise ContinuityError(ErrorCode.METADATA_INACCESSIBLE,
+            f"{provider} process exited with code {result.returncode}, but LLMD could not record the result. Do not relaunch blindly; run `llmd doctor` and inspect provider state.") from exc
     if result.returncode != 0:
         if launch_id:
             dispatcher.mark_launch_failed(launch_id=launch_id, detail=f"provider exited with {result.returncode}", apply=True)
@@ -447,10 +500,119 @@ def _run_pane(
     return 0
 
 
-def _session_runtime_lock(dispatcher: DispatcherService, name: str):
+def _session_runtime_lock(dispatcher: DispatcherService, name: str, *, blocking: bool = True):
     from .dispatcher import _mutation_lock
 
-    return _mutation_lock(dispatcher.home_dir, lock_name=name)
+    return _mutation_lock(dispatcher.home_dir, lock_name=name, blocking=blocking)
+
+
+def _try_session_runtime_lock(dispatcher: DispatcherService, name: str) -> bool:
+    path = dispatcher.home_dir / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as stream:
+        try:
+            stream.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            return False
+        except OSError:
+            return True
+
+
+def _session_in_use(dispatcher: DispatcherService, provider: str, environment_id: str, session_id: str) -> bool:
+    key = hashlib.sha256(f"{provider}\0{environment_id}\0{session_id}".encode()).hexdigest()[:24]
+    return _try_session_runtime_lock(dispatcher, f"session-{key}.lock")
+
+
+def _continue_items(dispatcher: DispatcherService, gui: str | None = None, *, include_completed: bool = False) -> list[dict[str, Any]]:
+    conversations = dispatcher.list_guis()
+    if gui:
+        conversations = [item for item in conversations if item["alias"].casefold() == gui.casefold()]
+    items = []
+    for conversation in conversations:
+        for slot in dispatcher.list_slots(gui=conversation["gui_id"], active_only=False):
+            if slot["state"] == "completed" and not include_completed:
+                continue
+            provider = slot.get("current_provider") or slot.get("pending_provider")
+            session = slot.get("current_session_id")
+            if slot.get("pending_launch_id"):
+                pending = dispatcher._row("SELECT environment_id FROM dispatcher_pending_launches WHERE launch_id = ?",
+                                          (slot["pending_launch_id"],))
+                runtime = _runtime_label(dispatcher, provider, pending["environment_id"], None, pending=True) if pending else "UNKNOWN"
+            else:
+                runtime = (_runtime_label(dispatcher, provider, slot.get("current_environment_id"), session)
+                           if provider and session else "NOT OBSERVED")
+            items.append({**slot, "gui_alias": conversation["alias"], "provider": provider,
+                          "runtime_status": runtime,
+                          "search_text": " ".join(str(v) for v in (conversation["alias"], slot["name"], provider or "", session or "")).casefold()})
+    items.sort(key=lambda row: (row["state"] != "active", row.get("last_activity_at") is None,
+                                row["last_activity_at"] or "", row["gui_alias"].casefold(), row["name"].casefold()), reverse=False)
+    active = [row for row in items if row["state"] == "active"]
+    inactive = [row for row in items if row["state"] != "active"]
+    active.sort(key=lambda row: (row.get("last_activity_at") is None, row.get("last_activity_at") or "", row["gui_alias"].casefold(), row["name"].casefold()))
+    active.sort(key=lambda row: row.get("last_activity_at") or "", reverse=True)
+    inactive.sort(key=lambda row: (row.get("last_activity_at") is None, row.get("last_activity_at") or "", row["gui_alias"].casefold(), row["name"].casefold()))
+    inactive.sort(key=lambda row: row.get("last_activity_at") or "", reverse=True)
+    items = active + inactive
+    return items
+
+
+def _runtime_label(dispatcher: DispatcherService, provider: str, environment: str | None,
+                   session: str | None, *, pending: bool = False) -> str:
+    if not environment or (not session and not pending):
+        return "UNKNOWN"
+    env = next((item for item in dispatcher.materializer.list_environments() if item.environment_id == environment), None)
+    if env is None or not environment_is_locally_owned(dispatcher.home_dir, env):
+        return "UNKNOWN"
+    if pending:
+        return "PENDING"
+    if not session:
+        return "UNKNOWN"
+    return "IN USE" if _session_in_use(dispatcher, provider, environment, session) else "NOT OBSERVED"
+
+
+def _run_picker(dispatcher: DispatcherService, args: argparse.Namespace, input_stream: TextIO, output_stream: TextIO) -> int:
+    if not (input_stream.isatty() and output_stream.isatty()):
+        raise ContinuityError(ErrorCode.INVALID_INPUT, "`llmd continue` without an agent requires an interactive terminal.")
+    from .interactive import select_item
+    items = _continue_items(dispatcher, args.gui, include_completed=args.all)
+    if not items:
+        print("No eligible agents have a resumable session.", file=output_stream)
+        return 0
+    action, item = select_item(items, title="LLMD — Resume Agent",
+        render_line=lambda row: f"{row['gui_alias']:<20} {row['name']:<28} {(row.get('provider') or '—').upper():<8} {row['state']} / {row['runtime_status']}",
+        input_stream=input_stream, output_stream=output_stream, filter_key="search_text")
+    if action != "selected" or item is None:
+        return 0
+    if not item.get("current_session_id"):
+        print("This agent has no selected session. Use `llmd register` or `llmd start` first.", file=output_stream)
+        return 2
+    if item["state"] == "completed":
+        print("Completed agents cannot be resumed by the Phase 3 picker.", file=output_stream)
+        return 2
+    if item["runtime_status"] == "IN USE":
+        print("This session is already in use by an LLMD-managed process.", file=output_stream)
+        return 2
+    if item["state"] == "inactive":
+        print("Inactive agent selected. Confirm reactivation? [y/N] ", end="", file=output_stream, flush=True)
+        if input_stream.readline().strip().casefold() not in {"y", "yes"}:
+            return 0
+        if args.apply:
+            if _session_in_use(dispatcher, item["provider"], item["current_environment_id"], item["current_session_id"]):
+                print("This session is already in use by an LLMD-managed process.", file=output_stream)
+                return 2
+            dispatcher.set_slot_state(gui=item["gui_alias"], name=item["name"], state="active", apply=True)
+    if not args.apply:
+        print("Dry-run: pass -a/--apply to resume this session.", file=output_stream)
+        return 0
+    return _run_pane(dispatcher, slot_id=item["slot_id"], launch_id=None, input_stream=input_stream, output_stream=output_stream)
 
 
 def _open(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[str, Any]:
@@ -493,6 +655,216 @@ def _open(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[str, 
     return result
 
 
+def _resolve_name(positional: str | None, named: str | None, label: str) -> str | None:
+    if positional is not None and named is not None and positional.casefold() != named.casefold():
+        raise ContinuityError(ErrorCode.INVALID_INPUT, f"Conflicting positional and named {label} values.")
+    return named if named is not None else positional
+
+
+def _probe_existing_lock(path: Path) -> str:
+    if not path.exists():
+        return "not_present"
+    try:
+        stream = path.open("r+b")
+    except OSError:
+        return "inaccessible"
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            return "available"
+        except OSError:
+            return "contended"
+    finally:
+        stream.close()
+
+
+def _doctor_report(dispatcher: DispatcherService, gui: str | None = None, agent: str | None = None) -> dict[str, Any]:
+    try:
+        db = dispatcher.materializer.get_diagnostics_snapshot()
+    except Exception as exc:
+        db = {"db_exists": (dispatcher.home_dir / "index.sqlite").exists(), "integrity": "unavailable",
+              "diagnostic_error": f"{type(exc).__name__}: {exc}"}
+    lock = _probe_existing_lock(dispatcher.home_dir / "dispatcher.lock")
+    report: dict[str, Any] = {
+        "schema_version": 1,
+        "registry": {"home": str(dispatcher.home_dir), "accessible": dispatcher.home_dir.exists(),
+                     "database": {key: db.get(key) for key in ("db_exists", "schema_version", "supported_schema_version", "integrity", "counts", "diagnostic_error")},
+                     "mutation_lock": lock},
+        "scope": {"gui": gui, "agent": agent}, "agents": [], "pending_launches": [],
+        "inconsistencies": [],
+        "limitations": ["Lock observations cover this local runtime only; they do not prove external provider inactivity.",
+                        "A lock timeout does not establish a stale lock or identify the blocked operation."],
+    }
+    rows = dispatcher._rows("""SELECT s.slot_id, s.name, s.state, g.alias,
+                   a.provider AS current_provider, a.environment_id AS current_environment_id,
+                   a.native_session_id AS current_session_id,
+                   p.launch_id AS pending_launch_id, p.provider AS pending_provider,
+                   p.environment_id AS pending_environment_id
+               FROM agent_slots s JOIN dispatcher_gui_conversations g USING(gui_id)
+               LEFT JOIN agent_slot_activations a ON a.activation_id = (
+                   SELECT cur.activation_id FROM agent_slot_activations cur WHERE cur.slot_id=s.slot_id
+                   ORDER BY cur.sequence DESC LIMIT 1)
+               LEFT JOIN dispatcher_pending_launches p ON p.launch_id = (
+                   SELECT q.launch_id FROM dispatcher_pending_launches q WHERE q.slot_id=s.slot_id AND q.status='pending'
+                   ORDER BY q.requested_at DESC, q.launch_id DESC LIMIT 1)
+               WHERE (? IS NULL OR g.alias_key = ?) AND (? IS NULL OR s.name_key = ?)
+               ORDER BY g.alias_key, s.name_key""",
+               (gui.casefold() if gui else None, gui.casefold() if gui else None,
+                agent.casefold() if agent else None, agent.casefold() if agent else None))
+    environments = dispatcher.materializer.list_environments()
+    for row in rows:
+        provider = row["current_provider"] or row["pending_provider"]
+        sid = row["current_session_id"]
+        env_id = row["current_environment_id"]
+        runtime = "NOT OBSERVED"
+        if row["pending_launch_id"]:
+            pending_env = next((value for value in environments if value.environment_id == row["pending_environment_id"]), None)
+            runtime = "PENDING" if pending_env and environment_is_locally_owned(dispatcher.home_dir, pending_env) else "UNKNOWN"
+        elif sid and row["current_provider"]:
+            env = next((value for value in environments if value.environment_id == env_id), None)
+            if env is None or not environment_is_locally_owned(dispatcher.home_dir, env):
+                runtime = "UNKNOWN"
+            else:
+                lock_key = hashlib.sha256(f"{provider}\0{env_id}\0{sid}".encode()).hexdigest()[:24]
+                observation = _probe_existing_lock(dispatcher.home_dir / f"session-{lock_key}.lock")
+                runtime = "IN USE" if observation == "contended" else "UNKNOWN" if observation == "inaccessible" else "NOT OBSERVED"
+        report["agents"].append({"gui": row["alias"], "name": row["name"], "slot_id": row["slot_id"],
+            "lifecycle": row["state"], "provider": provider, "session_id": sid, "runtime": runtime,
+            "duplicate_resume": "blocked" if runtime == "IN USE" else "uncertain"})
+        if row["pending_launch_id"]:
+            pending = dispatcher._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?", (row["pending_launch_id"],))
+            if pending:
+                report["pending_launches"].append(dispatcher._with_captured_bootstrap_id(pending))
+    report["pending_launches"].sort(key=lambda value: value["launch_id"])
+    report["agents"].sort(key=lambda value: (value["gui"].casefold(), value["name"].casefold()))
+    if db.get("db_exists") and db.get("integrity") not in ("ok", None):
+        report["inconsistencies"].append({"kind": "sqlite_integrity", "detail": db["integrity"]})
+    report["duplicate_resume_risk"] = "blocked" if any(a["runtime"] == "IN USE" for a in report["agents"]) else "uncertain"
+    return report
+
+
+def _render_doctor_report(report: dict[str, Any], stream: TextIO) -> None:
+    registry = report["registry"]
+    database = registry["database"]
+    print("LLMD Doctor", file=stream)
+    print(f"Registry: {'accessible' if registry['accessible'] else 'unavailable'} ({registry['home']})", file=stream)
+    print(f"Registry integrity: {database.get('integrity') or 'unknown'}", file=stream)
+    if database.get("diagnostic_error"):
+        print(f"  Diagnostic error: {database['diagnostic_error']}", file=stream)
+    print(f"Registry lock: {registry['mutation_lock']}", file=stream)
+    print("Agents:", file=stream)
+    if not report["agents"]:
+        print("  No matching agents.", file=stream)
+    for agent in report["agents"]:
+        provider = (agent.get("provider") or "unassigned").upper()
+        session = agent.get("session_id") or "no selected session"
+        print(f"  {agent['gui']} / {agent['name']}  {provider}  {agent['lifecycle']}  {agent['runtime']}", file=stream)
+        print(f"    Session: {session}; duplicate resume: {agent['duplicate_resume']}", file=stream)
+    print("Pending launches:", file=stream)
+    if not report["pending_launches"]:
+        print("  None.", file=stream)
+    for pending in report["pending_launches"]:
+        captured = pending.get("captured_session_id") or "no captured session ID"
+        print(f"  {pending['launch_id']}  {pending.get('provider', 'unknown')}  {captured}", file=stream)
+    print("Inconsistencies:", file=stream)
+    if not report["inconsistencies"]:
+        print("  None positively established.", file=stream)
+    for issue in report["inconsistencies"]:
+        print(f"  {issue['kind']}: {issue['detail']}", file=stream)
+    print("Limitations:", file=stream)
+    for limitation in report["limitations"]:
+        print(f"  - {limitation}", file=stream)
+
+
+def _resolve_historical_session(dispatcher: DispatcherService, *, gui: str, name: str,
+                                provider: str | None, session_id: str | None,
+                                allow_latest: bool = False) -> dict[str, Any] | None:
+    slot = dispatcher.get_slot(gui=gui, name=name)
+    history = slot["history"]
+    if session_id:
+        matches = [row for row in history if row["native_session_id"] == session_id]
+        if provider:
+            matches = [row for row in matches if row["provider"] == provider]
+        if not matches:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Requested session ID is not in this agent's activation history.")
+        return matches[-1]
+    if provider:
+        matches = dispatcher.sessions_for_provider(gui=gui, name=name, provider=provider)
+        if not matches:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, f"No historical {provider} session exists for this agent.")
+        if len(matches) > 1 and not allow_latest:
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                f"Multiple historical {provider} sessions exist; specify --session-id from `llmd history`.")
+        return matches[0]
+    return None
+
+
+def _listing(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[str, Any]:
+    if args.limit is not None and args.limit < 1:
+        raise ContinuityError(ErrorCode.INVALID_INPUT, "Limit must be a positive integer.")
+    limit = args.limit if args.limit is not None else (None if args.all else 10)
+    gui = _resolve_name(args.gui_pos, args.gui, "GUI")
+    if gui:
+        rows = dispatcher.list_slots(gui=gui, active_only=False)
+        rows = [row for row in rows if args.all or row['state'] != 'completed']
+        rows.sort(key=lambda row: 0 if row['state'] == 'active' else 1 if row['state'] == 'inactive' else 2)
+        total = len(rows)
+        selected = rows if limit is None else rows[:limit]
+        return {'action': 'list', 'gui': gui, 'slots': selected, 'total': total,
+                'shown': len(selected), 'omitted': total - len(selected), 'limit': limit}
+    guis = dispatcher.list_guis()
+    total = len(guis)
+    selected = guis if limit is None else guis[:limit]
+    conversations = []
+    for item in selected:
+        slots = dispatcher.list_slots(gui=item['gui_id'])
+        shown = slots if args.all else slots[:10]
+        conversations.append({**item, 'slots': shown, 'total': len(slots), 'shown': len(shown),
+                              'omitted': len(slots) - len(shown)})
+    return {'action': 'list', 'schema_version': 1, 'conversations': conversations, 'total': total,
+            'shown': len(conversations), 'omitted': total - len(conversations), 'limit': limit}
+
+
+def _render_listing(result: dict[str, Any], stream: TextIO, color: str) -> None:
+    use_color = color == 'always' or (color == 'auto' and stream.isatty() and 'NO_COLOR' not in os.environ)
+    width = shutil.get_terminal_size((100, 24)).columns
+    def style(value: str, code: str) -> str:
+        return f"\033[{code}m{value}\033[0m" if use_color else value
+    def clip(value: str, size: int) -> str:
+        return value if len(value) <= size else value[:max(1, size - 1)] + '…'
+    def rows(items: list[dict[str, Any]]) -> None:
+        for row in items:
+            provider = (row.get('current_provider') or row.get('pending_provider') or '—').upper()
+            session = row.get('current_session_id') or '—'
+            if width < 70:
+                line = f"  {clip(row['name'], max(8, width - 25))} [{row['state']}] {provider}\n    {clip(session, max(8, width - 4))}"
+            else:
+                name_width = min(30, max(12, width // 3))
+                session_width = max(8, width - name_width - 29)
+                line = f"  {clip(row['name'], name_width):<{name_width}}  {style(f'{provider:<8}', '36')}  {clip(session, session_width):<{session_width}}  {row['state']}"
+            print(style(line, '2') if row['state'] == 'inactive' else line, file=stream)
+    if 'conversations' in result:
+        for conversation in result['conversations']:
+            print(style(conversation['alias'], '1'), file=stream)
+            rows(conversation['slots'])
+            if conversation['omitted']:
+                print(f"  {conversation['omitted']} agents omitted.", file=stream)
+        print(f"Showing {result['shown']} of {result['total']} conversations ({result['omitted']} omitted).", file=stream)
+    else:
+        print(style(result['gui'], '1'), file=stream)
+        rows(result['slots'])
+        print(f"Showing {result['shown']} of {result['total']} agents ({result['omitted']} omitted).", file=stream)
+
+
 def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input_stream: TextIO, output_stream: TextIO) -> int:
     if args.command is None:
         if not (input_stream.isatty() and output_stream.isatty()):
@@ -502,6 +874,13 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
 
         return run_interactive(DispatcherService(home_dir=args.home), input_stream=input_stream, output_stream=output_stream)
 
+    if args.command in {"start", "continue"}:
+        args.gui = _resolve_name(args.gui_pos, args.gui, "GUI")
+        args.agent_name = _resolve_name(args.agent_pos, args.agent_name, "agent")
+        if args.command == "start" and (not args.gui or not args.agent_name):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Both GUI and agent are required.")
+        if args.command == "continue" and args.agent_name and not args.gui:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "A GUI is required when an agent is specified.")
     dispatcher = DispatcherService(home_dir=args.home)
     if args.command == "gui":
         if args.gui_command == "add":
@@ -523,24 +902,51 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
             parser.parse_args(["slot", "--help"])
             return 2
     elif args.command == "list":
-        result = {"action": "list", "gui": args.gui, "slots": dispatcher.list_slots(gui=args.gui)}
+        result = _listing(dispatcher, args)
+    elif args.command == "register":
+        gui = _resolve_name(args.gui_pos, args.gui, "GUI")
+        name = _resolve_name(args.agent_pos, args.agent_name, "agent")
+        if not gui:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "A GUI name is required.")
+        if args.dry_run and args.apply:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Choose either --dry-run or --apply.")
+        result = dispatcher.register(gui, name, provider=args.provider, session_id=args.session_id,
+                                     apply=not args.dry_run, select=args.select)
     elif args.command == "history":
         result = {"action": "history", "slot": dispatcher.get_slot(gui=args.gui, name=args.agent_name)}
     elif args.command == "pending":
         result = {"action": "pending", "launches": dispatcher.list_pending_launches(gui=args.gui)}
+    elif args.command == "doctor":
+        result = _doctor_report(dispatcher, args.gui, args.agent_name)
+    elif args.command == "recover":
+        result = dispatcher.recover_captured_launch(gui=args.gui, name=args.agent_name, apply=args.apply)
     elif args.command == "attach":
         result = dispatcher.attach_session(gui=args.gui, name=args.agent_name, provider=args.provider,
                                            session_id=args.session_id, environment_selector=args.environment,
                                            cwd=args.cwd, launch_id=args.launch_id, apply=args.apply)
     elif args.command in {"start", "switch"}:
-        if args.command == "switch" and args.reuse_previous:
-            old = dispatcher.latest_session_for_provider(gui=args.gui, name=args.agent_name, provider=args.provider)
-            if old is None:
-                raise ContinuityError(ErrorCode.INVALID_INPUT, f"No previous {args.provider} session exists in this slot.")
-            result = dispatcher.attach_session(gui=args.gui, name=args.agent_name, provider=args.provider,
-                                               session_id=old["native_session_id"],
-                                               environment_selector=old["environment_id"], apply=args.apply,
-                                               provenance="dispatcher_reuse")
+        positional_start = args.command == "start" and args.gui_pos is not None
+        if positional_start:
+            if not args.apply:
+                preview = dispatcher.register(args.gui, args.agent_name, apply=False)
+                print(f"{preview['summary']} New provider session preview only; execution requires --new -a.", file=output_stream)
+                return 0
+            if not args.new:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                    "Positional start execution requires --new and -a/--apply to authorize a provider launch.")
+            dispatcher.register(args.gui, args.agent_name, apply=True)
+            slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
+            if slot["current"]:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                    f"{args.gui!r} / {args.agent_name!r} already selects {slot['current']['provider']} session "
+                    f"{slot['current']['native_session_id']}; use continue or switch explicitly.")
+        reuse = args.command == "switch" and args.reuse_previous
+        if reuse:
+            old = _resolve_historical_session(dispatcher, gui=args.gui, name=args.agent_name,
+                                              provider=args.provider, session_id=None, allow_latest=True)
+            result = dispatcher.attach_session(gui=args.gui, name=args.agent_name, provider=old["provider"],
+                session_id=old["native_session_id"], environment_selector=old["environment_id"],
+                apply=args.apply, provenance="dispatcher_reuse")
             if args.apply:
                 slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
                 return _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
@@ -553,18 +959,42 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
                                  launch_id=result["details"]["launch_id"],
                                  input_stream=input_stream, output_stream=output_stream)
     elif args.command == "continue":
+        if not args.agent_name:
+            return _run_picker(dispatcher, args, input_stream, output_stream)
         slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
-        if slot["current"] is None:
+        target = _resolve_historical_session(dispatcher, gui=args.gui, name=args.agent_name,
+            provider=args.provider, session_id=args.session_id) if (args.provider or args.session_id) else slot["current"]
+        if target is None:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "This slot has no selected session; use `llmd start`.")
-        result = {"action": "continue", "applied": False, "slot": slot,
-                  "summary": "Dry-run: pass -a/--apply to resume the current session."}
+        if slot["state"] == "completed":
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Completed agents require an explicit lifecycle change before resumption.")
+        if args.apply and _session_in_use(dispatcher, target["provider"], target["environment_id"], target["native_session_id"]):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Requested session is already in use.")
+        if slot["state"] == "inactive":
+            if not args.reactivate:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                    "This agent is inactive; pass --reactivate to confirm its lifecycle change.")
+            if args.apply:
+                dispatcher.set_slot_state(gui=args.gui, name=args.agent_name, state="active", apply=True)
+        if target != slot["current"]:
+            if not args.apply:
+                result = {"action": "continue", "applied": False, "slot": slot,
+                          "summary": f"Dry-run: would select historical {target['provider']} session {target['native_session_id']}."}
+            else:
+                dispatcher.attach_session(gui=args.gui, name=args.agent_name, provider=target["provider"],
+                    session_id=target["native_session_id"], environment_selector=target["environment_id"],
+                    apply=True, provenance="dispatcher_reuse")
+        else:
+            result = {"action": "continue", "applied": False, "slot": slot,
+                      "summary": "Dry-run: pass -a/--apply to resume the selected session."}
         if args.apply:
-            return _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
+            current_slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
+            return _run_pane(dispatcher, slot_id=current_slot["slot_id"], launch_id=None,
                              input_stream=input_stream, output_stream=output_stream)
     elif args.command == "open":
         result = _open(dispatcher, args)
         if args.apply and result.get("terminal_launcher_available") is False:
-            print(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default) if args.json_output else result["summary"], file=output_stream)
+            print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True, default=_json_default) if args.json_output else result["summary"], file=output_stream)
             return 2
     elif args.command == "pane-run":
         return _run_pane(dispatcher, slot_id=args.slot_id, launch_id=args.launch_id,
@@ -575,8 +1005,17 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
 
     json_mode = bool(args.json_output)
     if json_mode:
-        print(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default), file=output_stream)
+        print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True, default=_json_default), file=output_stream)
     else:
+        if result.get("action") == "list":
+            _render_listing(result, output_stream, args.color)
+            return 0
+        if result.get("schema_version") == 1 and "registry" in result and "agents" in result:
+            _render_doctor_report(result, output_stream)
+            return 0
+        if result.get("action") == "gui-list":
+            for conversation in result["conversations"]:
+                print(conversation["alias"], file=output_stream)
         if "summary" in result:
             print(result["summary"], file=output_stream)
         for slot_row in result.get("slots", []):
@@ -600,8 +1039,8 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
                 if launch.get("failure_detail"):
                     print(f"  Recovery: {launch['failure_detail']}", file=output_stream)
         if result.get("action") == "open":
-            print(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default), file=output_stream)
-        if not result.get("applied", True) and result.get("events"):
+            print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True, default=_json_default), file=output_stream)
+        if result.get("action") != "register" and not result.get("applied", True) and result.get("events"):
             print("Preview only. Pass -a / --apply to persist this operation.", file=output_stream)
     launch = result.get("launch") if result.get("action") == "open" and args.apply else None
     if getattr(getattr(launch, "status", None), "value", None) == "failed":

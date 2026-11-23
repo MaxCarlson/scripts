@@ -6,11 +6,12 @@ import contextlib
 import os
 import time
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .environment import load_or_create_environment, resolve_environment_selector
+from .environment import environment_is_locally_owned, load_or_create_environment, resolve_environment_selector
 from .errors import ContinuityError, ErrorCode
 from .identifiers import generate_id, normalize_path_canonical, normalize_repo_identity, now_utc_iso
 from .models import EventEnvelope, EventType
@@ -20,7 +21,7 @@ _VALID_STATES = {"active", "inactive", "completed"}
 
 
 @contextlib.contextmanager
-def _mutation_lock(home_dir: Path, lock_name: str = "dispatcher.lock") -> Iterator[None]:
+def _mutation_lock(home_dir: Path, lock_name: str = "dispatcher.lock", *, blocking: bool = True) -> Iterator[None]:
     """Serialize sequence allocation and spool appends across dispatcher processes."""
     lock_path = home_dir / lock_name
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -32,17 +33,17 @@ def _mutation_lock(home_dir: Path, lock_name: str = "dispatcher.lock") -> Iterat
         if os.name == "nt":
             import msvcrt
 
-            deadline = time.monotonic() + 10.0
+            deadline = time.monotonic() + (10.0 if blocking else 0.0)
             while True:
                 try:
                     stream.seek(0)
                     msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
                     break
                 except OSError:
-                    if time.monotonic() >= deadline:
+                    if not blocking or time.monotonic() >= deadline:
                         raise ContinuityError(
                             ErrorCode.METADATA_INACCESSIBLE,
-                            "Timed out waiting for dispatcher registry lock.",
+                            "Session is already in use." if not blocking else "Timed out waiting for dispatcher registry lock.",
                         ) from None
                     time.sleep(0.02)
             try:
@@ -53,7 +54,10 @@ def _mutation_lock(home_dir: Path, lock_name: str = "dispatcher.lock") -> Iterat
         else:
             import fcntl
 
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            try:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+            except BlockingIOError as exc:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Session is already in use.") from exc
             try:
                 yield
             finally:
@@ -178,6 +182,86 @@ class DispatcherService:
             "details": {"gui_id": gui_id, "alias": clean},
             "events": [event.to_dict()],
         }
+
+    def register(self, gui: str, name: str | None = None, *, provider: str | None = None,
+                 session_id: str | None = None, apply: bool = True, select: bool = False) -> dict[str, Any]:
+        """Register identities and an optional session under one dispatcher mutation lock."""
+        gui = gui.strip()
+        name = name.strip() if name is not None else None
+        if not gui or len(gui) > 120 or (name is not None and (not name or len(name) > 120)):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "GUI and agent names must contain 1–120 characters.")
+        if bool(provider) != bool(session_id) or (session_id is not None and not session_id.strip()):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Provider and nonempty session ID must be supplied together.")
+        if provider and not name:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "A session requires an agent name.")
+        provider = self.continuity._validate_provider(provider) if provider else None
+        session_id = session_id.strip() if session_id else None
+        events: list[EventEnvelope] = []
+        with _mutation_lock(self.home_dir) if apply else contextlib.nullcontext():
+            self._sync()
+            conversation = self._row("SELECT * FROM dispatcher_gui_conversations WHERE alias_key = ?", (gui.casefold(),))
+            slot = (self._row("SELECT * FROM agent_slots WHERE gui_id = ? AND name_key = ?",
+                              (conversation['gui_id'], name.casefold())) if conversation and name else None)
+            env = load_or_create_environment(self.home_dir, persist=False)
+            history = self._history(slot['slot_id']) if slot else []
+            if history and provider:
+                current = history[-1]
+                same_current = (current['provider'], current['environment_id'], current['native_session_id']) == (
+                    provider, env.environment_id, session_id
+                )
+                if not same_current and not select:
+                    raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                          "A different session is selected; pass --select to change it.")
+                if not same_current:
+                    lock_key = __import__('hashlib').sha256(
+                        f"{current['provider']}\0{current['environment_id']}\0{current['native_session_id']}".encode()
+                    ).hexdigest()[:24]
+                    try:
+                        with _mutation_lock(self.home_dir, f"session-{lock_key}.lock", blocking=False):
+                            pass
+                    except ContinuityError as exc:
+                        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                            "Cannot change selection while the current session is in use.") from exc
+            if apply:
+                env = load_or_create_environment(self.home_dir, persist=True)
+            gui_id = conversation['gui_id'] if conversation else generate_id('gui')
+            slot_id = slot['slot_id'] if slot else generate_id('slot') if name else None
+            timestamp = now_utc_iso()
+            if not conversation:
+                events.append(self._event(EventType.DISPATCHER_GUI_REGISTERED, environment_id=env.environment_id,
+                    payload={'gui_id': gui_id, 'alias': gui, 'alias_key': gui.casefold()}, timestamp=timestamp))
+            if name and not slot:
+                events.append(self._event(EventType.DISPATCHER_SLOT_CREATED, environment_id=env.environment_id,
+                    payload={'slot_id': slot_id, 'gui_id': gui_id, 'name': name, 'name_key': name.casefold()},
+                    timestamp=timestamp))
+            same = history and provider and (history[-1]['provider'], history[-1]['environment_id'],
+                    history[-1]['native_session_id']) == (provider, env.environment_id, session_id)
+            if provider and not same:
+                if not self.materializer.get_session(provider, env.environment_id, session_id):
+                    events.append(self._event(EventType.SESSION_REGISTERED, environment_id=env.environment_id,
+                        provider=provider, session_id=session_id, timestamp=timestamp,
+                        payload={'environment': env.to_dict(), 'cwd_native': None, 'cwd_canonical': None,
+                                 'repository_identity': None, 'first_observed_at': timestamp,
+                                 'last_seen_at': timestamp, 'metadata_source': 'dispatcher_attach'}))
+                activation_time = (datetime.now(UTC) + timedelta(microseconds=2)).isoformat(timespec='microseconds').replace('+00:00', 'Z')
+                events.append(self._event(EventType.DISPATCHER_SESSION_ACTIVATED, environment_id=env.environment_id,
+                    provider=provider, session_id=session_id, timestamp=activation_time,
+                    payload={'slot_id': slot_id, 'activation_id': generate_id('act'),
+                             'sequence': (history[-1]['sequence'] if history else 0) + 1,
+                             'provenance': 'explicit_attach'}))
+            if events:
+                base_time = datetime.now(UTC)
+                events = [replace(event, source_timestamp=(base_time + timedelta(microseconds=i + 1)).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+                                  observed_timestamp=(base_time + timedelta(microseconds=i + 1)).isoformat(timespec="microseconds").replace("+00:00", "Z"))
+                          for i, event in enumerate(events)]
+            if apply and events:
+                env_events = self.continuity._ensure_environment_event(env, self.materializer.list_environments(),
+                    base_time.isoformat(timespec="microseconds").replace("+00:00", "Z"))
+                for event in [*env_events, *events]:
+                    self.continuity._emit_and_materialize([event])
+        return {'action': 'register', 'applied': bool(apply and events), 'events': [e.to_dict() for e in events],
+                'details': {'gui_id': gui_id, 'slot_id': slot_id},
+                'summary': ('Registered' if apply and events else 'Dry-run: would register' if events else 'Already registered') + f' {gui!r}' + (f' / {name!r}' if name else '') + '.'}
 
     def list_guis(self, *, active_only: bool = True) -> list[dict[str, Any]]:
         self._sync()
@@ -401,16 +485,124 @@ class DispatcherService:
         return {"action": "launch-failed", "applied": apply, "summary": "Marked pending launch as failed.",
                 "details": {"launch_id": launch_id, "status": "failed"}, "events": [event.to_dict()]}
 
+    def recover_captured_launch(self, *, gui: str, name: str, apply: bool = False) -> dict[str, Any]:
+        """Resolve a pending launch only when its exact bootstrap session ID was durably captured."""
+        import hashlib
+
+        conversation = self._row("SELECT * FROM dispatcher_gui_conversations WHERE alias_key = ? OR gui_id = ?",
+                                 (gui.strip().casefold(), gui.strip()))
+        if conversation is None:
+            raise ContinuityError(ErrorCode.WORKFLOW_NOT_FOUND, f"GUI conversation not found: {gui!r}.")
+        slot = self._row("SELECT * FROM agent_slots WHERE gui_id = ? AND (slot_id = ? OR name_key = ?)",
+                         (conversation["gui_id"], name.strip(), name.strip().casefold()))
+        if slot is None:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, f"Agent slot not found: {name!r}.")
+        current_history = self._history(slot["slot_id"])
+        expected_current = current_history[-1] if current_history else None
+        pending = self._row("""SELECT * FROM dispatcher_pending_launches
+                             WHERE slot_id = ? ORDER BY requested_at DESC, launch_id DESC LIMIT 1""", (slot["slot_id"],))
+        if pending is None:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "No pending launch exists for this agent.")
+        if pending["status"] == "resolved":
+            return {"action": "recover", "applied": False, "status": "already_recovered",
+                    "summary": "This captured launch is already resolved; no metadata changed.",
+                    "details": {"launch_id": pending["launch_id"]}}
+        if pending["status"] != "pending":
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "The latest launch is not pending; no recovery was applied.")
+        pending = self._with_captured_bootstrap_id(pending)
+        session_id = pending.get("captured_session_id")
+        if not session_id or pending.get("captured_session_conflict"):
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                "Recovery is unresolved: no single exact bootstrap session ID was captured. Inspect provider state and use llmd attach with a verified ID.")
+        environments = self.materializer.list_environments()
+        env = next((item for item in environments if item.environment_id == pending["environment_id"]), None)
+        if env is None or not environment_is_locally_owned(self.home_dir, env):
+            raise ContinuityError(ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE,
+                "Recovery refused because runtime ownership cannot be established for this host and environment.")
+        key = hashlib.sha256(f"{pending['provider']}\0{pending['environment_id']}\0{session_id}".encode()).hexdigest()[:24]
+        lock_name = f"session-{key}.lock"
+        if not apply:
+            return {"action": "recover", "applied": False, "status": "preview",
+                    "summary": f"Would associate captured {pending['provider']} session {session_id} and resolve pending launch {pending['launch_id']}; no provider will be launched.",
+                    "details": {"launch_id": pending["launch_id"], "session_id": session_id}}
+        with _mutation_lock(self.home_dir):
+            self._sync()
+            latest = self._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ? AND status = 'pending'",
+                               (pending["launch_id"],))
+            if latest is None:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch changed concurrently; inspect `llmd doctor` and retry recovery.")
+            captured_now = self._with_captured_bootstrap_id(latest)
+            if captured_now.get("captured_session_id") != session_id or captured_now.get("captured_session_conflict"):
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Captured session metadata changed; recovery was not applied.")
+            slot = self._slot(conversation["gui_id"], slot["slot_id"])
+            history = self._history(slot["slot_id"])
+            current = history[-1] if history else None
+            expected_key = ((expected_current["provider"], expected_current["environment_id"], expected_current["native_session_id"])
+                            if expected_current else None)
+            current_key = ((current["provider"], current["environment_id"], current["native_session_id"])
+                           if current else None)
+            if current_key != expected_key:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                    "Agent selection changed while recovery was prepared; no metadata was overwritten. Inspect doctor and retry.")
+            current_is_target = current and (current["provider"], current["environment_id"], current["native_session_id"]) == (
+                pending["provider"], env.environment_id, session_id)
+            if current and not current_is_target:
+                ckey = hashlib.sha256(f"{current['provider']}\0{current['environment_id']}\0{current['native_session_id']}".encode()).hexdigest()[:24]
+                with _mutation_lock(self.home_dir, f"session-{ckey}.lock", blocking=False):
+                    pass
+            with _mutation_lock(self.home_dir, lock_name, blocking=False):
+                now = now_utc_iso()
+                events: list[EventEnvelope] = []
+                known_envs = self.materializer.list_environments()
+                events.extend(self.continuity._ensure_environment_event(env, known_envs, now))
+                if not self.materializer.get_session(pending["provider"], env.environment_id, session_id):
+                    events.append(self._event(EventType.SESSION_REGISTERED, environment_id=env.environment_id,
+                        provider=pending["provider"], session_id=session_id, timestamp=now,
+                        payload={"environment": env.to_dict(), "cwd_native": pending.get("cwd"),
+                                 "cwd_canonical": normalize_path_canonical(pending.get("cwd")),
+                                 "repository_identity": normalize_repo_identity(pending.get("cwd")),
+                                 "first_observed_at": now, "last_seen_at": now, "metadata_source": "dispatcher_recovery"}))
+                same = current and (current["provider"], current["environment_id"], current["native_session_id"]) == (
+                    pending["provider"], env.environment_id, session_id)
+                if not same:
+                    activation_id = generate_id("act")
+                    events.append(self._event(EventType.DISPATCHER_SESSION_ACTIVATED,
+                        environment_id=env.environment_id, provider=pending["provider"], session_id=session_id,
+                        timestamp=now, payload={"slot_id": slot["slot_id"], "activation_id": activation_id,
+                            "sequence": (current["sequence"] if current else 0) + 1, "provenance": "dispatcher_recovery"}))
+                events.append(self._event(EventType.DISPATCHER_LAUNCH_RESOLVED,
+                    environment_id=env.environment_id, provider=pending["provider"], session_id=session_id,
+                    payload={"launch_id": pending["launch_id"], "native_session_id": session_id}))
+                base = datetime.now(UTC)
+                events = [replace(event,
+                    source_timestamp=(base + timedelta(microseconds=index + 1)).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+                    observed_timestamp=(base + timedelta(microseconds=index + 1)).isoformat(timespec="microseconds").replace("+00:00", "Z"))
+                    for index, event in enumerate(events)]
+                for event in events:
+                    self.continuity._emit_and_materialize([event])
+        return {"action": "recover", "applied": True, "status": "recovered",
+                "summary": f"Associated captured session {session_id} and resolved pending launch. No provider was launched.",
+                "details": {"launch_id": pending["launch_id"], "session_id": session_id,
+                            "activation_added": not bool(current and same)}}
+
     def record_process_observation(
         self, *, slot_id: str, launch_id: str | None, return_code: int, outcome: str,
         detail: str | None = None, native_session_id: str | None = None,
+        session_identity: tuple[str, str, str] | None = None,
     ) -> None:
         slot = self.get_slot_by_id(slot_id)
         current = slot["current"]
         pending = self.get_pending_launch(launch_id) if launch_id else None
-        provider = pending["provider"] if pending else (current["provider"] if current else None)
-        environment_id = pending["environment_id"] if pending else (current["environment_id"] if current else None)
-        session_id = native_session_id or (None if pending else (current["native_session_id"] if current else None))
+        if pending:
+            provider = pending["provider"]
+            environment_id = pending["environment_id"]
+            session_id = native_session_id
+        elif session_identity:
+            provider, environment_id, session_id = session_identity
+        else:
+            provider = current["provider"] if current else None
+            environment_id = current["environment_id"] if current else None
+            session_id = native_session_id or (current["native_session_id"] if current else None)
         if not provider or not environment_id:
             return
         event = self._event(
@@ -596,6 +788,21 @@ class DispatcherService:
                         "summary": "Session became current before this request was applied.",
                         "details": {"slot_id": slot["slot_id"], "session_id": session}, "events": [],
                     }
+                current = latest[-1] if latest else None
+                if current:
+                    import hashlib
+
+                    lock_key = hashlib.sha256(
+                        f"{current['provider']}\0{current['environment_id']}\0{current['native_session_id']}".encode()
+                    ).hexdigest()[:24]
+                    try:
+                        with _mutation_lock(self.home_dir, f"session-{lock_key}.lock", blocking=False):
+                            pass
+                    except ContinuityError as exc:
+                        raise ContinuityError(
+                            ErrorCode.INVALID_INPUT,
+                            f"Cannot change selection while current session {current['native_session_id']} is in use.",
+                        ) from exc
                 next_sequence = (latest[-1]["sequence"] if latest else 0) + 1
                 sequence = next_sequence
                 activation_event.payload["sequence"] = next_sequence
