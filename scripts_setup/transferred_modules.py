@@ -1,8 +1,9 @@
-"""Canonical ownership boundary for modules transferred to MaxCarlson/llm-agent-toolkit.
+"""Historical inventory for modules transferred to llm-agent-toolkit.
 
-Original source directories under ``scripts/modules/`` remain untouched on disk for
-historical continuity, but must not be installed into ``scripts/.venv``, included in
-``scripts_manifest.json``, or exposed through ``scripts/bin`` launchers.
+This registry remains useful for excluding toolkit-owned distributions and command
+names from scripts installation. Individual historical source directories may be
+retired after ownership, data, and consumer checks; registry membership does not
+imply that a local source directory is present.
 """
 from __future__ import annotations
 
@@ -85,7 +86,7 @@ SCRIPTS_OWNED_SHARED_MODULES: frozenset[str] = frozenset({"termdash", "cross_pla
 
 
 def is_transferred_module_dir(path_or_name: Path | str) -> bool:
-    """Return True if *path_or_name* refers to one of the 23 transferred module directories."""
+    """Return True if *path_or_name* names one of the 23 transferred module directories."""
     name = Path(path_or_name).name if isinstance(path_or_name, Path) else str(path_or_name).strip().strip("/\\")
     if "/" in name or "\\" in name:
         name = Path(name).name
