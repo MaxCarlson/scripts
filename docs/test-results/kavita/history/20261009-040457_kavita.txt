@@ -1,0 +1,91 @@
+
+
+====================================================================================================
+VALIDATION TARGET: kavita
+====================================================================================================
+Timestamp: 2026-10-09T04:04:57.9552519-07:00
+Description: Reusable Kavita API client, exact path matching, and pending assignment validation.
+Repository root: C:\Users\mcarls\.codex\.chatgpt-projects\g-p-6a69f86133788191b9710c01d1213c7f\scripts-work
+Working directory: C:\Users\mcarls\.codex\.chatgpt-projects\g-p-6a69f86133788191b9710c01d1213c7f\scripts-work\modules\kavita
+Python: C:\Users\mcarls\AppData\Local\Programs\Python\Python312\python.exe
+PowerShell: 7.6.1
+Platform: Microsoft Windows 10.0.26300
+Bootstrap enabled: False
+Production read-only checks: False
+History retention: 3 prior runs, maximum age 14 days
+Git branch: codex/kavita-module-mangadl-collections-20261009-0349
+Git commit: 3c2d7e51f86d9471e99f1f6d12e1309bfb2d69de
+Git status before validation:
+ M docs/HANDOFF.md
+ M docs/README.md
+ M docs/plans/HANDOFF.md
+ M modules/mangadl/README.md
+ M modules/mangadl/__init__.py
+ M modules/mangadl/docs/HANDOFF.md
+ M modules/mangadl/docs/README.md
+ M modules/mangadl/docs/plans/HANDOFF.md
+ M modules/mangadl/mangadl/__init__.py
+ M modules/mangadl/mangadl/cli.py
+ M modules/mangadl/mangadl/cli_core.py
+ M modules/mangadl/mangadl/cli_structure.py
+ M modules/mangadl/mangadl/worker_core.py
+ M modules/mangadl/pyproject.toml
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/plans/20261009-0349_kavita-module-mangadl-collections/
+?? modules/kavita/
+?? modules/mangadl/tests/kavita_assignment_test.py
+
+====================================================================================================
+Compile Kavita package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\.codex\.chatgpt-projects\g-p-6a69f86133788191b9710c01d1213c7f\scripts-work\modules\kavita
+Command: C:\Users\mcarls\AppData\Local\Programs\Python\Python312\python.exe -m compileall -q kavita tests
+RESULT: PASS - Compile Kavita package and tests
+
+====================================================================================================
+Lint Kavita package and tests
+====================================================================================================
+Working directory: C:\Users\mcarls\.codex\.chatgpt-projects\g-p-6a69f86133788191b9710c01d1213c7f\scripts-work\modules\kavita
+Command: C:\Users\mcarls\AppData\Local\Programs\Python\Python312\python.exe -m ruff check kavita tests
+All checks passed!
+RESULT: PASS - Lint Kavita package and tests
+
+====================================================================================================
+Kavita pytest suite
+====================================================================================================
+Working directory: C:\Users\mcarls\.codex\.chatgpt-projects\g-p-6a69f86133788191b9710c01d1213c7f\scripts-work\modules\kavita
+Command: C:\Users\mcarls\AppData\Local\Programs\Python\Python312\python.exe -m pytest tests -q --strict-config --strict-markers --basetemp C:\Users\mcarls\.codex\.chatgpt-projects\g-p-6a69f86133788191b9710c01d1213c7f\scripts-work\modules\kavita\.pytest_tmp_root\validation-20261009-040457
+[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                                          [100%][0m
+RESULT: PASS - Kavita pytest suite
+
+====================================================================================================
+TARGET SUMMARY
+====================================================================================================
+Latest report: C:\Users\mcarls\.codex\.chatgpt-projects\g-p-6a69f86133788191b9710c01d1213c7f\scripts-work\docs\test-results\kavita\LATEST.txt
+Context snapshot: C:\Users\mcarls\.codex\.chatgpt-projects\g-p-6a69f86133788191b9710c01d1213c7f\scripts-work\docs\test-results\kavita\LATEST_CONTEXT.md
+Progress diff: C:\Users\mcarls\.codex\.chatgpt-projects\g-p-6a69f86133788191b9710c01d1213c7f\scripts-work\docs\test-results\kavita\LATEST_PROGRESS.diff
+TARGET RESULT: PASS
+All requested validation sections passed.
+
+Git status after validation:
+ M docs/HANDOFF.md
+ M docs/README.md
+ M docs/plans/HANDOFF.md
+ M modules/mangadl/README.md
+ M modules/mangadl/__init__.py
+ M modules/mangadl/docs/HANDOFF.md
+ M modules/mangadl/docs/README.md
+ M modules/mangadl/docs/plans/HANDOFF.md
+ M modules/mangadl/mangadl/__init__.py
+ M modules/mangadl/mangadl/cli.py
+ M modules/mangadl/mangadl/cli_core.py
+ M modules/mangadl/mangadl/cli_structure.py
+ M modules/mangadl/mangadl/worker_core.py
+ M modules/mangadl/pyproject.toml
+ M modules/scripts_help/scripts_help/registry/registry.py
+ M validation-targets.json
+?? docs/plans/20261009-0349_kavita-module-mangadl-collections/
+?? docs/test-results/kavita/
+?? modules/kavita/
+?? modules/mangadl/tests/kavita_assignment_test.py

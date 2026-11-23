@@ -6,7 +6,7 @@ MangaDL, YTAEDL, and the AEBN downloader are being relocated to the private `psc
 
 The public migration branch is `codex/media-modules-public-20261123`. It removes the public source copies and associated personal runtime artifacts while retaining generic modules such as `compresser`, `kavita`, `procparsers`, `url_file_tools`, and `video_dataset_tools`.
 
-Selected historical media plans and test records were preserved in the private archive at `pscripts/docs/archive/public-scripts/`. The public tree keeps only this concise migration handoff in place of the historical working log.
+Downloader-specific historical plans and test records were preserved in the private archive at `pscripts/docs/archive/public-scripts/`. Generic engineering validation records for Compresser, cross-platform utilities, and Kavita remain public; this handoff replaces the downloader-specific working log.
 
 ## Integration notes
 
