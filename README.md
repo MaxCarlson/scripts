@@ -62,11 +62,10 @@ scripts/
 │   ├── clipboard_utils/  # Clipboard operations
 │   ├── file_utils/       # File manipulation tools
 │   ├── tmux_manager/     # Tmux session management
-│   ├── ytaedl/           # YouTube/audio downloader
 │   ├── ...               # 40+ modules
 │   └── setup.py          # Module installer
 ├── pyscripts/            # Standalone Python scripts
-├── pscripts/             # Additional Python scripts
+├── pscripts/             # Pinned private scripts and installable modules
 ├── pwsh/                 # PowerShell scripts
 ├── shell-scripts/        # Bash/Zsh scripts
 ├── scripts_setup/        # Setup utilities
@@ -89,7 +88,7 @@ scripts/
 | `file_utils` | File and directory manipulation utilities |
 | `tmux_manager` | Tmux session and window management |
 | `parallel_runner` | Concurrent task execution |
-| `ytaedl` | YouTube and audio download tools |
+| Private download CLIs | Installed from the pinned `pscripts` submodule |
 | `sshmanager` | SSH connection management |
 | `gitpulse` | Git repository monitoring |
 | `termdash` | Terminal dashboard framework |

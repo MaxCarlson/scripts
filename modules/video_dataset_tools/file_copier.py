@@ -1,16 +1,43 @@
 #!/usr/bin/env python
+from __future__ import annotations
+
 import argparse
 import json
 import logging
 import os
 import random
-import shutil
 import sys
 from pathlib import Path
+
 from tqdm import tqdm
 
 # Configure logging for verbose output
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+def default_state_path() -> Path:
+    """Return an OS user-state location rather than writing state into source."""
+    if os.name == 'nt':
+        base = Path(os.environ.get('LOCALAPPDATA') or (Path.home() / 'AppData' / 'Local'))
+    else:
+        base = Path(os.environ.get('XDG_STATE_HOME') or (Path.home() / '.local' / 'state'))
+    return base / 'video_dataset_tools' / 'copy_state.json'
+
+
+def resolve_state_paths(explicit: Path | None, *, cwd: Path, resume: bool) -> tuple[Path | None, Path]:
+    """Return a state file to read and a state file to write.
+
+    An explicit ``--log-file`` keeps its historical read/write behavior. For a
+    resume without an explicit path, an existing CWD ``copy_state.json`` is read
+    once for compatibility, while subsequent writes go to the user-state path.
+    """
+    if explicit is not None:
+        return explicit, explicit
+    destination = default_state_path()
+    legacy = cwd / 'copy_state.json'
+    if resume and legacy.is_file() and not destination.is_file():
+        return legacy, destination
+    return (destination if resume else None), destination
 
 def parse_source_path(path_str):
     """Parses a source path with optional recursion depth like /path/to/dir::d<N>."""
@@ -109,13 +136,13 @@ Example: -s /videos/movies::d0 -s /videos/series
     parser.add_argument(
         '-r', '--resume',
         action='store_true',
-        help="Resume a previous run. Requires --log-file."
+        help="Resume a previous run, including a legacy CWD state file when present."
     )
     parser.add_argument(
         '-l', '--log-file',
         type=Path,
-        default=Path('copy_state.json'),
-        help="Log file to store the state of copied files for resuming."
+        default=None,
+        help="State file to read and write (default: per-user application state)."
     )
     parser.add_argument(
         '-e', '--video-extensions',
@@ -130,6 +157,7 @@ Example: -s /videos/movies::d0 -s /videos/series
     )
 
     args = parser.parse_args()
+    state_read_path, args.log_file = resolve_state_paths(args.log_file, cwd=Path.cwd(), resume=args.resume)
 
     # --- State Initialization ---
     state = {
@@ -137,9 +165,9 @@ Example: -s /videos/movies::d0 -s /videos/series
         'total_size_copied': 0,
         'total_count_copied': 0
     }
-    if args.resume and args.log_file.exists():
-        logging.info(f"Resuming from state file: {args.log_file}")
-        with open(args.log_file, 'r') as f:
+    if args.resume and state_read_path and state_read_path.exists():
+        logging.info(f"Resuming from state file: {state_read_path}")
+        with open(state_read_path, 'r') as f:
             state = json.load(f)
 
     # --- File Discovery ---
@@ -207,6 +235,7 @@ Example: -s /videos/movies::d0 -s /videos/series
         state['total_size_copied'] += file_size
         state['total_count_copied'] += 1
 
+        args.log_file.parent.mkdir(parents=True, exist_ok=True)
         with open(args.log_file, 'w') as f:
             json.dump(state, f, indent=4)
         

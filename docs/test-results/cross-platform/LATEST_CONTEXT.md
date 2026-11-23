@@ -114,4 +114,3 @@ probing or elevation.
 - Detection does not require administrator/root privileges.
 - Failures return unknown with a useful reason.
 - Callers remain responsible for conservative policy when media is unknown.
-

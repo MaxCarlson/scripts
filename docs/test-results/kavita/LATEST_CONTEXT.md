@@ -112,4 +112,3 @@ _Missing at validation time: `C:\Users\mcarls\src\scripts\modules\kavita\docs\pl
 ### `docs/plans/20261009-0349_kavita-module-mangadl-collections/checklist.md`
 
 _Missing at validation time: `C:\Users\mcarls\src\scripts\modules\kavita\docs\plans\20261009-0349_kavita-module-mangadl-collections\checklist.md`_
-

@@ -1,12 +1,15 @@
+from pathlib import Path
+
 from scripts_setup.launcher_generator import (
-    scan_repository_programs,
+    CommandEntry,
+    classify_wrapper,
     detect_collisions,
     generate_manifest,
-    generate_windows_wrapper,
     generate_posix_wrapper,
-    classify_wrapper,
+    generate_windows_wrapper,
     is_managed_wrapper,
-    CommandEntry,
+    scan_repository_programs,
+    write_wrapper,
 )
 
 
@@ -112,3 +115,82 @@ def test_generate_manifest(tmp_path):
     assert data["schema_version"] == 1
     assert "pkg" in data["commands"]
     assert data["commands"]["pkg"]["program_id"] == "module:pkg"
+
+
+def test_private_pscripts_does_not_shadow_public_aebndl_until_migration(tmp_path):
+    public = tmp_path / "modules" / "aebndl_module"
+    private = tmp_path / "pscripts" / "modules" / "aebndl_module"
+    for directory in (public, private):
+        directory.mkdir(parents=True)
+        (directory / "pyproject.toml").write_text(
+            '[project]\nname="aebndl"\nversion="0.8.1"\n[project.scripts]\naebndl="aebn_dl.cli:main"\n',
+            encoding="utf-8",
+        )
+
+    commands = scan_repository_programs(tmp_path)
+
+    assert commands["aebndl"].source_path == "modules/aebndl_module"
+
+
+def test_duplicate_console_command_ownership_is_rejected(tmp_path):
+    for module, distribution in (("one", "one"), ("two", "two")):
+        directory = tmp_path / "modules" / module
+        directory.mkdir(parents=True)
+        (directory / "pyproject.toml").write_text(
+            f'[project]\nname="{distribution}"\nversion="1.0"\n[project.scripts]\nshared="{distribution}:main"\n',
+            encoding="utf-8",
+        )
+
+    try:
+        scan_repository_programs(tmp_path)
+    except ValueError as exc:
+        assert "shared" in str(exc)
+    else:
+        raise AssertionError("duplicate console command owners should fail closed")
+
+
+def test_pinned_pscripts_media_commands_are_in_manifest_inventory():
+    root = Path(__file__).resolve().parents[1]
+
+    commands = scan_repository_programs(root)
+
+    for name in ("mangadl", "ytaedl", "aebndl", "video-tools"):
+        assert name in commands
+        assert commands[name].source_path.startswith("pscripts/modules/")
+
+
+def test_windows_wrapper_write_is_idempotent_without_doubled_carriage_returns(tmp_path):
+    wrapper = tmp_path / "demo.cmd"
+
+    assert write_wrapper(wrapper, "demo", is_windows=True) is True
+    first = wrapper.read_bytes()
+    assert b"\r\r\n" not in first
+
+    assert write_wrapper(wrapper, "demo", is_windows=True) is False
+    assert wrapper.read_bytes() == first
+
+
+def test_scan_repository_programs_reads_poetry_and_literal_setup_py_entry_points(tmp_path):
+    syncmux = tmp_path / "modules" / "syncmux"
+    syncmux.mkdir(parents=True)
+    (syncmux / "pyproject.toml").write_text(
+        "[tool.poetry]\nname = \"syncmux\"\nversion = \"0.1.0\"\n"
+        "[tool.poetry.scripts]\nsyncmux = \"syncmux.__main__:main\"\n",
+        encoding="utf-8",
+    )
+
+    translations = tmp_path / "modules" / "translations"
+    translations.mkdir(parents=True)
+    (translations / "setup.py").write_text(
+        "from setuptools import setup\n"
+        "setup(name=\"translations\", version=\"0.1.0\", "
+        "entry_points={\"console_scripts\": [\"translations=translations.cli:main\"]})\n",
+        encoding="utf-8",
+    )
+
+    commands = scan_repository_programs(tmp_path)
+
+    assert commands["syncmux"].distribution == "syncmux"
+    assert commands["syncmux"].entry_point == "syncmux.__main__:main"
+    assert commands["translations"].distribution == "translations"
+    assert commands["translations"].entry_point == "translations.cli:main"

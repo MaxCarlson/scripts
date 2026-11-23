@@ -4,18 +4,18 @@ index fe5c692..36caf23 100644
 +++ "b/C:\\Users\\mcarls\\src\\scripts\\docs\\test-results\\kavita\\LATEST_CONTEXT.md"
 @@ -1,8 +1,8 @@
  # Validation Context: kavita
- 
+
 -Generated: 2026-10-09T04:04:59.1375567-07:00
 +Generated: 2026-10-09T14:34:44.0584358-07:00
  Branch: codex/kavita-module-mangadl-collections-20261009-0349
 -Commit: 3c2d7e51f86d9471e99f1f6d12e1309bfb2d69de
 +Commit: b38bd37bf4b02770635869780c8d0bcae4dd719e
  Validation report: docs\test-results\kavita\LATEST.txt
- 
+
  ## Validation Highlights
 @@ -15,34 +15,58 @@ Validation report: docs\test-results\kavita\LATEST.txt
  ## Working Tree
- 
+
  ```text
 - M docs/HANDOFF.md
 - M docs/README.md
@@ -69,16 +69,16 @@ index fe5c692..36caf23 100644
 +?? modules/mangadl/tests/page_adapters_test.py
 +?? modules/mangadl/tests/repair_pages_test.py
  ```
- 
+
  ## Project Status Sources
- 
+
  ### `docs/plans/20261009-0349_kavita-module-mangadl-collections/STATUS.md`
- 
+
 -_Missing at validation time: `C:\Users\mcarls\.codex\.chatgpt-projects\g-p-6a69f86133788191b9710c01d1213c7f\scripts-work\modules\kavita\docs\plans\20261009-0349_kavita-module-mangadl-collections\STATUS.md`_
 +_Missing at validation time: `C:\Users\mcarls\src\scripts\modules\kavita\docs\plans\20261009-0349_kavita-module-mangadl-collections\STATUS.md`_
- 
+
  ### `docs/plans/20261009-0349_kavita-module-mangadl-collections/checklist.md`
- 
+
 -_Missing at validation time: `C:\Users\mcarls\.codex\.chatgpt-projects\g-p-6a69f86133788191b9710c01d1213c7f\scripts-work\modules\kavita\docs\plans\20261009-0349_kavita-module-mangadl-collections\checklist.md`_
 +_Missing at validation time: `C:\Users\mcarls\src\scripts\modules\kavita\docs\plans\20261009-0349_kavita-module-mangadl-collections\checklist.md`_
 +

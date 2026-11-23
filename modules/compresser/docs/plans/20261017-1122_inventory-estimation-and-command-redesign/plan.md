@@ -71,7 +71,7 @@ Existing paths below are module-relative unless otherwise stated.
 | New `compresser/sequential_estimation.py` | Certified complete-round bounds/alpha spending |
 | New `compresser/quality_curves.py` | Optional explicitly interpolated quality exploration |
 | `report_models.py`, `reporting.py`, `report_session.py`, `ui.py`, `markdown_report.py` | Existing shared report/progress contract, extended estimation facts |
-| `compresser/cli.py`; `modules/mangadl/mangadl/cli_core.py`, `cli_structure.py`, `compress.py` | Thin adapters; MangaDL exact selection/ownership remains module-owned |
+| `compresser/cli.py`; `pscripts/modules/mangadl/mangadl/cli_core.py`, `cli_structure.py`, `compress.py` | Thin adapters; MangaDL exact selection/ownership remains module-owned |
 
 Interfaces are specified as contracts below, not permission to duplicate existing
 models. Keep new modules focused; reuse current public types where their semantics fit.
@@ -89,7 +89,7 @@ At checkpoints affecting both adapters run:
 
 ```powershell
 .venv/Scripts/python.exe -m pytest modules/compresser/tests -q -p no:cacheprovider --basetemp=modules/compresser/.pytest_tmp_root/estimation-full --tb=short
-.venv/Scripts/python.exe -m pytest modules/mangadl/tests -o addopts= -q -p no:cacheprovider --tb=short
+.venv/Scripts/python.exe -m pytest pscripts/modules/mangadl/tests -o addopts= -q -p no:cacheprovider --tb=short
 .venv/Scripts/python.exe -m pytest modules/scripts_help/tests -q -p no:cacheprovider --basetemp=modules/scripts_help/.pytest_tmp_root/estimation-full --tb=short
 ```
 
@@ -104,7 +104,7 @@ Record exact outcomes in STATUS.md; historical test counts are not new verificat
 ### Task 1: Change workspace layout without moving data
 
 **Files:** Modify `compresser/workspace.py`, tests/workspace_test.py,
-tests/inventory_test.py; `modules/mangadl/tests/compress_test.py`.
+tests/inventory_test.py; `pscripts/modules/mangadl/tests/compress_test.py`.
 **Interfaces:** Keep `resolve_workspace(target: Path, parent: Path|None, *, owner: str)
 -> CompressionWorkspace`; remove legacy inventory argument/path detection. Properties
 resolve fixed inventory.sqlite3/trials.sqlite3, plans/, reports/, previews/.
