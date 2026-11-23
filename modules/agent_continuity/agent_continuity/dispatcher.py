@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .environment import load_or_create_environment, resolve_environment_selector
+from .environment import environment_is_locally_owned, load_or_create_environment, resolve_environment_selector
 from .errors import ContinuityError, ErrorCode
 from .identifiers import generate_id, normalize_path_canonical, normalize_repo_identity, now_utc_iso
 from .models import EventEnvelope, EventType
@@ -489,8 +489,6 @@ class DispatcherService:
         """Resolve a pending launch only when its exact bootstrap session ID was durably captured."""
         import hashlib
 
-        from .environment import detect_runtime_kind
-
         conversation = self._row("SELECT * FROM dispatcher_gui_conversations WHERE alias_key = ? OR gui_id = ?",
                                  (gui.strip().casefold(), gui.strip()))
         if conversation is None:
@@ -518,9 +516,9 @@ class DispatcherService:
                 "Recovery is unresolved: no single exact bootstrap session ID was captured. Inspect provider state and use llmd attach with a verified ID.")
         environments = self.materializer.list_environments()
         env = next((item for item in environments if item.environment_id == pending["environment_id"]), None)
-        if env is None or env.runtime_kind != detect_runtime_kind():
+        if env is None or not environment_is_locally_owned(self.home_dir, env):
             raise ContinuityError(ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE,
-                "Recovery refused because runtime ownership cannot be observed in this environment.")
+                "Recovery refused because runtime ownership cannot be established for this host and environment.")
         key = hashlib.sha256(f"{pending['provider']}\0{pending['environment_id']}\0{session_id}".encode()).hexdigest()[:24]
         lock_name = f"session-{key}.lock"
         if not apply:

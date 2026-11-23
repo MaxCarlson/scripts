@@ -40,12 +40,16 @@ def test_noninteractive_no_argument_call_shows_help_without_registry_mutation(tm
 
 def test_no_argument_interactive_entry_can_exit_without_mutation(tmp_path):
     parser = build_parser()
-    output = StringIO()
     output = TTYOutput()
+    service = DispatcherService(ContinuityService(tmp_path))
+    before_guis = service.list_guis()
+    before_events = service._rows("SELECT event_id, event_type FROM activity_events ORDER BY sequence")
     result = dispatch(parser.parse_args(["-H", str(tmp_path)]), parser, input_stream=TTYInput("\x03"), output_stream=output)
 
     assert result == 0
     assert "Select GUI Conversation" in output.getvalue()
+    assert service.list_guis() == before_guis == []
+    assert service._rows("SELECT event_id, event_type FROM activity_events ORDER BY sequence") == before_events == []
 
 
 def test_selector_filters_case_insensitively_and_keeps_item_order():

@@ -161,6 +161,34 @@ def _read_environment_file(env_file: Path) -> EnvironmentInfo:
     ) from last_exc
 
 
+def environment_is_locally_owned(home_dir: Path, environment: EnvironmentInfo) -> bool:
+    """Return whether persisted metadata and current host identity establish local ownership."""
+    env_file = home_dir / "environment.json"
+    if not env_file.is_file():
+        return False
+    try:
+        persisted = _read_environment_file(env_file)
+    except ContinuityError:
+        return False
+
+    runtime_kind = detect_runtime_kind()
+    hostname = socket.gethostname()
+    distro = os.environ.get("WSL_DISTRO_NAME") if runtime_kind == RuntimeKind.WSL.value else None
+    if not hostname or hostname == "unknown" or persisted.hostname in {"", "unknown"}:
+        return False
+    if environment.environment_id != persisted.environment_id:
+        return False
+    if (environment.runtime_kind, environment.hostname.casefold()) != (runtime_kind, hostname.casefold()):
+        return False
+    if (persisted.runtime_kind, persisted.hostname.casefold()) != (runtime_kind, hostname.casefold()):
+        return False
+    if runtime_kind == RuntimeKind.WSL.value:
+        if not distro or not persisted.distro or not environment.distro:
+            return False
+        return persisted.distro.casefold() == distro.casefold() == environment.distro.casefold()
+    return environment.runtime_kind == persisted.runtime_kind
+
+
 def load_or_create_environment(home_dir: Path, *, persist: bool = True) -> EnvironmentInfo:
     """
     Load the stable local environment identity from <home_dir>/environment.json.

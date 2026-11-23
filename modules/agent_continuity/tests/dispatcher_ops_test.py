@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 from io import StringIO
 
+import pytest
+
 from agent_continuity.dispatcher import DispatcherService, _mutation_lock
 from agent_continuity.dispatcher_cli import build_parser, dispatch
+from agent_continuity.errors import ContinuityError
 from agent_continuity.service import ContinuityService
 
 
@@ -32,6 +35,64 @@ def test_doctor_is_read_only_and_json_is_stable(tmp_path):
     assert first["registry"]["database"]["integrity"] == "not_initialized"
     assert "do not prove external provider inactivity" in " ".join(first["limitations"])
     assert not home.exists()
+
+
+def test_doctor_human_output_reports_registry_runtime_pending_and_limitations(tmp_path):
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(ContinuityService(home))
+    dispatcher.register("P", "A")
+    dispatcher.begin_launch(gui="P", name="A", provider="codex", apply=True)
+
+    code, output = _dispatch(home, "doctor", "-g", "P", "-n", "A")
+
+    assert code == 0
+    assert "Registry integrity:" in output
+    assert "Registry lock:" in output
+    assert "P / A" in output
+    assert "PENDING" in output
+    assert "Pending launches:" in output
+    assert "Limitations:" in output
+
+
+def test_runtime_ownership_requires_same_wsl_distribution(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr("agent_continuity.environment.detect_runtime_kind", lambda: "wsl")
+    monkeypatch.setattr("agent_continuity.environment.socket.gethostname", lambda: "shared-host")
+    dispatcher = DispatcherService(ContinuityService(home))
+    dispatcher.register("P", "A", provider="codex", session_id="native")
+    launch = dispatcher.begin_launch(gui="P", name="A", provider="codex", apply=True)
+    slot = dispatcher.get_slot(gui="P", name="A")
+    dispatcher.record_process_observation(slot_id=slot["slot_id"], launch_id=launch["details"]["launch_id"],
+        return_code=0, outcome="bootstrap_id_captured", native_session_id="captured")
+
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Debian")
+    with pytest.raises(ContinuityError, match="runtime ownership cannot be established"):
+        dispatcher.recover_captured_launch(gui="P", name="A", apply=True)
+
+    code, output = _dispatch(home, "doctor", "-g", "P", "-n", "A", "-j")
+    assert code == 0
+    assert json.loads(output)["agents"][0]["runtime"] == "UNKNOWN"
+
+
+def test_runtime_ownership_requires_same_host(tmp_path, monkeypatch):
+    monkeypatch.setattr("agent_continuity.environment.detect_runtime_kind", lambda: "windows")
+    monkeypatch.setattr("agent_continuity.environment.socket.gethostname", lambda: "host-one")
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(ContinuityService(home))
+    dispatcher.register("P", "A")
+    launch = dispatcher.begin_launch(gui="P", name="A", provider="codex", apply=True)
+    slot = dispatcher.get_slot(gui="P", name="A")
+    dispatcher.record_process_observation(slot_id=slot["slot_id"], launch_id=launch["details"]["launch_id"],
+        return_code=0, outcome="bootstrap_id_captured", native_session_id="captured")
+
+    monkeypatch.setattr("agent_continuity.environment.socket.gethostname", lambda: "host-two")
+    with pytest.raises(ContinuityError, match="runtime ownership cannot be established"):
+        dispatcher.recover_captured_launch(gui="P", name="A", apply=True)
+
+    code, output = _dispatch(home, "doctor", "-g", "P", "-n", "A", "-j")
+    assert code == 0
+    assert json.loads(output)["agents"][0]["runtime"] == "UNKNOWN"
 
 
 def test_doctor_does_not_create_session_lock_files(tmp_path):

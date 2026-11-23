@@ -17,3 +17,11 @@
 - [x] Clarify metadata failures after provider submission.
 - [x] Run full suite, Ruff, and whitespace checks.
 - [x] Review and commit operational diagnostics locally.
+
+## Independent review corrections
+
+- [x] Prevent picker preview and contended named continuation from mutating lifecycle/history.
+- [x] Establish runtime ownership from environment ID, runtime kind, hostname, and WSL distribution; otherwise report UNKNOWN and refuse recovery.
+- [x] Render human-readable doctor output without changing the JSON schema.
+- [x] Assert interactive initialization leaves durable dispatcher state unchanged.
+- [x] Run focused and full tests, Ruff, and diff checks; commit locally without pushing.

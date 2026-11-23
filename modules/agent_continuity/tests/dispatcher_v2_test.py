@@ -174,6 +174,55 @@ def test_flat_picker_uses_searchable_all_fields_and_runtime(tmp_path, monkeypatc
     assert filter_items(items, "native-123", key="search_text")
 
 
+def test_inactive_picker_dry_run_does_not_change_lifecycle_or_history(tmp_path, monkeypatch):
+    from argparse import Namespace
+
+    from agent_continuity.dispatcher_cli import _run_picker
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("P", "A", provider="codex", session_id="native")
+    dispatcher.set_slot_state(gui="P", name="A", state="inactive", apply=True)
+    before = dispatcher.get_slot(gui="P", name="A")
+
+    class TTYInput(StringIO):
+        def isatty(self):
+            return True
+
+    class TTYOutput(StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr("agent_continuity.interactive.select_item", lambda *a, **k: ("selected", {
+        **before, "gui_alias": "P", "provider": "codex", "runtime_status": "NOT OBSERVED",
+        "current_session_id": "native", "search_text": "p a codex native",
+    }))
+    input_stream = TTYInput("y\n")
+    output_stream = TTYOutput()
+    assert _run_picker(dispatcher, Namespace(gui=None, all=False, apply=False), input_stream, output_stream) == 0
+
+    after = dispatcher.get_slot(gui="P", name="A")
+    assert after["state"] == "inactive"
+    assert after["history"] == before["history"]
+
+
+def test_named_continue_checks_runtime_before_reactivation_mutation(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.register("P", "A", provider="codex", session_id="native")
+    dispatcher.set_slot_state(gui="P", name="A", state="inactive", apply=True)
+    before = dispatcher.get_slot(gui="P", name="A")
+    parser = build_parser()
+    args = parser.parse_args(["-H", str(home), "continue", "-g", "P", "-n", "A", "--reactivate", "-a"])
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._session_in_use", lambda *a: True)
+
+    with pytest.raises(ContinuityError, match="already in use"):
+        dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())
+
+    after = dispatcher.get_slot(gui="P", name="A")
+    assert after["state"] == "inactive"
+    assert after["history"] == before["history"]
+
+
 def test_runtime_lease_is_nonblocking_and_lifetime_scoped(tmp_path):
     from agent_continuity.dispatcher_cli import _session_runtime_lock, _try_session_runtime_lock
     dispatcher = DispatcherService(home_dir=tmp_path / "registry")
