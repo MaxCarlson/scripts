@@ -235,3 +235,11 @@ Historical checkpoint status above is superseded by the final pscripts and full-
 - [x] Verify final-head Ubuntu run [45179881547](https://github.com/MaxCarlson/scripts/actions/runs/45179881547) succeeded: 64 packages, 69 script launchers, 95 console commands, zero missing; 107 pre-bootstrap tests passed / 1 deselected; Runmux synthetic HTTP step passed; 3 launcher tests; 120 post-bootstrap tests; `pip check` clean.
 - [ ] Preserve the five unpublished-package, Trusted Publisher/environment, shared hosted qualification, and public-index validation gates. Do not publish packages or merge PR #22 without explicit authorization.
 - [ ] Keep source retirement as a later phase on a fresh branch from integrated `scripts/main`; preserve the historical retirement checkpoint and both module catalogs/ownership holds.
+
+## PR #25 current-main reconciliation — 2026-11-23
+
+- [x] Verify current `scripts/main` at `c87db5b68ae14ce5398c4a8cd16ed23289bcfacf`; PR #25 changes only `modules/agent_continuity/` and does not overlap PR #22 changed paths.
+- [x] Merge current main into the PR #22 worktree without conflicts: merge commit `0c1572f00e1b75b72a7ffc768ff4b03ab0b5e8fa`; preserve Gitlink `1640d1b80e60116aab74c9e89be67a83090a3727`.
+- [x] Run focused dispatcher tests after creating the expected pytest temp parent: `python -m pytest -q modules/agent_continuity/tests/dispatcher_v2_test.py modules/agent_continuity/tests/dispatcher_ops_test.py modules/agent_continuity/tests/dispatcher_cli_test.py` completed with exit 0.
+- [ ] Push the latest main reconciliation and status update; run the hosted Ubuntu workflow against the combined PR #25 tree; refresh PR #22 description with the resulting head/run. The prior successful run `45181270938` predates this merge.
+- [ ] Keep the existing publication/clean-index and explicit merge gates. Do not merge PR #22 or retire source in this phase.
