@@ -8,7 +8,7 @@
 - A changed module uses its `pyproject.toml` version and any exposed `__version__` in sync. A changed standalone `pyscripts/` file bumps its embedded `__version__`.
 - Add new CLIs to `modules/scripts_help/scripts_help/registry/registry.py`.
 - Keep module test temp roots inside the owning module, normally `modules/<module>/.pytest_tmp_root/`.
-- Prefer reusable terminal UI components in `modules/termdash`.
+- Prefer reusable terminal UI components from the `mxc-termdash` distribution (`termdash` Python imports).
 
 Read `docs/agent/PYTHON_REPO_STANDARDS.md` and `docs/agent/SCRIPTS_REPO_STANDARDS.md` for the full rules when changing Python or CLI behavior. `MODULE_STANDARDS.md` points to those split files and the legacy planning guide.
 
