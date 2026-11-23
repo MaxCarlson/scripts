@@ -470,12 +470,16 @@ def _run_pane(
         if launch_id:
             dispatcher.mark_launch_failed(launch_id=launch_id, detail=str(exc), apply=True)
         elif session_id:
-            dispatcher.record_process_observation(slot_id=slot_id, launch_id=None, return_code=-1, outcome="spawn_failed")
+            dispatcher.record_process_observation(
+                slot_id=slot_id, launch_id=None, return_code=-1, outcome="spawn_failed",
+                session_identity=(provider, environment_id, session_id),
+            )
         raise ContinuityError(ErrorCode.PROVIDER_UNAVAILABLE, f"Failed to launch {provider}: {exc}") from exc
     try:
         dispatcher.record_process_observation(
             slot_id=slot_id, launch_id=launch_id, return_code=result.returncode,
             outcome="normal_exit" if result.returncode == 0 else "nonzero_exit",
+            session_identity=(provider, environment_id, session_id) if session_id else None,
         )
     except ContinuityError as exc:
         raise ContinuityError(ErrorCode.METADATA_INACCESSIBLE,

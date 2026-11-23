@@ -25,3 +25,10 @@
 - [x] Render human-readable doctor output without changing the JSON schema.
 - [x] Assert interactive initialization leaves durable dispatcher state unchanged.
 - [x] Run focused and full tests, Ruff, and diff checks; commit locally without pushing.
+
+## Final session-switch concurrency correction
+
+- [x] Guard current-session lease in `attach_session` under registry mutation lock.
+- [x] Preserve same-current no-op and protect continue, attach, and reuse switch paths.
+- [x] Preserve child session identity for process-exit observations.
+- [x] Run full tests, Ruff, and diff checks; commit and push the validated correction.

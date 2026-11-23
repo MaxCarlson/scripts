@@ -157,3 +157,89 @@ def test_metadata_failure_after_provider_exit_is_actionable(tmp_path, monkeypatc
         ContinuityError(ErrorCode.METADATA_INACCESSIBLE, "lock timeout")))
     with pytest.raises(ContinuityError, match="process exited with code 0.*Do not relaunch blindly"):
         _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None, input_stream=StringIO(), output_stream=StringIO())
+
+
+@pytest.mark.parametrize("command", ["continue", "attach", "switch"])
+def test_switch_refuses_running_current_session_without_writing_or_launching(tmp_path, monkeypatch, command):
+    import hashlib
+
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.register("P", "A", provider="codex", session_id="historical")
+    dispatcher.register("P", "A", provider="agy", session_id="current", select=True)
+    slot = dispatcher.get_slot(gui="P", name="A")
+    current = slot["current"]
+    lock_key = hashlib.sha256(
+        f"{current['provider']}\0{current['environment_id']}\0{current['native_session_id']}".encode()
+    ).hexdigest()[:24]
+    lock_name = f"session-{lock_key}.lock"
+    before_history = slot["history"]
+    before_events = dispatcher._rows("SELECT event_id, event_type FROM activity_events ORDER BY observed_timestamp, event_id")
+    launches = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane", lambda *a, **k: launches.append(True) or 0)
+    parser = build_parser()
+    argv = {
+        "continue": ["continue", "-g", "P", "-n", "A", "-p", "codex", "-a"],
+        "attach": ["attach", "-g", "P", "-n", "A", "-p", "codex", "-i", "historical", "-a"],
+        "switch": ["switch", "-g", "P", "-n", "A", "-p", "codex", "-r", "-a"],
+    }[command]
+
+    with _mutation_lock(home, lock_name):
+        args = parser.parse_args(["-H", str(home), *argv])
+        with pytest.raises(ContinuityError, match="current session.*in use"):
+            dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())
+
+    after = dispatcher.get_slot(gui="P", name="A")
+    assert after["history"] == before_history
+    assert dispatcher._rows("SELECT event_id, event_type FROM activity_events ORDER BY observed_timestamp, event_id") == before_events
+    assert launches == []
+
+
+def test_attach_same_current_session_is_noop_even_when_running(tmp_path):
+    import hashlib
+
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.register("P", "A", provider="codex", session_id="current")
+    slot = dispatcher.get_slot(gui="P", name="A")
+    current = slot["current"]
+    lock_key = hashlib.sha256(
+        f"{current['provider']}\0{current['environment_id']}\0{current['native_session_id']}".encode()
+    ).hexdigest()[:24]
+    before_events = dispatcher._rows("SELECT event_id, event_type FROM activity_events ORDER BY observed_timestamp, event_id")
+
+    with _mutation_lock(home, f"session-{lock_key}.lock"):
+        result = dispatcher.attach_session(gui="P", name="A", provider="codex", session_id="current", apply=True)
+
+    assert result["events"] == []
+    assert dispatcher.get_slot(gui="P", name="A")["history"] == slot["history"]
+    assert dispatcher._rows("SELECT event_id, event_type FROM activity_events ORDER BY observed_timestamp, event_id") == before_events
+
+
+def test_process_observation_uses_session_that_child_ran(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from agent_continuity.dispatcher_cli import _run_pane
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("P", "A", provider="codex", session_id="child-session")
+    slot = dispatcher.get_slot(gui="P", name="A")
+
+    @contextmanager
+    def release_then_switch(*args, **kwargs):
+        yield
+        dispatcher.attach_session(gui="P", name="A", provider="agy", session_id="new-selection", apply=True)
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._session_runtime_lock", release_then_switch)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", lambda *args, **kwargs: ["fake-provider"])
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", lambda *args, **kwargs: SimpleNamespace(returncode=1))
+
+    assert _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
+                     input_stream=StringIO(), output_stream=StringIO()) == 1
+
+    event = dispatcher._row(
+        "SELECT provider, native_session_id FROM activity_events "
+        "WHERE event_type = 'dispatcher.process_observed' ORDER BY observed_timestamp DESC, event_id DESC LIMIT 1"
+    )
+    assert event == {"provider": "codex", "native_session_id": "child-session"}

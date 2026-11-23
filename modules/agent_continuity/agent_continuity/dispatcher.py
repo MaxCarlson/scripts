@@ -588,13 +588,21 @@ class DispatcherService:
     def record_process_observation(
         self, *, slot_id: str, launch_id: str | None, return_code: int, outcome: str,
         detail: str | None = None, native_session_id: str | None = None,
+        session_identity: tuple[str, str, str] | None = None,
     ) -> None:
         slot = self.get_slot_by_id(slot_id)
         current = slot["current"]
         pending = self.get_pending_launch(launch_id) if launch_id else None
-        provider = pending["provider"] if pending else (current["provider"] if current else None)
-        environment_id = pending["environment_id"] if pending else (current["environment_id"] if current else None)
-        session_id = native_session_id or (None if pending else (current["native_session_id"] if current else None))
+        if pending:
+            provider = pending["provider"]
+            environment_id = pending["environment_id"]
+            session_id = native_session_id
+        elif session_identity:
+            provider, environment_id, session_id = session_identity
+        else:
+            provider = current["provider"] if current else None
+            environment_id = current["environment_id"] if current else None
+            session_id = native_session_id or (current["native_session_id"] if current else None)
         if not provider or not environment_id:
             return
         event = self._event(
@@ -780,6 +788,21 @@ class DispatcherService:
                         "summary": "Session became current before this request was applied.",
                         "details": {"slot_id": slot["slot_id"], "session_id": session}, "events": [],
                     }
+                current = latest[-1] if latest else None
+                if current:
+                    import hashlib
+
+                    lock_key = hashlib.sha256(
+                        f"{current['provider']}\0{current['environment_id']}\0{current['native_session_id']}".encode()
+                    ).hexdigest()[:24]
+                    try:
+                        with _mutation_lock(self.home_dir, f"session-{lock_key}.lock", blocking=False):
+                            pass
+                    except ContinuityError as exc:
+                        raise ContinuityError(
+                            ErrorCode.INVALID_INPUT,
+                            f"Cannot change selection while current session {current['native_session_id']} is in use.",
+                        ) from exc
                 next_sequence = (latest[-1]["sequence"] if latest else 0) + 1
                 sequence = next_sequence
                 activation_event.payload["sequence"] = next_sequence
