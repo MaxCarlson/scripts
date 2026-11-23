@@ -153,11 +153,11 @@ def test_managed_stale_console_wrapper_is_repaired(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     destination = bootstrap.launcher_path(bin_dir, "tool", True)
-    destination.write_text(generate_windows_wrapper("tool").replace('"tool"', '"stale-tool"'), encoding="utf-8")
+    stale_content = generate_windows_wrapper("tool").replace("exit /b %ERRORLEVEL%", "exit /b 7")
+    destination.write_bytes(stale_content.encode("utf-8"))
     monkeypatch.setattr(bootstrap, "installed_versions", lambda: {"utility": "2.0"})
     monkeypatch.setattr(bootstrap, "console_scripts", lambda names: [("tool", "utility")])
     monkeypatch.setattr(bootstrap, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr(bootstrap, "write_console_proxy", lambda path, name, windows, venv, **kwargs: path.write_text(generate_windows_wrapper(name).replace("\r\n", "\n"), encoding="utf-8"))
     monkeypatch.setattr(bootstrap, "sys", SimpleNamespace(executable="python", path=[]))
     (tmp_path / ".venv" / "Scripts").mkdir(parents=True)
     (tmp_path / ".venv" / "Scripts" / "tool.exe").write_bytes(b"fixture")
