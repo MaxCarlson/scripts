@@ -14,7 +14,7 @@ def manifest():
         "tasks": [task],
         "prompt_policy": {"id": "sv0-unmodified-v1"},
         "provenance": {
-            "effective_base_url": "http://host.docker.internal:1234/v1",
+            "effective_base_url": "http://host.docker.internal:1235/v1",
             "registry_resolution": {
                 "tasks": [
                     {

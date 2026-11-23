@@ -20,7 +20,12 @@ except ImportError:
     command_lock = None  # type: ignore[assignment]
 from .importer import HarborImporter
 from .models import HarborJobResult, JobStats
-from .planner import BenchmarkPlan, check_docker_readiness, check_harbor_readiness
+from .planner import (
+    BenchmarkPlan,
+    check_docker_readiness,
+    check_harbor_readiness,
+    validate_harbor_inference_base_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +197,9 @@ def build_harbor_command(
         cmd.extend(["--model", plan.model])
 
     if plan.base_url and plan.agent not in ("oracle", "nop"):
+        url_blocker = validate_harbor_inference_base_url(plan.agent, plan.base_url)
+        if url_blocker:
+            raise PreflightCheckError(url_blocker)
         cmd.extend(["--base-url", plan.base_url])
 
     if plan.model_api_format and plan.agent not in ("oracle", "nop"):
@@ -262,6 +270,10 @@ def execute_harbor_run(
         raise PreflightCheckError(
             f"Cannot execute benchmark due to readiness blockers: {'; '.join(plan.readiness.blockers)}"
         )
+
+    url_blocker = validate_harbor_inference_base_url(plan.agent, plan.base_url)
+    if url_blocker:
+        raise PreflightCheckError(f"Cannot execute benchmark due to unsafe inference route: {url_blocker}")
 
     # Preflight 1: Docker
     docker_ok, docker_msg = check_docker_readiness()

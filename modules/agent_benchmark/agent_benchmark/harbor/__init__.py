@@ -18,6 +18,7 @@ from .models import (
     evaluate_trial_status,
 )
 from .planner import (
+    PROTECTED_COORDINATOR_BASE_URL,
     BenchmarkPlan,
     ReadinessCheck,
     SUPPORTED_HARBOR_AGENTS,
@@ -25,6 +26,7 @@ from .planner import (
     check_docker_readiness,
     check_harbor_readiness,
     plan_benchmark,
+    validate_harbor_inference_base_url,
     verify_agent_readiness,
 )
 from .reporting import collect_run_summaries, render_leaderboard_table
@@ -61,6 +63,7 @@ __all__ = [
     "HarborTrialResult",
     "StatusEvaluation",
     "evaluate_trial_status",
+    "PROTECTED_COORDINATOR_BASE_URL",
     "BenchmarkPlan",
     "ReadinessCheck",
     "SUPPORTED_HARBOR_AGENTS",
@@ -68,6 +71,7 @@ __all__ = [
     "check_docker_readiness",
     "check_harbor_readiness",
     "plan_benchmark",
+    "validate_harbor_inference_base_url",
     "verify_agent_readiness",
     "collect_run_summaries",
     "render_leaderboard_table",

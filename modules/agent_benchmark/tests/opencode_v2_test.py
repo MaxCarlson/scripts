@@ -97,7 +97,7 @@ def test_opencode_v2_configuration_blockers():
 
     valid_blockers = check_agent_configuration_blockers(
         "opencode-v2",
-        base_url="http://host.docker.internal:8788/v1",
+        base_url="http://host.docker.internal:1235/v1",
     )
     assert valid_blockers == []
 
@@ -109,7 +109,7 @@ def test_plan_benchmark_opencode_v2():
             dataset_name="aider-polyglot",
             language="python",
             agent="opencode-v2",
-            base_url="http://host.docker.internal:8788/v1",
+            base_url="http://host.docker.internal:1235/v1",
             count=1,
         )
         assert plan.agent == "opencode-v2"
@@ -123,7 +123,7 @@ def test_build_harbor_command_maps_opencode_v2_to_dynamic_class():
         dataset_name="aider-polyglot",
         language="python",
         agent="opencode-v2",
-        base_url="http://host.docker.internal:8788/v1",
+        base_url="http://host.docker.internal:1235/v1",
         count=1,
     )
     cmd = build_harbor_command(plan, jobs_dir=Path(".harbor-jobs"))
@@ -160,7 +160,7 @@ def test_execute_harbor_run_opencode_v2_environment(tmp_path):
             dataset_name="aider-polyglot",
             language="python",
             agent="opencode-v2",
-            base_url="http://host.docker.internal:8788/v1",
+            base_url="http://host.docker.internal:1235/v1",
             count=1,
         )
         execute_harbor_run(

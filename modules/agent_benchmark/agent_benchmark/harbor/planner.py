@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import ipaddress
 import os
 import shutil
 import subprocess
 from typing import Any, Sequence
+from urllib.parse import urlsplit
 
 from .datasets import DatasetDescriptor, resolve_dataset, select_tasks
+
+PROTECTED_COORDINATOR_HOST = "host.docker.internal"
+PROTECTED_COORDINATOR_PORT = 1235
+PROTECTED_COORDINATOR_BASE_URL = f"http://{PROTECTED_COORDINATOR_HOST}:{PROTECTED_COORDINATOR_PORT}/v1"
+DIRECT_LMSTUDIO_PORT = 1234
+LLM_MONITOR_PORTS = frozenset({8788, 8789})
+LOCAL_HARBOR_AGENTS = frozenset({"qwen-coder", "opencode", "opencode-v2"})
 
 # Officially supported Harbor agent adapters recognized for coding evaluation
 SUPPORTED_HARBOR_AGENTS: dict[str, dict[str, Any]] = {
@@ -61,7 +70,7 @@ SUPPORTED_HARBOR_AGENTS: dict[str, dict[str, Any]] = {
         "requires_docker": True,
         "requires_credentials": False,
         "default_model": "openai/qwen38_23GB",
-        "default_base_url": "http://host.docker.internal:1234/v1",
+        "default_base_url": PROTECTED_COORDINATOR_BASE_URL,
     },
     "opencode-v2": {
         "description": "OpenCode v2 candidate agent (@opencode/cli@2.2.5)",
@@ -69,7 +78,7 @@ SUPPORTED_HARBOR_AGENTS: dict[str, dict[str, Any]] = {
         "requires_docker": True,
         "requires_credentials": False,
         "default_model": "openai/qwen38_23GB",
-        "default_base_url": "http://host.docker.internal:1234/v1",
+        "default_base_url": PROTECTED_COORDINATOR_BASE_URL,
         "pinned_version": "2.2.5",
         "package": "@opencode/cli",
     },
@@ -79,7 +88,7 @@ SUPPORTED_HARBOR_AGENTS: dict[str, dict[str, Any]] = {
         "requires_docker": True,
         "requires_credentials": False,
         "default_model": "qwen38_23GB",
-        "default_base_url": "http://host.docker.internal:1234/v1",
+        "default_base_url": PROTECTED_COORDINATOR_BASE_URL,
     },
     "aider": {
         "description": "Aider coding assistant CLI adapter",
@@ -187,6 +196,116 @@ def verify_agent_readiness(agent_name: str) -> tuple[bool, str]:
     return True, f"Agent supported: {meta['description']}"
 
 
+def _is_loopback_or_unspecified_host(host: str) -> bool:
+    """Return True if host is localhost, loopback, or an unspecified bind address."""
+    if host in ("localhost", "localhost.localdomain"):
+        return True
+    try:
+        ip_obj = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if ip_obj.is_loopback or ip_obj.is_unspecified:
+        return True
+    if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped is not None:
+        return ip_obj.ipv4_mapped.is_loopback or ip_obj.ipv4_mapped.is_unspecified
+    return False
+
+
+def validate_harbor_inference_base_url(agent_name: str, base_url: str | None) -> str | None:
+    """Validate Harbor inference base_url, failing closed on bypasses, malformed URLs, and unverified routes."""
+    agent_norm = agent_name.lower().strip()
+    if agent_norm in ("oracle", "nop"):
+        return None
+
+    is_local_agent = agent_norm in LOCAL_HARBOR_AGENTS
+    if base_url is None:
+        if is_local_agent:
+            return (
+                f"{agent_name} requires --base-url pointing to the protected Resource Coordinator "
+                f"endpoint ({PROTECTED_COORDINATOR_BASE_URL})"
+            )
+        return None
+
+    if not base_url.strip() or any(ch.isspace() for ch in base_url):
+        return (
+            f"Malformed inference base_url {base_url!r} for {agent_name}: "
+            f"empty or whitespace-containing URL is not permitted (expected {PROTECTED_COORDINATOR_BASE_URL})"
+        )
+
+    try:
+        parsed = urlsplit(base_url)
+        port = parsed.port
+    except ValueError as exc:
+        return f"Malformed inference base_url {base_url!r} for {agent_name}: {exc}"
+
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https") or not parsed.netloc:
+        return (
+            f"Malformed inference base_url {base_url!r} for {agent_name}: "
+            "must use http:// or https:// with a valid host"
+        )
+    if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
+        return (
+            f"Malformed inference base_url {base_url!r} for {agent_name}: "
+            "credentials, query parameters, and fragments are not permitted"
+        )
+
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return f"Malformed inference base_url {base_url!r} for {agent_name}: missing hostname"
+
+    if port == DIRECT_LMSTUDIO_PORT:
+        return (
+            f"Unsafe direct LM Studio bypass route {base_url!r} for {agent_name}: "
+            f"port {DIRECT_LMSTUDIO_PORT} bypasses Resource Coordinator protection "
+            f"(use {PROTECTED_COORDINATOR_BASE_URL})"
+        )
+
+    if _is_loopback_or_unspecified_host(host):
+        return (
+            f"Unsafe local loopback/host-only inference route {base_url!r} for {agent_name}: "
+            f"container agents cannot safely route to {host!r} (use {PROTECTED_COORDINATOR_BASE_URL})"
+        )
+
+    if is_local_agent or host == PROTECTED_COORDINATOR_HOST:
+        if scheme != "http":
+            return (
+                f"Unverified local inference route {base_url!r} for {agent_name}: "
+                f"expected http:// for container-facing Resource Coordinator ({PROTECTED_COORDINATOR_BASE_URL})"
+            )
+        if host != PROTECTED_COORDINATOR_HOST:
+            return (
+                f"Unverified local inference route {base_url!r} for {agent_name}: "
+                f"host {host!r} is not the container-facing Resource Coordinator host "
+                f"{PROTECTED_COORDINATOR_HOST!r} (use {PROTECTED_COORDINATOR_BASE_URL})"
+            )
+        if port is None:
+            return (
+                f"Malformed or unverified local inference route {base_url!r} for {agent_name}: "
+                f"explicit Resource Coordinator port {PROTECTED_COORDINATOR_PORT} is required "
+                f"(use {PROTECTED_COORDINATOR_BASE_URL})"
+            )
+        if port in LLM_MONITOR_PORTS:
+            return (
+                f"Unverified LLM Monitor inference route {base_url!r} for {agent_name}: "
+                f"port {port} cannot be proven offline to forward through Resource Coordinator "
+                f"(:{PROTECTED_COORDINATOR_PORT}); use {PROTECTED_COORDINATOR_BASE_URL}"
+            )
+        if port != PROTECTED_COORDINATOR_PORT:
+            return (
+                f"Unverified local inference route {base_url!r} for {agent_name}: "
+                f"port {port} is not the protected Resource Coordinator port "
+                f"{PROTECTED_COORDINATOR_PORT} (use {PROTECTED_COORDINATOR_BASE_URL})"
+            )
+        if parsed.path.rstrip("/") != "/v1":
+            return (
+                f"Malformed local inference route {base_url!r} for {agent_name}: "
+                f"OpenAI-compatible '/v1' path is required (expected {PROTECTED_COORDINATOR_BASE_URL})"
+            )
+
+    return None
+
+
 def check_agent_configuration_blockers(
     agent_name: str,
     *,
@@ -216,9 +335,10 @@ def check_agent_configuration_blockers(
         if env_var and not os.environ.get(env_var):
             blockers.append(f"Credentials in ${env_var} must be set in environment for {agent_name} cloud execution")
 
-    # 4. Local agents (qwen-coder, opencode, opencode-v2) require a base URL
-    if agent_norm in ("qwen-coder", "opencode", "opencode-v2") and not base_url:
-        blockers.append(f"{agent_name} requires --base-url pointing to an OpenAI-compatible endpoint")
+    # 4. Validate inference base_url routing (blocks direct :1234, loopback, malformed, and unverified routes)
+    url_blocker = validate_harbor_inference_base_url(agent_name, base_url)
+    if url_blocker:
+        blockers.append(url_blocker)
 
     # 5. Agents that do not accept an api-format parameter
     if agent_norm in ("oracle", "nop") and model_api_format is not None:

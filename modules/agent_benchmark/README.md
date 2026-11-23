@@ -243,7 +243,8 @@ The architecture separates responsibilities cleanly:
 ### Requirements & Setup
 - **Harbor**: Install or pin `harbor==0.25.0` via `uv tool install harbor` or run on-demand via `uv tool run --from harbor==0.25.0 harbor`.
 - **Docker**: Harbor requires an active Docker daemon (e.g., Docker Desktop for Windows with WSL2 engine) for containerized agent isolation and verification. If Docker is offline, planning and import remain available, but execution fails closed before dispatch.
-- **Windows 11 / WSL2 Deployment**: Run Docker Desktop with the WSL2 backend enabled. For local model servers (e.g., LM Studio), ensure the host model server is accessible from container networks via `host.docker.internal`.
+- **Windows 11 / WSL2 Deployment**: Run Docker Desktop with the WSL2 backend enabled. Local Harbor coding agents (`qwen-coder`, `opencode`, `opencode-v2`) default to and require the protected container-facing Resource Coordinator route (`http://host.docker.internal:1235/v1`). Direct LM Studio (`:1234`), loopback/localhost endpoints, malformed URLs, and unverified proxy ports (including unverified LLM Monitor `:8788` routes) fail closed in preflight.
+- **Live Qualification Requirement**: Offline planning and unit tests do not establish production reachability. Live Harbor execution still requires qualifying container-to-host connectivity to `host.docker.internal:1235`, verifying endpoint identity, and confirming actual managed admission through `resource_coordinator`.
 
 ### CLI Commands (`agent-bench external`)
 

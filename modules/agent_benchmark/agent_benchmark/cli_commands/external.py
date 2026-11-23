@@ -56,7 +56,7 @@ def add_external_parser(actions: Any) -> None:
         "-m", "--model", default=None, help="Exact model identifier (default: qwen38_23GB for qwen-coder)"
     )
     ext_plan.add_argument(
-        "-u", "--base-url", default=None, help="Inference API base URL for agent (default: http://host.docker.internal:1234/v1 for qwen-coder)"
+        "-u", "--base-url", default=None, help="Inference API base URL for agent (default: http://host.docker.internal:1235/v1 for local agents)"
     )
     ext_plan.add_argument(
         "-t", "--task", action="append", help="Specific task ID (repeatable)"

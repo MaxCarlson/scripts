@@ -46,7 +46,7 @@ def test_build_harbor_command():
     assert "--model" in cmd
     assert "test-model" in cmd
     assert "--base-url" in cmd
-    assert "http://host.docker.internal:1234/v1" in cmd
+    assert "http://host.docker.internal:1235/v1" in cmd
     assert "--include-task-name" in cmd
     assert "polyglot_python_proverb" in cmd
     assert "polyglot_python_grep" in cmd
@@ -372,7 +372,7 @@ def test_build_harbor_command_api_format():
     fmt_idx = cmd_format.index("--api-format")
     assert cmd_format[fmt_idx + 1] == "openai_chat_completions"
     assert "--base-url" in cmd_format
-    assert "http://host.docker.internal:1234/v1" in cmd_format
+    assert "http://host.docker.internal:1235/v1" in cmd_format
 
     # 2. Default plan without model_api_format omits --api-format
     plan_no_fmt = plan_benchmark("aider/aider-polyglot", agent="opencode", count=1)
@@ -380,19 +380,82 @@ def test_build_harbor_command_api_format():
     assert "--api-format" not in cmd_no_fmt
     assert "--base-url" in cmd_no_fmt
 
-    # 3. Custom base_url preserved alongside explicit api-format
+    # 3. Protected Resource Coordinator base_url preserved alongside explicit api-format
     plan_gateway = plan_benchmark(
         "aider/aider-polyglot",
         agent="opencode",
         count=1,
-        base_url="http://host.docker.internal:8788/v1",
+        base_url="http://host.docker.internal:1235/v1",
         model_api_format="openai_chat_completions",
     )
     cmd_gateway = build_harbor_command(plan_gateway, jobs_dir=Path(".harbor-jobs"))
     assert "--api-format" in cmd_gateway
     assert cmd_gateway[cmd_gateway.index("--api-format") + 1] == "openai_chat_completions"
     assert "--base-url" in cmd_gateway
-    assert cmd_gateway[cmd_gateway.index("--base-url") + 1] == "http://host.docker.internal:8788/v1"
+    assert cmd_gateway[cmd_gateway.index("--base-url") + 1] == "http://host.docker.internal:1235/v1"
+
+
+@pytest.mark.parametrize(
+    "unsafe_url",
+    [
+        "http://host.docker.internal:1234/v1",
+        "http://localhost:1235/v1",
+        "http://127.0.0.1:1234/v1",
+        "http://host.docker.internal:8788/v1",
+        "not-a-url",
+    ],
+)
+def test_runner_fails_closed_on_bypass_and_unverified_routes(tmp_path: Path, monkeypatch, unsafe_url: str):
+    from dataclasses import replace
+    from agent_benchmark.harbor.planner import ReadinessCheck
+
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ready"))
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
+    monkeypatch.setattr("agent_benchmark.harbor.runner.shutil.which", lambda _: "harbor")
+
+    # Ensure Docker/Harbor/subprocess are never invoked when route validation fails
+    monkeypatch.setattr(
+        "agent_benchmark.harbor.runner.check_docker_readiness",
+        lambda: (_ for _ in ()).throw(AssertionError("Docker check should not run for unsafe route")),
+    )
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("subprocess.run should not execute")),
+    )
+
+    # 1. Planned unsafe route fails closed in execute_harbor_run
+    blocked_plan = plan_benchmark("aider/aider-polyglot", agent="opencode", base_url=unsafe_url, count=1)
+    assert blocked_plan.readiness.is_runnable is False
+    with pytest.raises(PreflightCheckError, match="readiness blockers"):
+        execute_harbor_run(
+            blocked_plan,
+            execute=True,
+            output_dir=tmp_path / "out",
+            jobs_dir=tmp_path / "jobs",
+        )
+
+    # 2. Even if a plan claims readiness, runner re-validates base_url in both build_harbor_command and execute_harbor_run
+    forged_plan = replace(
+        blocked_plan,
+        readiness=ReadinessCheck(
+            harbor_installed=True,
+            harbor_version="0.25.0",
+            docker_available=True,
+            docker_message="ready",
+            agent_supported=True,
+            agent_message="ok",
+            blockers=(),
+        ),
+    )
+    with pytest.raises(PreflightCheckError):
+        build_harbor_command(forged_plan, jobs_dir=tmp_path / "jobs")
+    with pytest.raises(PreflightCheckError, match="unsafe inference route"):
+        execute_harbor_run(
+            forged_plan,
+            execute=True,
+            output_dir=tmp_path / "out",
+            jobs_dir=tmp_path / "jobs",
+        )
 
 def test_ensure_harbor_opencode_compatibility_patches_target_and_is_idempotent(tmp_path: Path):
     adapter_file = tmp_path / "opencode.py"

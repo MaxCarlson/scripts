@@ -73,7 +73,7 @@ def test_agent_defaults_and_isolation():
     p_qwen = plan_benchmark("aider/aider-polyglot", agent="qwen-coder", count=1)
     assert p_qwen.agent == "qwen-coder"
     assert p_qwen.model == "qwen38_23GB"
-    assert p_qwen.base_url == "http://host.docker.internal:1234/v1"
+    assert p_qwen.base_url == "http://host.docker.internal:1235/v1"
 
     # 2. Oracle defaults
     p_oracle = plan_benchmark("aider/aider-polyglot", agent="oracle", count=1)
@@ -103,7 +103,13 @@ def test_agent_defaults_and_isolation():
     p_opencode = plan_benchmark("aider/aider-polyglot", agent="opencode", count=1)
     assert p_opencode.agent == "opencode"
     assert p_opencode.model == "openai/qwen38_23GB"
-    assert p_opencode.base_url == "http://host.docker.internal:1234/v1" 
+    assert p_opencode.base_url == "http://host.docker.internal:1235/v1"
+
+    # 7. Local opencode-v2 defaults
+    p_opencode_v2 = plan_benchmark("aider/aider-polyglot", agent="opencode-v2", count=1)
+    assert p_opencode_v2.agent == "opencode-v2"
+    assert p_opencode_v2.model == "openai/qwen38_23GB"
+    assert p_opencode_v2.base_url == "http://host.docker.internal:1235/v1"
 
 
 def test_cloud_agent_credential_blockers(monkeypatch):
@@ -182,3 +188,113 @@ def test_model_api_format_planning():
     )
     assert any("does not accept an api-format parameter" in b for b in p_oracle.readiness.blockers)
     assert p_oracle.readiness.is_runnable is False
+
+
+@pytest.mark.parametrize("agent_name", ["qwen-coder", "opencode", "opencode-v2"])
+@pytest.mark.parametrize(
+    "bypass_url",
+    [
+        "http://host.docker.internal:1234/v1",
+        "http://localhost:1234/v1",
+        "http://127.0.0.1:1234/v1",
+        "http://[::1]:1234/v1",
+        "http://0.0.0.0:1234/v1",
+        "http://localhost:1235/v1",
+        "http://127.0.0.1:1235/v1",
+        "http://[::1]:1235/v1",
+        "http://0.0.0.0:1235/v1",
+    ],
+)
+def test_local_agent_rejects_explicit_bypass_routes(monkeypatch, agent_name: str, bypass_url: str):
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ready"))
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
+
+    plan = plan_benchmark("aider/aider-polyglot", agent=agent_name, base_url=bypass_url, count=1)
+    assert plan.base_url == bypass_url
+    assert plan.readiness.is_runnable is False
+    assert len(plan.readiness.blockers) >= 1
+
+
+@pytest.mark.parametrize(
+    "bad_url, expected_fragment",
+    [
+        ("", "Malformed"),
+        ("   ", "Malformed"),
+        ("host.docker.internal:1235/v1", "Malformed"),
+        ("ftp://host.docker.internal:1235/v1", "Malformed"),
+        ("http://host.docker.internal:abc/v1", "Malformed"),
+        ("http://host.docker.internal/v1", "Malformed or unverified"),
+        ("http://host.docker.internal:1235", "Malformed"),
+        ("http://host.docker.internal:1235/v2", "Malformed"),
+        ("http://user@host.docker.internal:1235/v1", "Malformed"),
+        ("http://host.docker.internal:1235/v1?token=1", "Malformed"),
+        ("http://host.docker.internal:8788/v1", "Unverified LLM Monitor"),
+        ("http://host.docker.internal:8789/v1", "Unverified LLM Monitor"),
+        ("http://host.docker.internal:9999/v1", "Unverified local inference route"),
+        ("https://api.example.com/v1", "Unverified local inference route"),
+    ],
+)
+def test_local_agent_rejects_malformed_and_unverified_routes(monkeypatch, bad_url: str, expected_fragment: str):
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ready"))
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
+
+    plan = plan_benchmark("aider/aider-polyglot", agent="opencode", base_url=bad_url, count=1)
+    assert plan.base_url == bad_url
+    assert plan.readiness.is_runnable is False
+    assert any(expected_fragment in blocker for blocker in plan.readiness.blockers)
+
+
+def test_local_agent_accepts_protected_coordinator_route(monkeypatch):
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ready"))
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
+
+    for agent_name in ("qwen-coder", "opencode", "opencode-v2"):
+        plan = plan_benchmark("aider/aider-polyglot", agent=agent_name, count=1)
+        assert plan.base_url == "http://host.docker.internal:1235/v1"
+        assert plan.readiness.is_runnable is True
+        assert plan.readiness.blockers == ()
+
+
+def test_cloud_agent_isolation_and_bypass_protection(monkeypatch):
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ready"))
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    # Default cloud plan remains runnable without base_url
+    p_cloud = plan_benchmark("aider/aider-polyglot", agent="codex", count=1)
+    assert p_cloud.base_url is None
+    assert p_cloud.readiness.is_runnable is True
+
+    # Explicit remote HTTPS endpoint for cloud agent remains runnable
+    p_custom = plan_benchmark(
+        "aider/aider-polyglot",
+        agent="codex",
+        base_url="https://api.openai.com/v1",
+        count=1,
+    )
+    assert p_custom.readiness.is_runnable is True
+
+    # Explicit local bypasses are blocked even for cloud agents
+    for unsafe_url in (
+        "http://host.docker.internal:1234/v1",
+        "http://127.0.0.1:1235/v1",
+        "http://host.docker.internal:8788/v1",
+    ):
+        p_unsafe = plan_benchmark("aider/aider-polyglot", agent="codex", base_url=unsafe_url, count=1)
+        assert p_unsafe.readiness.is_runnable is False
+
+
+def test_non_executing_planning_makes_no_network_calls(monkeypatch):
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ready"))
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
+
+    import socket
+
+    def fail_connect(*args, **kwargs):
+        raise AssertionError("Non-executing planning must not open network connections")
+
+    monkeypatch.setattr(socket, "create_connection", fail_connect)
+
+    plan = plan_benchmark("aider/aider-polyglot", agent="qwen-coder", count=1)
+    assert plan.base_url == "http://host.docker.internal:1235/v1"
+    assert plan.readiness.is_runnable is True
