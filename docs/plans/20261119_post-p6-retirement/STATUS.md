@@ -101,7 +101,7 @@ The five wheelhouse hashes were recomputed and match `.github/qualified-wheelhou
 
 - PR #22 is open, unmerged, and currently reported mergeable at `8d4a00b38090b700c5328419b5cb06df2bde4e28`; its base remains `main` at `c87db5b68ae14ce5398c4a8cd16ed23289bcfacf`.
 - PR #27 is open and currently reported mergeable; it proposes the nine toolkit-only removals listed above.
-- PR #28 is open and currently reported mergeable; it is based on PR #22's branch. Its head is `6fe4d814d3c842e8300db4fbfeb5ba39e62d38db`.
+- PR #28 is open and currently reported mergeable; it is based on PR #22's branch. The source-removal implementation is commit `6fe4d814d3c842e8300db4fbfeb5ba39e62d38db`; a documentation-only checkpoint follows it on the PR branch.
 - This PR B must target PR #22's branch and remain dependent on it. Do not merge it to main independently. PR #27 can be reviewed separately and does not depend on PyPI publication; merge only with separate approval.
 - The historical retirement branch, quarantine directory/manifests, five raw JSON evidence files, primary diagnostics, PR #22 `.tmp_build/`, and all other worktrees remain preserved.
 
