@@ -90,6 +90,24 @@ def test_unknown_package_name_fails_closed(tmp_path, monkeypatch):
     assert bootstrap.run(tmp_path) == 1
 
 
+def test_missing_private_submodule_access_reports_failure(tmp_path, monkeypatch, capsys):
+    (tmp_path / ".gitmodules").write_text(
+        '[submodule "pscripts"]\n\tpath = pscripts\n\turl = https://example.invalid/pscripts.git\n',
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fail_submodule_access(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=128)
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", fail_submodule_access)
+
+    assert bootstrap.run(tmp_path) == 1
+    assert calls == [["git", "-C", str(tmp_path), "submodule", "update", "--init", "--recursive", "--", "pscripts"]]
+    assert "[ERROR] pscripts submodule is missing and could not be initialized" in capsys.readouterr().err
+
+
 def test_missing_pscripts_project_installs_requirements_only_when_missing(tmp_path, monkeypatch):
     source = project(tmp_path / "pscripts" / "modules" / "utility", "utility")
     (source / "requirements.txt").write_text("requests\n", encoding="utf-8")
