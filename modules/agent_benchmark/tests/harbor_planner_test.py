@@ -274,14 +274,61 @@ def test_cloud_agent_isolation_and_bypass_protection(monkeypatch):
     )
     assert p_custom.readiness.is_runnable is True
 
-    # Explicit local bypasses are blocked even for cloud agents
+    # Explicit local bypasses and alternate local-address representations are blocked even for cloud agents
     for unsafe_url in (
         "http://host.docker.internal:1234/v1",
         "http://127.0.0.1:1235/v1",
+        "http://127.1:8080/v1",
+        "http://0177.0.0.1:8080/v1",
+        "http://2130706433:8080/v1",
+        "https://[::ffff:127.0.0.1]/v1",
+        "https://169.254.169.254/latest",
+        "https://10.0.0.1/v1",
+        "https://sub.localhost/v1",
+        "http://api.openai.com/v1",
         "http://host.docker.internal:8788/v1",
     ):
         p_unsafe = plan_benchmark("aider/aider-polyglot", agent="codex", base_url=unsafe_url, count=1)
         assert p_unsafe.readiness.is_runnable is False
+
+
+def test_url_diagnostics_redact_credentials_query_and_fragment(monkeypatch):
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ready"))
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
+
+    secret_url = "http://user:super-secret-pass@host.docker.internal:1235/v1?api_key=leak-token#secret-frag"
+    plan = plan_benchmark("aider/aider-polyglot", agent="opencode", base_url=secret_url, count=1)
+    assert plan.readiness.is_runnable is False
+    joined = " ".join(plan.readiness.blockers)
+    assert "super-secret-pass" not in joined
+    assert "leak-token" not in joined
+    assert "secret-frag" not in joined
+    assert "***@" in joined
+
+
+def test_monitored_route_planning_preserves_valid_gateway_and_blocks_bypasses(monkeypatch):
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ready"))
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
+
+    p_mon = plan_benchmark(
+        "aider/aider-polyglot",
+        agent="opencode",
+        base_url="http://host.docker.internal:8788/v1",
+        monitored_route=True,
+        count=1,
+    )
+    assert p_mon.readiness.is_runnable is True
+
+    # Even with monitored_route=True, :1234 and loopback must still fail closed
+    for unsafe in ("http://host.docker.internal:1234/v1", "http://127.0.0.1:8788/v1", "http://localhost:8788/v1"):
+        p_bad = plan_benchmark(
+            "aider/aider-polyglot",
+            agent="opencode",
+            base_url=unsafe,
+            monitored_route=True,
+            count=1,
+        )
+        assert p_bad.readiness.is_runnable is False
 
 
 def test_non_executing_planning_makes_no_network_calls(monkeypatch):

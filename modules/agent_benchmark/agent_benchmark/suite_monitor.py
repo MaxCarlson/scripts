@@ -152,6 +152,36 @@ def verify_recorded_requests(*, monitor_url: str, request_ids: list[str], record
             active_client.close()
 
 
+def _evaluate_coordinator_admission(status_payload: dict[str, Any]) -> tuple[bool, str | None]:
+    """Determine whether LLM Monitor status proves upstream routing through Resource Coordinator (:1235)."""
+    admitted_flag = status_payload.get("coordinator_admitted")
+    if admitted_flag is False:
+        raise MonitorPreflightError("LLM Monitor status explicitly reports Resource Coordinator admission is disabled")
+
+    upstream_url = None
+    for key in ("upstream_base_url", "upstream_url", "target_url", "inference_base_url", "provider_url"):
+        val = status_payload.get(key)
+        if isinstance(val, str) and val.strip():
+            upstream_url = val.strip()
+            break
+
+    if upstream_url is not None:
+        parsed = urlsplit(upstream_url)
+        if parsed.port == 1234:
+            raise MonitorPreflightError(
+                "LLM Monitor upstream points to direct LM Studio (:1234), bypassing Resource Coordinator (:1235)"
+            )
+        if parsed.port == 1235 and (parsed.hostname or "").lower() in {"127.0.0.1", "localhost", "::1", "host.docker.internal"}:
+            return True, upstream_url
+        raise MonitorPreflightError(
+            f"LLM Monitor upstream {upstream_url!r} is not proven to route through Resource Coordinator (:1235)"
+        )
+
+    if admitted_flag is True:
+        return True, None
+    return False, None
+
+
 def validate_monitor(
     *, agent: str, model: str, monitor_url: str | None = None, recording: str = "off",
     api_format: str | None = None, client: httpx.Client | None = None, monitor_host_url: str | None = None,
@@ -188,6 +218,7 @@ def validate_monitor(
         availability = status.get("availability")
         if availability not in {"available", "connected"}:
             raise MonitorPreflightError("LLM Monitor inference service is not available")
+        coordinator_admitted, upstream_url = _evaluate_coordinator_admission(status)
         recording_response = active_client.get(f"{origin}/api/inference/v1/recording/status", headers=headers)
         recording_response.raise_for_status()
         recording_payload = recording_response.json().get("recording", {})
@@ -208,6 +239,8 @@ def validate_monitor(
             "verified": True, "gateway_url": gateway, "agent": agent, "model": model,
             "monitor_host_url": origin, "monitor_model_inventory_verified": True,
             "api_format": api_format, "monitor_availability": availability,
+            "coordinator_admitted": coordinator_admitted,
+            "upstream_base_url": upstream_url,
             "recording_mode": actual,
             "recording_healthy": healthy,
             "dropped_observations": dropped,

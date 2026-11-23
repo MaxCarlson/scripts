@@ -159,3 +159,53 @@ def test_build_monitor_headers_auto_bootstraps_managed_capability(monkeypatch):
     assert headers["Authorization"] == "Bearer token-managed-xyz-123"
     assert "Cookie" not in headers
 
+
+def test_monitor_preflight_evaluates_coordinator_admission():
+    def _client_with_status(status_payload: dict) -> httpx.Client:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/v1/models"):
+                return httpx.Response(200, json={"data": [{"id": "model"}]})
+            if request.url.path.endswith("/api/inference/v1/status"):
+                return httpx.Response(200, json=status_payload)
+            if request.url.path.endswith("/api/inference/v1/requests"):
+                return httpx.Response(200, json={"capture_state": "available", "requests": []})
+            return httpx.Response(200, json={"recording": {"mode": "off", "status": "disabled"}})
+
+        return httpx.Client(transport=httpx.MockTransport(handler))
+
+    # 1. Direct :1234 upstream fails closed
+    with pytest.raises(MonitorPreflightError, match="bypassing Resource Coordinator"):
+        validate_monitor(
+            agent="opencode",
+            model="openai/model",
+            api_format="openai_chat_completions",
+            client=_client_with_status({"availability": "available", "upstream_base_url": "http://127.0.0.1:1234/v1"}),
+        )
+
+    # 2. Explicit coordinator_admitted=False fails closed
+    with pytest.raises(MonitorPreflightError, match="admission is disabled"):
+        validate_monitor(
+            agent="opencode",
+            model="openai/model",
+            api_format="openai_chat_completions",
+            client=_client_with_status({"availability": "available", "coordinator_admitted": False}),
+        )
+
+    # 3. Omitted upstream/coordinator proof sets coordinator_admitted=False
+    res_unproven = validate_monitor(
+        agent="opencode",
+        model="openai/model",
+        api_format="openai_chat_completions",
+        client=_client_with_status({"availability": "available"}),
+    )
+    assert res_unproven["coordinator_admitted"] is False
+
+    # 4. Upstream :1235 proves coordinator admission
+    res_proven = validate_monitor(
+        agent="opencode",
+        model="openai/model",
+        api_format="openai_chat_completions",
+        client=_client_with_status({"availability": "available", "upstream_base_url": "http://127.0.0.1:1235/v1"}),
+    )
+    assert res_proven["coordinator_admitted"] is True
+

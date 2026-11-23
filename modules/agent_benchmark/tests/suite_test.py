@@ -304,3 +304,50 @@ def test_resume_dispatches_only_pending_tasks_after_interruption(tmp_path: Path)
     ))
     assert "polyglot_python_beer-song" not in remaining
     assert remaining[0] == "polyglot_python_bottle-song"
+
+
+def test_monitored_study_preparation_preserves_planning_and_enforces_receipt_at_dispatch(tmp_path: Path, monkeypatch):
+    from agent_benchmark.harbor import PreflightCheckError, execute_harbor_run, plan_benchmark
+
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ready"))
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "harbor==0.25.0"))
+
+    manifest = build_manifest(
+        cohort="aider-python-10",
+        agent="opencode",
+        model="openai/qwen38_23GB",
+        base_url=None,
+        api_format="openai_chat_completions",
+        llm_monitor=True,
+        recording="content",
+        study_adapter=True,
+    )
+    assert manifest["readiness"]["is_runnable"] is True
+    assert manifest["provenance"]["effective_base_url"] == "http://host.docker.internal:8788/v1"
+    assert manifest["provenance"]["route_qualification"] == "unqualified_monitor_route"
+
+    # Even with valid monitor + coordinator admission evidence, missing/stale/mismatched network receipt blocks study dispatch
+    plan = plan_benchmark(
+        manifest["dataset"],
+        agent="opencode",
+        model=manifest["provenance"]["effective_agent_model"],
+        base_url=manifest["provenance"]["effective_base_url"],
+        model_api_format=manifest["provenance"]["effective_api_format"],
+        monitored_route=True,
+        task_ids=[manifest["tasks"][0]],
+    )
+    with pytest.raises(PreflightCheckError, match="NETWORK_QUALIFICATION_MISSING"):
+        execute_harbor_run(
+            plan,
+            execute=True,
+            output_dir=tmp_path / "out",
+            jobs_dir=tmp_path / "jobs",
+            study_adapter=True,
+            study_manifest=manifest,
+            study_run_dir=tmp_path,
+            monitor_admission_evidence={
+                "verified": True,
+                "gateway_url": "http://host.docker.internal:8788/v1",
+                "coordinator_admitted": True,
+            },
+        )

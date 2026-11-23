@@ -21,6 +21,8 @@ except ImportError:
 from .importer import HarborImporter
 from .models import HarborJobResult, JobStats
 from .planner import (
+    LOCAL_HARBOR_AGENTS,
+    PROTECTED_COORDINATOR_BASE_URL,
     BenchmarkPlan,
     check_docker_readiness,
     check_harbor_readiness,
@@ -40,8 +42,65 @@ def _require_study_network_qualification(run_dir: Path | None, manifest: dict[st
         raise PreflightCheckError(str(exc)) from exc
 
 
+_PRUNED_ADAPTER_SCAN_PREFIXES = (
+    "wheels-",
+    "sdists-",
+    "simple-",
+    "http-",
+    "git-",
+    "__pycache__",
+    ".git",
+    "node_modules",
+    ".pytest",
+    ".venv",
+)
+_ADAPTER_REL_PATH = Path("harbor") / "agents" / "installed" / "opencode.py"
+
+
+def _scan_bounded_for_opencode_adapter(
+    base: Path,
+    *,
+    max_depth: int = 5,
+    max_dirs: int = 2000,
+) -> list[Path]:
+    """Bounded, deterministic directory scan for harbor/agents/installed/opencode.py."""
+    found: list[Path] = []
+    direct = base / _ADAPTER_REL_PATH
+    if direct.is_file():
+        found.append(direct.resolve())
+        return found
+
+    visited_dirs = 0
+    stack: list[tuple[Path, int]] = [(base, 0)]
+    while stack and visited_dirs < max_dirs:
+        current, depth = stack.pop()
+        visited_dirs += 1
+        candidate = current / _ADAPTER_REL_PATH
+        if candidate.is_file():
+            found.append(candidate.resolve())
+        if depth >= max_depth:
+            continue
+        try:
+            with os.scandir(current) as entries:
+                subdirs = sorted(
+                    (
+                        Path(entry.path)
+                        for entry in entries
+                        if entry.is_dir(follow_symlinks=False)
+                        and not entry.name.startswith(_PRUNED_ADAPTER_SCAN_PREFIXES)
+                    ),
+                    key=lambda p: p.name,
+                    reverse=True,
+                )
+        except OSError:
+            continue
+        for subdir in subdirs:
+            stack.append((subdir, depth + 1))
+    return found
+
+
 def find_harbor_opencode_adapters() -> list[Path]:
-    """Find installed or cached Harbor opencode adapter script paths."""
+    """Find installed or cached Harbor opencode adapter script paths using bounded traversal."""
     candidates: list[Path] = []
     uv_cache = os.environ.get("UV_CACHE_DIR")
     if uv_cache and os.path.isdir(uv_cache):
@@ -64,12 +123,16 @@ def find_harbor_opencode_adapters() -> list[Path]:
 
     found: set[Path] = set()
     for base in candidates:
-        if base.is_dir():
-            try:
-                for p in base.glob("**/harbor/agents/installed/opencode.py"):
-                    found.add(p.resolve())
-            except Exception:
-                pass
+        if not base.is_dir():
+            continue
+        # Check uv archive-v0 / environments-v2 roots directly when present to avoid scanning unrelated cache buckets
+        uv_archive = base / "archive-v0"
+        if uv_archive.is_dir():
+            for p in _scan_bounded_for_opencode_adapter(uv_archive, max_depth=2, max_dirs=500):
+                found.add(p)
+            continue
+        for p in _scan_bounded_for_opencode_adapter(base, max_depth=4, max_dirs=1000):
+            found.add(p)
     return sorted(found)
 
 
@@ -128,6 +191,40 @@ class PreflightCheckError(RuntimeError):
     """Raised when environment prerequisites (Docker, Harbor) fail."""
 
 
+def _verify_dispatch_route(
+    plan: BenchmarkPlan,
+    *,
+    monitor_admission_evidence: dict[str, Any] | None = None,
+) -> None:
+    """Fail closed unless the dispatch route is protected RC :1235 or has verified monitor + RC admission."""
+    agent_norm = plan.agent.lower().strip()
+    if agent_norm in ("oracle", "nop"):
+        return
+    if agent_norm in LOCAL_HARBOR_AGENTS and plan.base_url != PROTECTED_COORDINATOR_BASE_URL:
+        structural_blocker = validate_harbor_inference_base_url(
+            plan.agent,
+            plan.base_url,
+            monitored_route=True,
+        )
+        if structural_blocker:
+            raise PreflightCheckError(f"Cannot execute benchmark due to unsafe inference route: {structural_blocker}")
+        if not isinstance(monitor_admission_evidence, dict) or monitor_admission_evidence.get("verified") is not True:
+            raise PreflightCheckError(
+                "Cannot execute monitored local inference without verified monitor admission evidence"
+            )
+        gateway_url = str(monitor_admission_evidence.get("gateway_url") or "").rstrip("/")
+        if not plan.base_url or gateway_url != plan.base_url.rstrip("/"):
+            raise PreflightCheckError("Monitored inference route does not match verified monitor gateway_url")
+        if monitor_admission_evidence.get("coordinator_admitted") is not True:
+            raise PreflightCheckError(
+                "Monitored local inference route lacks verified Resource Coordinator (:1235) admission evidence"
+            )
+        return
+    url_blocker = validate_harbor_inference_base_url(plan.agent, plan.base_url)
+    if url_blocker:
+        raise PreflightCheckError(f"Cannot execute benchmark due to unsafe inference route: {url_blocker}")
+
+
 def build_harbor_command(
     plan: BenchmarkPlan,
     *,
@@ -144,6 +241,7 @@ def build_harbor_command(
     study_source_git_url: str | None = None,
     study_source_revision: str | None = None,
     study_network_policy: dict[str, Any] | None = None,
+    monitor_admission_evidence: dict[str, Any] | None = None,
 ) -> list[str]:
     """Build an exact subprocess argument list for harbor run (no shell interpolation)."""
     # Prefer native harbor executable, fallback to uv tool run
@@ -197,9 +295,7 @@ def build_harbor_command(
         cmd.extend(["--model", plan.model])
 
     if plan.base_url and plan.agent not in ("oracle", "nop"):
-        url_blocker = validate_harbor_inference_base_url(plan.agent, plan.base_url)
-        if url_blocker:
-            raise PreflightCheckError(url_blocker)
+        _verify_dispatch_route(plan, monitor_admission_evidence=monitor_admission_evidence)
         cmd.extend(["--base-url", plan.base_url])
 
     if plan.model_api_format and plan.agent not in ("oracle", "nop"):
@@ -239,6 +335,7 @@ def execute_harbor_run(
     study_design: dict[str, Any] | None = None,
     study_manifest: dict[str, Any] | None = None,
     study_run_dir: Path | None = None,
+    monitor_admission_evidence: dict[str, Any] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """
     Execute a planned Harbor benchmark under explicit authorization and import results.
@@ -271,9 +368,7 @@ def execute_harbor_run(
             f"Cannot execute benchmark due to readiness blockers: {'; '.join(plan.readiness.blockers)}"
         )
 
-    url_blocker = validate_harbor_inference_base_url(plan.agent, plan.base_url)
-    if url_blocker:
-        raise PreflightCheckError(f"Cannot execute benchmark due to unsafe inference route: {url_blocker}")
+    _verify_dispatch_route(plan, monitor_admission_evidence=monitor_admission_evidence)
 
     # Preflight 1: Docker
     docker_ok, docker_msg = check_docker_readiness()
@@ -328,6 +423,7 @@ def execute_harbor_run(
         study_source_git_url=study_network.get("source_git_url") if study_network else None,
         study_source_revision=study_network.get("source_revision") if study_network else None,
         study_network_policy=study_network.get("network_policy") if study_network else None,
+        monitor_admission_evidence=monitor_admission_evidence,
     )
 
     run_env = os.environ.copy()

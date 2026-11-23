@@ -14,10 +14,20 @@ from ..benchmarks.catalog import get_default_catalog
 from ..external_sources import ResourceSpec, SourceManager
 
 
-def benchmark_resource_snapshot(benchmark: Any, source_manager: SourceManager) -> dict[str, Any]:
+def benchmark_resource_snapshot(
+    benchmark: Any,
+    source_manager: SourceManager,
+    *,
+    verify_hashes: bool = True,
+) -> dict[str, Any]:
     """Derive resource readiness from current receipts/content, not static catalog metadata."""
     required = [decl for decl in benchmark.resources if not decl.optional]
-    results = [source_manager.verify_resource(ResourceSpec.from_declaration(benchmark.id, decl)) for decl in required]
+    results = [
+        source_manager.verify_resource(ResourceSpec.from_declaration(benchmark.id, decl))
+        if verify_hashes
+        else source_manager.verify_resource(ResourceSpec.from_declaration(benchmark.id, decl), verify_hashes=False)
+        for decl in required
+    ]
     installed = sum(item.get("status") == "verified" for item in results)
     all_verified = bool(results) and installed == len(results)
     harbor_marker = any(decl.type == "harbor_registry" for decl in required)

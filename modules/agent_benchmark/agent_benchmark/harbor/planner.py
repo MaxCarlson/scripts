@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import ipaddress
 import os
+import re
 import shutil
+import socket
 import subprocess
 from typing import Any, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from .datasets import DatasetDescriptor, resolve_dataset, select_tasks
 
@@ -196,22 +198,68 @@ def verify_agent_readiness(agent_name: str) -> tuple[bool, str]:
     return True, f"Agent supported: {meta['description']}"
 
 
-def _is_loopback_or_unspecified_host(host: str) -> bool:
-    """Return True if host is localhost, loopback, or an unspecified bind address."""
-    if host in ("localhost", "localhost.localdomain"):
-        return True
+def _redact_url_for_diagnostic(url: str) -> str:
+    """Redact credentials, query parameters, and fragments before emitting URLs in diagnostics."""
     try:
-        ip_obj = ipaddress.ip_address(host)
+        parsed = urlsplit(url)
     except ValueError:
-        return False
-    if ip_obj.is_loopback or ip_obj.is_unspecified:
+        redacted = re.sub(r"(^[a-zA-Z][a-zA-Z0-9+.-]*://)([^/@]+)@", r"\1***@", url)
+        redacted = re.sub(r"\?[^#]*", "?<redacted>", redacted)
+        redacted = re.sub(r"#.*$", "#<redacted>", redacted)
+        return redacted
+
+    netloc = parsed.netloc
+    if parsed.username is not None or parsed.password is not None:
+        host_part = parsed.hostname or ""
+        if ":" in host_part and not host_part.startswith("["):
+            host_part = f"[{host_part}]"
+        port_part = ""
+        try:
+            if parsed.port is not None:
+                port_part = f":{parsed.port}"
+        except ValueError:
+            port_part = ":<invalid-port>"
+        netloc = f"***@{host_part}{port_part}"
+    query = "<redacted>" if parsed.query else ""
+    fragment = "<redacted>" if parsed.fragment else ""
+    return urlunsplit((parsed.scheme, netloc, parsed.path, query, fragment))
+
+
+def _parse_ip_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parse standard or alternate IPv4/IPv6 host representations (e.g. 127.1, 0177.0.0.1, 2130706433)."""
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    try:
+        packed = socket.inet_aton(host)
+    except OSError:
+        return None
+    return ipaddress.IPv4Address(packed)
+
+
+def _is_unsafe_local_ip_or_host(host: str, *, allow_private_remote: bool = False) -> bool:
+    """Return True if host is localhost, loopback, unspecified, link-local, or alternate local IP."""
+    if host in ("localhost", "localhost.localdomain") or host.endswith(".localhost"):
         return True
+    ip_obj = _parse_ip_address(host)
+    if ip_obj is None:
+        return False
     if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped is not None:
-        return ip_obj.ipv4_mapped.is_loopback or ip_obj.ipv4_mapped.is_unspecified
+        ip_obj = ip_obj.ipv4_mapped
+    if ip_obj.is_loopback or ip_obj.is_unspecified or ip_obj.is_link_local or ip_obj.is_multicast or ip_obj.is_reserved:
+        return True
+    if not allow_private_remote and ip_obj.is_private:
+        return True
     return False
 
 
-def validate_harbor_inference_base_url(agent_name: str, base_url: str | None) -> str | None:
+def validate_harbor_inference_base_url(
+    agent_name: str,
+    base_url: str | None,
+    *,
+    monitored_route: bool = False,
+) -> str | None:
     """Validate Harbor inference base_url, failing closed on bypasses, malformed URLs, and unverified routes."""
     agent_norm = agent_name.lower().strip()
     if agent_norm in ("oracle", "nop"):
@@ -226,9 +274,11 @@ def validate_harbor_inference_base_url(agent_name: str, base_url: str | None) ->
             )
         return None
 
+    safe_url = _redact_url_for_diagnostic(base_url)
+
     if not base_url.strip() or any(ch.isspace() for ch in base_url):
         return (
-            f"Malformed inference base_url {base_url!r} for {agent_name}: "
+            f"Malformed inference base_url {safe_url!r} for {agent_name}: "
             f"empty or whitespace-containing URL is not permitted (expected {PROTECTED_COORDINATOR_BASE_URL})"
         )
 
@@ -236,72 +286,79 @@ def validate_harbor_inference_base_url(agent_name: str, base_url: str | None) ->
         parsed = urlsplit(base_url)
         port = parsed.port
     except ValueError as exc:
-        return f"Malformed inference base_url {base_url!r} for {agent_name}: {exc}"
+        return f"Malformed inference base_url {safe_url!r} for {agent_name}: {exc}"
 
     scheme = parsed.scheme.lower()
     if scheme not in ("http", "https") or not parsed.netloc:
         return (
-            f"Malformed inference base_url {base_url!r} for {agent_name}: "
+            f"Malformed inference base_url {safe_url!r} for {agent_name}: "
             "must use http:// or https:// with a valid host"
         )
     if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
         return (
-            f"Malformed inference base_url {base_url!r} for {agent_name}: "
+            f"Malformed inference base_url {safe_url!r} for {agent_name}: "
             "credentials, query parameters, and fragments are not permitted"
         )
 
     host = (parsed.hostname or "").lower().rstrip(".")
     if not host:
-        return f"Malformed inference base_url {base_url!r} for {agent_name}: missing hostname"
+        return f"Malformed inference base_url {safe_url!r} for {agent_name}: missing hostname"
 
     if port == DIRECT_LMSTUDIO_PORT:
         return (
-            f"Unsafe direct LM Studio bypass route {base_url!r} for {agent_name}: "
+            f"Unsafe direct LM Studio bypass route {safe_url!r} for {agent_name}: "
             f"port {DIRECT_LMSTUDIO_PORT} bypasses Resource Coordinator protection "
             f"(use {PROTECTED_COORDINATOR_BASE_URL})"
         )
 
-    if _is_loopback_or_unspecified_host(host):
+    if _is_unsafe_local_ip_or_host(host, allow_private_remote=False):
         return (
-            f"Unsafe local loopback/host-only inference route {base_url!r} for {agent_name}: "
+            f"Unsafe local loopback/host-only inference route {safe_url!r} for {agent_name}: "
             f"container agents cannot safely route to {host!r} (use {PROTECTED_COORDINATOR_BASE_URL})"
         )
 
     if is_local_agent or host == PROTECTED_COORDINATOR_HOST:
         if scheme != "http":
             return (
-                f"Unverified local inference route {base_url!r} for {agent_name}: "
+                f"Unverified local inference route {safe_url!r} for {agent_name}: "
                 f"expected http:// for container-facing Resource Coordinator ({PROTECTED_COORDINATOR_BASE_URL})"
             )
         if host != PROTECTED_COORDINATOR_HOST:
             return (
-                f"Unverified local inference route {base_url!r} for {agent_name}: "
+                f"Unverified local inference route {safe_url!r} for {agent_name}: "
                 f"host {host!r} is not the container-facing Resource Coordinator host "
                 f"{PROTECTED_COORDINATOR_HOST!r} (use {PROTECTED_COORDINATOR_BASE_URL})"
             )
         if port is None:
             return (
-                f"Malformed or unverified local inference route {base_url!r} for {agent_name}: "
+                f"Malformed or unverified local inference route {safe_url!r} for {agent_name}: "
                 f"explicit Resource Coordinator port {PROTECTED_COORDINATOR_PORT} is required "
                 f"(use {PROTECTED_COORDINATOR_BASE_URL})"
             )
-        if port in LLM_MONITOR_PORTS:
+        if parsed.path.rstrip("/") != "/v1":
             return (
-                f"Unverified LLM Monitor inference route {base_url!r} for {agent_name}: "
-                f"port {port} cannot be proven offline to forward through Resource Coordinator "
-                f"(:{PROTECTED_COORDINATOR_PORT}); use {PROTECTED_COORDINATOR_BASE_URL}"
+                f"Malformed local inference route {safe_url!r} for {agent_name}: "
+                f"OpenAI-compatible '/v1' path is required (expected {PROTECTED_COORDINATOR_BASE_URL})"
             )
         if port != PROTECTED_COORDINATOR_PORT:
+            if monitored_route and is_local_agent:
+                return None
+            if port in LLM_MONITOR_PORTS:
+                return (
+                    f"Unverified LLM Monitor inference route {safe_url!r} for {agent_name}: "
+                    f"port {port} cannot be proven offline to forward through Resource Coordinator "
+                    f"(:{PROTECTED_COORDINATOR_PORT}); use {PROTECTED_COORDINATOR_BASE_URL}"
+                )
             return (
-                f"Unverified local inference route {base_url!r} for {agent_name}: "
+                f"Unverified local inference route {safe_url!r} for {agent_name}: "
                 f"port {port} is not the protected Resource Coordinator port "
                 f"{PROTECTED_COORDINATOR_PORT} (use {PROTECTED_COORDINATOR_BASE_URL})"
             )
-        if parsed.path.rstrip("/") != "/v1":
-            return (
-                f"Malformed local inference route {base_url!r} for {agent_name}: "
-                f"OpenAI-compatible '/v1' path is required (expected {PROTECTED_COORDINATOR_BASE_URL})"
-            )
+    elif scheme != "https":
+        return (
+            f"Unsafe custom cloud-agent endpoint {safe_url!r} for {agent_name}: "
+            "custom remote endpoints must use https://"
+        )
 
     return None
 
@@ -312,6 +369,7 @@ def check_agent_configuration_blockers(
     model: str | None = None,
     base_url: str | None = None,
     model_api_format: str | None = None,
+    monitored_route: bool = False,
 ) -> list[str]:
     """Identify invalid or missing configuration parameters for a given agent."""
     agent_norm = agent_name.lower().strip()
@@ -327,7 +385,8 @@ def check_agent_configuration_blockers(
 
     # 2. Agents that do not accept a base URL
     if agent_norm in ("oracle", "nop") and base_url is not None:
-        blockers.append(f"Agent {agent_name!r} does not accept an inference base-url parameter (received {base_url!r})")
+        safe_url = _redact_url_for_diagnostic(base_url)
+        blockers.append(f"Agent {agent_name!r} does not accept an inference base-url parameter (received {safe_url!r})")
 
     # 3. Agents requiring credentials when not routing to a custom base_url
     if meta.get("requires_credentials") and not base_url:
@@ -336,7 +395,7 @@ def check_agent_configuration_blockers(
             blockers.append(f"Credentials in ${env_var} must be set in environment for {agent_name} cloud execution")
 
     # 4. Validate inference base_url routing (blocks direct :1234, loopback, malformed, and unverified routes)
-    url_blocker = validate_harbor_inference_base_url(agent_name, base_url)
+    url_blocker = validate_harbor_inference_base_url(agent_name, base_url, monitored_route=monitored_route)
     if url_blocker:
         blockers.append(url_blocker)
 
@@ -397,6 +456,7 @@ def plan_benchmark(
     model: str | None = None,
     base_url: str | None = None,
     model_api_format: str | None = None,
+    monitored_route: bool = False,
     task_ids: Sequence[str] | None = None,
     language: str | None = None,
     count: int | None = None,
@@ -451,7 +511,11 @@ def plan_benchmark(
     docker_ok, docker_msg = check_docker_readiness()
     agent_ok, agent_msg = verify_agent_readiness(agent)
     agent_blockers = check_agent_configuration_blockers(
-        agent, model=model, base_url=effective_base_url, model_api_format=canonical_format
+        agent,
+        model=model,
+        base_url=effective_base_url,
+        model_api_format=canonical_format,
+        monitored_route=monitored_route,
     )
 
     blockers: list[str] = []

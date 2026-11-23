@@ -449,7 +449,7 @@ def test_runner_fails_closed_on_bypass_and_unverified_routes(tmp_path: Path, mon
     )
     with pytest.raises(PreflightCheckError):
         build_harbor_command(forged_plan, jobs_dir=tmp_path / "jobs")
-    with pytest.raises(PreflightCheckError, match="unsafe inference route"):
+    with pytest.raises(PreflightCheckError, match="unsafe inference route|monitor admission evidence"):
         execute_harbor_run(
             forged_plan,
             execute=True,
@@ -489,4 +489,78 @@ def test_find_harbor_opencode_adapters_smoke():
     for p in found:
         assert isinstance(p, Path)
         assert p.name == "opencode.py"
+
+
+def test_find_harbor_opencode_adapters_bounded_and_pruned(tmp_path: Path, monkeypatch):
+    uv_cache = tmp_path / "uv-cache"
+    good_adapter = uv_cache / "archive-v0" / "abc123" / "harbor" / "agents" / "installed" / "opencode.py"
+    good_adapter.parent.mkdir(parents=True)
+    good_adapter.write_text("# adapter", encoding="utf-8")
+
+    # Pruned directories should not be traversed
+    pruned_adapter = uv_cache / "wheels-v3" / "pkg" / "harbor" / "agents" / "installed" / "opencode.py"
+    pruned_adapter.parent.mkdir(parents=True)
+    pruned_adapter.write_text("# pruned", encoding="utf-8")
+
+    monkeypatch.setenv("UV_CACHE_DIR", str(uv_cache))
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setattr("site.getsitepackages", lambda: [])
+    monkeypatch.setattr("sys.prefix", str(tmp_path / "empty-prefix"))
+
+    found = find_harbor_opencode_adapters()
+    assert good_adapter.resolve() in found
+    assert pruned_adapter.resolve() not in found
+
+
+def test_monitored_route_requires_coordinator_admission_evidence_at_dispatch(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ready"))
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
+    monkeypatch.setattr("agent_benchmark.harbor.runner.shutil.which", lambda _: "harbor")
+
+    mon_plan = plan_benchmark(
+        "aider/aider-polyglot",
+        agent="opencode",
+        base_url="http://host.docker.internal:8788/v1",
+        monitored_route=True,
+        count=1,
+    )
+    assert mon_plan.readiness.is_runnable is True
+
+    # 1. Missing evidence fails closed in both build_harbor_command and execute_harbor_run
+    with pytest.raises(PreflightCheckError, match="monitor admission evidence"):
+        build_harbor_command(mon_plan, jobs_dir=tmp_path / "jobs")
+
+    with pytest.raises(PreflightCheckError, match="monitor admission evidence"):
+        execute_harbor_run(
+            mon_plan,
+            execute=True,
+            output_dir=tmp_path / "out",
+            jobs_dir=tmp_path / "jobs",
+        )
+
+    # 2. Verified monitor WITHOUT coordinator_admitted=True still fails closed
+    with pytest.raises(PreflightCheckError, match="Resource Coordinator"):
+        execute_harbor_run(
+            mon_plan,
+            execute=True,
+            output_dir=tmp_path / "out",
+            jobs_dir=tmp_path / "jobs",
+            monitor_admission_evidence={
+                "verified": True,
+                "gateway_url": "http://host.docker.internal:8788/v1",
+                "coordinator_admitted": False,
+            },
+        )
+
+    # 3. Verified monitor WITH coordinator_admitted=True builds command
+    cmd = build_harbor_command(
+        mon_plan,
+        jobs_dir=tmp_path / "jobs",
+        monitor_admission_evidence={
+            "verified": True,
+            "gateway_url": "http://host.docker.internal:8788/v1",
+            "coordinator_admitted": True,
+        },
+    )
+    assert "http://host.docker.internal:8788/v1" in cmd
 

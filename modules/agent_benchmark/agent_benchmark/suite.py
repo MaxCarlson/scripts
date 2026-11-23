@@ -293,6 +293,7 @@ def build_manifest(
         model=model,
         base_url=effective_url,
         model_api_format=effective_format,
+        monitored_route=llm_monitor,
         task_ids=selected["tasks"],
         repetitions=1,
         seed=None,
@@ -329,6 +330,13 @@ def build_manifest(
         "provenance": {
             "requested_base_url": base_url,
             "effective_base_url": plan.base_url,
+            "route_qualification": (
+                "unqualified_monitor_route"
+                if llm_monitor and plan.base_url and plan.base_url != "http://host.docker.internal:1235/v1"
+                else "protected_coordinator_route"
+                if plan.base_url == "http://host.docker.internal:1235/v1"
+                else "cloud_or_reference"
+            ),
             "monitor_url": (monitor_url or DEFAULT_MONITOR_URL) if llm_monitor else None,
             "monitor_host_url": effective_host_url,
             "llm_monitor_required": llm_monitor,
@@ -827,6 +835,7 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
     )
     try:
         monitor_before = None
+        monitor_health = None
         if manifest["provenance"]["llm_monitor_required"]:
             host_url = host_monitor_origin(
                 manifest["provenance"]["monitor_url"], manifest["provenance"].get("monitor_host_url")
@@ -846,6 +855,7 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
             model=manifest["provenance"].get("effective_agent_model", manifest["model"]),
             base_url=manifest["provenance"]["effective_base_url"],
             model_api_format=manifest["provenance"]["effective_api_format"],
+            monitored_route=bool(manifest["provenance"].get("llm_monitor_required")),
             task_ids=[task],
             repetitions=1,
             seed=None,
@@ -873,6 +883,7 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
                 study_design=manifest.get("study_design"),
                 study_manifest=manifest if manifest.get("study_adapter") else None,
                 study_run_dir=store.run_dir if manifest.get("study_adapter") else None,
+                monitor_admission_evidence=monitor_health,
             )
         status = (
             "infrastructure_invalid"

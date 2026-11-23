@@ -395,8 +395,8 @@ class SourceManager:
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
-    def verify_resource(self, spec: ResourceSpec) -> dict[str, Any]:
-        """Verify presence and file hash integrity of an installed resource."""
+    def verify_resource(self, spec: ResourceSpec, *, verify_hashes: bool = True) -> dict[str, Any]:
+        """Verify presence and (optionally) file hash integrity of an installed resource."""
         spec.validate_safety()
         lock = load_sources_lock(self.lock_file)
         receipt = lock.get_receipt(spec.benchmark_id, spec.name)
@@ -486,7 +486,27 @@ class SourceManager:
                         "details": f"Required resource file or directory missing: {p}",
                     }
 
-        # Check file hashes
+        # Check file presence (and SHA-256 hashes when verify_hashes=True)
+        if not verify_hashes:
+            missing = [rel_path for rel_path in receipt.file_hashes if not (target / rel_path).is_file()]
+            if missing:
+                return {
+                    "benchmark_id": spec.benchmark_id,
+                    "resource_name": spec.name,
+                    "status": "corrupted",
+                    "corrupted_files": [f"missing: {rel_path}" for rel_path in missing],
+                    "details": f"{len(missing)} file(s) missing on disk",
+                }
+            return {
+                "benchmark_id": spec.benchmark_id,
+                "resource_name": spec.name,
+                "status": "verified",
+                "files_checked": len(receipt.file_hashes),
+                "hash_verification": "skipped",
+                "content_hash": receipt.content_hash,
+                "installed_at": receipt.installed_at,
+            }
+
         corrupted: list[str] = []
         for rel_path, expected_hash in receipt.file_hashes.items():
             file_p = target / rel_path

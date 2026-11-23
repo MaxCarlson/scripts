@@ -271,6 +271,8 @@ def handle_suite(args: argparse.Namespace) -> int:
             from .external_sources import SourceManager
 
             fmt = getattr(args, "format", "table")
+            if fmt == "table" and sys.stderr.isatty():
+                print("Discovering suites and resource readiness...", file=sys.stderr, flush=True)
             discovery = get_unified_discovery(include_readiness=True)
             catalog = get_default_catalog()
             manager = SourceManager()
@@ -279,7 +281,9 @@ def handle_suite(args: argparse.Namespace) -> int:
                 if benchmark_id:
                     benchmark = next((item for item in catalog.list_benchmarks() if item.id == benchmark_id), None)
                     if benchmark:
-                        snapshot = benchmark_resource_snapshot(benchmark, manager)
+                        if fmt == "table" and sys.stderr.isatty():
+                            print(f"  checking {benchmark.id}...", file=sys.stderr, flush=True)
+                        snapshot = benchmark_resource_snapshot(benchmark, manager, verify_hashes=False)
                         dataset["install_state"] = snapshot["state"].lower()
                         dataset["readiness_reason"] = f"{snapshot['installed']}/{snapshot['required']} required resources verified"
                         dataset["execution_readiness"] = (
