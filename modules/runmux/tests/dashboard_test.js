@@ -1162,6 +1162,69 @@ async function testHistoricalChartTreatsNullAndStaleMeasurementsAsBreaks() {
   assert.equal(paths.length, 2, "null and stale points must not be bridged into fabricated continuity");
 }
 
+async function testHistoricalChartExcludesStaleMeasurementsFromScale() {
+  const now = Date.now() / 1000;
+  for (const stalePoint of [
+    { epoch: now - 5, cpu_percent: 10000, sample_interval_seconds: 5, is_stale: true },
+    { epoch: now - 5, cpu_percent: 10000, sample_interval_seconds: 60 },
+  ]) {
+    const { context } = dashboardHarness();
+    const container = element("div");
+    context.__dashboard.renderTimeSeriesChart(container, {
+      title: "Process CPU",
+      unit: "%",
+      staleAfterSeconds: 20,
+      series: [{
+        label: "CPU",
+        color: "#57a6ff",
+        field: "cpu_percent",
+        values: [
+          { epoch: now - 10, cpu_percent: 10, sample_interval_seconds: 5 },
+          stalePoint,
+          { epoch: now, cpu_percent: 20, sample_interval_seconds: 5 },
+        ],
+      }],
+    });
+
+    const svg = container.children[0];
+    assert.equal(Number(svg.getAttribute("data-y-max")), 30, "stale outliers must not inflate chart scale");
+    const paths = svg.children.filter((child) => child.tagName === "path" && child.classList.contains("chart-series"));
+    assert.equal(paths.length, 2, "stale points must break the line between valid samples");
+    assert.ok(paths.every((path) => !/10000/.test(path.getAttribute("d"))));
+  }
+
+  const { context } = dashboardHarness();
+  const container = element("div");
+  context.__dashboard.renderTimeSeriesChart(container, {
+    yMax: 500,
+    staleAfterSeconds: 20,
+    series: [{
+      label: "CPU",
+      field: "cpu_percent",
+      values: [
+        { epoch: now - 10, cpu_percent: 10, sample_interval_seconds: 5 },
+        { epoch: now - 5, cpu_percent: 10000, sample_interval_seconds: 60 },
+      ],
+    }],
+  });
+  assert.equal(Number(container.children[0].getAttribute("data-y-max")), 500, "explicit yMax must remain the lower bound for chart scaling");
+
+  const discontinuityHarness = dashboardHarness();
+  const discontinuityContainer = element("div");
+  discontinuityHarness.context.__dashboard.renderTimeSeriesChart(discontinuityContainer, {
+    series: [{
+      label: "CPU",
+      field: "cpu_percent",
+      values: [
+        { epoch: now - 1, cpu_percent: 10, run_id: "run-a" },
+        { epoch: now, cpu_percent: 20, run_id: "run-b" },
+      ],
+    }],
+  });
+  const discontinuityPaths = discontinuityContainer.children[0].children.filter((child) => child.tagName === "path" && child.classList.contains("chart-series"));
+  assert.equal(discontinuityPaths.length, 2, "run changes must continue to split chart segments");
+}
+
 async function testHistoryRangeQueriesAreBoundedAndModeGated() {
   const h = dashboardHarness();
   const db = h.context.__dashboard;
@@ -2569,6 +2632,7 @@ Promise.all([
   testOverviewModeSelectionAndCycling(),
   testHistoricalChartBreaksAtGapsAndScalesMultiCoreCpu(),
   testHistoricalChartTreatsNullAndStaleMeasurementsAsBreaks(),
+  testHistoricalChartExcludesStaleMeasurementsFromScale(),
   testHistoryRangeQueriesAreBoundedAndModeGated(),
   testHistoryRefreshCancelsAndDiscardsObsoleteRunResponse(),
   testHistoryChartShowsUnavailableForNullMetrics(),
