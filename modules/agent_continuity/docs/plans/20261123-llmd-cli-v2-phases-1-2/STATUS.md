@@ -1,9 +1,9 @@
-# LLMD CLI v2 phases 1-4
 
-Status: Phase 4 implemented; validated; local commit pending on feature/llmd-cli-v2-20261123.
 
-Positional start is preview-only by default and requires --new plus --apply before provider initialization. Legacy named start and direct continue preserve their existing authorization defaults. Historical continuation resolves only IDs present in activation history; provider matching refuses ambiguity, exact IDs disambiguate. Switch reuse uses the same resolver and preserves latest-provider behavior.
+## Operational diagnostics checkpoint
 
-Validation: python -m pytest -q --basetemp=.pytest_tmp_root/phase4-final-full; python -m ruff check agent_continuity/dispatcher.py agent_continuity/dispatcher_cli.py tests/dispatcher_v2_test.py; git diff --check.
+Status: implemented and validated on the same feature branch; committed after final verification. Root-cause findings are recorded in `docs/operational-diagnostics/ROOT_CAUSE_FINDINGS.md`. The incident cause remains unconfirmed because the failing operation/traceback was unavailable. `llmd doctor` is read-only and `llmd recover` only associates a durably captured exact ID.
 
-Next: review and commit locally. No push or merge.
+Validation: `python -m pytest -q --basetemp=.pytest_tmp_root/ops-final-full`; `python -m ruff check agent_continuity/dispatcher.py agent_continuity/dispatcher_cli.py tests/dispatcher_ops_test.py`; `git diff --check`.
+
+Checkpoint: operational diagnostics changes are committed locally. No push or merge.

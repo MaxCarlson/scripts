@@ -42,7 +42,7 @@ def test_no_argument_interactive_entry_can_exit_without_mutation(tmp_path):
     parser = build_parser()
     output = StringIO()
     output = TTYOutput()
-    result = dispatch(parser.parse_args([]), parser, input_stream=TTYInput("\x03"), output_stream=output)
+    result = dispatch(parser.parse_args(["-H", str(tmp_path)]), parser, input_stream=TTYInput("\x03"), output_stream=output)
 
     assert result == 0
     assert "Select GUI Conversation" in output.getvalue()

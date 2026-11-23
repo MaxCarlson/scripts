@@ -158,3 +158,15 @@ llmd switch -g "Project" -n "Agent" -p agy -r -a        # reuse latest known AGY
 ```
 
 `continue -p` selects a historical session only when that provider has one unambiguous session in the agent history. If multiple sessions match, use `-i/--session-id`; unknown IDs are rejected and never trigger a new session. Selecting a historical session records an activation transition, while selecting the already current session remains a no-op. Inactive direct targets require `--reactivate`; completed agents require a separate lifecycle change. Legacy direct `continue` remains preview-by-default. Allowing an explicit target to resume without `-a` is a future product decision and is not enabled here.
+
+## Operational diagnostics and recovery
+
+`llmd doctor` inspects SQLite integrity, the existing registry lock, selected sessions, session locks, and pending bootstrap records. It does not create lock files or synchronize event spools; its JSON is schema version 1 and deterministic. Runtime observations are local to the current environment. `NOT OBSERVED` does not prove the provider is stopped, and registry-lock contention is not evidence that a lock is stale.
+
+`llmd recover -g GUI -n AGENT` previews metadata-only recovery when a pending launch contains one durably captured exact session ID. Use `-a` to apply. Recovery refuses cross-environment/unknown ownership, lock contention, missing or conflicting captured IDs, and concurrent selection changes. It never launches, resumes, terminates, or retries a provider. When bootstrap succeeded but the ID was not persisted, inspect provider state and attach only a verified ID; automatic retry is unsafe.
+
+```powershell
+llmd doctor -g "LLM-Dispatcher" -n "shared-python-integration" -j
+llmd recover -g "LLM-Dispatcher" -n "shared-python-integration"
+llmd recover -g "LLM-Dispatcher" -n "shared-python-integration" -a
+```

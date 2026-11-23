@@ -108,6 +108,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_options(pending)
     pending.add_argument("-g", "--gui", help="Filter to one GUI conversation.")
 
+    doctor = sub.add_parser("doctor", help="Read-only registry, launch, and runtime diagnostics.")
+    _add_common_options(doctor)
+    doctor.add_argument("-g", "--gui")
+    doctor.add_argument("-n", "--agent-name")
+
+    recover = sub.add_parser("recover", help="Reconcile a captured pending session association.")
+    _add_common_options(recover)
+    recover.add_argument("-g", "--gui", required=True)
+    recover.add_argument("-n", "--agent-name", required=True)
+    recover.add_argument("-a", "--apply", action="store_true", help="Apply the metadata-only recovery.")
+
     attach = sub.add_parser("attach", help="Explicitly attach a known native session to a named slot.")
     _add_common_options(attach)
     attach.add_argument("-g", "--gui", required=True)
@@ -323,6 +334,7 @@ def _run_pane(
             process_cwd = cwd
     if launch_id:
         process_cwd = None if cross_wsl else cwd
+    bootstrap_completed = False
     try:
         if launch_id:
             dispatcher.record_process_observation(
@@ -390,14 +402,20 @@ def _run_pane(
                 )
                 return bootstrap.returncode or 1
 
-            dispatcher.record_process_observation(
-                slot_id=slot_id,
-                launch_id=launch_id,
-                return_code=0,
-                outcome="bootstrap_id_captured",
+            bootstrap_completed = True
+            try:
+                dispatcher.record_process_observation(
+                    slot_id=slot_id,
+                    launch_id=launch_id,
+                    return_code=0,
+                    outcome="bootstrap_id_captured",
                 detail="Exact native session ID captured from this provider invocation; persisting slot association.",
-                native_session_id=captured_session_id,
-            )
+                    native_session_id=captured_session_id,
+                )
+            except ContinuityError as exc:
+                print(f"Bootstrap created session {captured_session_id}, but LLMD could not persist its ID. Do not retry the launch; inspect provider state and use `llmd attach` with this exact ID if verified.", file=output_stream)
+                raise ContinuityError(ErrorCode.METADATA_INACCESSIBLE,
+                    f"Provider bootstrap succeeded with session {captured_session_id}, but its metadata was not persisted; do not relaunch blindly. Run `llmd doctor`.") from exc
             other_slot = dispatcher._row(
                 """SELECT slot_id FROM agent_slot_activations
                    WHERE provider = ? AND environment_id = ? AND native_session_id = ?
@@ -432,7 +450,7 @@ def _run_pane(
         else:
             argv = _native_argv(dispatcher, provider, session_id, environment_id=environment_id, cwd=cwd)
     except ContinuityError as exc:
-        if launch_id:
+        if launch_id and not bootstrap_completed:
             pending_now = dispatcher._row(
                 "SELECT failure_detail FROM dispatcher_pending_launches WHERE launch_id = ? AND status = 'pending'",
                 (launch_id,),
@@ -454,10 +472,14 @@ def _run_pane(
         elif session_id:
             dispatcher.record_process_observation(slot_id=slot_id, launch_id=None, return_code=-1, outcome="spawn_failed")
         raise ContinuityError(ErrorCode.PROVIDER_UNAVAILABLE, f"Failed to launch {provider}: {exc}") from exc
-    dispatcher.record_process_observation(
-        slot_id=slot_id, launch_id=launch_id, return_code=result.returncode,
-        outcome="normal_exit" if result.returncode == 0 else "nonzero_exit",
-    )
+    try:
+        dispatcher.record_process_observation(
+            slot_id=slot_id, launch_id=launch_id, return_code=result.returncode,
+            outcome="normal_exit" if result.returncode == 0 else "nonzero_exit",
+        )
+    except ContinuityError as exc:
+        raise ContinuityError(ErrorCode.METADATA_INACCESSIBLE,
+            f"{provider} process exited with code {result.returncode}, but LLMD could not record the result. Do not relaunch blindly; run `llmd doctor` and inspect provider state.") from exc
     if result.returncode != 0:
         if launch_id:
             dispatcher.mark_launch_failed(launch_id=launch_id, detail=f"provider exited with {result.returncode}", apply=True)
@@ -622,6 +644,93 @@ def _resolve_name(positional: str | None, named: str | None, label: str) -> str 
     return named if named is not None else positional
 
 
+def _probe_existing_lock(path: Path) -> str:
+    if not path.exists():
+        return "not_present"
+    try:
+        stream = path.open("r+b")
+    except OSError:
+        return "inaccessible"
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            return "available"
+        except OSError:
+            return "contended"
+    finally:
+        stream.close()
+
+
+def _doctor_report(dispatcher: DispatcherService, gui: str | None = None, agent: str | None = None) -> dict[str, Any]:
+    try:
+        db = dispatcher.materializer.get_diagnostics_snapshot()
+    except Exception as exc:
+        db = {"db_exists": (dispatcher.home_dir / "index.sqlite").exists(), "integrity": "unavailable",
+              "diagnostic_error": f"{type(exc).__name__}: {exc}"}
+    lock = _probe_existing_lock(dispatcher.home_dir / "dispatcher.lock")
+    report: dict[str, Any] = {
+        "schema_version": 1,
+        "registry": {"home": str(dispatcher.home_dir), "accessible": dispatcher.home_dir.exists(),
+                     "database": {key: db.get(key) for key in ("db_exists", "schema_version", "supported_schema_version", "integrity", "counts", "diagnostic_error")},
+                     "mutation_lock": lock},
+        "scope": {"gui": gui, "agent": agent}, "agents": [], "pending_launches": [],
+        "inconsistencies": [],
+        "limitations": ["Lock observations cover this local runtime only; they do not prove external provider inactivity.",
+                        "A lock timeout does not establish a stale lock or identify the blocked operation."],
+    }
+    rows = dispatcher._rows("""SELECT s.slot_id, s.name, s.state, g.alias,
+                   a.provider AS current_provider, a.environment_id AS current_environment_id,
+                   a.native_session_id AS current_session_id,
+                   p.launch_id AS pending_launch_id, p.provider AS pending_provider
+               FROM agent_slots s JOIN dispatcher_gui_conversations g USING(gui_id)
+               LEFT JOIN agent_slot_activations a ON a.activation_id = (
+                   SELECT cur.activation_id FROM agent_slot_activations cur WHERE cur.slot_id=s.slot_id
+                   ORDER BY cur.sequence DESC LIMIT 1)
+               LEFT JOIN dispatcher_pending_launches p ON p.launch_id = (
+                   SELECT q.launch_id FROM dispatcher_pending_launches q WHERE q.slot_id=s.slot_id AND q.status='pending'
+                   ORDER BY q.requested_at DESC, q.launch_id DESC LIMIT 1)
+               WHERE (? IS NULL OR g.alias_key = ?) AND (? IS NULL OR s.name_key = ?)
+               ORDER BY g.alias_key, s.name_key""",
+               (gui.casefold() if gui else None, gui.casefold() if gui else None,
+                agent.casefold() if agent else None, agent.casefold() if agent else None))
+    environments = dispatcher.materializer.list_environments()
+    for row in rows:
+        provider = row["current_provider"] or row["pending_provider"]
+        sid = row["current_session_id"]
+        env_id = row["current_environment_id"]
+        runtime = "PENDING" if row["pending_launch_id"] else "NOT OBSERVED"
+        if sid and row["current_provider"]:
+            env = next((value for value in environments if value.environment_id == env_id), None)
+            if env is None or env.runtime_kind != detect_runtime_kind():
+                runtime = "UNKNOWN"
+            else:
+                lock_key = hashlib.sha256(f"{provider}\0{env_id}\0{sid}".encode()).hexdigest()[:24]
+                observation = _probe_existing_lock(dispatcher.home_dir / f"session-{lock_key}.lock")
+                runtime = "IN USE" if observation == "contended" else "UNKNOWN" if observation == "inaccessible" else "NOT OBSERVED"
+        report["agents"].append({"gui": row["alias"], "name": row["name"], "slot_id": row["slot_id"],
+            "lifecycle": row["state"], "provider": provider, "session_id": sid, "runtime": runtime,
+            "duplicate_resume": "blocked" if runtime == "IN USE" else "uncertain"})
+        if row["pending_launch_id"]:
+            pending = dispatcher._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?", (row["pending_launch_id"],))
+            if pending:
+                report["pending_launches"].append(dispatcher._with_captured_bootstrap_id(pending))
+    report["pending_launches"].sort(key=lambda value: value["launch_id"])
+    report["agents"].sort(key=lambda value: (value["gui"].casefold(), value["name"].casefold()))
+    if db.get("db_exists") and db.get("integrity") not in ("ok", None):
+        report["inconsistencies"].append({"kind": "sqlite_integrity", "detail": db["integrity"]})
+    report["duplicate_resume_risk"] = "blocked" if any(a["runtime"] == "IN USE" for a in report["agents"]) else "uncertain"
+    return report
+
+
 def _resolve_historical_session(dispatcher: DispatcherService, *, gui: str, name: str,
                                 provider: str | None, session_id: str | None,
                                 allow_latest: bool = False) -> dict[str, Any] | None:
@@ -753,6 +862,10 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
         result = {"action": "history", "slot": dispatcher.get_slot(gui=args.gui, name=args.agent_name)}
     elif args.command == "pending":
         result = {"action": "pending", "launches": dispatcher.list_pending_launches(gui=args.gui)}
+    elif args.command == "doctor":
+        result = _doctor_report(dispatcher, args.gui, args.agent_name)
+    elif args.command == "recover":
+        result = dispatcher.recover_captured_launch(gui=args.gui, name=args.agent_name, apply=args.apply)
     elif args.command == "attach":
         result = dispatcher.attach_session(gui=args.gui, name=args.agent_name, provider=args.provider,
                                            session_id=args.session_id, environment_selector=args.environment,
@@ -827,7 +940,7 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
     elif args.command == "open":
         result = _open(dispatcher, args)
         if args.apply and result.get("terminal_launcher_available") is False:
-            print(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default) if args.json_output else result["summary"], file=output_stream)
+            print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True, default=_json_default) if args.json_output else result["summary"], file=output_stream)
             return 2
     elif args.command == "pane-run":
         return _run_pane(dispatcher, slot_id=args.slot_id, launch_id=args.launch_id,
@@ -838,7 +951,7 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
 
     json_mode = bool(args.json_output)
     if json_mode:
-        print(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default), file=output_stream)
+        print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True, default=_json_default), file=output_stream)
     else:
         if result.get("action") == "list":
             _render_listing(result, output_stream, args.color)
@@ -869,7 +982,7 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
                 if launch.get("failure_detail"):
                     print(f"  Recovery: {launch['failure_detail']}", file=output_stream)
         if result.get("action") == "open":
-            print(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default), file=output_stream)
+            print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True, default=_json_default), file=output_stream)
         if result.get("action") != "register" and not result.get("applied", True) and result.get("events"):
             print("Preview only. Pass -a / --apply to persist this operation.", file=output_stream)
     launch = result.get("launch") if result.get("action") == "open" and args.apply else None

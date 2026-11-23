@@ -485,6 +485,108 @@ class DispatcherService:
         return {"action": "launch-failed", "applied": apply, "summary": "Marked pending launch as failed.",
                 "details": {"launch_id": launch_id, "status": "failed"}, "events": [event.to_dict()]}
 
+    def recover_captured_launch(self, *, gui: str, name: str, apply: bool = False) -> dict[str, Any]:
+        """Resolve a pending launch only when its exact bootstrap session ID was durably captured."""
+        import hashlib
+
+        from .environment import detect_runtime_kind
+
+        conversation = self._row("SELECT * FROM dispatcher_gui_conversations WHERE alias_key = ? OR gui_id = ?",
+                                 (gui.strip().casefold(), gui.strip()))
+        if conversation is None:
+            raise ContinuityError(ErrorCode.WORKFLOW_NOT_FOUND, f"GUI conversation not found: {gui!r}.")
+        slot = self._row("SELECT * FROM agent_slots WHERE gui_id = ? AND (slot_id = ? OR name_key = ?)",
+                         (conversation["gui_id"], name.strip(), name.strip().casefold()))
+        if slot is None:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, f"Agent slot not found: {name!r}.")
+        current_history = self._history(slot["slot_id"])
+        expected_current = current_history[-1] if current_history else None
+        pending = self._row("""SELECT * FROM dispatcher_pending_launches
+                             WHERE slot_id = ? ORDER BY requested_at DESC, launch_id DESC LIMIT 1""", (slot["slot_id"],))
+        if pending is None:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "No pending launch exists for this agent.")
+        if pending["status"] == "resolved":
+            return {"action": "recover", "applied": False, "status": "already_recovered",
+                    "summary": "This captured launch is already resolved; no metadata changed.",
+                    "details": {"launch_id": pending["launch_id"]}}
+        if pending["status"] != "pending":
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "The latest launch is not pending; no recovery was applied.")
+        pending = self._with_captured_bootstrap_id(pending)
+        session_id = pending.get("captured_session_id")
+        if not session_id or pending.get("captured_session_conflict"):
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                "Recovery is unresolved: no single exact bootstrap session ID was captured. Inspect provider state and use llmd attach with a verified ID.")
+        environments = self.materializer.list_environments()
+        env = next((item for item in environments if item.environment_id == pending["environment_id"]), None)
+        if env is None or env.runtime_kind != detect_runtime_kind():
+            raise ContinuityError(ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE,
+                "Recovery refused because runtime ownership cannot be observed in this environment.")
+        key = hashlib.sha256(f"{pending['provider']}\0{pending['environment_id']}\0{session_id}".encode()).hexdigest()[:24]
+        lock_name = f"session-{key}.lock"
+        if not apply:
+            return {"action": "recover", "applied": False, "status": "preview",
+                    "summary": f"Would associate captured {pending['provider']} session {session_id} and resolve pending launch {pending['launch_id']}; no provider will be launched.",
+                    "details": {"launch_id": pending["launch_id"], "session_id": session_id}}
+        with _mutation_lock(self.home_dir):
+            self._sync()
+            latest = self._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ? AND status = 'pending'",
+                               (pending["launch_id"],))
+            if latest is None:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch changed concurrently; inspect `llmd doctor` and retry recovery.")
+            captured_now = self._with_captured_bootstrap_id(latest)
+            if captured_now.get("captured_session_id") != session_id or captured_now.get("captured_session_conflict"):
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Captured session metadata changed; recovery was not applied.")
+            slot = self._slot(conversation["gui_id"], slot["slot_id"])
+            history = self._history(slot["slot_id"])
+            current = history[-1] if history else None
+            expected_key = ((expected_current["provider"], expected_current["environment_id"], expected_current["native_session_id"])
+                            if expected_current else None)
+            current_key = ((current["provider"], current["environment_id"], current["native_session_id"])
+                           if current else None)
+            if current_key != expected_key:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                    "Agent selection changed while recovery was prepared; no metadata was overwritten. Inspect doctor and retry.")
+            current_is_target = current and (current["provider"], current["environment_id"], current["native_session_id"]) == (
+                pending["provider"], env.environment_id, session_id)
+            if current and not current_is_target:
+                ckey = hashlib.sha256(f"{current['provider']}\0{current['environment_id']}\0{current['native_session_id']}".encode()).hexdigest()[:24]
+                with _mutation_lock(self.home_dir, f"session-{ckey}.lock", blocking=False):
+                    pass
+            with _mutation_lock(self.home_dir, lock_name, blocking=False):
+                now = now_utc_iso()
+                events: list[EventEnvelope] = []
+                known_envs = self.materializer.list_environments()
+                events.extend(self.continuity._ensure_environment_event(env, known_envs, now))
+                if not self.materializer.get_session(pending["provider"], env.environment_id, session_id):
+                    events.append(self._event(EventType.SESSION_REGISTERED, environment_id=env.environment_id,
+                        provider=pending["provider"], session_id=session_id, timestamp=now,
+                        payload={"environment": env.to_dict(), "cwd_native": pending.get("cwd"),
+                                 "cwd_canonical": normalize_path_canonical(pending.get("cwd")),
+                                 "repository_identity": normalize_repo_identity(pending.get("cwd")),
+                                 "first_observed_at": now, "last_seen_at": now, "metadata_source": "dispatcher_recovery"}))
+                same = current and (current["provider"], current["environment_id"], current["native_session_id"]) == (
+                    pending["provider"], env.environment_id, session_id)
+                if not same:
+                    activation_id = generate_id("act")
+                    events.append(self._event(EventType.DISPATCHER_SESSION_ACTIVATED,
+                        environment_id=env.environment_id, provider=pending["provider"], session_id=session_id,
+                        timestamp=now, payload={"slot_id": slot["slot_id"], "activation_id": activation_id,
+                            "sequence": (current["sequence"] if current else 0) + 1, "provenance": "dispatcher_recovery"}))
+                events.append(self._event(EventType.DISPATCHER_LAUNCH_RESOLVED,
+                    environment_id=env.environment_id, provider=pending["provider"], session_id=session_id,
+                    payload={"launch_id": pending["launch_id"], "native_session_id": session_id}))
+                base = datetime.now(UTC)
+                events = [replace(event,
+                    source_timestamp=(base + timedelta(microseconds=index + 1)).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+                    observed_timestamp=(base + timedelta(microseconds=index + 1)).isoformat(timespec="microseconds").replace("+00:00", "Z"))
+                    for index, event in enumerate(events)]
+                for event in events:
+                    self.continuity._emit_and_materialize([event])
+        return {"action": "recover", "applied": True, "status": "recovered",
+                "summary": f"Associated captured session {session_id} and resolved pending launch. No provider was launched.",
+                "details": {"launch_id": pending["launch_id"], "session_id": session_id,
+                            "activation_added": not bool(current and same)}}
+
     def record_process_observation(
         self, *, slot_id: str, launch_id: str | None, return_code: int, outcome: str,
         detail: str | None = None, native_session_id: str | None = None,
