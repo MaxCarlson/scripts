@@ -4,6 +4,22 @@ Local-first GUI–Agent Session Continuity Module with the backward-compatible `
 
 See [docs/agent-session-continuity-master-plan.md](./docs/agent-session-continuity-master-plan.md) for the governing Master Implementation Plan (v3.0) and [docs/adr/ADR-001-phase0-architecture-decisions.md](./docs/adr/ADR-001-phase0-architecture-decisions.md) for Phase 0 architecture decisions.
 
+## Listing and registering conversations (LLMD v2)
+
+`llmd list` shows the ten most recently active registered conversations, with up to ten active agents each. `llmd list "Project"` includes active and inactive agents; `-A` also includes completed agents and removes default limits. An explicit `-l` limits results even with `-A`. Output reports omitted counts. Use `-j` for JSON and `-c never` to disable color; JSON contains complete session IDs and truncation metadata. Global JSON uses schema version 1. Scoped JSON retains `action`, `gui`, and `slots` and adds count metadata.
+
+```powershell
+llmd list
+llmd list "Project" -l 25
+llmd list -g "Project" -A -j
+llmd register "Project"
+llmd register "Project" "Agent" -p codex -i "SESSION_ID"
+llmd register -g "Project" -n "Agent" -p agy -i "SESSION_ID" -d
+llmd continue "Project" "Agent"  # preview; add -a to resume
+```
+
+Registration applies by default and never launches a provider. `-d` previews it. Existing associations are left unchanged; selecting a different session requires `-s/--select` and preserves history. Runtime use is not observed in this release, so verify the session is not in use before changing a selection. Registration uses existing events and a single mutation lock; interrupted operations can be retried. Legacy mutation and launch commands remain dry-run by default. `start` and `continue` also accept GUI and agent positional names without changing their execution defaults.
+
 ## Named Agent Dispatcher
 
 `llmd` stores local GUI aliases, named agent slots, lifecycle state, pending launches, and ordered session activations in the same durable event spool and rebuildable SQLite index used by `agents`. A local GUI alias does not create a conversation in ChatGPT.

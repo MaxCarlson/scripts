@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="llmd",
         description="Resume named Codex and AGY sessions associated with local GUI conversation aliases.",
-        epilog="Mutations and provider launches are dry-run by default. Pass -a/--apply to proceed.",
+        epilog="Register applies by default; legacy mutations and launches require -a/--apply.",
     )
     parser.add_argument("-H", "--home", help="Override the shared agent_continuity registry directory.")
     parser.add_argument("-j", "--json", dest="json_output", action="store_true", help="Output JSON.")
@@ -79,9 +79,25 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("-n", "--agent-name", required=True)
         command.add_argument("-a", "--apply", action="store_true")
 
-    listing = sub.add_parser("list", help="List active named agents for a GUI conversation.")
+    listing = sub.add_parser("list", help="List conversations and their agents.")
     _add_common_options(listing)
-    listing.add_argument("-g", "--gui", required=True)
+    listing.add_argument("gui_pos", nargs="?")
+    listing.add_argument("-g", "--gui")
+    listing.add_argument("-l", "--limit", type=int, help="Maximum records (default 10, or unlimited with --all).")
+    listing.add_argument("-A", "--all", action="store_true")
+    listing.add_argument("-c", "--color", choices=("auto", "always", "never"), default="auto")
+
+    register = sub.add_parser("register", help="Register a GUI, agent, and optional existing session.")
+    _add_common_options(register)
+    register.add_argument("gui_pos", nargs="?")
+    register.add_argument("agent_pos", nargs="?")
+    register.add_argument("-g", "--gui")
+    register.add_argument("-n", "--agent-name")
+    register.add_argument("-p", "--provider", choices=("agy", "codex"))
+    register.add_argument("-i", "--session-id")
+    register.add_argument("-d", "--dry-run", action="store_true")
+    register.add_argument("-a", "--apply", action="store_true", help="Compatibility option; registration applies by default.")
+    register.add_argument("-s", "--select", action="store_true", help="Select a different session, preserving history.")
 
     history = sub.add_parser("history", help="Show the full session activation history for one agent.")
     _add_common_options(history)
@@ -106,8 +122,11 @@ def build_parser() -> argparse.ArgumentParser:
     for command_name in ("start", "switch"):
         command = sub.add_parser(command_name, help="Start a native session for a named agent slot.")
         _add_common_options(command)
-        command.add_argument("-g", "--gui", required=True)
-        command.add_argument("-n", "--agent-name", required=True)
+        if command_name == "start":
+            command.add_argument("gui_pos", nargs="?")
+            command.add_argument("agent_pos", nargs="?")
+        command.add_argument("-g", "--gui", required=command_name != "start")
+        command.add_argument("-n", "--agent-name", required=command_name != "start")
         command.add_argument("-p", "--provider", required=True, choices=("agy", "codex"))
         command.add_argument("-e", "--environment", help="Target environment ID or alias (default: local).")
         if command_name == "switch":
@@ -117,8 +136,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     cont = sub.add_parser("continue", help="Resume the currently selected native session.")
     _add_common_options(cont)
-    cont.add_argument("-g", "--gui", required=True)
-    cont.add_argument("-n", "--agent-name", required=True)
+    cont.add_argument("gui_pos", nargs="?")
+    cont.add_argument("agent_pos", nargs="?")
+    cont.add_argument("-g", "--gui")
+    cont.add_argument("-n", "--agent-name")
     cont.add_argument("-a", "--apply", action="store_true")
 
     opening = sub.add_parser("open", help="Open active selected sessions through terminal_launcher.")
@@ -493,6 +514,69 @@ def _open(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[str, 
     return result
 
 
+def _resolve_name(positional: str | None, named: str | None, label: str) -> str | None:
+    if positional is not None and named is not None and positional.casefold() != named.casefold():
+        raise ContinuityError(ErrorCode.INVALID_INPUT, f"Conflicting positional and named {label} values.")
+    return named if named is not None else positional
+
+
+def _listing(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[str, Any]:
+    if args.limit is not None and args.limit < 1:
+        raise ContinuityError(ErrorCode.INVALID_INPUT, "Limit must be a positive integer.")
+    limit = args.limit if args.limit is not None else (None if args.all else 10)
+    gui = _resolve_name(args.gui_pos, args.gui, "GUI")
+    if gui:
+        rows = dispatcher.list_slots(gui=gui, active_only=False)
+        rows = [row for row in rows if args.all or row['state'] != 'completed']
+        rows.sort(key=lambda row: 0 if row['state'] == 'active' else 1 if row['state'] == 'inactive' else 2)
+        total = len(rows)
+        selected = rows if limit is None else rows[:limit]
+        return {'action': 'list', 'gui': gui, 'slots': selected, 'total': total,
+                'shown': len(selected), 'omitted': total - len(selected), 'limit': limit}
+    guis = dispatcher.list_guis()
+    total = len(guis)
+    selected = guis if limit is None else guis[:limit]
+    conversations = []
+    for item in selected:
+        slots = dispatcher.list_slots(gui=item['gui_id'])
+        shown = slots if args.all else slots[:10]
+        conversations.append({**item, 'slots': shown, 'total': len(slots), 'shown': len(shown),
+                              'omitted': len(slots) - len(shown)})
+    return {'action': 'list', 'schema_version': 1, 'conversations': conversations, 'total': total,
+            'shown': len(conversations), 'omitted': total - len(conversations), 'limit': limit}
+
+
+def _render_listing(result: dict[str, Any], stream: TextIO, color: str) -> None:
+    use_color = color == 'always' or (color == 'auto' and stream.isatty() and 'NO_COLOR' not in os.environ)
+    width = shutil.get_terminal_size((100, 24)).columns
+    def style(value: str, code: str) -> str:
+        return f"\033[{code}m{value}\033[0m" if use_color else value
+    def clip(value: str, size: int) -> str:
+        return value if len(value) <= size else value[:max(1, size - 1)] + '…'
+    def rows(items: list[dict[str, Any]]) -> None:
+        for row in items:
+            provider = (row.get('current_provider') or row.get('pending_provider') or '—').upper()
+            session = row.get('current_session_id') or '—'
+            if width < 70:
+                line = f"  {clip(row['name'], max(8, width - 25))} [{row['state']}] {provider}\n    {clip(session, max(8, width - 4))}"
+            else:
+                name_width = min(30, max(12, width // 3))
+                session_width = max(8, width - name_width - 29)
+                line = f"  {clip(row['name'], name_width):<{name_width}}  {style(f'{provider:<8}', '36')}  {clip(session, session_width):<{session_width}}  {row['state']}"
+            print(style(line, '2') if row['state'] == 'inactive' else line, file=stream)
+    if 'conversations' in result:
+        for conversation in result['conversations']:
+            print(style(conversation['alias'], '1'), file=stream)
+            rows(conversation['slots'])
+            if conversation['omitted']:
+                print(f"  {conversation['omitted']} agents omitted.", file=stream)
+        print(f"Showing {result['shown']} of {result['total']} conversations ({result['omitted']} omitted).", file=stream)
+    else:
+        print(style(result['gui'], '1'), file=stream)
+        rows(result['slots'])
+        print(f"Showing {result['shown']} of {result['total']} agents ({result['omitted']} omitted).", file=stream)
+
+
 def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input_stream: TextIO, output_stream: TextIO) -> int:
     if args.command is None:
         if not (input_stream.isatty() and output_stream.isatty()):
@@ -502,6 +586,11 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
 
         return run_interactive(DispatcherService(home_dir=args.home), input_stream=input_stream, output_stream=output_stream)
 
+    if args.command in {"start", "continue"}:
+        args.gui = _resolve_name(args.gui_pos, args.gui, "GUI")
+        args.agent_name = _resolve_name(args.agent_pos, args.agent_name, "agent")
+        if not args.gui or not args.agent_name:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Both GUI and agent are required.")
     dispatcher = DispatcherService(home_dir=args.home)
     if args.command == "gui":
         if args.gui_command == "add":
@@ -523,7 +612,16 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
             parser.parse_args(["slot", "--help"])
             return 2
     elif args.command == "list":
-        result = {"action": "list", "gui": args.gui, "slots": dispatcher.list_slots(gui=args.gui)}
+        result = _listing(dispatcher, args)
+    elif args.command == "register":
+        gui = _resolve_name(args.gui_pos, args.gui, "GUI")
+        name = _resolve_name(args.agent_pos, args.agent_name, "agent")
+        if not gui:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "A GUI name is required.")
+        if args.dry_run and args.apply:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Choose either --dry-run or --apply.")
+        result = dispatcher.register(gui, name, provider=args.provider, session_id=args.session_id,
+                                     apply=not args.dry_run, select=args.select)
     elif args.command == "history":
         result = {"action": "history", "slot": dispatcher.get_slot(gui=args.gui, name=args.agent_name)}
     elif args.command == "pending":
@@ -577,6 +675,12 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
     if json_mode:
         print(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default), file=output_stream)
     else:
+        if result.get("action") == "list":
+            _render_listing(result, output_stream, args.color)
+            return 0
+        if result.get("action") == "gui-list":
+            for conversation in result["conversations"]:
+                print(conversation["alias"], file=output_stream)
         if "summary" in result:
             print(result["summary"], file=output_stream)
         for slot_row in result.get("slots", []):
@@ -601,7 +705,7 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
                     print(f"  Recovery: {launch['failure_detail']}", file=output_stream)
         if result.get("action") == "open":
             print(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default), file=output_stream)
-        if not result.get("applied", True) and result.get("events"):
+        if result.get("action") != "register" and not result.get("applied", True) and result.get("events"):
             print("Preview only. Pass -a / --apply to persist this operation.", file=output_stream)
     launch = result.get("launch") if result.get("action") == "open" and args.apply else None
     if getattr(getattr(launch, "status", None), "value", None) == "failed":

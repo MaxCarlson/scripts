@@ -6,6 +6,7 @@ import contextlib
 import os
 import time
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -178,6 +179,75 @@ class DispatcherService:
             "details": {"gui_id": gui_id, "alias": clean},
             "events": [event.to_dict()],
         }
+
+    def register(self, gui: str, name: str | None = None, *, provider: str | None = None,
+                 session_id: str | None = None, apply: bool = True, select: bool = False) -> dict[str, Any]:
+        """Register identities and an optional session under one dispatcher mutation lock."""
+        gui = gui.strip()
+        name = name.strip() if name is not None else None
+        if not gui or len(gui) > 120 or (name is not None and (not name or len(name) > 120)):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "GUI and agent names must contain 1–120 characters.")
+        if bool(provider) != bool(session_id) or (session_id is not None and not session_id.strip()):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Provider and nonempty session ID must be supplied together.")
+        if provider and not name:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "A session requires an agent name.")
+        provider = self.continuity._validate_provider(provider) if provider else None
+        session_id = session_id.strip() if session_id else None
+        events: list[EventEnvelope] = []
+        with _mutation_lock(self.home_dir) if apply else contextlib.nullcontext():
+            self._sync()
+            conversation = self._row("SELECT * FROM dispatcher_gui_conversations WHERE alias_key = ?", (gui.casefold(),))
+            slot = (self._row("SELECT * FROM agent_slots WHERE gui_id = ? AND name_key = ?",
+                              (conversation['gui_id'], name.casefold())) if conversation and name else None)
+            env = load_or_create_environment(self.home_dir, persist=False)
+            history = self._history(slot['slot_id']) if slot else []
+            if history and provider:
+                current = history[-1]
+                if (current['provider'], current['environment_id'], current['native_session_id']) != (
+                    provider, env.environment_id, session_id
+                ) and not select:
+                    raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                          "A different session is selected; pass --select to change it.")
+            if apply:
+                env = load_or_create_environment(self.home_dir, persist=True)
+            gui_id = conversation['gui_id'] if conversation else generate_id('gui')
+            slot_id = slot['slot_id'] if slot else generate_id('slot') if name else None
+            timestamp = now_utc_iso()
+            if not conversation:
+                events.append(self._event(EventType.DISPATCHER_GUI_REGISTERED, environment_id=env.environment_id,
+                    payload={'gui_id': gui_id, 'alias': gui, 'alias_key': gui.casefold()}, timestamp=timestamp))
+            if name and not slot:
+                events.append(self._event(EventType.DISPATCHER_SLOT_CREATED, environment_id=env.environment_id,
+                    payload={'slot_id': slot_id, 'gui_id': gui_id, 'name': name, 'name_key': name.casefold()},
+                    timestamp=timestamp))
+            same = history and provider and (history[-1]['provider'], history[-1]['environment_id'],
+                    history[-1]['native_session_id']) == (provider, env.environment_id, session_id)
+            if provider and not same:
+                if not self.materializer.get_session(provider, env.environment_id, session_id):
+                    events.append(self._event(EventType.SESSION_REGISTERED, environment_id=env.environment_id,
+                        provider=provider, session_id=session_id, timestamp=timestamp,
+                        payload={'environment': env.to_dict(), 'cwd_native': None, 'cwd_canonical': None,
+                                 'repository_identity': None, 'first_observed_at': timestamp,
+                                 'last_seen_at': timestamp, 'metadata_source': 'dispatcher_attach'}))
+                activation_time = (datetime.now(UTC) + timedelta(microseconds=2)).isoformat(timespec='microseconds').replace('+00:00', 'Z')
+                events.append(self._event(EventType.DISPATCHER_SESSION_ACTIVATED, environment_id=env.environment_id,
+                    provider=provider, session_id=session_id, timestamp=activation_time,
+                    payload={'slot_id': slot_id, 'activation_id': generate_id('act'),
+                             'sequence': (history[-1]['sequence'] if history else 0) + 1,
+                             'provenance': 'explicit_attach'}))
+            if events:
+                base_time = datetime.now(UTC)
+                events = [replace(event, source_timestamp=(base_time + timedelta(microseconds=i + 1)).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+                                  observed_timestamp=(base_time + timedelta(microseconds=i + 1)).isoformat(timespec="microseconds").replace("+00:00", "Z"))
+                          for i, event in enumerate(events)]
+            if apply and events:
+                env_events = self.continuity._ensure_environment_event(env, self.materializer.list_environments(),
+                    base_time.isoformat(timespec="microseconds").replace("+00:00", "Z"))
+                for event in [*env_events, *events]:
+                    self.continuity._emit_and_materialize([event])
+        return {'action': 'register', 'applied': bool(apply and events), 'events': [e.to_dict() for e in events],
+                'details': {'gui_id': gui_id, 'slot_id': slot_id},
+                'summary': ('Registered' if apply and events else 'Dry-run: would register' if events else 'Already registered') + f' {gui!r}' + (f' / {name!r}' if name else '') + '.'}
 
     def list_guis(self, *, active_only: bool = True) -> list[dict[str, Any]]:
         self._sync()
