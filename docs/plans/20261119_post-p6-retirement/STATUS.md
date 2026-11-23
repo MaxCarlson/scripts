@@ -101,6 +101,7 @@ The five wheelhouse hashes were recomputed and match `.github/qualified-wheelhou
 
 - PR #22 is open, unmerged, and currently reported mergeable at `8d4a00b38090b700c5328419b5cb06df2bde4e28`; its base remains `main` at `c87db5b68ae14ce5398c4a8cd16ed23289bcfacf`.
 - PR #27 is open and currently reported mergeable; it proposes the nine toolkit-only removals listed above.
+- PR #28 is open and currently reported mergeable; it is based on PR #22's branch. Its head is `6fe4d814d3c842e8300db4fbfeb5ba39e62d38db`.
 - This PR B must target PR #22's branch and remain dependent on it. Do not merge it to main independently. PR #27 can be reviewed separately and does not depend on PyPI publication; merge only with separate approval.
 - The historical retirement branch, quarantine directory/manifests, five raw JSON evidence files, primary diagnostics, PR #22 `.tmp_build/`, and all other worktrees remain preserved.
 
@@ -109,7 +110,7 @@ The five wheelhouse hashes were recomputed and match `.github/qualified-wheelhou
 To restore only the three removed source paths before commit, use:
 
 ```powershell
-git restore --source=8d4a00b38090b700c5328419b5cb06df2bde4e28 -- modules/script_logging modules/termdash modules/cross_platform
+git restore --source=8d4a00b38090b700c5328419b5cb06df2bde4e28 --staged --worktree -- modules/script_logging modules/termdash modules/cross_platform
 ```
 
 To cancel the full proposal before commit, restore the exact staged and edited task paths from the PR #22 base commit on this branch. After commit, revert the PR B commit. Do not restore or alter `resource_metrics` or `web_ui_tools` as part of this rollback; they remain present. The source directories remain available in PR #22 history and canonical `shared-python-modules`.

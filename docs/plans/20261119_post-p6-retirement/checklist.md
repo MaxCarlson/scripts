@@ -18,9 +18,10 @@
 - [x] Run bootstrap dry-run; zero failures and no writes.
 - [x] Restore only pre-existing tracked validation reports changed/pruned by the validation dispatcher; retain new run evidence as untracked artifacts.
 - [x] Update STATUS with exact dispositions for all 25 unique directories, holds, test results, and rollback steps.
-- [ ] Review task-only diff and run final `git diff --check`.
-- [ ] Commit the cleared PR B subset, push its branch, and open a PR targeting PR #22's branch.
-- [ ] Keep both retirement PRs unmerged; preserve historical retirement evidence and all protected work.
+- [x] Review task-only diff and run final `git diff --check`.
+- [x] Commit the cleared PR B subset (`6fe4d814`) and push branch `retire/shared-sources-20261123`.
+- [x] Open PR #28 targeting PR #22's branch; PR #28 is open and currently reported mergeable.
+- [x] Keep both retirement PRs unmerged; preserve historical retirement evidence and all protected work.
 
 ## Remaining holds
 
