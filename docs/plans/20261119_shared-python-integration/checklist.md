@@ -198,3 +198,26 @@ Historical checkpoint status above is superseded by the final pscripts and full-
 - [ ] This qualification used staging wheels. Clean public-index installation remains blocked until the five exact versions are published and their provenance/metadata are checked.
 
 **Scripts staging qualification is green on the updated PR head; release, pscripts-merge, and public-install gates remain as above.**
+
+## Final shared release and retirement scope — 2026-11-23
+
+- [x] Verify the shared release workflow's five accepted tag prefixes, source-directory mapping, OIDC `pypi` environment declaration, and distribution identifiers accepted by the build/validation tools.
+- [x] Correct the shared release guide on a separate branch and open [shared PR #3](https://github.com/MaxCarlson/shared-python-modules/pull/3) at `4cad58d4232efb5926f6260b52347eb34d1f3316`; review/merge remains pending. The guide distinguishes source directories from published names and documents rebuild/provenance verification.
+- [x] Recheck intended mxc release refs and PyPI project endpoints: no exact release tags or GitHub releases exist; all five PyPI project JSON endpoints returned HTTP 404.
+- [x] Inspect the latest shared `main` qualification run [44676966726](https://github.com/MaxCarlson/shared-python-modules/actions/runs/44676966726): jobs failed without steps/logs, leaving the cause unknown. No successful current-main qualification is established, and no duplicate dispatch was attempted because the available interface cannot dispatch workflows.
+- [ ] Verify/register one PyPI Pending Trusted Publisher for each exact mxc project: owner `MaxCarlson`, repository `shared-python-modules`, workflow `.github/workflows/release.yml`, environment `pypi`.
+- [ ] Verify the GitHub `pypi` environment's deployment protection rules. These publisher/environment settings are inaccessible through the available interfaces; do not claim they are configured.
+- [ ] Obtain successful nonpublishing shared main qualification when a runner is available.
+- [ ] Obtain explicit approval before creating the exact tags `mxc-resource-metrics/v0.3.0`, `mxc-script-logging/v0.1.1`, `mxc-web-ui-tools/v0.2.0`, `mxc-termdash/v0.10.0`, and `mxc-platform-utils/v0.9.0`; verify each rebuilt artifact's metadata, contents, hash, and provenance before accepting publication.
+- [ ] After publication, perform clean exact-version PyPI installations and focused consumer checks for scripts and toolkit.
+- [ ] Merge pscripts PR #1 only after separate review/authorization; verify the pinned commit remains reachable in `pscripts/main`.
+- [ ] Recheck and merge scripts PR #22 only after review and explicit authorization. No merge is performed in this phase.
+
+### Later source-retirement phase — explicitly out of scope here
+
+- [ ] After publication and successful scripts integration, create a fresh branch from then-current `scripts/main`; do not merge the historical `cc3273f0` retirement branch.
+- [ ] Audit all toolkit-transferred module directories cataloged by `scripts_setup/transferred_modules.py` (about 23) **and** all five shared-library directories cataloged by `scripts_setup/shared_packages.py`.
+- [ ] For each candidate, verify canonical ownership and source differences, imports/consumers, launcher references, package metadata, persistent user data, and historical retention requirements; preserve every unresolved hold.
+- [ ] Require separate explicit approval for physical source removal and for merging the resulting retirement PR.
+
+**Disposition:** release guide correction is open for review in shared PR #3. Scripts staging qualification is green, while public PyPI installation and merge/release remain blocked by the gates above. Source retirement remains a later, separately approved phase covering both catalogs.
