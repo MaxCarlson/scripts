@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import shutil
@@ -191,12 +191,75 @@ class PreflightCheckError(RuntimeError):
     """Raised when environment prerequisites (Docker, Harbor) fail."""
 
 
+_ADMISSION_MAX_AGE = timedelta(minutes=5)
+_COMMON_INTERNAL_SECRET_ENV_VARS = frozenset({
+    "RESOURCE_COORDINATOR_OPERATOR_TOKEN",
+    "RESOURCE_COORDINATOR_RECOVERY_TOKEN",
+    "LLM_MONITOR_AUTHORIZATION",
+    "LLM_MONITOR_SESSION_COOKIE",
+})
+_CLOUD_CREDENTIAL_ENV_VARS = frozenset({
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+})
+_AGENT_ALLOWED_CLOUD_ENV_VARS: dict[str, frozenset[str]] = {
+    "oracle": frozenset(),
+    "nop": frozenset(),
+    "qwen-coder": frozenset(),
+    "opencode": frozenset(),
+    "opencode-v2": frozenset(),
+    "codex": frozenset({"OPENAI_API_KEY"}),
+    "claude-code": frozenset({"ANTHROPIC_API_KEY"}),
+    "antigravity-cli": frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY"}),
+    "antigravity-sdk": frozenset({"GEMINI_API_KEY", "GOOGLE_API_KEY"}),
+    "aider": _CLOUD_CREDENTIAL_ENV_VARS,
+}
+
+
+def _build_scoped_harbor_env(plan: BenchmarkPlan, *, study_adapter: bool = False) -> dict[str, str]:
+    """Build a Harbor subprocess environment with adapter-scoped credential isolation.
+
+    Strips internal coordinator/monitor secrets and unrelated cloud API keys.
+    System/toolchain variables (PATH, DOCKER_HOST, UV_CACHE_DIR, etc.) remain inherited
+    because Harbor, uv, Node, and Docker CLIs on Windows/WSL2 depend on them.
+    """
+    run_env = os.environ.copy()
+    agent_norm = plan.agent.lower().strip()
+    allowed_cloud = _AGENT_ALLOWED_CLOUD_ENV_VARS.get(agent_norm, frozenset())
+
+    for var in _COMMON_INTERNAL_SECRET_ENV_VARS:
+        run_env.pop(var, None)
+    for var in _CLOUD_CREDENTIAL_ENV_VARS - allowed_cloud:
+        run_env.pop(var, None)
+
+    if os.name == "nt":
+        run_env["PYTHONUTF8"] = "1"
+        run_env["PYTHONIOENCODING"] = "utf-8"
+    if agent_norm in LOCAL_HARBOR_AGENTS:
+        run_env["OPENAI_API_KEY"] = "lm-studio"
+    if agent_norm == "opencode-v2" or study_adapter:
+        agent_bench_root = str(Path(__file__).resolve().parent.parent.parent)
+        benchmark_core_root = str(Path(agent_bench_root).parent / "benchmark_core")
+        current_pythonpath = run_env.get("PYTHONPATH", "")
+        run_env["PYTHONPATH"] = os.pathsep.join(
+            item for item in (agent_bench_root, benchmark_core_root, current_pythonpath) if item
+        )
+    return run_env
+
+
 def _verify_dispatch_route(
     plan: BenchmarkPlan,
     *,
     monitor_admission_evidence: dict[str, Any] | None = None,
 ) -> None:
-    """Fail closed unless the dispatch route is protected RC :1235 or has verified monitor + RC admission."""
+    """Fail closed unless the dispatch route is protected RC :1235 or has bound monitor + RC admission."""
+    from urllib.parse import urlsplit
+
     agent_norm = plan.agent.lower().strip()
     if agent_norm in ("oracle", "nop"):
         return
@@ -215,10 +278,53 @@ def _verify_dispatch_route(
         gateway_url = str(monitor_admission_evidence.get("gateway_url") or "").rstrip("/")
         if not plan.base_url or gateway_url != plan.base_url.rstrip("/"):
             raise PreflightCheckError("Monitored inference route does not match verified monitor gateway_url")
-        if monitor_admission_evidence.get("coordinator_admitted") is not True:
+
+        ev_model = str(monitor_admission_evidence.get("model") or "")
+        if not ev_model or ev_model.split("/", 1)[-1] != plan.model.split("/", 1)[-1]:
+            raise PreflightCheckError("Monitored admission evidence model does not match planned model")
+
+        routing = monitor_admission_evidence.get("configured_protected_routing")
+        if not isinstance(routing, dict) or routing.get("verified") is not True:
+            raise PreflightCheckError(
+                "Monitored local inference route lacks verified Resource Coordinator (:1235) upstream routing"
+            )
+        upstream_url = str(routing.get("upstream_base_url") or "")
+        parsed_up = urlsplit(upstream_url)
+        if parsed_up.port != 1235 or (parsed_up.hostname or "").lower() not in {
+            "127.0.0.1", "localhost", "::1", "host.docker.internal"
+        }:
+            raise PreflightCheckError("Monitored upstream routing must bind to loopback Resource Coordinator (:1235)")
+
+        runtime_id = monitor_admission_evidence.get("qualified_runtime_identity")
+        if (
+            not isinstance(runtime_id, dict)
+            or runtime_id.get("gateway_enabled") is not True
+            or not runtime_id.get("instance_id")
+            or not runtime_id.get("config_fingerprint")
+            or not runtime_id.get("host_origin")
+        ):
+            raise PreflightCheckError("Monitored local inference route lacks qualified monitor runtime identity")
+
+        admission = monitor_admission_evidence.get("observed_per_request_admission")
+        if (
+            not isinstance(admission, dict)
+            or admission.get("status") != "verified"
+            or admission.get("instance_id") != runtime_id.get("instance_id")
+            or monitor_admission_evidence.get("coordinator_admitted") is not True
+        ):
             raise PreflightCheckError(
                 "Monitored local inference route lacks verified Resource Coordinator (:1235) admission evidence"
             )
+        verified_at_raw = admission.get("verified_at")
+        if not isinstance(verified_at_raw, str) or not verified_at_raw:
+            raise PreflightCheckError("Monitored admission evidence is missing verified_at timestamp")
+        try:
+            verified_at = datetime.fromisoformat(verified_at_raw)
+        except ValueError as exc:
+            raise PreflightCheckError("Monitored admission evidence has malformed verified_at timestamp") from exc
+        now = datetime.now(timezone.utc)
+        if verified_at.utcoffset() is None or verified_at > now or (now - verified_at) > _ADMISSION_MAX_AGE:
+            raise PreflightCheckError("Monitored admission evidence is stale or has invalid timestamp")
         return
     url_blocker = validate_harbor_inference_base_url(plan.agent, plan.base_url)
     if url_blocker:
@@ -294,8 +400,8 @@ def build_harbor_command(
     if plan.model and plan.model not in ("default", "none") and plan.agent not in ("oracle", "nop"):
         cmd.extend(["--model", plan.model])
 
+    _verify_dispatch_route(plan, monitor_admission_evidence=monitor_admission_evidence)
     if plan.base_url and plan.agent not in ("oracle", "nop"):
-        _verify_dispatch_route(plan, monitor_admission_evidence=monitor_admission_evidence)
         cmd.extend(["--base-url", plan.base_url])
 
     if plan.model_api_format and plan.agent not in ("oracle", "nop"):
@@ -426,19 +532,7 @@ def execute_harbor_run(
         monitor_admission_evidence=monitor_admission_evidence,
     )
 
-    run_env = os.environ.copy()
-    if os.name == "nt":
-        run_env["PYTHONUTF8"] = "1"
-        run_env["PYTHONIOENCODING"] = "utf-8"
-    if plan.agent in ("qwen-coder", "opencode", "opencode-v2") and "OPENAI_API_KEY" not in run_env:
-        run_env["OPENAI_API_KEY"] = "lm-studio"
-    if plan.agent == "opencode-v2" or study_adapter:
-        agent_bench_root = str(Path(__file__).resolve().parent.parent.parent)
-        benchmark_core_root = str(Path(agent_bench_root).parent / "benchmark_core")
-        current_pythonpath = run_env.get("PYTHONPATH", "")
-        run_env["PYTHONPATH"] = os.pathsep.join(
-            item for item in (agent_bench_root, benchmark_core_root, current_pythonpath) if item
-        )
+    run_env = _build_scoped_harbor_env(plan, study_adapter=study_adapter)
 
     if plan.agent == "opencode" and not study_adapter:
         ensure_harbor_opencode_compatibility()

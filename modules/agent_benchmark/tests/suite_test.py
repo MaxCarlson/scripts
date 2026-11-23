@@ -348,6 +348,23 @@ def test_monitored_study_preparation_preserves_planning_and_enforces_receipt_at_
             monitor_admission_evidence={
                 "verified": True,
                 "gateway_url": "http://host.docker.internal:8788/v1",
+                "model": "llm-monitor/qwen38_23GB",
                 "coordinator_admitted": True,
+                "configured_protected_routing": {
+                    "verified": True,
+                    "upstream_base_url": "http://127.0.0.1:1235",
+                },
+                "qualified_runtime_identity": {
+                    "instance_id": "inst-1",
+                    "config_fingerprint": "sha256:abc",
+                    "host_origin": "http://127.0.0.1:8788",
+                    "gateway_enabled": True,
+                },
+                "observed_per_request_admission": {
+                    "status": "verified",
+                    "instance_id": "inst-1",
+                    "coordinator_url": "http://127.0.0.1:1235",
+                    "verified_at": "2099-01-01T00:00:00+00:00",
+                },
             },
         )

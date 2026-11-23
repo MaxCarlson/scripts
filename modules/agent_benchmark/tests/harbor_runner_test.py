@@ -538,8 +538,8 @@ def test_monitored_route_requires_coordinator_admission_evidence_at_dispatch(tmp
             jobs_dir=tmp_path / "jobs",
         )
 
-    # 2. Verified monitor WITHOUT coordinator_admitted=True still fails closed
-    with pytest.raises(PreflightCheckError, match="Resource Coordinator"):
+    # 2. Unbound boolean dict without bound routing/identity/admission still fails closed
+    with pytest.raises(PreflightCheckError):
         execute_harbor_run(
             mon_plan,
             execute=True,
@@ -548,19 +548,115 @@ def test_monitored_route_requires_coordinator_admission_evidence_at_dispatch(tmp
             monitor_admission_evidence={
                 "verified": True,
                 "gateway_url": "http://host.docker.internal:8788/v1",
-                "coordinator_admitted": False,
+                "coordinator_admitted": True,
             },
         )
 
-    # 3. Verified monitor WITH coordinator_admitted=True builds command
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    valid_evidence = {
+        "verified": True,
+        "gateway_url": "http://host.docker.internal:8788/v1",
+        "model": "openai/qwen38_23GB",
+        "coordinator_admitted": True,
+        "configured_protected_routing": {
+            "verified": True,
+            "upstream_base_url": "http://127.0.0.1:1235",
+        },
+        "qualified_runtime_identity": {
+            "instance_id": "inst-1",
+            "config_fingerprint": "sha256:abc",
+            "host_origin": "http://127.0.0.1:8788",
+            "gateway_enabled": True,
+        },
+        "observed_per_request_admission": {
+            "status": "verified",
+            "instance_id": "inst-1",
+            "coordinator_url": "http://127.0.0.1:1235",
+            "verified_at": now.isoformat(),
+        },
+    }
+
+    # 3. Stale, mismatched model, or mismatched instance_id fails closed
+    stale_ev = {
+        **valid_evidence,
+        "observed_per_request_admission": {
+            **valid_evidence["observed_per_request_admission"],
+            "verified_at": (now - timedelta(minutes=10)).isoformat(),
+        },
+    }
+    with pytest.raises(PreflightCheckError, match="stale"):
+        build_harbor_command(mon_plan, jobs_dir=tmp_path / "jobs", monitor_admission_evidence=stale_ev)
+
+    bad_model_ev = {**valid_evidence, "model": "openai/other-model"}
+    with pytest.raises(PreflightCheckError, match="model"):
+        build_harbor_command(mon_plan, jobs_dir=tmp_path / "jobs", monitor_admission_evidence=bad_model_ev)
+
+    bad_inst_ev = {
+        **valid_evidence,
+        "observed_per_request_admission": {
+            **valid_evidence["observed_per_request_admission"],
+            "instance_id": "inst-other",
+        },
+    }
+    with pytest.raises(PreflightCheckError, match="admission evidence"):
+        build_harbor_command(mon_plan, jobs_dir=tmp_path / "jobs", monitor_admission_evidence=bad_inst_ev)
+
+    # 4. Complete bound admission evidence builds command
     cmd = build_harbor_command(
         mon_plan,
         jobs_dir=tmp_path / "jobs",
-        monitor_admission_evidence={
-            "verified": True,
-            "gateway_url": "http://host.docker.internal:8788/v1",
-            "coordinator_admitted": True,
-        },
+        monitor_admission_evidence=valid_evidence,
     )
     assert "http://host.docker.internal:8788/v1" in cmd
+
+
+@pytest.mark.parametrize("bad_base_url", [None, "", "   "])
+def test_build_harbor_command_rejects_missing_or_empty_local_base_url(tmp_path: Path, monkeypatch, bad_base_url):
+    from dataclasses import replace
+    from agent_benchmark.harbor.planner import ReadinessCheck
+
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ready"))
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
+    monkeypatch.setattr("agent_benchmark.harbor.runner.shutil.which", lambda _: "harbor")
+
+    base_plan = plan_benchmark("aider/aider-polyglot", agent="opencode", count=1)
+    forged = replace(
+        base_plan,
+        base_url=bad_base_url,
+        readiness=ReadinessCheck(True, "0.25.0", True, "ready", True, "ok", ()),
+    )
+    with pytest.raises(PreflightCheckError):
+        build_harbor_command(forged, jobs_dir=tmp_path / "jobs")
+
+
+def test_runner_scoped_credential_isolation(monkeypatch):
+    from agent_benchmark.harbor.runner import _build_scoped_harbor_env
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-openai")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-real-anthropic")
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-real-key")
+    monkeypatch.setenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", "rc-secret")
+    monkeypatch.setenv("LLM_MONITOR_AUTHORIZATION", "Bearer mon-secret")
+
+    oracle_env = _build_scoped_harbor_env(plan_benchmark("aider/aider-polyglot", agent="oracle", count=1))
+    assert "OPENAI_API_KEY" not in oracle_env
+    assert "ANTHROPIC_API_KEY" not in oracle_env
+    assert "GEMINI_API_KEY" not in oracle_env
+    assert "RESOURCE_COORDINATOR_OPERATOR_TOKEN" not in oracle_env
+    assert "LLM_MONITOR_AUTHORIZATION" not in oracle_env
+
+    local_env = _build_scoped_harbor_env(plan_benchmark("aider/aider-polyglot", agent="opencode", count=1))
+    assert local_env["OPENAI_API_KEY"] == "lm-studio"
+    assert "ANTHROPIC_API_KEY" not in local_env
+    assert "GEMINI_API_KEY" not in local_env
+    assert "RESOURCE_COORDINATOR_OPERATOR_TOKEN" not in local_env
+    assert "LLM_MONITOR_AUTHORIZATION" not in local_env
+
+    codex_env = _build_scoped_harbor_env(plan_benchmark("aider/aider-polyglot", agent="codex", count=1))
+    assert codex_env["OPENAI_API_KEY"] == "sk-real-openai"
+    assert "ANTHROPIC_API_KEY" not in codex_env
+    assert "GEMINI_API_KEY" not in codex_env
+    assert "RESOURCE_COORDINATOR_OPERATOR_TOKEN" not in codex_env
 

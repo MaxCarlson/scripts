@@ -191,21 +191,47 @@ def test_monitor_preflight_evaluates_coordinator_admission():
             client=_client_with_status({"availability": "available", "coordinator_admitted": False}),
         )
 
-    # 3. Omitted upstream/coordinator proof sets coordinator_admitted=False
+    # 3. Real llm_monitor/inference_web.py /api/inference/v1/status schema (no upstream/admission fields)
+    real_producer_status = {
+        "schema_version": 1,
+        "availability": "connected",
+        "revision": 4,
+        "refreshed_at": "2026-11-23T23:50:00+00:00",
+        "capabilities": {"request_lifecycle": {"state": "available", "source": "gateway"}},
+        "recording": {"mode": "content", "healthy": True, "dropped_count": 0},
+        "hardware_samples": [],
+    }
     res_unproven = validate_monitor(
         agent="opencode",
         model="openai/model",
         api_format="openai_chat_completions",
-        client=_client_with_status({"availability": "available"}),
+        client=_client_with_status(real_producer_status),
     )
     assert res_unproven["coordinator_admitted"] is False
+    assert res_unproven["observed_per_request_admission"]["reason"] == "producer_contract_missing"
 
-    # 4. Upstream :1235 proves coordinator admission
+    # 4. Complete bound producer contract proves coordinator admission
     res_proven = validate_monitor(
         agent="opencode",
         model="openai/model",
         api_format="openai_chat_completions",
-        client=_client_with_status({"availability": "available", "upstream_base_url": "http://127.0.0.1:1235/v1"}),
+        client=_client_with_status({
+            **real_producer_status,
+            "gateway_upstream": "http://127.0.0.1:1235",
+            "runtime_identity": {
+                "instance_id": "inst-1",
+                "config_fingerprint": "sha256:abc",
+                "gateway_enabled": True,
+            },
+            "coordinator_admission": {
+                "status": "verified",
+                "coordinator_url": "http://127.0.0.1:1235",
+                "verified_at": "2026-11-23T23:50:00+00:00",
+            },
+        }),
     )
     assert res_proven["coordinator_admitted"] is True
+    assert res_proven["configured_protected_routing"]["verified"] is True
+    assert res_proven["qualified_runtime_identity"]["instance_id"] == "inst-1"
+    assert res_proven["observed_per_request_admission"]["status"] == "verified"
 

@@ -152,19 +152,26 @@ def verify_recorded_requests(*, monitor_url: str, request_ids: list[str], record
             active_client.close()
 
 
-def _evaluate_coordinator_admission(status_payload: dict[str, Any]) -> tuple[bool, str | None]:
-    """Determine whether LLM Monitor status proves upstream routing through Resource Coordinator (:1235)."""
+def _evaluate_coordinator_admission(
+    status_payload: dict[str, Any],
+    *,
+    origin: str,
+) -> tuple[bool, dict[str, Any], dict[str, Any] | None, dict[str, Any]]:
+    """Evaluate configured protected routing, runtime identity, and per-request admission from status."""
+    from datetime import datetime, timezone
+
     admitted_flag = status_payload.get("coordinator_admitted")
     if admitted_flag is False:
         raise MonitorPreflightError("LLM Monitor status explicitly reports Resource Coordinator admission is disabled")
 
     upstream_url = None
-    for key in ("upstream_base_url", "upstream_url", "target_url", "inference_base_url", "provider_url"):
+    for key in ("gateway_upstream", "upstream_base_url", "upstream_url", "target_url", "inference_base_url", "provider_url"):
         val = status_payload.get(key)
         if isinstance(val, str) and val.strip():
             upstream_url = val.strip()
             break
 
+    routing: dict[str, Any] = {"verified": False, "upstream_base_url": upstream_url}
     if upstream_url is not None:
         parsed = urlsplit(upstream_url)
         if parsed.port == 1234:
@@ -172,14 +179,33 @@ def _evaluate_coordinator_admission(status_payload: dict[str, Any]) -> tuple[boo
                 "LLM Monitor upstream points to direct LM Studio (:1234), bypassing Resource Coordinator (:1235)"
             )
         if parsed.port == 1235 and (parsed.hostname or "").lower() in {"127.0.0.1", "localhost", "::1", "host.docker.internal"}:
-            return True, upstream_url
-        raise MonitorPreflightError(
-            f"LLM Monitor upstream {upstream_url!r} is not proven to route through Resource Coordinator (:1235)"
-        )
+            routing = {"verified": True, "upstream_base_url": upstream_url}
+        else:
+            raise MonitorPreflightError(
+                f"LLM Monitor upstream {upstream_url!r} is not proven to route through Resource Coordinator (:1235)"
+            )
 
-    if admitted_flag is True:
-        return True, None
-    return False, None
+    runtime_identity: dict[str, Any] | None = None
+    raw_identity = status_payload.get("runtime_identity")
+    if isinstance(raw_identity, dict) and raw_identity.get("instance_id") and raw_identity.get("config_fingerprint"):
+        runtime_identity = {**raw_identity, "host_origin": raw_identity.get("host_origin") or origin}
+
+    admission_block = status_payload.get("coordinator_admission")
+    if isinstance(admission_block, dict) and admission_block.get("status") == "verified" and routing["verified"] and runtime_identity is not None:
+        verified_at = admission_block.get("verified_at") or status_payload.get("refreshed_at") or datetime.now(timezone.utc).isoformat()
+        observed_admission = {
+            "status": "verified",
+            "instance_id": runtime_identity["instance_id"],
+            "coordinator_url": admission_block.get("coordinator_url") or upstream_url,
+            "verified_at": verified_at,
+        }
+        return True, routing, runtime_identity, observed_admission
+
+    return False, routing, runtime_identity, {
+        "status": "unverified",
+        "reason": "producer_contract_missing",
+        "detail": "llm_monitor /api/inference/v1/status does not yet emit gateway_upstream, runtime_identity, and coordinator_admission",
+    }
 
 
 def validate_monitor(
@@ -218,7 +244,9 @@ def validate_monitor(
         availability = status.get("availability")
         if availability not in {"available", "connected"}:
             raise MonitorPreflightError("LLM Monitor inference service is not available")
-        coordinator_admitted, upstream_url = _evaluate_coordinator_admission(status)
+        coordinator_admitted, routing, runtime_identity, observed_admission = _evaluate_coordinator_admission(
+            status, origin=origin
+        )
         recording_response = active_client.get(f"{origin}/api/inference/v1/recording/status", headers=headers)
         recording_response.raise_for_status()
         recording_payload = recording_response.json().get("recording", {})
@@ -240,7 +268,10 @@ def validate_monitor(
             "monitor_host_url": origin, "monitor_model_inventory_verified": True,
             "api_format": api_format, "monitor_availability": availability,
             "coordinator_admitted": coordinator_admitted,
-            "upstream_base_url": upstream_url,
+            "configured_protected_routing": routing,
+            "qualified_runtime_identity": runtime_identity,
+            "observed_per_request_admission": observed_admission,
+            "upstream_base_url": routing.get("upstream_base_url"),
             "recording_mode": actual,
             "recording_healthy": healthy,
             "dropped_observations": dropped,

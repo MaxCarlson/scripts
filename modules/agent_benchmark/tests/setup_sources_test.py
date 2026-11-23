@@ -323,3 +323,25 @@ def test_setup_inventory_and_flag_order(tmp_path: Path, capsys: pytest.CaptureFi
     for suggestion in suggestions:
         parsed = parser().parse_args(shlex.split(suggestion))
         assert parsed.cohort in COHORTS
+
+
+def test_modified_resource_content_detected_by_full_verification_not_presence_only(tmp_path: Path) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "data.txt").write_text("original content", encoding="utf-8")
+
+    manager = SourceManager(tmp_path / "store")
+    spec = ResourceSpec("bench", "git", "source", revision="rev1")
+    manager.install_resource(spec, execute=True, mock_source_dir=source)
+
+    # Mutate installed file on disk without updating receipt
+    installed_file = manager.get_target_path(spec) / "data.txt"
+    installed_file.write_text("tampered content", encoding="utf-8")
+
+    presence = manager.verify_resource(spec, verify_hashes=False)
+    assert presence["status"] == "verified"
+    assert presence["hash_verification"] == "skipped"
+
+    full = manager.verify_resource(spec, verify_hashes=True)
+    assert full["status"] == "corrupted"
+    assert any("mismatch: data.txt" in item for item in full["corrupted_files"])

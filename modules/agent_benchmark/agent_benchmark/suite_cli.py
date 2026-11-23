@@ -274,6 +274,11 @@ def handle_suite(args: argparse.Namespace) -> int:
             if fmt == "table" and sys.stderr.isatty():
                 print("Discovering suites and resource readiness...", file=sys.stderr, flush=True)
             discovery = get_unified_discovery(include_readiness=True)
+            discovery["verification_mode"] = "presence_only"
+            discovery["integrity_note"] = (
+                "suite list performs fast presence/receipt checks only; "
+                "run 'agent-benchmark setup verify' for full SHA-256 content verification"
+            )
             catalog = get_default_catalog()
             manager = SourceManager()
             for dataset in discovery["datasets"]:
@@ -285,7 +290,11 @@ def handle_suite(args: argparse.Namespace) -> int:
                             print(f"  checking {benchmark.id}...", file=sys.stderr, flush=True)
                         snapshot = benchmark_resource_snapshot(benchmark, manager, verify_hashes=False)
                         dataset["install_state"] = snapshot["state"].lower()
-                        dataset["readiness_reason"] = f"{snapshot['installed']}/{snapshot['required']} required resources verified"
+                        dataset["verification_mode"] = "presence_only"
+                        dataset["readiness_reason"] = (
+                            f"{snapshot['installed']}/{snapshot['required']} required resources present "
+                            "(hashes not checked; use 'setup verify')"
+                        )
                         dataset["execution_readiness"] = (
                             "tasks_not_provisioned"
                             if snapshot["state"] == "REGISTERED" and benchmark.resources
@@ -314,6 +323,10 @@ def handle_suite(args: argparse.Namespace) -> int:
                     rev = c["source_revision"][:8] if c.get("source_revision") else "-"
                     c_tbl.add_row(c["id"], c["dataset"], str(c["tasks"]), rev)
                 print(c_tbl.render())
+                print(
+                    "\nNote: 'suite list' checks resource presence and receipts only. "
+                    "Run 'agent-benchmark setup verify' for full SHA-256 content integrity verification."
+                )
             else:
                 emit(discovery, llm_friendly=friendly)
             return 0
