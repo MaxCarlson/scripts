@@ -587,13 +587,6 @@ REGISTRY: dict = {
                 "version": "0.1.0",
             },
             {
-                "name": "termdash (module)",
-                "path": "modules/termdash",
-                "desc": "Real-time terminal dashboard for system stats and process monitoring",
-                "help_cmd": ["python", "-m", "termdash", "--help"],
-                "version": "0.4.0",
-            },
-            {
                 "name": "llm_monitor (module)",
                 "path": "modules/llm_monitor",
                 "desc": "Read-only local LLM diagnostics, historical telemetry, alerts, and standalone inference overview",
