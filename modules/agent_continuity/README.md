@@ -138,3 +138,9 @@ By default, state is stored under `~/.agent_continuity` (override with `AGENT_CO
 cd modules/agent_continuity
 python -m pytest
 ```
+
+## Interactive continuation and runtime status
+
+`llmd continue` opens a flat searchable picker across registered conversations; `llmd continue "Project"` or `-g "Project"` scopes it. Type to filter GUI, agent, provider, or native session ID; use arrows and Enter to choose, Backspace to edit, and Esc to cancel. Active agents sort first by recent activity. Inactive agents remain visible and require confirmation to reactivate. Completed agents are hidden unless `-A` is supplied, and the picker will not resume completed agents. A missing session association never starts a provider.
+
+Runtime status is independent of registry lifecycle. `IN USE` means the same-runtime LLMD session lock is currently held; `PENDING` marks an unresolved launch; `NOT OBSERVED` means that lock was not observed; `UNKNOWN` means runtime identity is unavailable or belongs to a different environment. Windows and WSL use separate local lock visibility, so the status cannot establish activity across those boundaries. Managed `continue -a` atomically acquires the session lock before launching and rejects contention. The lock is held while the provider subprocess runs and released on exit or spawn failure.

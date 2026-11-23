@@ -21,7 +21,7 @@ _VALID_STATES = {"active", "inactive", "completed"}
 
 
 @contextlib.contextmanager
-def _mutation_lock(home_dir: Path, lock_name: str = "dispatcher.lock") -> Iterator[None]:
+def _mutation_lock(home_dir: Path, lock_name: str = "dispatcher.lock", *, blocking: bool = True) -> Iterator[None]:
     """Serialize sequence allocation and spool appends across dispatcher processes."""
     lock_path = home_dir / lock_name
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,17 +33,17 @@ def _mutation_lock(home_dir: Path, lock_name: str = "dispatcher.lock") -> Iterat
         if os.name == "nt":
             import msvcrt
 
-            deadline = time.monotonic() + 10.0
+            deadline = time.monotonic() + (10.0 if blocking else 0.0)
             while True:
                 try:
                     stream.seek(0)
                     msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
                     break
                 except OSError:
-                    if time.monotonic() >= deadline:
+                    if not blocking or time.monotonic() >= deadline:
                         raise ContinuityError(
                             ErrorCode.METADATA_INACCESSIBLE,
-                            "Timed out waiting for dispatcher registry lock.",
+                            "Session is already in use." if not blocking else "Timed out waiting for dispatcher registry lock.",
                         ) from None
                     time.sleep(0.02)
             try:
@@ -54,7 +54,10 @@ def _mutation_lock(home_dir: Path, lock_name: str = "dispatcher.lock") -> Iterat
         else:
             import fcntl
 
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            try:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+            except BlockingIOError as exc:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Session is already in use.") from exc
             try:
                 yield
             finally:
@@ -203,11 +206,22 @@ class DispatcherService:
             history = self._history(slot['slot_id']) if slot else []
             if history and provider:
                 current = history[-1]
-                if (current['provider'], current['environment_id'], current['native_session_id']) != (
+                same_current = (current['provider'], current['environment_id'], current['native_session_id']) == (
                     provider, env.environment_id, session_id
-                ) and not select:
+                )
+                if not same_current and not select:
                     raise ContinuityError(ErrorCode.INVALID_INPUT,
                                           "A different session is selected; pass --select to change it.")
+                if not same_current:
+                    lock_key = __import__('hashlib').sha256(
+                        f"{current['provider']}\0{current['environment_id']}\0{current['native_session_id']}".encode()
+                    ).hexdigest()[:24]
+                    try:
+                        with _mutation_lock(self.home_dir, f"session-{lock_key}.lock", blocking=False):
+                            pass
+                    except ContinuityError as exc:
+                        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                            "Cannot change selection while the current session is in use.") from exc
             if apply:
                 env = load_or_create_environment(self.home_dir, persist=True)
             gui_id = conversation['gui_id'] if conversation else generate_id('gui')

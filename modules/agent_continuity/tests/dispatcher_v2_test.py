@@ -1,7 +1,11 @@
 import json
 from io import StringIO
 
+import pytest
+
+from agent_continuity.dispatcher import DispatcherService
 from agent_continuity.dispatcher_cli import build_parser, dispatch
+from agent_continuity.errors import ContinuityError
 
 
 def run(home, *args):
@@ -147,3 +151,32 @@ def test_retry_after_partial_registration(tmp_path, monkeypatch):
     service.materializer.rebuild_from_spools()
     assert service.get_slot(gui='P', name='A')['history'] == before['history']
     assert len(before['history']) == 1
+
+
+def test_flat_picker_non_tty_requires_explicit_target(tmp_path):
+    parser = build_parser()
+    output = StringIO()
+    args = parser.parse_args(["-H", str(tmp_path / "registry"), "continue"])
+    with pytest.raises(ContinuityError, match="interactive terminal"):
+        dispatch(args, parser, input_stream=StringIO(), output_stream=output)
+
+
+def test_flat_picker_uses_searchable_all_fields_and_runtime(tmp_path, monkeypatch):
+    from agent_continuity.interactive import filter_items
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("Project", "Agent", provider="codex", session_id="native-123")
+    from agent_continuity.dispatcher_cli import _continue_items
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._session_in_use", lambda *args: True)
+    items = _continue_items(dispatcher)
+    assert items[0]["runtime_status"] == "IN USE"
+    assert filter_items(items, "project", key="search_text")
+    assert filter_items(items, "codex", key="search_text")
+    assert filter_items(items, "native-123", key="search_text")
+
+
+def test_runtime_lease_is_nonblocking_and_lifetime_scoped(tmp_path):
+    from agent_continuity.dispatcher_cli import _session_runtime_lock, _try_session_runtime_lock
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    with _session_runtime_lock(dispatcher, "session-test.lock"):
+        assert _try_session_runtime_lock(dispatcher, "session-test.lock")
+    assert not _try_session_runtime_lock(dispatcher, "session-test.lock")

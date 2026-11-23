@@ -141,6 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     cont.add_argument("-g", "--gui")
     cont.add_argument("-n", "--agent-name")
     cont.add_argument("-a", "--apply", action="store_true")
+    cont.add_argument("-A", "--all", action="store_true", help="Include completed agents in the interactive picker.")
 
     opening = sub.add_parser("open", help="Open active selected sessions through terminal_launcher.")
     _add_common_options(opening)
@@ -439,7 +440,7 @@ def _run_pane(
         session_lock = contextlib.nullcontext()
         if session_id:
             lock_key = hashlib.sha256(f"{provider}\0{environment_id}\0{session_id}".encode()).hexdigest()[:24]
-            session_lock = _session_runtime_lock(dispatcher, f"session-{lock_key}.lock")
+            session_lock = _session_runtime_lock(dispatcher, f"session-{lock_key}.lock", blocking=False)
         with session_lock:
             result = subprocess.run(argv, cwd=process_cwd, check=False)
     except OSError as exc:
@@ -468,10 +469,106 @@ def _run_pane(
     return 0
 
 
-def _session_runtime_lock(dispatcher: DispatcherService, name: str):
+def _session_runtime_lock(dispatcher: DispatcherService, name: str, *, blocking: bool = True):
     from .dispatcher import _mutation_lock
 
-    return _mutation_lock(dispatcher.home_dir, lock_name=name)
+    return _mutation_lock(dispatcher.home_dir, lock_name=name, blocking=blocking)
+
+
+def _try_session_runtime_lock(dispatcher: DispatcherService, name: str) -> bool:
+    path = dispatcher.home_dir / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as stream:
+        try:
+            stream.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            return False
+        except OSError:
+            return True
+
+
+def _session_in_use(dispatcher: DispatcherService, provider: str, environment_id: str, session_id: str) -> bool:
+    key = hashlib.sha256(f"{provider}\0{environment_id}\0{session_id}".encode()).hexdigest()[:24]
+    return _try_session_runtime_lock(dispatcher, f"session-{key}.lock")
+
+
+def _continue_items(dispatcher: DispatcherService, gui: str | None = None, *, include_completed: bool = False) -> list[dict[str, Any]]:
+    conversations = dispatcher.list_guis()
+    if gui:
+        conversations = [item for item in conversations if item["alias"].casefold() == gui.casefold()]
+    items = []
+    for conversation in conversations:
+        for slot in dispatcher.list_slots(gui=conversation["gui_id"], active_only=False):
+            if slot["state"] == "completed" and not include_completed:
+                continue
+            provider = slot.get("current_provider") or slot.get("pending_provider")
+            session = slot.get("current_session_id")
+            runtime = "PENDING" if slot.get("pending_launch_id") else (
+                _runtime_label(dispatcher, provider, slot.get("current_environment_id"), session)
+                if provider and session else "NOT OBSERVED")
+            items.append({**slot, "gui_alias": conversation["alias"], "provider": provider,
+                          "runtime_status": runtime,
+                          "search_text": " ".join(str(v) for v in (conversation["alias"], slot["name"], provider or "", session or "")).casefold()})
+    items.sort(key=lambda row: (row["state"] != "active", row.get("last_activity_at") is None,
+                                row["last_activity_at"] or "", row["gui_alias"].casefold(), row["name"].casefold()), reverse=False)
+    active = [row for row in items if row["state"] == "active"]
+    inactive = [row for row in items if row["state"] != "active"]
+    active.sort(key=lambda row: (row.get("last_activity_at") is None, row.get("last_activity_at") or "", row["gui_alias"].casefold(), row["name"].casefold()))
+    active.sort(key=lambda row: row.get("last_activity_at") or "", reverse=True)
+    inactive.sort(key=lambda row: (row.get("last_activity_at") is None, row.get("last_activity_at") or "", row["gui_alias"].casefold(), row["name"].casefold()))
+    inactive.sort(key=lambda row: row.get("last_activity_at") or "", reverse=True)
+    items = active + inactive
+    return items
+
+
+def _runtime_label(dispatcher: DispatcherService, provider: str, environment: str | None, session: str | None) -> str:
+    if not environment or not session:
+        return "UNKNOWN"
+    env = next((item for item in dispatcher.materializer.list_environments() if item.environment_id == environment), None)
+    if env is None or env.runtime_kind != detect_runtime_kind():
+        return "UNKNOWN"
+    return "IN USE" if _session_in_use(dispatcher, provider, environment, session) else "NOT OBSERVED"
+
+
+def _run_picker(dispatcher: DispatcherService, args: argparse.Namespace, input_stream: TextIO, output_stream: TextIO) -> int:
+    if not (input_stream.isatty() and output_stream.isatty()):
+        raise ContinuityError(ErrorCode.INVALID_INPUT, "`llmd continue` without an agent requires an interactive terminal.")
+    from .interactive import select_item
+    items = _continue_items(dispatcher, args.gui, include_completed=args.all)
+    if not items:
+        print("No eligible agents have a resumable session.", file=output_stream)
+        return 0
+    action, item = select_item(items, title="LLMD — Resume Agent",
+        render_line=lambda row: f"{row['gui_alias']:<20} {row['name']:<28} {(row.get('provider') or '—').upper():<8} {row['state']} / {row['runtime_status']}",
+        input_stream=input_stream, output_stream=output_stream, filter_key="search_text")
+    if action != "selected" or item is None:
+        return 0
+    if not item.get("current_session_id"):
+        print("This agent has no selected session. Use `llmd register` or `llmd start` first.", file=output_stream)
+        return 2
+    if item["state"] == "completed":
+        print("Completed agents cannot be resumed by the Phase 3 picker.", file=output_stream)
+        return 2
+    if item["runtime_status"] == "IN USE":
+        print("This session is already in use by an LLMD-managed process.", file=output_stream)
+        return 2
+    if item["state"] == "inactive":
+        print("Inactive agent selected. Confirm reactivation? [y/N] ", end="", file=output_stream, flush=True)
+        if input_stream.readline().strip().casefold() not in {"y", "yes"}:
+            return 0
+        dispatcher.set_slot_state(gui=item["gui_alias"], name=item["name"], state="active", apply=True)
+    if not args.apply:
+        print("Dry-run: pass -a/--apply to resume this session.", file=output_stream)
+        return 0
+    return _run_pane(dispatcher, slot_id=item["slot_id"], launch_id=None, input_stream=input_stream, output_stream=output_stream)
 
 
 def _open(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[str, Any]:
@@ -589,8 +686,10 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
     if args.command in {"start", "continue"}:
         args.gui = _resolve_name(args.gui_pos, args.gui, "GUI")
         args.agent_name = _resolve_name(args.agent_pos, args.agent_name, "agent")
-        if not args.gui or not args.agent_name:
+        if args.command == "start" and (not args.gui or not args.agent_name):
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Both GUI and agent are required.")
+        if args.command == "continue" and args.agent_name and not args.gui:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "A GUI is required when an agent is specified.")
     dispatcher = DispatcherService(home_dir=args.home)
     if args.command == "gui":
         if args.gui_command == "add":
@@ -651,6 +750,8 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
                                  launch_id=result["details"]["launch_id"],
                                  input_stream=input_stream, output_stream=output_stream)
     elif args.command == "continue":
+        if not args.agent_name:
+            return _run_picker(dispatcher, args, input_stream, output_stream)
         slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
         if slot["current"] is None:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "This slot has no selected session; use `llmd start`.")
