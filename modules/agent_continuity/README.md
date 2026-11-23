@@ -4,6 +4,22 @@ Local-first GUI–Agent Session Continuity Module with the backward-compatible `
 
 See [docs/agent-session-continuity-master-plan.md](./docs/agent-session-continuity-master-plan.md) for the governing Master Implementation Plan (v3.0) and [docs/adr/ADR-001-phase0-architecture-decisions.md](./docs/adr/ADR-001-phase0-architecture-decisions.md) for Phase 0 architecture decisions.
 
+## Listing and registering conversations (LLMD v2)
+
+`llmd list` shows the ten most recently active registered conversations, with up to ten active agents each. `llmd list "Project"` includes active and inactive agents; `-A` also includes completed agents and removes default limits. An explicit `-l` limits results even with `-A`. Output reports omitted counts. Use `-j` for JSON and `-c never` to disable color; JSON contains complete session IDs and truncation metadata. Global JSON uses schema version 1. Scoped JSON retains `action`, `gui`, and `slots` and adds count metadata.
+
+```powershell
+llmd list
+llmd list "Project" -l 25
+llmd list -g "Project" -A -j
+llmd register "Project"
+llmd register "Project" "Agent" -p codex -i "SESSION_ID"
+llmd register -g "Project" -n "Agent" -p agy -i "SESSION_ID" -d
+llmd continue "Project" "Agent"  # preview; add -a to resume
+```
+
+Registration applies by default and never launches a provider. `-d` previews it. Existing associations are left unchanged; selecting a different session requires `-s/--select` and preserves history. Runtime use is not observed in this release, so verify the session is not in use before changing a selection. Registration uses existing events and a single mutation lock; interrupted operations can be retried. Legacy mutation and launch commands remain dry-run by default. `start` and `continue` also accept GUI and agent positional names without changing their execution defaults.
+
 ## Named Agent Dispatcher
 
 `llmd` stores local GUI aliases, named agent slots, lifecycle state, pending launches, and ordered session activations in the same durable event spool and rebuildable SQLite index used by `agents`. A local GUI alias does not create a conversation in ChatGPT.
@@ -121,4 +137,36 @@ By default, state is stored under `~/.agent_continuity` (override with `AGENT_CO
 ```powershell
 cd modules/agent_continuity
 python -m pytest
+```
+
+## Interactive continuation and runtime status
+
+`llmd continue` opens a flat searchable picker across registered conversations; `llmd continue "Project"` or `-g "Project"` scopes it. Type to filter GUI, agent, provider, or native session ID; use arrows and Enter to choose, Backspace to edit, and Esc to cancel. Active agents sort first by recent activity. Inactive agents remain visible and require confirmation to reactivate. The confirmation alone does not persist reactivation in preview mode; lifecycle changes require `-a/--apply`. Completed agents are hidden unless `-A` is supplied, and the picker will not resume completed agents. A missing session association never starts a provider.
+
+Runtime status is independent of registry lifecycle. `IN USE` means the same-runtime LLMD session lock is currently held; `PENDING` marks an unresolved launch whose owning environment is established; `NOT OBSERVED` means that lock was not observed; `UNKNOWN` means runtime identity is unavailable or belongs to a different environment. Local ownership requires matching persisted environment ID, runtime kind, hostname, and (for WSL) distribution metadata. A missing or mismatched identity is `UNKNOWN`; identical cloned environment metadata and hostnames cannot be distinguished with the available identity fields. Windows and WSL use separate local lock visibility, so status cannot establish activity across those boundaries. Managed `continue -a` atomically acquires the session lock before launching and rejects contention. The lock is held while the provider subprocess runs and released on exit or spawn failure. `attach`, historical `continue`, and reuse `switch` refuse to change selection while the current session's managed lock is held; selecting the already-current session remains a no-op. Process-exit observations retain the session identity that the child ran, even if selection later changes.
+
+## Starting and selecting historical sessions
+
+A positional start is preview-only unless both `--new` and `-a/--apply` are present. It creates missing local GUI and agent records, refuses a slot with an already selected session, and creates a new native conversation only after that explicit authorization. Existing named `start -g/-n` keeps its legacy dry-run default and authorization semantics.
+
+```powershell
+llmd start "Project" "Agent" -p codex                    # preview; no provider call
+llmd start "Project" "Agent" -p codex --new -a          # explicit new conversation
+llmd continue "Project" "Agent" -p agy                  # preview historical selection
+llmd continue "Project" "Agent" -i "SESSION_ID" -a      # select and resume exact history ID
+llmd switch -g "Project" -n "Agent" -p agy -r -a        # reuse latest known AGY session
+```
+
+`continue -p` selects a historical session only when that provider has one unambiguous session in the agent history. If multiple sessions match, use `-i/--session-id`; unknown IDs are rejected and never trigger a new session. Selecting a historical session records an activation transition, while selecting the already current session remains a no-op. Inactive direct targets require `--reactivate`; completed agents require a separate lifecycle change. Legacy direct `continue` remains preview-by-default. Allowing an explicit target to resume without `-a` is a future product decision and is not enabled here.
+
+## Operational diagnostics and recovery
+
+`llmd doctor` prints a human-readable summary by default and supports deterministic JSON with `-j`. It inspects SQLite integrity, the existing registry lock, selected sessions, session locks, and pending bootstrap records. It does not create lock files or synchronize event spools; its JSON remains schema version 1. Runtime observations require established local environment ownership. `NOT OBSERVED` does not prove the provider is stopped, and registry-lock contention is not evidence that a lock is stale.
+
+`llmd recover -g GUI -n AGENT` previews metadata-only recovery when a pending launch contains one durably captured exact session ID. Use `-a` to apply. Recovery refuses cross-environment/unknown ownership, lock contention, missing or conflicting captured IDs, and concurrent selection changes. It never launches, resumes, terminates, or retries a provider. When bootstrap succeeded but the ID was not persisted, inspect provider state and attach only a verified ID; automatic retry is unsafe.
+
+```powershell
+llmd doctor -g "LLM-Dispatcher" -n "shared-python-integration" -j
+llmd recover -g "LLM-Dispatcher" -n "shared-python-integration"
+llmd recover -g "LLM-Dispatcher" -n "shared-python-integration" -a
 ```
