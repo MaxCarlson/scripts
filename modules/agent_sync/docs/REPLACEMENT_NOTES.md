@@ -1,20 +1,14 @@
-# agent_sync Replacement Notes (Historical)
+# agent_sync Replacement Notes
 
-This file records the original scripts-side replacement plan. Current source
-ownership for transferred modules is `llm-agent-toolkit`; develop and install
-those modules from the toolkit repository, not from `scripts/modules/`.
+Replace `scripts/modules/agent_sync/` with this directory.
 
 Do not install the prototype `scripts/modules/llm_orchestrator/`; its useful functionality has been folded into `agent_sync`.
 
-The canonical replacements are:
+Keep these existing modules:
 
-- `llm-agent-toolkit/modules/llm_local/`
-- `llm-agent-toolkit/modules/llm-models/`
-- `llm-agent-toolkit/modules/agent_memory/`
-
-Agent Memory notes are persistent user data, separate from its source. Use
-`AGENT_MEMORY_ROOT` to select a store and the canonical `agent-memory migrate`
-command to copy a legacy store before removing local residual data.
+- `scripts/modules/llm_local/`
+- `scripts/modules/llm-models/`
+- `scripts/modules/agent_memory/`
 
 Optional follow-up integrations:
 
