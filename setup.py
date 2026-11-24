@@ -192,8 +192,6 @@ except Exception:
 # ─────────────────────────────────────────────────────────
 MODULES_DIR = SCRIPTS_DIR / "modules"
 STANDARD_UI_SETUP_DIR = MODULES_DIR / "standard_ui"
-CROSS_PLATFORM_DIR = MODULES_DIR / "cross_platform"
-SCRIPT_LOGGING_DIR = MODULES_DIR / "script_logging"
 PYTHON_SETUP_DIR = MODULES_DIR / "python_setup"
 SCRIPTS_SETUP_PACKAGE_DIR = SCRIPTS_DIR / "scripts_setup"
 
@@ -928,6 +926,14 @@ def ensure_module_installed(module_display_name: str, install_path: Path,
                             soft_fail: bool = False):
     try:
         from scripts_setup.transferred_modules import is_transferred_module_dir
+        from scripts_setup.shared_packages import is_shared_module_dir
+        if is_shared_module_dir(install_path):
+            status_line(
+                f"{module_display_name}: installed from shared distribution — source skipped",
+                "unchanged",
+                "shared package",
+            )
+            return
         if is_transferred_module_dir(install_path):
             status_line(
                 f"{module_display_name}: transferred to llm-agent-toolkit — skipped",
@@ -1267,13 +1273,17 @@ def main():
     except Exception:
         pass
 
-    # Core modules — now safe because we're under ./.venv
-    # Order matters: cross_platform must be installed before python_setup (dependency)
-    # Note: script_logging and resource_metrics were transferred to MaxCarlson/llm-agent-toolkit.
-    with setup_group("Core Modules", 4):
+    # Ensure reusable libraries come from their qualified distributions before local consumers install.
+    from scripts_setup.shared_packages import ensure_shared_distributions
+
+    if not ensure_shared_distributions(verbose=args.verbose):
+        log_error("Shared Python package installation or validation failed; see the pip diagnostic above.")
+        sys.exit(1)
+
+    # Core modules — cross_platform is installed above as a shared distribution.
+    with setup_group("Core Modules", 3):
         for name, path in [
             ("standard_ui", STANDARD_UI_SETUP_DIR),
-            ("cross_platform", CROSS_PLATFORM_DIR),
             ("python_setup", PYTHON_SETUP_DIR),
             ("scripts_setup", SCRIPTS_SETUP_PACKAGE_DIR),
         ]:

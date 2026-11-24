@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "drive-manager"
-version = "0.3.8"
+version = "0.4.0"
 description = "Cross-platform disk and USB inspection, diagnosis, formatting, and bootable image writing tools with strict dry-run safety."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,9 +33,9 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-ui = ["termdash"]
+ui = ["mxc-termdash>=0.10.0,<0.11"]
 dev = ["pytest>=8", "ruff>=0.6"]
-local = ["cross-platform", "termdash"]
+local = ["mxc-platform-utils>=0.9.0,<0.10", "mxc-termdash>=0.10.0,<0.11"]
 
 [project.scripts]
 drive-manager = "drive_manager.cli:main"

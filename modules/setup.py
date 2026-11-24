@@ -625,8 +625,10 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                 is_transferred_distribution,
                 is_transferred_module_dir,
             )
+            from scripts_setup.shared_packages import is_shared_module_dir
         except ImportError:
             is_transferred_module_dir = lambda _p: False  # noqa: E731
+            is_shared_module_dir = lambda _p: False  # noqa: E731
             is_transferred_distribution = lambda _d: False  # noqa: E731
 
         # Try to use dependency-aware ordering
@@ -640,20 +642,28 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
                 ordered_names = resolve_module_order(modules_dir)
                 entries = [
                     modules_dir / name for name in ordered_names
-                    if (modules_dir / name).is_dir() and not is_transferred_module_dir(name)
+                    if (modules_dir / name).is_dir()
+                    and not is_transferred_module_dir(name)
+                    and not is_shared_module_dir(name)
                 ]
                 if verbose:
                     log_info(f"Using dependency-aware installation order: {', '.join(ordered_names)}")
             else:
                 entries = sorted(
-                    (p for p in modules_dir.iterdir() if p.is_dir() and not is_transferred_module_dir(p)),
+                    (
+                        p for p in modules_dir.iterdir()
+                        if p.is_dir() and not is_transferred_module_dir(p) and not is_shared_module_dir(p)
+                    ),
                     key=lambda p: p.name.lower(),
                 )
         except Exception as e:
             if verbose:
                 log_warning(f"Dependency resolver failed ({e}), using alphabetical order")
             entries = sorted(
-                (p for p in modules_dir.iterdir() if p.is_dir() and not is_transferred_module_dir(p)),
+                (
+                    p for p in modules_dir.iterdir()
+                    if p.is_dir() and not is_transferred_module_dir(p) and not is_shared_module_dir(p)
+                ),
                 key=lambda p: p.name.lower(),
             )
 
@@ -662,9 +672,14 @@ def install_python_modules(modules_dir: Path, logs_dir: Path, *, skip_reinstall:
         for entry in entries:
             name = entry.name
 
+            if is_shared_module_dir(entry):
+                if verbose:
+                    status_line(f"{name}: shared distribution owns installation — source skipped", "unchanged")
+                continue
+
             if is_transferred_module_dir(entry):
                 if verbose:
-                    status_line(f"{name}: transferred to llm-agent-toolkit — skipped", "unchanged")
+                    status_line(f"{name}: transferred to llm-agent-toolkit — source skipped", "unchanged")
                 continue
 
             if entry.resolve() == Path(__file__).resolve().parent:

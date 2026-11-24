@@ -1078,7 +1078,7 @@ def handle_web(args: argparse.Namespace) -> int:
     except ImportError:
         print(
             "runmux: web view dependencies are not installed; install the optional runmux web extra "
-            "and the web-ui-tools package.",
+            "(which includes mxc-web-ui-tools).",
             file=sys.stderr,
         )
         return 2

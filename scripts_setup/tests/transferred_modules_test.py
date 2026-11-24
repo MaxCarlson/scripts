@@ -20,6 +20,7 @@ from scripts_setup.transferred_modules import (
     is_transferred_distribution,
     is_transferred_module_dir,
 )
+from scripts_setup.shared_packages import SHARED_MODULE_DIRECTORY_TO_DISTRIBUTION
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -44,8 +45,7 @@ def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scri
 def test_dependency_resolver_excludes_all_23_transferred_modules() -> None:
     order = resolve_module_order(REPO_ROOT / "modules")
     assert not (set(order) & set(TRANSFERRED_MODULE_DIRS))
-    assert "termdash" in order
-    assert "cross_platform" in order
+    assert not (set(order) & set(SHARED_MODULE_DIRECTORY_TO_DISTRIBUTION))
 
 
 def test_bootstrap_latest_package_sources_excludes_all_transferred_modules() -> None:
@@ -55,8 +55,8 @@ def test_bootstrap_latest_package_sources_excludes_all_transferred_modules() -> 
 
     assert not (source_dirs & set(TRANSFERRED_MODULE_DIRS))
     assert not any(is_transferred_distribution(name) for name in source_dists)
-    assert "termdash" in source_dirs
-    assert "cross_platform" in source_dirs
+    assert not (source_dirs & set(SHARED_MODULE_DIRECTORY_TO_DISTRIBUTION))
+    assert not any(name in SHARED_MODULE_DIRECTORY_TO_DISTRIBUTION.values() for name in source_dists)
 
 
 def test_launcher_generator_scan_excludes_all_transferred_commands() -> None:
@@ -67,7 +67,27 @@ def test_launcher_generator_scan_excludes_all_transferred_commands() -> None:
         if entry.distribution:
             assert not is_transferred_distribution(entry.distribution)
     assert "termdash" in commands
+    assert commands["termdash"].source_path == "installed-distribution:mxc-termdash"
     assert "scripts-help" in commands
+
+
+def test_launcher_generator_includes_console_scripts_from_pscripts_setup_py(tmp_path: Path) -> None:
+    module = tmp_path / "pscripts" / "modules" / "legacy_cli"
+    module.mkdir(parents=True)
+    (module / "setup.py").write_text(
+        "from setuptools import setup\n"
+        "setup(name='legacy_cli', version='1.2.3', entry_points={"
+        "'console_scripts': ['legacy-cli=legacy_cli.cli:main']})\n",
+        encoding="utf-8",
+    )
+
+    commands = scan_repository_programs(tmp_path)
+
+    assert commands["legacy-cli"].program_id == "module:legacy_cli"
+    assert commands["legacy-cli"].source_path == "pscripts/modules/legacy_cli"
+    assert commands["legacy-cli"].distribution == "legacy_cli"
+    assert commands["legacy-cli"].entry_point == "legacy_cli.cli:main"
+    assert commands["legacy-cli"].version == "1.2.3"
 
 
 def test_setup_skills_excludes_transferred_modules() -> None:
@@ -79,11 +99,17 @@ def test_setup_skills_excludes_transferred_modules() -> None:
 
 def test_generated_wrappers_delegate_script_logging_launcher_with_target_python() -> None:
     win = generate_windows_wrapper("scripts-help")
-    assert "LLM_AGENT_TOOLKIT_ROOT" in win
-    assert r"..\llm-agent-toolkit\.venv\Scripts\python.exe" in win
+    assert 'set "_LAUNCHER_PY=%_VENV_PY%"' in win
+    assert "llm-agent-toolkit" not in win
+    assert "LLM_AGENT_TOOLKIT_ROOT" not in win
+    assert r'-I "%_ROOT%scripts_setup\launcher.py"' in win
+    assert "-m scripts_setup.launcher" not in win
     assert '--target-python "%_VENV_PY%"' in win
 
     posix = generate_posix_wrapper("scripts-help")
-    assert "LLM_AGENT_TOOLKIT_ROOT" in posix
-    assert "../llm-agent-toolkit/.venv/bin/python" in posix
+    assert 'LAUNCHER_PY="$VENV_PY"' in posix
+    assert "llm-agent-toolkit" not in posix
+    assert "LLM_AGENT_TOOLKIT_ROOT" not in posix
+    assert '-I "$ROOT/scripts_setup/launcher.py"' in posix
+    assert "-m scripts_setup.launcher" not in posix
     assert '--target-python "$VENV_PY"' in posix
