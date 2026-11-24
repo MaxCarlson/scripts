@@ -235,6 +235,40 @@ def test_registry_all_items_have_required_keys() -> None:
                 )
 
 
+def test_retired_toolkit_modules_are_not_listed_as_scripts_programs() -> None:
+    retired = {
+        "agent_sync", "agt", "agent_benchmark", "benchmark_core",
+        "interactive_reports", "ai_orchestrator", "knowledge_manager",
+        "llm-interface", "llm-models", "llm-patcher", "lmstui",
+        "local_agent_bridge", "web_ai_automator",
+    }
+
+    def walk(items):
+        for category in items.values():
+            yield from category.get("items", ())
+            for child in category.get("subcategories", {}).values():
+                yield from walk({"child": child})
+
+    registered = {item["path"] for item in walk(REGISTRY)}
+    retired_paths = sorted(
+        path for path in registered
+        if path.startswith("modules/") and path.split("/", 2)[1] in retired
+    )
+    assert not retired_paths, retired_paths
+
+    import runpy
+
+    compatibility_registry = runpy.run_path(
+        str(_MOD_ROOT.parent.parent / "pyscripts" / "help_registry" / "registry.py")
+    )["REGISTRY"]
+    compatibility_paths = {item["path"] for item in walk(compatibility_registry)}
+    compatibility_retired_paths = sorted(
+        path for path in compatibility_paths
+        if path.startswith("modules/") and path.split("/", 2)[1] in retired
+    )
+    assert not compatibility_retired_paths, compatibility_retired_paths
+
+
 def test_collect_registered_paths_nonempty() -> None:
     paths = _collect_registered_paths()
     assert len(paths) > 0
