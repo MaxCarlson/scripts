@@ -11,12 +11,12 @@ from scripts_setup.shared_packages import SHARED_MODULE_DIRECTORY_TO_DISTRIBUTIO
 from scripts_setup.transferred_modules import TRANSFERRED_MODULE_DIRECTORY_TO_DISTRIBUTION
 
 
-def check_changes(changes: list[tuple[str, str, str, str]], exceptions: list[dict[str, str]], *, toolkit: set[str] | None = None, shared: set[str] | None = None) -> list[str]:
+def check_changes(changes: list[tuple[str, str, str, str, str, str]], exceptions: list[dict[str, str]], *, toolkit: set[str] | None = None, shared: set[str] | None = None) -> list[str]:
     """Return violations for changed transferred files without exact, explained exceptions."""
     errors = []
     toolkit = toolkit if toolkit is not None else set(TRANSFERRED_MODULE_DIRECTORY_TO_DISTRIBUTION)
     shared = shared if shared is not None else set(SHARED_MODULE_DIRECTORY_TO_DISTRIBUTION)
-    for action, path, before, after in changes:
+    for action, path, before_mode, after_mode, before, after in changes:
         parts = PurePosixPath(path).parts
         if len(parts) < 2 or parts[0] != "modules":
             continue
@@ -27,14 +27,24 @@ def check_changes(changes: list[tuple[str, str, str, str]], exceptions: list[dic
             owner = "llm-agent-toolkit"
         else:
             continue
-        allowed = any(
-            entry.get("path") == path and entry.get("action") == action and entry.get("before") == before and entry.get("after") == after
-            and isinstance(entry.get("reason"), str) and entry["reason"].strip()
-            for entry in exceptions if isinstance(entry, dict)
-        )
+        allowed = any(_exception_allows(entry, action, path, before_mode, after_mode, before, after)
+                      for entry in exceptions if isinstance(entry, dict))
         if not allowed:
             errors.append(f"{action} {path}: canonical owner is {owner}; add an exact reviewed exception for retirement or reconciliation")
     return errors
+
+
+def _exception_allows(entry: dict[str, str], action: str, path: str, before_mode: str,
+                      after_mode: str, before: str, after: str) -> bool:
+    if not isinstance(entry.get("reason"), str) or not entry["reason"].strip():
+        return False
+    if entry.get("type") == "retirement":
+        prefix = entry.get("path", "")
+        return (action == "D" and prefix.startswith("modules/") and
+                (path == prefix or path.startswith(prefix.rstrip("/") + "/")))
+    return (entry.get("path") == path and entry.get("action") == action and
+            entry.get("before_mode") == before_mode and entry.get("after_mode") == after_mode and
+            entry.get("before") == before and entry.get("after") == after)
 
 
 def registry_at(revision: str, path: str, name: str) -> set[str]:
@@ -60,7 +70,7 @@ def main() -> int:
         check=True, capture_output=True,
     )
     fields = result.stdout.decode("utf-8").split("\0")
-    changes = [(fields[i].split()[4], fields[i + 1], fields[i].split()[2], fields[i].split()[3]) for i in range(0, len(fields) - 1, 2)]
+    changes = [(fields[i].split()[4], fields[i + 1], *fields[i].split()[1:5]) for i in range(0, len(fields) - 1, 2)]
     exception_path = ".github/source-ownership-exceptions.json"
     content = subprocess.run(["git", "show", f"{args.end}:{exception_path}"], check=True, capture_output=True, text=True)
     exceptions = json.loads(content.stdout)
