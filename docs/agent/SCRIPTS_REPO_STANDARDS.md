@@ -31,10 +31,10 @@ else:
 
 When adding a new module that depends on core modules, ensure it installs after its dependencies.
 
-Core order:
+Core order for scripts-owned packages and shared distributions:
 
 1. `standard_ui` — no dependencies
-2. `cross_platform` — no dependencies
+2. `mxc-platform-utils` — shared distribution imported as `cross_platform`
 3. `python_setup` — depends on `cross_platform`
 4. `scripts_setup` — no dependencies
 
@@ -87,6 +87,6 @@ When an operation needs resumable temporary state:
 
 ## Termdash-First UI Reuse
 
-If a terminal widget is reusable, build it inside `modules/termdash` and consume it from callers instead of duplicating ad hoc UI code.
+If a terminal widget is reusable, contribute it to the `mxc-termdash` shared distribution and consume it from callers instead of duplicating ad hoc UI code. Its Python import package remains `termdash`.
 
 Keep color/status conventions consistent across dashboards, logs, progress displays, and hotkeys.

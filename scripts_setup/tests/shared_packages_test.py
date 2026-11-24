@@ -1,6 +1,8 @@
 """Ownership and staging policy for independently distributed shared libraries."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from scripts_setup.shared_packages import (
     SHARED_DISTRIBUTION_REQUIREMENTS,
     SHARED_MODULE_DIRECTORY_TO_DISTRIBUTION,
@@ -9,6 +11,26 @@ from scripts_setup.shared_packages import (
     is_shared_source_install,
     needs_shared_distribution_replacement,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_retired_shared_source_directories_are_absent() -> None:
+    retired_source_dirs = {"script_logging", "termdash", "cross_platform", "web_ui_tools"}
+    assert not any((REPO_ROOT / "modules" / module_dir).exists() for module_dir in retired_source_dirs)
+    # resource_metrics remains temporarily for resource_coordinator's pinned H4 bundle builder.
+    assert (REPO_ROOT / "modules" / "resource_metrics").is_dir()
+
+
+def test_validation_targets_do_not_install_retired_shared_source_paths() -> None:
+    import json
+
+    manifest = json.loads((REPO_ROOT / "validation-targets.json").read_text(encoding="utf-8"))
+    text = json.dumps(manifest)
+    assert not any(
+        f"modules/{module_dir}" in text
+        for module_dir in ("script_logging", "termdash", "cross_platform", "web_ui_tools")
+    )
 
 
 def test_shared_package_registry_uses_qualified_compatible_ranges() -> None:
