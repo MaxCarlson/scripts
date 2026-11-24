@@ -583,7 +583,7 @@ class DispatcherService:
                         with _mutation_lock(self.home_dir, f"session-{lock_key}.lock", blocking=False):
                             pass
                 env_now = load_or_create_environment(self.home_dir, persist=True)
-                if env_now.environment_id != env.environment_id:
+                if env_now.environment_id != local_env.environment_id:
                     raise ContinuityError(ErrorCode.INVALID_INPUT, "Runtime environment changed while start was prepared; retry.")
                 env_events = self.continuity._ensure_environment_event(
                     env, self.materializer.list_environments(), now
@@ -1159,6 +1159,7 @@ class DispatcherService:
         launch_id: str | None = None,
         expected_current: tuple[str, str, str] | None = None,
         check_current: bool = False,
+        reactivate: bool = False,
         apply: bool = False,
         provenance: str = "explicit_attach",
     ) -> dict[str, Any]:
@@ -1173,11 +1174,13 @@ class DispatcherService:
         env = resolve_environment_selector(environment_selector, self.materializer.list_environments(), local_env)
         session_row = self.materializer.get_session(provider_name, env.environment_id, session)
         history = self._history(slot["slot_id"])
-        if history and (history[-1]["provider"], history[-1]["environment_id"], history[-1]["native_session_id"]) == (
-            provider_name, env.environment_id, session
-        ) and (not check_current or expected_current == (
+        already_selected = bool(history and (
             history[-1]["provider"], history[-1]["environment_id"], history[-1]["native_session_id"]
-        )):
+        ) == (
+            provider_name, env.environment_id, session
+        ))
+        if (already_selected and not (apply and check_current)
+                and not (apply and reactivate and slot["state"] == "inactive")):
             return {"action": "attach", "applied": False, "summary": "Session is already selected for this slot.",
                     "details": {"slot_id": slot["slot_id"], "session_id": session}, "events": []}
 
@@ -1243,9 +1246,25 @@ class DispatcherService:
                 if check_current and latest_identity != expected_current:
                     raise ContinuityError(ErrorCode.INVALID_INPUT,
                                           "Agent selection changed while provider switch was prepared; retry.")
+                if check_current and current_slot["state"] == "completed":
+                    raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                          "Completed agents require an explicit lifecycle change before resumption.")
+                if check_current and current_slot["state"] == "inactive" and not reactivate:
+                    raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                          "This agent is inactive; pass --reactivate to confirm its lifecycle change.")
                 if latest and (latest[-1]["provider"], latest[-1]["environment_id"], latest[-1]["native_session_id"]) == (
                     provider_name, env.environment_id, session
                 ):
+                    if reactivate and current_slot["state"] == "inactive":
+                        state_event = self._event(
+                            EventType.DISPATCHER_SLOT_STATE_CHANGED, environment_id=env.environment_id,
+                            payload={"slot_id": slot["slot_id"], "state": "active"},
+                        )
+                        self.continuity._emit_and_materialize([state_event])
+                        return {"action": "slot-state", "applied": True,
+                                "summary": "Reactivated the selected exact session.",
+                                "details": {"slot_id": slot["slot_id"], "state": "active"},
+                                "events": [state_event.to_dict()]}
                     return {
                         "action": "attach", "applied": False,
                         "summary": "Session became current before this request was applied.",
@@ -1266,6 +1285,11 @@ class DispatcherService:
                             ErrorCode.INVALID_INPUT,
                             f"Cannot change selection while current session {current['native_session_id']} is in use.",
                         ) from exc
+                if reactivate and current_slot["state"] == "inactive":
+                    events.insert(0, self._event(
+                        EventType.DISPATCHER_SLOT_STATE_CHANGED, environment_id=env.environment_id,
+                        payload={"slot_id": slot["slot_id"], "state": "active"},
+                    ))
                 next_sequence = (latest[-1]["sequence"] if latest else 0) + 1
                 sequence = next_sequence
                 activation_event.payload["sequence"] = next_sequence

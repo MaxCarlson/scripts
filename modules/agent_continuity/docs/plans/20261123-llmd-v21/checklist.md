@@ -54,3 +54,13 @@
 - [x] Update README, current CLI reference, feature register, module version, and deferred LLMD-25/26 status.
 - [x] Run focused tests, full module suite, Ruff, and diff checks; inspect integration risk against main without merge/rebase.
 - [x] Commit and push task changes on the existing feature branch; do not merge.
+
+## v1.5.2 correctness follow-up
+
+- [x] Keep preview and pending launch on one resolved Windows/WSL environment with omitted and explicit selectors.
+- [x] Stop post-exit options 4–6 from forwarding source cwd/native args without destination-specific confirmation.
+- [x] Validate picker cwd before lifecycle changes and use expected-current CAS for historical `continue` and `switch -r`.
+- [x] Require `switch -r -R` for inactive slots and reject completed slots.
+- [x] Emit one JSON document for existing-session `start -j`; preserve text output.
+- [x] Run focused and full module tests, scoped Ruff, version consistency, and diff checks.
+- [ ] Inspect cached main integration paths, commit, and push without merge/rebase.

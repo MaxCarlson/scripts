@@ -40,6 +40,14 @@ A GUI alias refers to an existing ChatGPT GUI conversation; LLMD does not create
 | **LLMD-23** | P0 | Invocation-scoped working directory | `-C/--cwd` applies to supported resume paths, validates local or recorded-WSL runtime directories, flags detected repository/worktree context changes, and never rewrites existing native-session cwd provenance |
 | **LLMD-24** | P0 | Launch preview and permission diagnostics | Before provider execution, show resolved executable/argv, cwd, recorded runtime/environment, exact session (or captured-ID placeholder), and requested permission flags. Effective permissions are always marked unverified |
 
+## v1.5.2 correctness follow-up
+
+- Resolve one concrete environment for preview and launch reservation. When a new provider session follows a Windows or WSL session, omitted `-e` retains the selected session environment; an explicit selector resolves to the same stored environment ID.
+- Keep `-C` and native argv scoped to their invoking session across post-exit options 4–6. Prompt before applying compatible overrides to a destination, present destination defaults for incompatible options, and allow cancellation before any registry transition.
+- Validate picker cwd before reactivation. Apply historical `continue` and `switch -r` selections with expected-current compare-and-swap; `switch -r` requires `-R` for inactive slots and rejects completed slots.
+- Keep `start -j` previews to a single JSON document for both selected-session and new-session paths.
+- Acceptance covers environment preview/pending parity, post-exit options and worktrees, override prompts/cancel/failure, inactive/completed lifecycle, stale activation, failed resumes, and JSON/text output.
+
 **Deferred:** LLMD-25 (persistent launch profiles) and LLMD-26 (native lock diagnostics) are out of scope for v2.1 because they add persistent policy/locking semantics beyond invocation-scoped argv and existing LLMD runtime locks.
 
 **Evidence for LLMD-18:** the named form currently calls `begin_launch` before registration and fails `Agent slot not found`. The positional form calls `dispatcher.register`. This is a verified inconsistency, not an inference about the user's environment.
