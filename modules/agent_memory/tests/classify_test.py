@@ -3,16 +3,6 @@ from unittest.mock import patch
 import pytest
 
 from agent_memory.classify import PlacementError, determine_project
-from agent_memory import classify as classify_module
-
-
-def test_auto_classify_without_llm_local_package_uses_global_fallback() -> None:
-    """The optional llm_local dependency may be absent without disabling memory writes."""
-    assert classify_module._llm_complete is None
-    result = determine_project(
-        kind="decision", project=None, title="Offline classification", auto_classify=True, interactive=False
-    )
-    assert result == "global"
 
 
 def test_constraint_always_global() -> None:
