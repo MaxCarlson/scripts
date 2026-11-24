@@ -118,7 +118,46 @@ def _venv_python() -> Path:
 
 def _repository_only_requested(argv: list[str] | None = None) -> bool:
     arguments = sys.argv[1:] if argv is None else argv
-    return "-r" in arguments or "--repository-only" in arguments
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("-r", "--repository-only", action="store_true")
+    try:
+        args, _ = parser.parse_known_args(arguments)
+    except SystemExit:
+        # If argparse cannot disambiguate an abbreviated option, fail closed
+        # when the token could be requesting repository-only mode.
+        return any(
+            argument.startswith("--repository-only")
+            or (argument.startswith("-") and not argument.startswith("--") and "r" in argument[1:])
+            for argument in arguments
+        )
+    return args.repository_only
+
+
+def _sanitize_repository_only_environment() -> None:
+    """Remove inherited interpreter and pip destination overrides for this setup run."""
+    inherited_pythonpath = os.environ.pop("PYTHONPATH", None)
+    if inherited_pythonpath:
+        inherited_paths = set()
+        for entry in inherited_pythonpath.split(os.pathsep):
+            try:
+                inherited_paths.add(Path(entry or os.curdir).resolve())
+            except (OSError, RuntimeError):
+                continue
+        if inherited_paths:
+            retained_paths = []
+            for entry in sys.path:
+                try:
+                    resolved_entry = Path(entry or os.curdir).resolve()
+                except (OSError, RuntimeError):
+                    retained_paths.append(entry)
+                    continue
+                if resolved_entry not in inherited_paths:
+                    retained_paths.append(entry)
+            sys.path[:] = retained_paths
+
+    for variable in ("PYTHONHOME", "PYTHONUSERBASE", "PIP_TARGET", "PIP_PREFIX", "PIP_USER", "PIP_ROOT"):
+        os.environ.pop(variable, None)
+    os.environ["PYTHONNOUSERSITE"] = "1"
 
 def _resolve_repository_only_paths(
     repository_root: Path,
@@ -160,7 +199,7 @@ def _prevalidate_repository_only_invocation(argv: list[str] | None = None) -> No
         expected_venv = SCRIPTS_DIR.resolve() / ".venv"
         if VENV_DIR.resolve() != expected_venv:
             raise ValueError(f"--repository-only requires .venv inside the invoked repository: {expected_venv}")
-    except (OSError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
 
@@ -189,6 +228,7 @@ def _create_venv():
 def _bootstrap_venv_if_needed():
     repository_only = _repository_only_requested()
     if repository_only:
+        _sanitize_repository_only_environment()
         _prevalidate_repository_only_invocation()
 
     # A repository-only run must never inherit a caller's bootstrap bypass.
@@ -197,9 +237,10 @@ def _bootstrap_venv_if_needed():
     elif os.environ.get("SKIP_VENV_BOOTSTRAP") == "1":
         return
 
-    # If we're already using the repo venv python, nothing to do
+    # Compare environment identity rather than executable paths: POSIX venv
+    # interpreters are commonly symlinks to the system Python executable.
     vpy = _venv_python()
-    if vpy.exists() and Path(sys.executable).resolve() == vpy.resolve():
+    if vpy.exists() and Path(sys.prefix).resolve() == VENV_DIR.resolve():
         return
 
     current_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
@@ -221,7 +262,7 @@ def _bootstrap_venv_if_needed():
 
     # Re-exec this script under the venv python so all downstream pip installs
     # use the venv and never hit system PEP 668.
-    if Path(sys.executable).resolve() != vpy.resolve():
+    if Path(sys.prefix).resolve() != VENV_DIR.resolve():
         os.execv(str(vpy), [str(vpy), *sys.argv])
 
 # Run the bootstrap ASAP (before any pip installs or sub-setups)
@@ -1336,12 +1377,10 @@ def _validate_repository_only_interpreter() -> None:
     if not venv_python.is_file():
         raise RuntimeError(f"Repository-only setup cannot find its venv interpreter: {venv_python}")
     try:
-        active_python = Path(sys.executable).resolve()
-        expected_python = venv_python.resolve()
         active_prefix = Path(sys.prefix).resolve()
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         raise RuntimeError(f"Could not resolve the repository .venv interpreter: {exc}") from exc
-    if active_python != expected_python or active_prefix != expected_venv:
+    if active_prefix != expected_venv:
         raise RuntimeError(
             "Repository-only setup must run with the invoked repository's .venv interpreter "
             f"({venv_python}); active interpreter is {sys.executable} with prefix {sys.prefix}."
@@ -1351,6 +1390,7 @@ def _validate_repository_only_interpreter() -> None:
 def _configure_repository_only(repository_only: bool) -> None:
     """Set or clear the child-process marker for the current setup invocation."""
     if repository_only:
+        _sanitize_repository_only_environment()
         os.environ[REPOSITORY_ONLY_ENV] = "1"
     else:
         os.environ.pop(REPOSITORY_ONLY_ENV, None)

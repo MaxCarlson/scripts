@@ -63,12 +63,20 @@ more explicit destinations instead of the default CLI skill folders:
 python setup.py --skills-dir C:\tools\codex-skills --skills-dir D:\shared\skills
 ```
 
+Repository-only setup ignores inherited `SCRIPTS` and bootstrap-skip settings,
+uses the invoked checkout's `.venv`, and clears common Python and pip install
+destination overrides before child installers run. It resolves managed output
+paths before writing. This limits setup-owned destinations and integration
+hooks; package build scripts still execute with the current user's normal
+filesystem and network access, so this mode is not a general-purpose security
+sandbox.
+
 ## How It Works
 
 ### 1. Virtual Environment Bootstrap
 
-**setup.py** (lines 61-97):
-- Detects if already running in `.venv/bin/python` or `Scripts\python.exe`
+**setup.py**:
+- Checks `sys.prefix` against the repository `.venv` to identify the active environment. This works when POSIX venv Python executables resolve through symlinks to the base interpreter.
 - If not, creates `.venv` (preferring `uv venv --seed` if available)
 - Re-execs itself under the venv Python
 - All subsequent operations use the venv

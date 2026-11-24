@@ -21,9 +21,14 @@
 - [x] Pin vdedup's GPU Pillow requirement below 13 and test dependency compatibility with MangaDL.
 - [x] Verify no external `DOTFILES` sentinel was created by repository-only setup.
 - [x] Validate Windows symlink privilege failure separately; do not substitute a no-op or change profile/system state.
-- [x] Run focused setup regressions (58 passed, 1 submodule-dependent test deselected), the vdedup compatibility test (1 passed), Python compilation, Ruff, and CRLF-aware whitespace checks.
-- [x] Review and stage only the eight intended follow-up files; commit as `d3bb18ba263b49d4d12a9999d120fc79654474f0` and push to the feature branch.
-- [x] Open draft PR #37: https://github.com/MaxCarlson/scripts/pull/37 (base `main`, current mergeability reported true; no workflow runs or status checks reported yet).
+- [x] Add regressions for abbreviated long and combined short flags, symlinked POSIX interpreter identity, and inherited Python/pip destination overrides; observe six failures against the prior implementation.
+- [x] Fix bootstrap environment detection using `sys.prefix`, fail closed on repository-only flag forms, clear common destination overrides, and validate resolved source/output paths.
+- [x] Run focused setup regressions (64 passed, 1 POSIX-only skip, 1 submodule-dependent deselection), the vdedup compatibility test (1 passed), Python compilation, Ruff, and CRLF-aware whitespace checks.
+- [x] Run repository-only `--help` with inherited PYTHONPATH/PIP destination overrides; exit 0 and no external target sentinels.
+- [x] Run an actual POSIX symlink-venv bootstrap reproduction in Ubuntu WSL: venv `python` resolved to the same base binary as system Python, venv `sys.prefix` matched `.venv`, and setup selected `.venv/bin/python` for re-execution. The pytest form is skipped on this Windows host.
+- [ ] Re-run full/incremental setup only when it can avoid the existing CPU-only Torch vdedup GPU force-reinstall; earlier full and incremental runs passed before the current bootstrap-only changes.
+- [ ] Stage, commit, and push the current corrections and updated qualification documentation.
+- [x] Keep draft PR #37 open: https://github.com/MaxCarlson/scripts/pull/37 (base `main`; current PR checks not reported).
 - [ ] If a suitable Windows environment becomes available, verify real shell symlink integration separately; current machine reports WinError 1314 and user/system integration remains intentionally disabled.
 
 ## Known qualification limits

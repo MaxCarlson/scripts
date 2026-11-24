@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -56,6 +58,14 @@ def test_root_setup_accepts_repository_only_short_and_long_flags(argv):
     args = setup.parse_args(argv)
 
     assert args.repository_only is True
+
+
+@pytest.mark.parametrize("argv", [["--repository-on"], ["-rv"]])
+def test_repository_only_detection_accepts_argparse_abbreviations_and_combined_flags(argv):
+    setup = _load_root_setup()
+
+    assert setup._repository_only_requested(argv)
+    assert setup.parse_args(argv).repository_only
 
 
 def test_root_setup_accepts_repeated_skill_destinations():
@@ -173,13 +183,56 @@ def test_run_setup_passes_repository_only_environment_to_child(tmp_path, monkeyp
     assert seen["SCRIPTS_REPOSITORY_ONLY"] == "1"
 
 
-def test_repository_only_environment_marker_is_set_and_cleared(monkeypatch):
+def test_repository_only_environment_marker_is_set_and_cleared(monkeypatch, tmp_path):
     setup = _load_root_setup()
+    inherited_pythonpath = tmp_path / "external-python-path"
+    environment_overrides = {
+        "PYTHONHOME": "C:/external/python-home",
+        "PYTHONPATH": str(inherited_pythonpath),
+        "PYTHONUSERBASE": "C:/external/python-user-base",
+        "PIP_TARGET": "C:/external/pip-target",
+        "PIP_PREFIX": "C:/external/pip-prefix",
+        "PIP_USER": "1",
+        "PIP_ROOT": "C:/external/pip-root",
+    }
+    for name, value in environment_overrides.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(setup.sys, "path", [*setup.sys.path, str(inherited_pythonpath)])
 
     setup._configure_repository_only(True)
     assert os.environ[setup.REPOSITORY_ONLY_ENV] == "1"
+    assert os.environ["PYTHONNOUSERSITE"] == "1"
+    assert all(name not in os.environ for name in environment_overrides)
+    assert str(inherited_pythonpath) not in setup.sys.path
     setup._configure_repository_only(False)
     assert setup.REPOSITORY_ONLY_ENV not in os.environ
+
+
+def test_repository_only_bootstrap_clears_destination_overrides_before_venv_setup(tmp_path, monkeypatch):
+    setup = _load_root_setup()
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    repository_venv = repository / ".venv"
+    venv_python = repository_venv / "bin" / "python"
+    inherited_pythonpath = tmp_path / "inherited-pythonpath"
+    monkeypatch.setenv("PYTHONPATH", str(inherited_pythonpath))
+    monkeypatch.setenv("PIP_TARGET", str(tmp_path / "external-pip-target"))
+    monkeypatch.setattr(setup, "SCRIPTS_DIR", repository)
+    monkeypatch.setattr(setup, "VENV_DIR", repository_venv)
+    monkeypatch.setattr(setup, "_venv_python", lambda: venv_python)
+    monkeypatch.setattr(setup, "_create_venv", lambda: None)
+    monkeypatch.setattr(setup, "_ensure_pip_in_venv", lambda _path: None)
+    monkeypatch.setattr(setup.os, "execv", Mock())
+    monkeypatch.setattr(setup.sys, "executable", str(tmp_path / "system-python"))
+    monkeypatch.setattr(setup.sys, "prefix", str(tmp_path / "system"))
+    monkeypatch.setattr(setup.sys, "argv", ["setup.py", "--repository-only"])
+    monkeypatch.setattr(setup.sys, "path", [*setup.sys.path, str(inherited_pythonpath)])
+
+    setup._bootstrap_venv_if_needed()
+
+    assert "PYTHONPATH" not in os.environ
+    assert "PIP_TARGET" not in os.environ
+    assert str(inherited_pythonpath) not in setup.sys.path
 
 
 def test_repository_only_flag_is_preserved_by_venv_reexecution(tmp_path, monkeypatch):
@@ -219,6 +272,92 @@ def test_repository_only_ignores_inherited_skip_venv_and_reexecutes_repository_v
     assert exec_calls and exec_calls[0][0] == str(venv_python)
 
 
+def test_repository_only_bootstrap_uses_prefix_when_venv_python_is_a_symlink(tmp_path, monkeypatch):
+    setup = _load_root_setup()
+    repository = tmp_path / "repo"
+    repository_venv = repository / ".venv"
+    venv_python = repository_venv / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+    system_python = tmp_path / "system" / "bin" / "python3"
+    shared_python_target = tmp_path / "usr" / "bin" / "python3"
+    exec_calls = []
+    ensure_pip = Mock()
+    original_resolve = Path.resolve
+
+    def resolve_symlinked_python(path, *args, **kwargs):
+        if path in {venv_python, system_python}:
+            return shared_python_target
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(setup, "SCRIPTS_DIR", repository)
+    monkeypatch.setattr(setup, "VENV_DIR", repository_venv)
+    monkeypatch.setattr(setup, "_venv_python", lambda: venv_python)
+    monkeypatch.setattr(setup, "_venv_site_packages_pyver", lambda: None)
+    monkeypatch.setattr(setup, "_ensure_pip_in_venv", ensure_pip)
+    monkeypatch.setattr(setup, "_create_venv", Mock())
+    monkeypatch.setattr(setup.os, "execv", lambda executable, argv: exec_calls.append((executable, argv)))
+    monkeypatch.setattr(setup.sys, "executable", str(system_python))
+    monkeypatch.setattr(setup.sys, "prefix", str(tmp_path / "system"))
+    monkeypatch.setattr(setup.sys, "argv", ["setup.py", "--repository-only"])
+    monkeypatch.setattr(Path, "resolve", resolve_symlinked_python)
+
+    setup._bootstrap_venv_if_needed()
+
+    ensure_pip.assert_called_once_with(venv_python)
+    assert exec_calls and exec_calls[0][0] == str(venv_python)
+    monkeypatch.setattr(setup.sys, "prefix", str(repository_venv))
+    setup._validate_repository_only_interpreter()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Requires POSIX venv interpreter symlinks")
+def test_repository_only_bootstrap_reexecs_from_system_python_with_real_symlink_venv(tmp_path):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    setup_copy = repository / "setup.py"
+    setup_copy.write_bytes((REPO_ROOT / "setup.py").read_bytes())
+    venv_dir = repository / ".venv"
+    subprocess.run([sys.executable, "-m", "venv", "--symlinks", str(venv_dir)], check=True)
+    venv_python = venv_dir / "bin" / "python"
+    assert venv_python.is_symlink()
+    assert venv_python.resolve() == Path(sys.executable).resolve()
+    venv_probe = subprocess.run(
+        [str(venv_python), "-c", "import sys; print(sys.prefix)"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert Path(venv_probe.stdout.strip()).resolve() == venv_dir.resolve()
+
+    probe = tmp_path / "bootstrap_probe.py"
+    probe.write_text(
+        "import os, subprocess, sys\n"
+        "from types import SimpleNamespace\n"
+        "from pathlib import Path\n"
+        "calls = []\n"
+        "subprocess.run = lambda *args, **kwargs: SimpleNamespace(returncode=0)\n"
+        "os.execv = lambda path, argv: calls.append((path, argv))\n"
+        "setup_path = sys.argv[1]\n"
+        "sys.argv = [setup_path, '--repository-only']\n"
+        "namespace = {'__name__': 'bootstrap_probe', '__file__': setup_path}\n"
+        "exec(compile(Path(setup_path).read_text(encoding='utf-8'), setup_path, 'exec'), namespace)\n"
+        "print('EXEC_TARGET=' + calls[0][0] if calls else 'EXEC_TARGET=none')\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    for name in ("PYTHONHOME", "PYTHONPATH", "SKIP_VENV_BOOTSTRAP"):
+        env.pop(name, None)
+    result = subprocess.run(
+        [sys.executable, str(probe), str(setup_copy)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert f"EXEC_TARGET={venv_python}" in result.stdout
+
+
 def test_repository_only_rejects_explicit_no_venv_even_with_inherited_skip(tmp_path, monkeypatch):
     setup = _load_root_setup()
     monkeypatch.setenv("SKIP_VENV_BOOTSTRAP", "1")
@@ -230,8 +369,18 @@ def test_repository_only_rejects_explicit_no_venv_even_with_inherited_skip(tmp_p
     assert error.value.code == 2
 
 
-@pytest.mark.parametrize("redirected", [False, True])
-def test_repository_only_rejects_external_bin_before_creating_venv(tmp_path, monkeypatch, redirected):
+@pytest.mark.parametrize(
+    ("repository_flag", "bin_flag", "redirected"),
+    [
+        ("--repository-only", "--bin-dir", False),
+        ("--repository-on", "--bin-d", False),
+        ("-rB", "", False),
+        ("-r", "--bin-dir", True),
+    ],
+)
+def test_repository_only_rejects_external_bin_before_creating_venv(
+    tmp_path, monkeypatch, repository_flag, bin_flag, redirected
+):
     setup = _load_root_setup()
     create_venv = Mock()
     monkeypatch.delenv("SKIP_VENV_BOOTSTRAP", raising=False)
@@ -248,7 +397,11 @@ def test_repository_only_rejects_external_bin_before_creating_venv(tmp_path, mon
             return original_resolve(path, *args, **kwargs)
 
         monkeypatch.setattr(Path, "resolve", resolve_with_redirect)
-    monkeypatch.setattr(setup.sys, "argv", ["setup.py", "--repository-only", "--bin-dir", str(bin_override)])
+    argv = ["setup.py", repository_flag]
+    if bin_flag:
+        argv.append(bin_flag)
+    argv.append(str(bin_override))
+    monkeypatch.setattr(setup.sys, "argv", argv)
 
     with pytest.raises(SystemExit) as error:
         setup._bootstrap_venv_if_needed()
