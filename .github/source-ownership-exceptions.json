@@ -1,0 +1,12 @@
+[
+  {
+    "type": "retirement",
+    "path": "modules/agent_abilities",
+    "reason": "Canonical source and its pinned upstream references are maintained in llm-agent-toolkit/modules/agent_abilities."
+  },
+  {
+    "type": "retirement",
+    "path": "modules/agent_skills",
+    "reason": "Canonical source and its pinned upstream references are maintained in llm-agent-toolkit/modules/agent_skills."
+  }
+]

@@ -1,8 +1,9 @@
-"""Historical P6 inventory for modules originally transferred to llm-agent-toolkit.
+"""Ownership inventory for modules transferred to llm-agent-toolkit.
 
-Original source directories under ``scripts/modules/`` remain untouched on disk for
-historical continuity, but must not be installed into ``scripts/.venv``, included in
-``scripts_manifest.json``, or exposed through ``scripts/bin`` launchers.
+This registry remains authoritative for package and CLI ownership after a source
+directory is retired. A retired source path is intentionally absent; any remaining
+scripts source copies must not be installed into scripts/.venv, included in
+scripts_manifest.json, or exposed through scripts/bin launchers.
 
 The five shared libraries have since moved to the independent shared-package
 distribution registry. Check that registry before using this historical transfer
@@ -13,7 +14,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# Authoritative mapping: scripts/modules/<directory_name> -> pyproject.toml [project].name
+# Authoritative mapping: toolkit-owned module directory -> pyproject.toml [project].name
 TRANSFERRED_MODULE_DIRECTORY_TO_DISTRIBUTION: dict[str, str] = {
     "agent_abilities": "agent-abilities",
     "agent_benchmark": "agent-benchmark",
@@ -89,7 +90,7 @@ SCRIPTS_OWNED_SHARED_MODULES: frozenset[str] = frozenset({"termdash", "cross_pla
 
 
 def is_transferred_module_dir(path_or_name: Path | str) -> bool:
-    """Return True if *path_or_name* refers to one of the 23 transferred module directories."""
+    """Return True if path_or_name names a registered toolkit-owned module directory."""
     name = Path(path_or_name).name if isinstance(path_or_name, Path) else str(path_or_name).strip().strip("/\\")
     if "/" in name or "\\" in name:
         name = Path(name).name
