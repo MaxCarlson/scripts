@@ -53,4 +53,4 @@
 - [x] Cover quoting, spaces, repeatable flags, conflicts, Windows wrappers, WSL, previews, failed launches, and preserved session/history identity.
 - [x] Update README, current CLI reference, feature register, module version, and deferred LLMD-25/26 status.
 - [x] Run focused tests, full module suite, Ruff, and diff checks; inspect integration risk against main without merge/rebase.
-- [ ] Commit and push task changes on the existing feature branch; do not merge.
+- [x] Commit and push task changes on the existing feature branch; do not merge.
