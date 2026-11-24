@@ -88,7 +88,7 @@ jobs:
       - name: Verify standalone wheel imports, CLI and dependencies
         run: |
           .ci-venv/bin/python -I -m pip check
-          .ci-venv/bin/python -I - "$GITHUB_WORKSPACE" <<'PY'
+          .ci-venv/bin/python -I - <<'PY'
           import importlib
           import importlib.metadata as metadata
           import sys
@@ -111,17 +111,6 @@ jobs:
               assert any(origin.is_relative_to(site) for site in site_dirs), (module_name, origin)
               print(f"{distribution}=={version} -> {origin}")
 
-          procparsers_distribution = metadata.distribution("procparsers")
-          procparsers = importlib.import_module("procparsers")
-          procparsers_origin = Path(procparsers.__file__).resolve()
-          expected_procparsers_origin = (
-              Path(sys.argv[1]) / "modules" / "procparsers" / "src" / "procparsers" / "__init__.py"
-          ).resolve()
-          assert procparsers_origin == expected_procparsers_origin, (
-              procparsers_origin,
-              expected_procparsers_origin,
-          )
-          print(f"procparsers=={procparsers_distribution.version} -> {procparsers_origin}")
           legacy = ("resource-metrics", "script-logging", "web-ui-tools", "termdash", "cross-platform")
           for distribution in legacy:
               try:
@@ -350,6 +339,17 @@ jobs:
                   lowered = direct_url.lower()
                   assert "shared-python-modules" not in lowered and "llm-agent-toolkit" not in lowered, direct_url
               print(f"{distribution}=={version} -> {origin}")
+          procparsers_distribution = metadata.distribution("procparsers")
+          procparsers = importlib.import_module("procparsers")
+          procparsers_origin = Path(procparsers.__file__).resolve()
+          expected_procparsers_origin = (
+              Path(sys.argv[1]) / "modules" / "procparsers" / "src" / "procparsers" / "__init__.py"
+          ).resolve()
+          assert procparsers_origin == expected_procparsers_origin, (
+              procparsers_origin,
+              expected_procparsers_origin,
+          )
+          print(f"procparsers=={procparsers_distribution.version} -> {procparsers_origin}")
           legacy = ("resource-metrics", "script-logging", "web-ui-tools", "termdash", "cross-platform")
           for distribution in legacy:
               try:
