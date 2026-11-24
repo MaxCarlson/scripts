@@ -19,12 +19,12 @@ from pathlib import Path
 # Import shared helpers from scripts_setup/setup_utils.py
 # ---------------------------------------------------------------------------
 try:
-    from scripts_setup.setup_utils import create_symlink, _log_info, _log_success, _log_warning, _log_error
+    from scripts_setup.setup_utils import create_symlink, _log_info, _log_success, _log_warning
 except ImportError:
     # Fallback when run standalone (not installed as a package)
     _here = Path(__file__).resolve().parent
     sys.path.insert(0, str(_here.parent))
-    from scripts_setup.setup_utils import create_symlink, _log_info, _log_success, _log_warning, _log_error
+    from scripts_setup.setup_utils import create_symlink, _log_info, _log_success, _log_warning
 
 
 CLI_SKILL_DIRS = [
@@ -66,7 +66,11 @@ def discover_skills(modules_dir: Path, verbose: bool = False) -> list[Path]:
     return skills
 
 
-def symlink_skills(skills: list[Path], verbose: bool = False) -> tuple[int, int]:
+def symlink_skills(
+    skills: list[Path],
+    verbose: bool = False,
+    cli_skill_dirs: list[Path] | None = None,
+) -> tuple[int, int]:
     """Symlink discovered skills into each CLI skills directory.
 
     Returns (created_count, skipped_count).
@@ -74,7 +78,7 @@ def symlink_skills(skills: list[Path], verbose: bool = False) -> tuple[int, int]
     created = 0
     skipped = 0
 
-    for cli_dir in CLI_SKILL_DIRS:
+    for cli_dir in cli_skill_dirs if cli_skill_dirs is not None else CLI_SKILL_DIRS:
         cli_dir.mkdir(parents=True, exist_ok=True)
 
         for skill_dir in skills:
@@ -120,6 +124,13 @@ def main() -> None:
         default=None,
         help="Root modules directory to scan (default: <scripts>/modules/)",
     )
+    parser.add_argument(
+        "-k", "--skills-dir",
+        type=Path,
+        action="append",
+        default=None,
+        help="Skill-link destination (repeatable; defaults to the supported CLI skill directories).",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     args = parser.parse_args()
 
@@ -135,7 +146,7 @@ def main() -> None:
 
     print(f"Discovered {len(skills)} skill(s): {', '.join(s.name for s in skills)}")
 
-    created, existing = symlink_skills(skills, verbose=args.verbose)
+    created, existing = symlink_skills(skills, verbose=args.verbose, cli_skill_dirs=args.skills_dir)
 
     if created:
         _log_success(f"Created {created} new skill symlink(s).", args.verbose)
