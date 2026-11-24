@@ -42,6 +42,7 @@ RETIRED_TOOLKIT_SOURCE_DIRS = frozenset({
     "web_ai_automator",
     "llm_local",
 })
+RETIRED_SHARED_TRANSFERRED_SOURCE_DIRS = frozenset({"script_logging", "web_ui_tools"})
 
 
 def _tracked_module_paths() -> set[str]:
@@ -86,7 +87,7 @@ def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scri
         assert is_transferred_distribution(dist_name)
         assert is_transferred_distribution(dist_name.replace("-", "_"))
         source_path = REPO_ROOT / "modules" / directory
-        if directory in (RETIRED_TOOLKIT_SOURCE_DIRS | retired):
+        if directory in (RETIRED_TOOLKIT_SOURCE_DIRS | RETIRED_SHARED_TRANSFERRED_SOURCE_DIRS | retired):
             tracked = [
                 path for path in tracked_module_paths
                 if path.startswith(f"modules/{directory}/")
