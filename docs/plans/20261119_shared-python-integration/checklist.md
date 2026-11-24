@@ -258,6 +258,7 @@ Historical checkpoint status above is superseded by the final pscripts and full-
 - [ ] Publish approved `mxc-web-ui-tools==0.2.0` and `mxc-termdash==0.10.0`; verify metadata, hashes and provenance for all five releases; run clean exact-version public-index installations and consumer checks. No publication was performed.
 - [x] Run local repository-sync utility tests in a disposable environment: 4 passed.
 - [x] Preview primary checkout sync without mutation: 12 commits behind; dirty `pscripts` Gitlink and untracked diagnostics, SQLite sidecars and YTAEDL runtime data; result `would_fast_forward_with_local_changes`.
+- [x] Inventory primary `.venv` editable installs: 65 packages; migrated `mangadl`/`ytaedl` point into an older private migration worktree and `aebndl` into the old public source. Preserve and re-qualify; do not repair blindly.
 - [x] Preview primary launcher ownership without mutation: 162 repo commands / 250 existing wrappers; 161 legacy updates, 78 obsolete managed wrappers, 11 unmanaged preserved, zero collisions. Do not apply until checkout migration and ownership are reviewed.
 - [ ] After Agent #3 completes authorized integrations, repeat sync dry-run and inventory; preserve user data and inspect the Gitlink and editable package origins before any safe fast-forward. Do not run broad launcher regeneration during synchronization.
 - [ ] Ask PR #31 owner to confirm closure as superseded; no PR was closed here.
