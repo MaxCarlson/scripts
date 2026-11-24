@@ -1,0 +1,7 @@
+[
+  {
+    "type": "retirement",
+    "path": "modules/llm_local",
+    "reason": "Agent Memory optional classifier fallback qualified with canonical package absent and present"
+  }
+]
