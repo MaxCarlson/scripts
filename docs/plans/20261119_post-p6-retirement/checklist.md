@@ -42,5 +42,11 @@
 
 - [x] Open ownership-protection draft PR #36; local focused selection passed 19 tests and its hosted ownership check passed.
 - [x] Dispatch hosted Linux qualification for the exact toolkit-only and combined refs (runs 45321529713 and 45321531381).
-- [ ] Inspect both hosted runs to completion and record exact outcomes; qualify clean bootstrap and post-removal HTTP before making readiness claims.
+- [x] Inspect hosted runs 45321529713 and 45321531381: both completed successfully, including clean bootstrap, HTTP, consumers, Gitlinks, launcher ownership, and final pip health.
 - [ ] Complete guard review, remaining ownership/launcher documentation checks, and all eight hold contracts.
+
+- [x] Restore PR #35's qualified 13-removal tree with corrective revert 54550da; preserve 4f8e158 as its qualification reference.
+- [x] Separate llm_local removal as PR #38 (53c29cd) and qualify absent/present dependency configurations without inference.
+- [x] Prepare canonical viewer source retirement PR #39 (1d7689f5); canonical install/attachment test passed; keep ordinary index availability gate.
+- [x] Prepare canonical llm-monitor metadata/API update in toolkit PR #5; Runmux canonical consumer tests passed.
+- [ ] Complete clean-index availability and hosted qualification for PR #38/#39; resolve Resource Coordinator H4 bundle contract before llm_monitor retirement.
