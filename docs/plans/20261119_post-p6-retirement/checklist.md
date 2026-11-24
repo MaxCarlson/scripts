@@ -44,3 +44,16 @@
 - PR #34 remains draft and PR #35 remains open. No merge occurred.
 - The Monitor follow-up branch is based on PR #35 head `217ba2ab8c22ebb3c493bfaae13341a686e04925`; local post-removal checks are recorded above, but no hosted run or merge is claimed.
 - The existing ownership-protection draft PR #36 remains separate and unmodified; its review/remaining launcher audit is still open.
+
+## Continuation checkpoint — 2026-11-24 Monitor composition
+
+- [x] Reconcile PR #34 against the existing PR #35 plus Monitor-removal tree without restoring Monitor source or tests.
+- [x] Compose current main, PR #33 qualification corrections, PR #34, PR #35, and existing Monitor removal on `qualify/retirement-monitor-pr34-pr35-20261124`.
+- [x] Verify the qualification commit includes PR #33 `72dbf83`, PR #35 `f4f8e15`, Monitor removal `99ef8af`, PR #34 `f7b119a`, and has main merge-base `b60155b9`.
+- [x] Confirm all 18 proposed source directories are absent and all seven held directories remain present.
+- [x] Run the combined focused selection on the final composition: 86 passed in 5.17s, including ownership, shared packages, Gitlink validation, Scripts Help, Runmux optional behavior, web CLI, and viewer metadata tests.
+- [x] Preserve PR #34 and PR #35 branches, primary checkout diagnostics and runtime sidecars, both Harbor worktrees, the Resource Coordinator H4 worktree, and historical quarantine evidence.
+- [ ] Dispatch and pass hosted Linux qualification on `d21a159327dea15b6032c61bad7e11f36ad6f1f7`; current `gh` token is invalid and API DNS lookup fails. Existing runs `45321529713`/`45321531381` do not cover this revision.
+- [ ] Hosted full authenticated bootstrap, launcher and consumer regressions, final `pip check`, and Ubuntu synthetic Runmux HTTP tests on the final composition.
+- [ ] Complete owning agent's Windows root-setup qualification; retain the known Windows HTTP socket-pair limitation.
+- [ ] Keep seven ownership/data/dependency holds and do not merge or synchronize primary `scripts/main` without separate approval.

@@ -148,3 +148,46 @@ The two replacement branches have been pushed; PR #35 is open, PR #34 is draft, 
 - Hosted Linux qualification completed on the preserved exact refs: toolkit-only run `45321529713` at `526af4aafda829013f246c6b13e0947fe62806b0`, and combined run `45321531381` at `f4a06aab3a24fe2bb672f5b63ba0b06d8e2e752a`. Both passed wheel verification, isolated imports, synthetic Runmux HTTP tests, selected consumer regressions, Gitlink validation, authenticated private checkout, clean bootstrap, launcher checks, and final pip health.
 - PR #35 was verified clean against main at head `217ba2ab8c22ebb3c493bfaae13341a686e04925`. PR #34 remains draft. The existing hosted runs validate their preserved compositions, not this additional Monitor-removal follow-up.
 - Seven other ownership/data/runtime holds remain open. No runtime data, primary checkout, original Harbor source feature worktree, or active H4/root-setup/dispatcher worktree was changed. Toolkit main was observed at `167a77f25e9b3d187be2fee72c95853467e1e83e` in the retirement continuation ledger.
+
+## Continuation checkpoint — 2026-11-24 combined Monitor qualification composition
+
+The Monitor-removal follow-up is now reconciled with the existing qualified PR #33/#34/#35 validation composition in a disposable branch. No PR branch or primary checkout was changed.
+
+| Role | Exact revision included |
+|---|---|
+| Current scripts base | `main` / `b60155b94efb54da703ed166fb9a01bb8982d1d4` |
+| PR #33 qualification corrections | `72dbf8370cf98ee8422dd946a84c1f177581d3d1` (workflow plus parent-tree Gitlink validator) |
+| PR #35 current retirement branch | `f4f8e158554e5b84e3eb7cf45921c9d855247d1c` |
+| Monitor follow-up removal | `99ef8af352eb58b5befd3011667e0dd7444bc7ee`, parent `f4f8e158554e5b84e3eb7cf45921c9d855247d1c` |
+| PR #34 shared-source branch | `f7b119a0b37024624ed6299c0247c213ff93a1e7` |
+| Final qualification composition | `d21a159327dea15b6032c61bad7e11f36ad6f1f7` (merge parents `7d50c6b324801fe6ab7fbf03e31015997d1cd60e` and `f4a06aab3a24fe2bb672f5b63ba0b06d8e2e752a`) |
+
+The final composition has `b60155b94efb54da703ed166fb9a01bb8982d1d4` as its merge base with main, and ancestry checks confirm it contains PR #33 `72dbf83`, PR #35 `f4f8e15`, Monitor follow-up `99ef8af`, PR #34 `f7b119a`, and the earlier combined qualification ref `f4a06aa`. The PR #33 workflow blob is present at `11191e541f9b4aea5df828b814f3dce2ccdf89db`. The qualification workflow's push trigger is limited to the two original migration branches; this qualification ref requires an authorized manual dispatch.
+
+### Reconciliation details
+
+PR #34's prior overlap with the Monitor deletion was resolved without restoring the module: `modules/llm_monitor/pyproject.toml` and `modules/llm_monitor/tests/conftest.py` remain deleted, and the PR #34-only `modules/llm_monitor/tests/package_metadata_test.py` was not retained. The two retirement documents auto-merged. The Scripts Help registry and test plus transferred-module ownership test were reconciled to cover the combined removals. Merging the prior PR #33/#34/#35 qualification ref then produced a Modify/Delete conflict on the Monitor `conftest.py` and a competing Scripts Help test name/assertion; resolution kept the Monitor file deleted and retained the broader test covering both toolkit and shared source directories. The transfer ownership test retains the `llm_monitor` source-absence assertion alongside the other retirement assertions.
+
+The resulting tree has all 18 proposed directories absent (`13` toolkit-only, `4` shared-source, and `llm_monitor`), with all seven protected directories present. `git ls-files modules/llm_monitor` returns no tracked paths. The seven holds remain `agent_abilities`, `agent_skills`, `agent_memory`, `llm_local`, `resource_coordinator`, `resource_metrics`, and `orchestrator_web_viewer`; their data, Gitlink, active H4, package, and optional-integration contracts above remain unresolved. Harbor feature branches/worktrees and live benchmark artifacts were preserved; no live benchmark or local inference was run or required for this source-copy decision.
+
+### Fresh local validation on the combined composition
+
+The following Windows command used the already-qualified local wheel install directory from the preserved PR #34 worktree; it did not install packages or mutate an application environment:
+
+```powershell
+$env:PYTHONPATH = "$PWD\modules\scripts_help;$PWD;C:\Users\mcarls\src\scripts\.worktrees\retire-shared-postmerge\.retirement-site"
+python -m pytest -q -p no:cacheprovider `
+  scripts_setup/tests/transferred_modules_test.py `
+  scripts_setup/tests/shared_packages_test.py `
+  scripts_setup/tests/gitlink_validation_test.py `
+  modules/scripts_help/tests/scripts_help_test.py `
+  modules/runmux/tests/llm_monitor_integration_test.py `
+  modules/runmux/tests/web_cli_test.py `
+  modules/orchestrator_web_viewer/tests/orchestrator_viewer_package_metadata_test.py
+```
+
+Result: **86 passed in 5.17s**. The selection covers ownership/bootstrap exclusion, shared distribution configuration, parent-tree Gitlink validation, both Scripts Help registries, Runmux's package-missing/integration behavior, web CLI, and viewer package metadata. The 18/7 directory-presence check also passed. This local run does not establish a full dependency-resolved bootstrap or hosted HTTP qualification.
+
+Hosted runs `45321529713` and `45321531381` remain valid for their earlier exact refs, but neither covers `99ef8af` or final composition `d21a159`. No hosted run was produced for this delta. A fresh `gh auth status` reports the saved `MaxCarlson` CLI token is invalid and DNS resolution for `api.github.com` fails; the available GitHub connector has no workflow-dispatch operation. This is an authentication/network dispatch blocker, not a test failure. Dispatch the existing workflow manually on `qualify/retirement-monitor-pr34-pr35-20261124` after GitHub authentication and runner access are restored. Required hosted gates remain authenticated submodule checkout, full bootstrap, post-bootstrap launchers/consumers, `pip check`, and Ubuntu synthetic Runmux HTTP tests. Windows HTTP retains its already documented host socket-pair limitation; Windows root-setup qualification remains with its owning agent.
+
+No merge, source cleanup, runtime-data movement, release, live benchmark, or local inference occurred. PR #34 and PR #35 remain unmerged; the new qualification branch is evidence only and is not a replacement PR.
