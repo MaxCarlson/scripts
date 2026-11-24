@@ -70,7 +70,14 @@ def main() -> int:
         check=True, capture_output=True,
     )
     fields = result.stdout.decode("utf-8").split("\0")
-    changes = [(fields[i].split()[4], fields[i + 1], *fields[i].split()[1:5]) for i in range(0, len(fields) - 1, 2)]
+    changes = []
+    for i in range(0, len(fields) - 1, 2):
+        metadata = fields[i].split()
+        if len(metadata) != 5 or not metadata[0].startswith(":"):
+            raise ValueError(f"Unexpected git diff raw metadata: {fields[i]!r}")
+        old_mode = metadata[0][1:]
+        new_mode, old_oid, new_oid, action = metadata[1:]
+        changes.append((action, fields[i + 1], old_mode, new_mode, old_oid, new_oid))
     exception_path = ".github/source-ownership-exceptions.json"
     content = subprocess.run(["git", "show", f"{args.end}:{exception_path}"], check=True, capture_output=True, text=True)
     exceptions = json.loads(content.stdout)

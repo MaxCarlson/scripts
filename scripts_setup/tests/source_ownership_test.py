@@ -1,5 +1,6 @@
-"""Behavioral checks for source ownership, including real Git repositories."""
+"""Git-level tests for the source ownership guard production CLI."""
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -7,44 +8,37 @@ from pathlib import Path
 
 from scripts_setup.source_ownership import check_changes
 
-ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = Path(__file__).resolve().parents[1] / "source_ownership.py"
 
 def git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
 
 class OwnershipTests(unittest.TestCase):
-    def test_owner_changes_and_exact_exceptions(self):
-        changes = [("M", "modules/agent_memory/a.py", "100644", "100644", "old", "new"),
-                   ("M", "modules/termdash/a.py", "100644", "100644", "old", "new")]
-        errors = check_changes(changes, [])
-        self.assertEqual(len(errors), 2)
-        self.assertIn("llm-agent-toolkit", errors[0])
-        self.assertIn("shared-python-modules", errors[1])
-        exc = [{"path":"modules/agent_memory/a.py","action":"M","before_mode":"100644","after_mode":"100644","before":"old","after":"new","reason":"API reconciliation"}]
-        self.assertEqual(len(check_changes(changes, exc)), 1)
-
-    def test_directory_retirement_exception_is_deletion_only(self):
-        exc = [{"type":"retirement","path":"modules/agent_sync","reason":"Reviewed source retirement"}]
-        self.assertEqual(check_changes([("D","modules/agent_sync/a.py","100644","000000","blob","0")], exc), [])
-        self.assertTrue(check_changes([("A","modules/agent_sync/a.py","000000","100644","0","blob")], exc))
-
-    def test_git_integration_catches_additions_gitlinks_and_mode_changes(self):
+    def test_exact_object_mode_gitlink_and_retirement_policy(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo=Path(temporary)
-            git(repo,"init","-q")
-            git(repo,"config","user.email","test@example.invalid")
-            git(repo,"config","user.name","Test")
-            (repo/"scripts_setup").mkdir(); (repo/"modules/agent_sync").mkdir(parents=True)
-            (repo/"scripts_setup/transferred_modules.py").write_text('TRANSFERRED_MODULE_DIRECTORY_TO_DISTRIBUTION = {"agent_sync": "agent-sync"}\n')
-            (repo/"scripts_setup/shared_packages.py").write_text('SHARED_MODULE_DIRECTORY_TO_DISTRIBUTION = {}\n')
-            (repo/".github").mkdir(); (repo/".github/source-ownership-exceptions.json").write_text("[]")
-            f=repo/"modules/agent_sync/old.py"; f.write_text("old\n")
+            git(repo,"init","-q"); git(repo,"config","user.email","test@example.invalid"); git(repo,"config","user.name","Test")
+            for folder in ("scripts_setup", ".github", "modules/agent_sync"):
+                (repo/folder).mkdir(parents=True,exist_ok=True)
+            (repo/"scripts_setup/transferred_modules.py").write_text('TRANSFERRED_MODULE_DIRECTORY_TO_DISTRIBUTION: dict[str, str] = {"agent_sync": "agent-sync"}\n')
+            (repo/"scripts_setup/shared_packages.py").write_text('SHARED_MODULE_DIRECTORY_TO_DISTRIBUTION: dict[str, str] = {}\n')
+            policy=repo/".github/source-ownership-exceptions.json"; policy.write_text("[]\n")
+            source=repo/"modules/agent_sync/file.py"; source.write_text("before\n"); source.chmod(0o644)
             git(repo,"add","."); git(repo,"commit","-qm","base"); base=git(repo,"rev-parse","HEAD")
-            f.unlink(); f.write_text("new\n"); git(repo,"add","."); git(repo,"commit","-qm","replace")
-            raw=subprocess.check_output(["git","diff","--raw","--no-abbrev","-z","--no-renames",base,"HEAD","--"],cwd=repo)
-            fields=raw.decode().split("\0")
-            changes=[(fields[i].split()[4],fields[i+1],*fields[i].split()[1:5]) for i in range(0,len(fields)-1,2)]
-            self.assertTrue(check_changes(changes,[],toolkit={"agent_sync"},shared=set()))
-            self.assertTrue(any(c[2] != c[3] for c in changes))
+            source.write_text("after\n"); source.chmod(0o755); git(repo,"add","."); git(repo,"update-index","--chmod=+x","modules/agent_sync/file.py"); git(repo,"commit","-qm","mode and content")
+            raw=subprocess.check_output(["git","diff","--raw","--no-abbrev","-z","--no-renames",base,"HEAD","--"],cwd=repo).decode().split("\0")
+            meta=raw[0].split(); self.assertEqual(meta[0],":100644"); self.assertEqual(meta[1],"100755")
+            self.assertEqual(len(meta[2]),40); self.assertEqual(len(meta[3]),40); self.assertEqual(meta[4],"M")
+            run=subprocess.run([os.fspath(__import__('sys').executable),os.fspath(SCRIPT),"--base",base,"--end","HEAD"],cwd=repo,capture_output=True,text=True,env={**os.environ,"PYTHONPATH":str(SCRIPT.parents[1])})
+            self.assertEqual(run.returncode,1,run.stdout+run.stderr)
+            policy.write_text(json.dumps([{"type":"retirement","path":"modules/agent_sync","reason":"approved source retirement"}]))
+            git(repo,"add",str(policy.relative_to(repo))); git(repo,"commit","-qm","record policy")
+            source.unlink(); git(repo,"add","-u"); git(repo,"update-index","--add","--cacheinfo","160000","0123456789012345678901234567890123456789","modules/agent_sync"); git(repo,"commit","-qm","retire with gitlink")
+            run=subprocess.run([os.fspath(__import__('sys').executable),os.fspath(SCRIPT),"--base",base,"--end","HEAD"],cwd=repo,capture_output=True,text=True,env={**os.environ,"PYTHONPATH":str(SCRIPT.parents[1])})
+            self.assertEqual(run.returncode,1,run.stdout+run.stderr)
+            git(repo,"update-index","--force-remove","modules/agent_sync"); git(repo,"commit","-qm","complete retirement")
+            run=subprocess.run([os.fspath(__import__('sys').executable),os.fspath(SCRIPT),"--base",base,"--end","HEAD"],cwd=repo,capture_output=True,text=True,env={**os.environ,"PYTHONPATH":str(SCRIPT.parents[1])})
+            self.assertEqual(run.returncode,0,run.stdout+run.stderr)
 
-if __name__ == "__main__": unittest.main()
+if __name__ == "__main__":
+    unittest.main()
