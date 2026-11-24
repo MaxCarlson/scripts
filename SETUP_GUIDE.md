@@ -85,7 +85,7 @@ sandbox.
 
 **modules/setup.py** and **scripts_setup/transferred_modules.py**:
 - Scans `modules/` directory while excluding the 23 modules transferred to `MaxCarlson/llm-agent-toolkit` (`TRANSFERRED_MODULE_DIRS` / `TRANSFERRED_NORMALIZED_DISTRIBUTIONS` in `scripts_setup/transferred_modules.py`).
-- Historical source directories for transferred modules remain untouched on disk in `scripts/modules/`, but are never installed into `scripts/.venv` or exposed via `scripts/bin`.
+- Transferred-module ownership remains recorded in `scripts_setup/transferred_modules.py`; retired historical source directories are absent from the active tree, and the remaining toolkit-owned sources are not installed into `scripts/.venv` or exposed through `scripts/bin`.
 - Installs each `scripts`-owned module in editable mode (`pip install -e`).
 - Tracks package names for proxy generation and handles dependencies via `dependency_resolver.py`.
 - `scripts/bin` wrappers delegate invocation logging to `script_logging.launcher` using the sibling `llm-agent-toolkit/.venv` interpreter (or `LLM_AGENT_TOOLKIT_ROOT`) with `-I` and `--target-python` pointing to `scripts/.venv`.
