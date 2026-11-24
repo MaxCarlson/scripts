@@ -40,6 +40,7 @@ RETIRED_TOOLKIT_SOURCE_DIRS = frozenset({
     "local_agent_bridge",
     "web_ai_automator",
 })
+RETIRED_SHARED_TRANSFERRED_SOURCE_DIRS = frozenset({"script_logging", "web_ui_tools"})
 
 
 def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scripts_modules() -> None:
@@ -56,7 +57,7 @@ def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scri
         assert is_transferred_distribution(dist_name)
         assert is_transferred_distribution(dist_name.replace("-", "_"))
         source_dir = REPO_ROOT / "modules" / directory
-        if directory in RETIRED_TOOLKIT_SOURCE_DIRS:
+        if directory in RETIRED_TOOLKIT_SOURCE_DIRS | RETIRED_SHARED_TRANSFERRED_SOURCE_DIRS:
             assert not source_dir.exists()
         else:
             assert source_dir.is_dir()

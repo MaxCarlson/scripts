@@ -1,4 +1,4 @@
-# modules/cross_platform/clipboard_utils.py
+# Cross-platform clipboard helpers.
 
 import os
 import sys

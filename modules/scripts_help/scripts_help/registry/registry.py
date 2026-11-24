@@ -559,13 +559,6 @@ REGISTRY: dict = {
                 "version": "0.1.0",
             },
             {
-                "name": "termdash (module)",
-                "path": "modules/termdash",
-                "desc": "Real-time terminal dashboard for system stats and process monitoring",
-                "help_cmd": ["python", "-m", "termdash", "--help"],
-                "version": "0.4.0",
-            },
-            {
                 "name": "runmux (module)",
                 "path": "modules/runmux",
                 "desc": "Managed process runner with a native terminal workspace and optional read-only browser",

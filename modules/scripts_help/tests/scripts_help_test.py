@@ -235,12 +235,14 @@ def test_registry_all_items_have_required_keys() -> None:
                 )
 
 
-def test_retired_toolkit_modules_are_not_listed_as_scripts_programs() -> None:
+def test_retired_module_sources_are_not_listed_as_scripts_programs() -> None:
     retired = {
         "agent_sync", "agt", "agent_benchmark", "benchmark_core",
         "interactive_reports", "ai_orchestrator", "knowledge_manager",
         "llm-interface", "llm-models", "llm-patcher", "lmstui",
-            "local_agent_bridge", "web_ai_automator", "llm_monitor",
+        "local_agent_bridge", "web_ai_automator", "llm_monitor",
+        "resource_metrics", "script_logging", "web_ui_tools", "termdash",
+        "cross_platform",
     }
 
     def walk(items):
