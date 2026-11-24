@@ -244,3 +244,17 @@ Historical checkpoint status above is superseded by the final pscripts and full-
 - [x] Push the latest main reconciliation and status update. Hosted Ubuntu run [45183908047](https://github.com/MaxCarlson/scripts/actions/runs/45183908047) passed on `b18f8879f6bc75c369ee7f66748f3465896a17e3`: 64 packages, 69 launchers, 95 console commands, zero missing; 107 pre-bootstrap tests passed / 1 deselected; Runmux synthetic HTTP step passed; 3 launcher tests; 120 post-bootstrap tests; `pip check` clean.
 - [x] Refresh PR #22 description with the PR #25 reconciliation, current scripts/main, pscripts merge, and successful run [45183908047](https://github.com/MaxCarlson/scripts/actions/runs/45183908047); PR #22 remains open for review and no merge was performed.
 - [ ] Keep the existing publication/clean-index and explicit merge gates. Do not merge PR #22 or retire source in this phase.
+
+
+## Final media and shared-package integration closeout — 2026-11-24
+
+- [x] Merge scripts PR #22, then #30, then reconciled #29; final `main` is `b60155b94efb54da703ed166fb9a01bb8982d1d4`.
+- [x] Preserve the reconciled tree from integration checkpoint `0d4efa6b5e2a17f9477e0ac50537c005b87941ad`; verify the private pscripts Gitlink is `d25e095f1ced76ec9e7904e0bf12db592defc798`, reachable from private main merge `129559e8302fdcb4fe262cbff95d173c41094cce`.
+- [x] Fresh disposable Windows `bootstrap_latest.ps1`: exit 0; 64 packages installed; 164 launchers generated; zero failures.
+- [x] Final Windows dry-run inventory: 64 packages (0 missing), 69 script launchers (0 missing), 95 console commands (0 proxies missing), 164 launcher files (0 failures); `pip check` clean.
+- [x] Import origins verified with isolated Python and no `PYTHONPATH`: private media modules from pinned pscripts; procparsers from public `src` package; mxc distributions from the scripts virtual environment.
+- [x] From outside the checkout, `mangadl`, `ytaedl`, `aebndl`, `termdash`, `runmux`, and `scripts-help` `--help` invocations all exited 0; no media downloads.
+- [x] Reuse prior test evidence from the identical qualified tree: 128 passed, 1 skipped; two incremental bootstrap runs had no missing packages or wrappers.
+- [ ] Dispatch and complete hosted Linux shared-package qualification. Not run: GitHub CLI could not reach the API in this session; the connected GitHub tool is read-only.
+- [ ] Complete Windows root `setup.py` with required symlink privileges and profile isolation. Earlier attempt failed with `WinError 1314`; direct bootstrap success does not cover this path.
+- [ ] Resolve public package-index independence/publication qualification and any separately authorized source-retirement scope. No publication or unrelated retirement was attempted.
