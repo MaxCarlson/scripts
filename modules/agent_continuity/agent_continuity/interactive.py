@@ -2,22 +2,44 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
-from datetime import datetime
+from collections.abc import Callable
 from typing import Any, TextIO
 
 from .dispatcher import DispatcherService
+from .terminal_format import clip_display, format_timestamp, pad_display
 
 
-def format_timestamp(value: str | None) -> str:
-    """Format persisted UTC activity in local time without inventing missing dates."""
-    if not value:
-        return "—"
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return parsed.astimezone().strftime("%Y-%m-%d %H:%M")
-    except (ValueError, OverflowError):
-        return "—"
+def _gui_selector_line(row: dict[str, Any], width: int, *, header: bool = False) -> str:
+    if width < 62:
+        name_width = max(10, width - 24)
+        return f"{pad_display('GUI Conversation' if header else row['alias'], name_width)}  " \
+               f"{('Last Activity' if header else format_timestamp(row.get('last_activity_at')))}"
+    name_width = max(12, min(36, width - 25))
+    return f"{pad_display('Last Activity' if header else format_timestamp(row.get('last_activity_at')), 16)}  " \
+           f"{pad_display('GUI Conversation' if header else row['alias'], name_width)}"
+
+
+def _agent_selector_line(row: dict[str, Any], width: int, *, header: bool = False) -> str:
+    provider = "Provider" if header else str(row.get("current_provider") or row.get("pending_provider") or "—").upper()
+    if width < 70:
+        name_width = max(10, min(24, width - 22))
+        session = "Current Session" if header else row.get("current_session_id") or (
+            "pending" if row.get("pending_launch_id") else "unresolved"
+        )
+        session_width = max(8, width - name_width - 14)
+        return f"{pad_display('Agent' if header else row['name'], name_width)}  {provider:<5}  " \
+               f"{clip_display(session, session_width)}"
+    name_width = max(12, min(32, (width - 58) // 2))
+    session_width = max(8, width - name_width - 50)
+    date = "Last Activity" if header else format_timestamp(row.get("last_activity_at"))
+    name = "Agent" if header else row["name"]
+    session = "Current Session" if header else row.get("current_session_id") or (
+        "pending" if row.get("pending_launch_id") else "unresolved"
+    )
+    return f"{pad_display(date, 16)}  {pad_display(name, name_width)}  {provider:<8}  " \
+           f"{clip_display(session, session_width)}"
 
 
 def filter_items(items: list[dict[str, Any]], query: str, *, key: str = "name") -> list[dict[str, Any]]:
@@ -67,7 +89,7 @@ def select_item(
     *,
     title: str,
     render_line,
-    header: str = "",
+    header: str | Callable[[], str] = "",
     input_stream: TextIO,
     output_stream: TextIO,
     allow_new: bool = False,
@@ -82,8 +104,9 @@ def select_item(
         selected = min(selected, max(0, len(matches) - 1))
         output_stream.write("\x1b[2J\x1b[H")
         output_stream.write(f"{title}\n\nSearch: {query}\n\n")
-        if header:
-            output_stream.write(header + "\n")
+        header_text = header() if callable(header) else header
+        if header_text:
+            output_stream.write(header_text + "\n")
         for index, item in enumerate(matches):
             output_stream.write(("> " if index == selected else "  ") + render_line(item) + "\n")
         if not matches:
@@ -149,11 +172,14 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
 
     from .dispatcher_cli import _json_default, _open, _run_pane
 
+    def terminal_width() -> int:
+        return shutil.get_terminal_size((100, 24)).columns
+
     while True:
         action, gui = select_item(
             dispatcher.list_guis(), title="LLM Dispatcher — Select GUI Conversation",
-            render_line=lambda row: f"{format_timestamp(row.get('last_activity_at')):<19}  {row['alias']}",
-            header="Last Activity       GUI Conversation",
+            render_line=lambda row: _gui_selector_line(row, terminal_width()),
+            header=lambda: _gui_selector_line({}, terminal_width(), header=True),
             input_stream=input_stream, output_stream=output_stream, allow_new=True,
             filter_key="alias",
         )
@@ -172,12 +198,8 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
         while True:
             action, slot = select_item(
                 dispatcher.list_slots(gui=gui_name), title=f"GUI: {gui_name}",
-                render_line=lambda row: (
-                    f"{format_timestamp(row.get('last_activity_at')):<19}  {row['name']:<14} "
-                    f"{str(row.get('current_provider') or row.get('pending_provider') or '—').upper():<9} "
-                    f"{row.get('current_session_id') or ('pending' if row.get('pending_launch_id') else 'unresolved')}"
-                ),
-                header="Last Activity       Agent          Provider   Current Session",
+                render_line=lambda row: _agent_selector_line(row, terminal_width()),
+                header=lambda: _agent_selector_line({}, terminal_width(), header=True),
                 input_stream=input_stream, output_stream=output_stream,
                 allow_new=True, allow_open_all=True,
             )

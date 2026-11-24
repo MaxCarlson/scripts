@@ -89,6 +89,8 @@ class EventType(StrEnum):
     DISPATCHER_LAUNCH_RESOLVED = "dispatcher.launch_resolved"
     DISPATCHER_LAUNCH_FAILED = "dispatcher.launch_failed"
     DISPATCHER_PROCESS_OBSERVED = "dispatcher.process_observed"
+    DISPATCHER_SLOTS_TRANSITIONED = "dispatcher.slots_transitioned"
+    DISPATCHER_AGENT_TRANSITION_COMPLETED = "dispatcher.agent_transition_completed"
 
 
 @dataclass(slots=True)

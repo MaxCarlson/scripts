@@ -105,3 +105,7 @@ The materialized schema stores `created_at`, `updated_at` and `last_activity_at`
 ## 7. Evidence and limitations
 
 Examined repository source at the pinned baseline, the published README, and user-supplied `llmd list`, `llmd -h`, and `start -g/-n` output. This document does not claim interactive terminal tests were executed against that commit. Proposed future behavior lives in `02_PROPOSED_CHANGES_EVALUATION.md`; implementation sequencing and acceptance are in `00_IMPLEMENTATION_PLAN.md`.
+
+## Implementation update (feature branch)
+
+The original baseline notes above remain historical. The authorized implementation adds `review`/`return`, `list -N/--history-count`, and exit-menu options 5/6. Option 4 continues to switch providers within the same slot. New-session creation through `start` retains the explicit `-N -a` convention. Review and switch relationships are durable events with rebuildable projections; all automated provider bootstrap tests use fake child processes.

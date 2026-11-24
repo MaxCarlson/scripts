@@ -6,7 +6,7 @@ See [docs/agent-session-continuity-master-plan.md](./docs/agent-session-continui
 
 ## Listing and registering conversations (LLMD v2)
 
-`llmd list` shows the ten most recently active registered conversations, with up to ten active agents each. `llmd list "Project"` includes active and inactive agents; `-A` also includes completed agents and removes default limits. An explicit `-l` limits results even with `-A`. Output reports omitted counts. Use `-j` for JSON and `-c never` to disable color; JSON contains complete session IDs and truncation metadata. Global JSON uses schema version 1. Scoped JSON retains `action`, `gui`, and `slots` and adds count metadata.
+`llmd list` shows the ten most recently active registered conversations and their active and inactive agents; `-A` also includes completed agents and removes default limits. An explicit `-l` limits results even with `-A`. Output reports omitted counts, local activity times, lifecycle, and observed runtime separately. Use `-N 3` to include three recent activation-history entries under each shown agent, `-j` for JSON, and `-c never` to disable color. Global JSON keeps schema version 1; scoped JSON retains `action`, `gui`, and `slots`. History adds an optional per-agent `activation_history` array only when `-N` is positive.
 
 ```powershell
 llmd list
@@ -16,6 +16,7 @@ llmd register "Project"
 llmd register "Project" "Agent" -p codex -i "SESSION_ID"
 llmd register -g "Project" -n "Agent" -p agy -i "SESSION_ID" -d
 llmd continue "Project" "Agent"  # preview; add -a to resume
+llmd list -g "Project" -N 3
 ```
 
 Registration applies by default and never launches a provider. `-d` previews it. Existing associations are left unchanged; selecting a different session requires `-s/--select` and preserves history. Runtime use is not observed in this release, so verify the session is not in use before changing a selection. Registration uses existing events and a single mutation lock; interrupted operations can be retried. Legacy mutation and launch commands remain dry-run by default. `start` and `continue` also accept GUI and agent positional names without changing their execution defaults.
@@ -39,7 +40,7 @@ Mutations and provider launches are dry-run by default. Review the preview, then
 llmd gui add -n AgentImprovement -a
 llmd gui rename -g AgentImprovement -n AgentPerformance -a
 llmd slot create -g AgentImprovement -n AgentPerf -a
-llmd start -g AgentImprovement -n AgentPerf -p agy -a
+llmd start -g AgentImprovement -n AgentPerf -p agy -N -a
 llmd attach -g AgentImprovement -n AgentPerf -p agy -i <native-session-id> -a
 llmd switch -g AgentImprovement -n AgentPerf -p codex -a
 llmd switch -g AgentImprovement -n AgentPerf -p agy -r -a
@@ -50,7 +51,13 @@ llmd open -g AgentImprovement -k 2
 llmd open -g AgentImprovement -k 2 -a
 llmd open -g AgentImprovement -k 4 -a
 llmd slot disable -g AgentImprovement -n AgentPerf -a
+llmd review -g AgentImprovement -n AgentPerf -R AgentReview -p codex -C "C:\\worktrees\\review" -N -a
+llmd return -g AgentImprovement -n AgentPerf -a
 ```
+
+After a normal provider exit, option 4 reuses or explicitly creates the opposite provider under the same slot. Option 5 opens a searchable picker of inactive agents in the current GUI and resumes the selected exact session; it never starts a new session. Option 6 collects a new name, provider, and confirmed existing working directory, then requires an affirmative confirmation before creating a slot and initializing one new session. The linked original agent is listed first when returning from a reviewer.
+
+`llmd review -g GUI -n ORIGINAL -R REVIEWER -p PROVIDER -C WORKTREE -a` resumes an existing reviewer session. Creating a reviewer session requires both `-N -a`. `llmd return -g GUI -n ORIGINAL -a` deactivates the reviewer and resumes the original's recorded exact provider session. Review cycles and slot/session transitions are durable and survive rebuilding the SQLite index. Provider execution in automated tests uses fake processes only.
 
 Starting a new provider session uses a bounded two-stage bootstrap. The dispatcher first persists a pending launch, then runs one fixed initialization-only model turn in a read-only/headless provider invocation. Codex's JSONL `thread.started.thread_id` or AGY's JSON `conversation_id` is captured from that specific child process, associated with the intended slot, and immediately resumed in the interactive pane. The user's actual assignment is not sent during bootstrap. A new slot start therefore uses one initialization model turn; continuing or reusing an existing session does not.
 
@@ -58,7 +65,7 @@ If the bootstrap exits unexpectedly or cannot return one successful, unambiguous
 
 `llmd open` creates opaque per-slot `PaneSpec` requests and delegates grouping and execution to the reusable `terminal_launcher` package. Preview is dry-run; pass `-a` to submit it to Windows Terminal. Unresolved or pending session IDs are listed for manual recovery and are never turned into a guessed resume command. The dispatcher does not construct `wt.exe` commands itself.
 
-The pane wrapper prompts after a normal zero exit. Keep active is the default; a nonzero exit or an unexpected wrapper/terminal shutdown leaves the current session and slot state unchanged.
+The pane wrapper prompts after a normal zero exit. Keep active is the default; a nonzero exit or an unexpected wrapper/terminal shutdown leaves the current session and slot state unchanged. Switching to an existing or new agent validates the destination before changing the departing slot's lifecycle.
 
 ## Current Status
 

@@ -1,3 +1,4 @@
+import hashlib
 import json
 from io import StringIO
 
@@ -129,6 +130,444 @@ def test_explicit_limit_with_all_and_global_cap(tmp_path):
     assert scoped['omitted'] == 9
 
 
+def test_list_history_count_expands_newest_activation_rows_in_scoped_and_global_json(tmp_path):
+    home = tmp_path / "registry"
+    run(home, "register", "P", "A", "-p", "codex", "-i", "same-id")
+    run(home, "register", "P", "A", "-p", "agy", "-i", "agy-id", "-s")
+    run(home, "register", "P", "A", "-p", "codex", "-i", "same-id", "-s")
+
+    scoped = json.loads(run(home, "list", "-g", "P", "-N", "2", "-j")[1])
+    history = scoped["slots"][0]["activation_history"]
+    assert [item["native_session_id"] for item in history] == ["same-id", "agy-id"]
+    assert history[0]["selected"] is True
+    assert history[1]["selected"] is False
+    assert all(item["activated_at"] for item in history)
+
+    global_result = json.loads(run(home, "list", "-N", "1", "-j")[1])
+    assert global_result["conversations"][0]["slots"][0]["activation_history"][0]["native_session_id"] == "same-id"
+
+    default = json.loads(run(home, "list", "-g", "P", "-N", "0", "-j")[1])
+    assert "activation_history" not in default["slots"][0]
+
+
+def test_list_completed_filter_is_consistent_between_global_and_scoped_views(tmp_path):
+    home = tmp_path / "registry"
+    for name in ("Active", "Inactive", "Completed"):
+        run(home, "register", "P", name)
+    run(home, "slot", "disable", "-g", "P", "-n", "Inactive", "-a")
+    run(home, "slot", "complete", "-g", "P", "-n", "Completed", "-a")
+
+    for args in (("list", "-g", "P", "-j"), ("list", "-j")):
+        data = json.loads(run(home, *args)[1])
+        slots = data["slots"] if "slots" in data else data["conversations"][0]["slots"]
+        assert {slot["state"] for slot in slots} == {"active", "inactive"}
+    for args in (("list", "-g", "P", "-A", "-j"), ("list", "-A", "-j")):
+        data = json.loads(run(home, *args)[1])
+        slots = data["slots"] if "slots" in data else data["conversations"][0]["slots"]
+        assert {slot["state"] for slot in slots} == {"active", "inactive", "completed"}
+
+
+def test_list_rejects_negative_history_count(tmp_path):
+    with pytest.raises(ContinuityError, match="history count"):
+        run(tmp_path / "registry", "list", "-N", "-1")
+
+
+def test_exit_option_five_resumes_only_inactive_exact_same_gui_session(tmp_path, monkeypatch):
+    from io import StringIO
+
+    from agent_continuity.dispatcher_cli import _switch_to_existing_agent
+
+    class TTY(StringIO):
+        def isatty(self):
+            return True
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("P", "Source", provider="codex", session_id="source-id")
+    dispatcher.register("P", "Target", provider="agy", session_id="target-id")
+    dispatcher.register("Other", "OtherTarget", provider="codex", session_id="other-id")
+    dispatcher.set_slot_state(gui="P", name="Target", state="inactive", apply=True)
+    dispatcher.set_slot_state(gui="Other", name="OtherTarget", state="inactive", apply=True)
+    source = dispatcher.get_slot(gui="P", name="Source")
+
+    def choose(items, **kwargs):
+        assert [item["name"] for item in items] == ["Target"]
+        assert kwargs["filter_key"] == "search_text"
+        return "selected", items[0]
+
+    monkeypatch.setattr("agent_continuity.interactive.select_item", choose)
+    launched = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
+                        lambda dispatcher, **kwargs: launched.append(kwargs["slot_id"]) or 0)
+    assert _switch_to_existing_agent(dispatcher, source, input_stream=TTY(""), output_stream=TTY()) == 0
+    assert launched == [dispatcher.get_slot(gui="P", name="Target")["slot_id"]]
+    assert dispatcher.get_slot(gui="P", name="Source")["state"] == "inactive"
+    assert dispatcher.get_slot(gui="P", name="Target")["state"] == "active"
+    assert [row["native_session_id"] for row in dispatcher.get_slot(gui="P", name="Target")["history"]] == ["target-id", "target-id"]
+    assert dispatcher.get_slot(gui="Other", name="OtherTarget")["state"] == "inactive"
+
+
+def test_exit_option_five_refuses_stale_picker_session_without_mutating_slots(tmp_path, monkeypatch):
+    from io import StringIO
+
+    from agent_continuity.dispatcher_cli import _switch_to_existing_agent
+
+    class TTY(StringIO):
+        def isatty(self):
+            return True
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("P", "Source", provider="codex", session_id="source")
+    dispatcher.register("P", "Target", provider="agy", session_id="old-target")
+    dispatcher.set_slot_state(gui="P", name="Target", state="inactive", apply=True)
+    source = dispatcher.get_slot(gui="P", name="Source")
+
+    def change_during_picker(items, **kwargs):
+        selected = dict(items[0])
+        dispatcher.attach_session(gui="P", name="Target", provider="agy", session_id="new-target",
+                                  apply=True, provenance="concurrent-change")
+        return "selected", selected
+
+    monkeypatch.setattr("agent_continuity.interactive.select_item", change_during_picker)
+    assert _switch_to_existing_agent(dispatcher, source, input_stream=TTY(""), output_stream=TTY()) == 2
+    assert dispatcher.get_slot(gui="P", name="Source")["state"] == "active"
+    assert dispatcher.get_slot(gui="P", name="Target")["state"] == "inactive"
+    assert dispatcher.get_slot(gui="P", name="Target")["current"]["native_session_id"] == "new-target"
+
+
+def test_exit_option_five_rejects_destination_with_missing_or_pending_session(tmp_path, monkeypatch):
+    from io import StringIO
+
+    from agent_continuity.dispatcher_cli import _switch_to_existing_agent
+
+    class TTY(StringIO):
+        def isatty(self):
+            return True
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("P", "Source", provider="codex", session_id="source-id")
+    dispatcher.create_slot(gui="P", name="NoSession", apply=True)
+    dispatcher.set_slot_state(gui="P", name="NoSession", state="inactive", apply=True)
+    source = dispatcher.get_slot(gui="P", name="Source")
+    assert _switch_to_existing_agent(dispatcher, source, input_stream=TTY(""), output_stream=TTY()) == 0
+    assert dispatcher.get_slot(gui="P", name="Source")["state"] == "active"
+
+
+def test_exit_option_six_requires_confirmation_before_slot_or_pending_launch(tmp_path, monkeypatch):
+    from io import StringIO
+
+    from agent_continuity.dispatcher_cli import _create_agent_after_exit
+
+    class TTY(StringIO):
+        def isatty(self):
+            return True
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("P", "Source", provider="codex", session_id="source-id")
+    source = dispatcher.get_slot(gui="P", name="Source")
+    assert _create_agent_after_exit(dispatcher, source, input_stream=TTY("New\n1\n\nno\n"),
+                                    output_stream=TTY()) == 0
+    assert [row["name"] for row in dispatcher.list_slots(gui="P", active_only=False)] == ["Source"]
+    assert dispatcher.list_pending_launches() == []
+
+
+def test_exit_option_six_prepares_new_slot_only_after_explicit_authorization(tmp_path, monkeypatch):
+    from io import StringIO
+
+    from agent_continuity.dispatcher_cli import _create_agent_after_exit
+
+    class TTY(StringIO):
+        def isatty(self):
+            return True
+
+    work = tmp_path / "work"
+    work.mkdir()
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("P", "Source", provider="codex", session_id="source-id")
+    source = dispatcher.get_slot(gui="P", name="Source")
+    seen = []
+
+    def fake_run(dispatcher, **kwargs):
+        seen.append(kwargs)
+        return 0
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane", fake_run)
+    assert _create_agent_after_exit(dispatcher, source, input_stream=TTY(f"New\n2\n{work}\ny\n"),
+                                    output_stream=TTY()) == 0
+    target = dispatcher.get_slot(gui="P", name="New")
+    assert target["state"] == "active" and not target["current"]
+    assert dispatcher.list_pending_launches()[0]["slot_id"] == target["slot_id"]
+    assert seen[0]["transition_source"]["slot_id"] == source["slot_id"]
+
+
+def test_review_and_return_round_trip_preserves_exact_cross_provider_sessions(tmp_path, monkeypatch):
+    from argparse import Namespace
+    from io import StringIO
+
+    from agent_continuity.dispatcher_cli import _return, _review
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    original_cwd = tmp_path / "original"
+    reviewer_cwd = tmp_path / "reviewer"
+    original_cwd.mkdir()
+    reviewer_cwd.mkdir()
+    dispatcher.create_gui("P", apply=True)
+    dispatcher.create_slot(gui="P", name="Implementer", apply=True)
+    dispatcher.attach_session(gui="P", name="Implementer", provider="codex", session_id="original-native",
+                              cwd=str(original_cwd), apply=True, provenance="test-cwd")
+    dispatcher.create_slot(gui="P", name="IndependentReview", apply=True)
+    dispatcher.attach_session(gui="P", name="IndependentReview", provider="agy", session_id="review-native",
+                              cwd=str(reviewer_cwd), apply=True, provenance="test-cwd")
+    dispatcher.set_slot_state(gui="P", name="IndependentReview", state="inactive", apply=True)
+    launched = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
+                        lambda dispatcher, **kwargs: launched.append(kwargs["slot_id"]) or 0)
+
+    review_args = Namespace(gui="P", agent_name="Implementer", reviewer_agent="IndependentReview",
+                            provider="agy", new=False, apply=True, cwd=str(reviewer_cwd), environment=None)
+    assert _review(dispatcher, review_args, StringIO(), StringIO()) == 0
+    original = dispatcher.get_slot(gui="P", name="Implementer")
+    reviewer = dispatcher.get_slot(gui="P", name="IndependentReview")
+    assert original["state"] == "inactive" and original["current"]["native_session_id"] == "original-native"
+    assert reviewer["state"] == "active" and reviewer["current"]["native_session_id"] == "review-native"
+    cycle = dispatcher.active_review_cycle(slot_id=original["slot_id"])
+    assert cycle and cycle["reviewer_slot_id"] == reviewer["slot_id"]
+    assert dispatcher.get_slot(gui="P", name="IndependentReview")["history"][-1]["native_session_id"] == "review-native"
+
+    assert _return(dispatcher, Namespace(gui="P", agent_name="Implementer", apply=True),
+                   StringIO(), StringIO()) == 0
+    original = dispatcher.get_slot(gui="P", name="Implementer")
+    reviewer = dispatcher.get_slot(gui="P", name="IndependentReview")
+    assert original["state"] == "active" and original["current"]["native_session_id"] == "original-native"
+    assert reviewer["state"] == "inactive" and reviewer["current"]["native_session_id"] == "review-native"
+    assert dispatcher.active_review_cycle(slot_id=original["slot_id"]) is None
+    assert len(original["history"]) == 2 and len(reviewer["history"]) == 2
+    listed = json.loads(run(tmp_path / "registry", "list", "-g", "P", "-j")[1])
+    assert next(row for row in listed["slots"] if row["name"] == "Implementer")["current_session_id"] == "original-native"
+    _, continue_json = run(tmp_path / "registry", "continue", "-g", "P", "-n", "Implementer", "-j")
+    assert json.loads(continue_json)["slot"]["current"]["native_session_id"] == "original-native"
+    assert dispatcher.materializer.get_session("codex", original["current"]["environment_id"],
+                                               "original-native").cwd_native == str(original_cwd)
+    assert dispatcher.materializer.get_session("agy", reviewer["current"]["environment_id"],
+                                               "review-native").cwd_native == str(reviewer_cwd)
+    cycles = dispatcher._rows("SELECT status FROM dispatcher_review_cycles")
+    assert [row["status"] for row in cycles] == ["returned"]
+    dispatcher.materializer.db_path.unlink()
+    dispatcher.materializer.rebuild_from_spools()
+    assert dispatcher._rows("SELECT status FROM dispatcher_review_cycles") == [{"status": "returned"}]
+
+
+def test_review_new_provider_session_requires_new_and_apply(tmp_path):
+    from argparse import Namespace
+    from io import StringIO
+
+    from agent_continuity.dispatcher_cli import _review
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("P", "Implementer", provider="codex", session_id="original")
+    args = Namespace(gui="P", agent_name="Implementer", reviewer_agent="Reviewer", provider="agy",
+                     new=True, apply=False, cwd=None, environment=None)
+    assert _review(dispatcher, args, StringIO(), StringIO()) == 0
+    assert [row["name"] for row in dispatcher.list_slots(gui="P", active_only=False)] == ["Implementer"]
+    assert dispatcher.list_pending_launches() == []
+
+
+def test_review_new_session_uses_fake_bootstrap_and_atomically_selects_exact_id(tmp_path, monkeypatch):
+    import subprocess
+    from argparse import Namespace
+    from io import StringIO
+
+    from agent_continuity.dispatcher_cli import _review
+
+    class TTY(StringIO):
+        def isatty(self):
+            return True
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("P", "Implementer", provider="codex", session_id="original")
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv", lambda *a, **k: ["fake-bootstrap"])
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", lambda *a, **k: ["fake-resume"])
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(list(argv))
+        output = '{"conversation_id":"review-created","status":"SUCCESS"}' if argv == ["fake-bootstrap"] else ""
+        return subprocess.CompletedProcess(argv, 0, stdout=output)
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", fake_run)
+    args = Namespace(gui="P", agent_name="Implementer", reviewer_agent="Reviewer", provider="agy",
+                     new=True, apply=True, cwd=str(tmp_path), environment=None)
+    assert _review(dispatcher, args, TTY("1\n"), TTY()) == 0
+    original = dispatcher.get_slot(gui="P", name="Implementer")
+    reviewer = dispatcher.get_slot(gui="P", name="Reviewer")
+    assert original["state"] == "inactive"
+    assert reviewer["state"] == "active"
+    assert reviewer["current"]["native_session_id"] == "review-created"
+    assert dispatcher.active_review_cycle(slot_id=original["slot_id"])["reviewer_session_id"] == "review-created"
+    assert dispatcher.list_pending_launches() == []
+    assert seen == [["fake-bootstrap"], ["fake-resume"]]
+
+
+def test_review_bootstrap_failure_keeps_pending_cycle_and_refuses_automatic_retry(tmp_path, monkeypatch):
+    import subprocess
+    from argparse import Namespace
+    from io import StringIO
+
+    from agent_continuity.dispatcher_cli import _review
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("P", "Implementer", provider="codex", session_id="original")
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv", lambda *a, **k: ["fake-bootstrap"])
+    calls = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run",
+                        lambda argv, **kwargs: calls.append(argv) or subprocess.CompletedProcess(argv, 1, stdout=""))
+    args = Namespace(gui="P", agent_name="Implementer", reviewer_agent="Reviewer", provider="agy",
+                     new=True, apply=True, cwd=None, environment=None)
+    assert _review(dispatcher, args, StringIO(""), StringIO()) == 1
+    original = dispatcher.get_slot(gui="P", name="Implementer")
+    reviewer = dispatcher.get_slot(gui="P", name="Reviewer")
+    assert original["state"] == "active" and reviewer["state"] == "active" and reviewer["current"] is None
+    assert dispatcher.open_review_cycle(slot_id=original["slot_id"])["status"] == "pending"
+    with pytest.raises(ContinuityError, match="open review cycle"):
+        _review(dispatcher, args, StringIO(""), StringIO())
+    assert calls == [["fake-bootstrap"]]
+
+
+def test_exit_option_six_fake_bootstrap_deactivates_source_only_after_capture(tmp_path, monkeypatch):
+    import subprocess
+    from io import StringIO
+
+    from agent_continuity.dispatcher_cli import _create_agent_after_exit
+
+    class TTY(StringIO):
+        def isatty(self):
+            return True
+
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("P", "Source", provider="codex", session_id="source-id")
+    source = dispatcher.get_slot(gui="P", name="Source")
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv", lambda *a, **k: ["fake-bootstrap"])
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", lambda *a, **k: ["fake-resume"])
+
+    def fake_run(argv, **kwargs):
+        output = ('{"type":"thread.started","thread_id":"new-agent-id"}\n{"type":"turn.completed"}'
+                  if argv == ["fake-bootstrap"] else "")
+        return subprocess.CompletedProcess(argv, 0, stdout=output)
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", fake_run)
+    output = TTY()
+    result = _create_agent_after_exit(dispatcher, source,
+                                      input_stream=TTY(f"New\n1\n{cwd}\ny\n1\n"), output_stream=output)
+    new_agent = dispatcher.get_slot(gui="P", name="New")
+    assert result == 0, output.getvalue()
+    assert dispatcher.get_slot(gui="P", name="Source")["state"] == "inactive"
+    assert new_agent["state"] == "active" and new_agent["current"]["native_session_id"] == "new-agent-id"
+    assert dispatcher.list_pending_launches() == []
+
+
+def test_exit_option_six_failed_bootstrap_keeps_source_active_and_pending_for_recovery(tmp_path, monkeypatch):
+    import subprocess
+    from io import StringIO
+
+    from agent_continuity.dispatcher_cli import _create_agent_after_exit
+
+    class TTY(StringIO):
+        def isatty(self):
+            return True
+
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("P", "Source", provider="codex", session_id="source-id")
+    source = dispatcher.get_slot(gui="P", name="Source")
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv", lambda *a, **k: ["fake-bootstrap"])
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run",
+                        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, stdout=""))
+    result = _create_agent_after_exit(dispatcher, source,
+                                      input_stream=TTY(f"New\n1\n{cwd}\ny\n"), output_stream=TTY())
+    assert result == 1
+    assert dispatcher.get_slot(gui="P", name="Source")["state"] == "active"
+    pending = dispatcher.list_pending_launches()
+    new_agent = dispatcher.get_slot(gui="P", name="New")
+    assert len(pending) == 1 and pending[0]["slot_id"] == new_agent["slot_id"]
+    assert new_agent["current"] is None
+
+
+def test_concurrent_agent_transitions_only_commit_one_stale_head(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("P", "Source", provider="codex", session_id="source")
+    dispatcher.register("P", "Target", provider="agy", session_id="target")
+    dispatcher.set_slot_state(gui="P", name="Target", state="inactive", apply=True)
+    source = dispatcher.get_slot(gui="P", name="Source")
+    target = dispatcher.get_slot(gui="P", name="Target")
+    args = dict(gui="P", source_slot_id=source["slot_id"], destination_slot_id=target["slot_id"],
+                provider="agy", environment_id=target["current"]["environment_id"], session_id="target",
+                source_state="inactive", destination_state="active",
+                expected_source=("codex", source["current"]["environment_id"], "source"),
+                expected_destination=("agy", target["current"]["environment_id"], "target"), apply=True)
+
+    def transition():
+        try:
+            dispatcher.complete_agent_transition(**args)
+            return "applied"
+        except ContinuityError:
+            return "stale"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: transition(), range(2)))
+    assert sorted(outcomes) == ["applied", "stale"]
+    assert dispatcher.get_slot(gui="P", name="Source")["state"] == "inactive"
+    assert dispatcher.get_slot(gui="P", name="Target")["state"] == "active"
+    assert len(dispatcher.get_slot(gui="P", name="Target")["history"]) == 2
+
+
+def test_exit_option_five_prioritizes_linked_original_and_returns_review_cycle(tmp_path, monkeypatch):
+    from io import StringIO
+
+    from agent_continuity.dispatcher_cli import _review_cycle_payload, _switch_to_existing_agent
+
+    class TTY(StringIO):
+        def isatty(self):
+            return True
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    for name, provider, session in (("Original", "codex", "original"),
+                                    ("Reviewer", "agy", "reviewer"),
+                                    ("Other", "codex", "other")):
+        dispatcher.register("P", name, provider=provider, session_id=session)
+    dispatcher.set_slot_state(gui="P", name="Reviewer", state="inactive", apply=True)
+    dispatcher.set_slot_state(gui="P", name="Other", state="inactive", apply=True)
+    original = dispatcher.get_slot(gui="P", name="Original")
+    reviewer = dispatcher.get_slot(gui="P", name="Reviewer")
+    cycle = _review_cycle_payload(original, reviewer["slot_id"], reviewer["current"])
+    dispatcher.complete_agent_transition(
+        gui="P", source_slot_id=original["slot_id"], destination_slot_id=reviewer["slot_id"],
+        provider="agy", environment_id=reviewer["current"]["environment_id"], session_id="reviewer",
+        source_state="inactive", destination_state="active",
+        expected_source=("codex", original["current"]["environment_id"], "original"),
+        expected_destination=("agy", reviewer["current"]["environment_id"], "reviewer"),
+        review_cycle=cycle, apply=True,
+    )
+    reviewer = dispatcher.get_slot(gui="P", name="Reviewer")
+    chosen = []
+
+    def choose(items, **kwargs):
+        assert [row["name"] for row in items][:2] == ["Original", "Other"]
+        chosen.append(items[0]["name"])
+        return "selected", items[0]
+
+    monkeypatch.setattr("agent_continuity.interactive.select_item", choose)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane", lambda *a, **k: 0)
+    assert _switch_to_existing_agent(dispatcher, reviewer, input_stream=TTY(""), output_stream=TTY()) == 0
+    assert chosen == ["Original"]
+    assert dispatcher.get_slot(gui="P", name="Original")["state"] == "active"
+    assert dispatcher.get_slot(gui="P", name="Reviewer")["state"] == "inactive"
+    assert dispatcher._rows("SELECT status FROM dispatcher_review_cycles")[0]["status"] == "returned"
+
+
 def test_retry_after_partial_registration(tmp_path, monkeypatch):
     import pytest
 
@@ -248,6 +687,179 @@ def test_positional_start_new_apply_creates_pending_without_mocked_provider_call
     service = DispatcherService(home_dir=home)
     assert service.get_slot(gui="P", name="A")["state"] == "active"
     assert service.list_pending_launches(gui="P")
+
+
+def test_named_start_preview_matches_positional_and_does_not_register(tmp_path):
+    home = tmp_path / "registry"
+    parser = build_parser()
+    output = StringIO()
+
+    assert dispatch(
+        parser.parse_args(["-H", str(home), "start", "-g", "P", "-n", "A", "-p", "codex"]),
+        parser,
+        input_stream=StringIO(),
+        output_stream=output,
+    ) == 0
+
+    service = DispatcherService(home_dir=home)
+    assert service.list_guis() == []
+    assert "would register" in output.getvalue().lower()
+    assert "requires --new -a" in output.getvalue()
+
+
+def test_named_start_requires_new_and_apply_then_registers_once(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    parser = build_parser()
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane", lambda *a, **k: 0)
+
+    args = parser.parse_args(["-H", str(home), "start", "-g", "P", "-n", "A", "-p", "codex", "-N", "-a"])
+    assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+
+    service = DispatcherService(home_dir=home)
+    assert [gui["alias"] for gui in service.list_guis()] == ["P"]
+    assert len(service.list_slots(gui="P", active_only=False)) == 1
+    assert len(service.list_pending_launches(gui="P")) == 1
+
+
+def test_named_start_apply_without_new_never_creates_pending_launch(tmp_path):
+    home = tmp_path / "registry"
+    parser = build_parser()
+    args = parser.parse_args(["-H", str(home), "start", "-g", "P", "-n", "A", "-p", "codex", "-a"])
+
+    with pytest.raises(ContinuityError, match="requires --new"):
+        dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())
+
+    assert DispatcherService(home_dir=home).list_guis() == []
+
+
+def test_start_with_selected_session_resumes_without_creating_duplicate_launch(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.register("P", "A", provider="codex", session_id="selected")
+    launches = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
+                        lambda dispatcher, **kw: launches.append(kw["launch_id"]) or 0)
+    parser = build_parser()
+
+    args = parser.parse_args(["-H", str(home), "start", "-g", "P", "-n", "A", "-p", "codex", "-a"])
+    assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+
+    assert launches == [None]
+    assert service.get_slot(gui="P", name="A")["current"]["native_session_id"] == "selected"
+    assert service.list_pending_launches(gui="P") == []
+
+
+def test_start_with_different_provider_requires_explicit_switch_command(tmp_path):
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.register("P", "A", provider="codex", session_id="selected")
+    parser = build_parser()
+    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "agy", "-a"])
+
+    with pytest.raises(ContinuityError, match="provider differs.*switch"):
+        dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())
+
+    assert [item["native_session_id"] for item in service.get_slot(gui="P", name="A")["history"]] == ["selected"]
+
+
+def test_prepare_start_rejects_a_stale_selected_session_snapshot(tmp_path):
+    service = DispatcherService(home_dir=tmp_path / "registry")
+    service.register("P", "A", provider="codex", session_id="old")
+    expected = service.get_slot(gui="P", name="A")["current"]
+    service.attach_session(gui="P", name="A", provider="codex", session_id="new", apply=True)
+
+    with pytest.raises(ContinuityError, match="selection changed"):
+        service.prepare_start(
+            gui="P", name="A", provider="agy", expected_current=(
+                expected["provider"], expected["environment_id"], expected["native_session_id"]
+            ), apply=True,
+        )
+
+    assert service.list_pending_launches(gui="P") == []
+
+
+def test_start_refuses_second_pending_launch_before_any_new_provider_call(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.create_gui("P", apply=True)
+    service.create_slot(gui="P", name="A", apply=True)
+    first = service.begin_launch(gui="P", name="A", provider="codex", apply=True)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
+                        lambda *a, **kw: pytest.fail("pending launch must not be retried"))
+    parser = build_parser()
+    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "agy", "-N", "-a"])
+
+    with pytest.raises(ContinuityError, match="already pending"):
+        dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())
+
+    assert [item["launch_id"] for item in service.list_pending_launches(gui="P")] == [
+        first["details"]["launch_id"]
+    ]
+
+
+def test_start_refuses_to_replace_an_in_use_selected_session(tmp_path):
+    from agent_continuity.dispatcher_cli import _session_runtime_lock
+
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.register("P", "A", provider="codex", session_id="running")
+    current = service.get_slot(gui="P", name="A")["current"]
+    lock_key = hashlib.sha256(
+        f"{current['provider']}\0{current['environment_id']}\0{current['native_session_id']}".encode()
+    ).hexdigest()[:24]
+    parser = build_parser()
+    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "agy", "-N", "-a"])
+
+    with _session_runtime_lock(service, f"session-{lock_key}.lock"), pytest.raises(ContinuityError, match="in use"):
+        dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())
+
+    assert [item["native_session_id"] for item in service.get_slot(gui="P", name="A")["history"]] == ["running"]
+
+
+def test_start_requires_explicit_reactivation_for_inactive_slot(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.create_gui("P", apply=True)
+    service.create_slot(gui="P", name="A", apply=True)
+    service.set_slot_state(gui="P", name="A", state="inactive", apply=True)
+    parser = build_parser()
+    denied = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "codex", "-N", "-a"])
+
+    with pytest.raises(ContinuityError, match="inactive.*reactivate"):
+        dispatch(denied, parser, input_stream=StringIO(), output_stream=StringIO())
+    assert service.list_pending_launches(gui="P") == []
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane", lambda *a, **kw: 0)
+    allowed = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "codex", "-N", "-r", "-a"])
+    assert dispatch(allowed, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+    assert service.get_slot(gui="P", name="A")["state"] == "active"
+    assert len(service.list_pending_launches(gui="P")) == 1
+
+
+def test_start_new_prompt_cancel_leaves_selected_session_and_history_unchanged(tmp_path, monkeypatch):
+    class TTYInput(StringIO):
+        def isatty(self):
+            return True
+
+    class TTYOutput(StringIO):
+        def isatty(self):
+            return True
+
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.register("P", "A", provider="codex", session_id="selected")
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
+                        lambda *a, **kw: pytest.fail("canceled new start must not launch"))
+    parser = build_parser()
+    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "agy", "-N", "-a"])
+    output = TTYOutput()
+
+    assert dispatch(args, parser, input_stream=TTYInput("n\n"), output_stream=output) == 0
+
+    slot = service.get_slot(gui="P", name="A")
+    assert [item["native_session_id"] for item in slot["history"]] == ["selected"]
+    assert service.list_pending_launches(gui="P") == []
+    assert "canceled" in output.getvalue().lower()
 
 
 def test_continue_historical_provider_and_exact_id_selection(tmp_path, monkeypatch):

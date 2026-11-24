@@ -162,6 +162,97 @@ def test_bootstrap_launch_uses_supported_headless_capture_arguments(tmp_path, mo
         assert argv[4] == "json"
 
 
+@pytest.mark.parametrize(("provider", "previous_provider"), [("codex", "agy"), ("agy", "codex")])
+def test_post_exit_option_four_reuses_opposite_provider_without_creating_slot(
+    tmp_path, monkeypatch, provider, previous_provider
+):
+    dispatcher, slot = _dispatcher_with_session(tmp_path, provider=provider, session_id=f"{provider}-current")
+    dispatcher.attach_session(gui="AgentImprovement", name="AgentPerf", provider=previous_provider,
+                              session_id=f"{previous_provider}-previous", apply=True)
+    dispatcher.attach_session(gui="AgentImprovement", name="AgentPerf", provider=provider,
+                              session_id=f"{provider}-current", apply=True)
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv",
+                        lambda dispatcher, selected_provider, session_id, **kw: [selected_provider, session_id])
+    output = StringIO()
+
+    code = _run_pane(
+        dispatcher,
+        slot_id=slot["slot_id"],
+        launch_id=None,
+        input_stream=StringIO("4\nr\n\n"),
+        output_stream=output,
+    )
+
+    current = dispatcher.get_slot(gui="AgentImprovement", name="AgentPerf")
+    assert code == 0
+    assert len(calls) == 2
+    assert calls[1] == [previous_provider, f"{previous_provider}-previous"]
+    assert current["current"]["provider"] == previous_provider
+    assert len(current["history"]) == 4
+    assert len(dispatcher.list_slots(gui="AgentImprovement", active_only=False)) == 1
+    assert f"[4] Switch to {previous_provider.upper()}" in output.getvalue()
+
+
+def test_post_exit_option_four_requires_explicit_confirmation_before_new_provider_bootstrap(tmp_path, monkeypatch):
+    dispatcher, slot = _dispatcher_with_session(tmp_path, provider="codex", session_id="codex-current")
+    outputs = iter((
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=0,
+                       stdout=json.dumps({"conversation_id": "agy-new", "status": "SUCCESS", "response": "READY"}),
+                       stderr=""),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ))
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return next(outputs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv", lambda *a, **kw: ["agy-bootstrap"])
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv",
+                        lambda dispatcher, selected_provider, session_id, **kw: [selected_provider, session_id])
+
+    code = _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
+                     input_stream=StringIO("4\ny\n\n"), output_stream=StringIO())
+
+    current = dispatcher.get_slot(gui="AgentImprovement", name="AgentPerf")
+    assert code == 0
+    assert len(calls) == 3
+    assert current["current"]["provider"] == "agy"
+    assert current["current"]["native_session_id"] == "agy-new"
+    assert len(current["history"]) == 2
+
+
+def test_post_exit_option_four_cancel_does_not_bootstrap_new_provider(tmp_path, monkeypatch):
+    dispatcher, slot = _dispatcher_with_session(tmp_path, provider="codex", session_id="codex-current")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv",
+                        lambda dispatcher, selected_provider, session_id, **kw: [selected_provider, session_id])
+    code = _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
+                     input_stream=StringIO("4\nn\n"), output_stream=StringIO())
+
+    current = dispatcher.get_slot(gui="AgentImprovement", name="AgentPerf")
+    assert code == 0
+    assert len(calls) == 1
+    assert current["current"]["native_session_id"] == "codex-current"
+    assert len(current["history"]) == 1
+    assert dispatcher.list_pending_launches(gui="AgentImprovement") == []
+
+
 def test_new_codex_launch_bootstraps_captures_associates_then_resumes_exact_session(tmp_path, monkeypatch):
     continuity = ContinuityService(tmp_path / "registry")
     dispatcher = DispatcherService(continuity)

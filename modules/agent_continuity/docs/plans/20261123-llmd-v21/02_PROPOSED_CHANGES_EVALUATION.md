@@ -17,7 +17,7 @@
 7. After the user chooses post-exit option 1/2/3/(4), print the scoped LLMD listing for the current GUI reflecting the resulting state.
 8. Make GUI/slot creation automatic when `llmd start -g GUI -n AGENT` is used, just as the positional `llmd start GUI AGENT` already does. The user reproduced `Agent slot not found` using the named syntax.
 
-These eight user requests are decomposed into **LLMD-01–LLMD-18** in the plan; no request should be lost merely because several are presentation details.
+These eight original user requests are decomposed into **LLMD-01–LLMD-18** in the plan. Subsequent implementation handoffs added LLMD-19 reviewer cycles and LLMD-20/21 exit-menu switching and creation; option 5 is the general inactive-agent picker with linked original prioritized, while option 4 remains same-slot provider switching. The current contract and acceptance table are in `00_IMPLEMENTATION_PLAN.md`.
 
 ## 2. Proposed user-visible interfaces
 
