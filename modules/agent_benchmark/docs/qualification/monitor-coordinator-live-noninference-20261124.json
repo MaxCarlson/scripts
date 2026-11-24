@@ -28,7 +28,8 @@
         "restart_inhibited": false,
         "gpu_admission_permitted": true,
         "recovery_required_reason": null,
-        "gaming": "inactive"
+        "gaming": "inactive",
+        "inference_and_gpu_inference_sections": "not captured in the initial sanitized projection"
       }
     },
     "lm_studio_model_inventory": {
@@ -67,7 +68,8 @@
       "monitor_timeout_ms": 750,
       "within_monitor_timeout": true,
       "slowest_observation_ms": 637,
-      "safety_restrictions_active": [],
+      "safety_restrictions_active": null,
+      "safety_restriction_qualification": "partial; maintenance, restart inhibition, recovery, GPU admission, and gaming fields were observed, but inference/gpu_inference section details were not captured",
       "benchmark_execution_ready": false,
       "final_post_cleanup_probe": {"exit_code": 1, "latency_ms": 2035, "result": "timeout", "listener_on_1235": false, "runtime_pid_53788_present": false},
       "reason": "LM Studio model inventory returned zero models; after cleanup the Coordinator no longer answered and its prior listener/process were absent. No restart was attempted."
@@ -199,6 +201,7 @@
     "Docker Desktop engine returned HTTP 500 and a Docker version request hung; no container route can be qualified until daemon startup is healthy under an authorized low-contention window.",
     "LM Studio reported zero models, so no benchmark is execution-ready.",
     "Coordinator port 1235 had no listener and its prior runtime PID was absent on the final post-cleanup check; cause is unknown and it was not restarted.",
+    "Coordinator inference/gpu_inference safety section details were not captured before the runtime became unavailable; the full safety restriction gate is therefore unqualified.",
     "Production Monitor on port 8788 was absent; no authenticated Monitor status or runtime contract could be verified.",
     "No Harbor image inventory was read because the Docker engine was unavailable; no image was pulled or container created.",
     "KRig hashrate/share telemetry was not collected, so the transient GPU telemetry change cannot be translated into mining output impact."
