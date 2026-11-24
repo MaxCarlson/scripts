@@ -1,16 +1,18 @@
 # Status
 
-- State: final repository-only isolation corrections are implemented and locally validated; draft PR #37 remains open pending final clean/incremental setup qualification.
+- State: final repository-only isolation corrections are implemented and locally validated; draft PR #37 remains open because a blank-environment clean setup was not replayed on the final bootstrap revision.
 - Branch: `fix/isolated-root-setup-20261124`
 - Base: `b60155b94efb54da703ed166fb9a01bb8982d1d4`
 - Workspace: `C:\Users\mcarls\src\scripts\.worktrees\isolated-root-setup-20261124`
-- Latest implementation commit: `97659e67c97a54900106ffe3b7b085c117d86de0`; plan metadata is being aligned with this pushed checkpoint.
+- Latest implementation commit: `97659e67c97a54900106ffe3b7b085c117d86de0`; plan metadata update follows this checkpoint.
 - PR: `https://github.com/MaxCarlson/scripts/pull/37` (draft, open). GitHub mergeability metadata varied between reads; local merge-tree against base was clean.
 - Follow-up corrections include package import detection, managed launcher cleanup, dependency compatibility, venv identity by `sys.prefix`, recognition of abbreviated/combined repository-only flags, and sanitization of inherited Python/pip destination overrides.
 - Private source: pinned `pscripts` Gitlink `d25e095f1ced76ec9e7904e0bf12db592defc798`; nested downloader dependency `af6bb8b1db14c8434c0a9da446ec49bbf067ab9b` is initialized.
 - Isolation behavior: repository-only setup resolves to the invoked checkout, validates venv/source/output paths before installation, propagates mode through subprocesses, retains package/launcher installation, and skips user/system integration. It ignores inherited `SCRIPTS` and `SKIP_VENV_BOOTSTRAP`, rejects incompatible external venv selection, and removes common Python/pip destination overrides. This mode is not a general-purpose security sandbox.
-- Full setup: an earlier online repository-only run exited 0, installed public/private modules, and generated launchers. The earlier online incremental run also exited 0; `scripts_setup` was correctly recognized as installed and skipped. The final incremental run was not repeated because the existing CPU-only vdedup hook force-reinstalls its GPU requirements each time.
-- Incremental qualification evidence: all 55 public module entries processed, private setup processed all 8 modules, and launcher refresh completed. 164 commands matched the manifest and wrappers, with zero missing/colliding/unmanaged/obsolete wrappers. `mangadl`, `ytaedl`, `aebndl`, `runmux`, and `termdash` help commands passed from an external directory with `PYTHONPATH` cleared.
+- Full setup: an earlier online repository-only run exited 0, installed public/private modules, and generated launchers. It was not confirmed to start from a blank environment, so it is not claimed as clean-install qualification.
+- Final incremental qualification: on the current bootstrap revision, `setup.py --repository-only --no-update-help -v` exited 0. It processed all 55 public module entries, all 8 private modules, and refreshed launchers. The existing CPU-only vdedup hook force-reinstalled its GPU requirements; all requirement wheels were served from the local pip cache, with no network download. This confirms incremental operation, not CUDA qualification or idempotence of that hook.
+- Final inventory: 164 discovered commands matched 164 manifest entries and 164 `.cmd` wrappers; zero were missing, colliding, unmanaged, or obsolete. `mangadl`, `ytaedl`, `aebndl`, `runmux`, and `termdash` `--help` commands passed from an external directory with `PYTHONPATH` cleared.
+- Final post-incremental `pip check` reported no broken requirements and retained a non-fatal warning about an invalid `~ympy` leftover.
 - Package import correction: `scripts_setup_utils` packages/imports `scripts_setup`; the regression failed before the change (`['scripts_setup_utils']` instead of `['scripts_setup']`) and passes now.
 - New isolation RED evidence: six assertions failed against the prior code for abbreviations/combined short flags, inherited environment overrides, and symlinked interpreter identity. Those targeted tests pass after the corrections.
 - Final focused tests: 64 passed, 1 skipped (POSIX-only pytest case on Windows), 1 submodule-dependent test deselected; vdedup compatibility test 1 passed. Python compilation, Ruff (`F841` ignored per baseline), and CRLF-aware diff check pass.
@@ -18,5 +20,5 @@
 - Windows smoke: repository-only `--help` exited 0 from the worktree venv with inherited `PYTHONPATH`, `PIP_TARGET`, `PIP_PREFIX`, `PIP_USER`, and `PIP_ROOT`; no external target sentinels were created.
 - Current environment health from earlier setup: `pip check` reported no broken requirements; pip warned about an invalid `~ympy` leftover. Torch is CPU-only, so CUDA operation is not qualified.
 - Windows privilege boundary: the symlink helper reports WinError 1314 without a no-op fallback. Full profile/shell integration was not run or altered.
-- Remaining: align the plan metadata, update PR #37 with this final head and evidence, and keep the PR draft until clean/incremental qualification for the final revision is complete; no merge.
+- Remaining: a blank-environment clean setup has not been replayed on the final bootstrap revision. Keep PR #37 in draft until that qualification can be completed; no merge.
 - Coordination: preserve retirement qualification branches PRs #34/#35, shared-package PR #22, and LLMD v2.1 work. No overlapping source changes were made.

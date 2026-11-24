@@ -26,7 +26,10 @@
 - [x] Run focused setup regressions (64 passed, 1 POSIX-only skip, 1 submodule-dependent deselection), the vdedup compatibility test (1 passed), Python compilation, Ruff, and CRLF-aware whitespace checks.
 - [x] Run repository-only `--help` with inherited PYTHONPATH/PIP destination overrides; exit 0 and no external target sentinels.
 - [x] Run an actual POSIX symlink-venv bootstrap reproduction in Ubuntu WSL: venv `python` resolved to the same base binary as system Python, venv `sys.prefix` matched `.venv`, and setup selected `.venv/bin/python` for re-execution. The pytest form is skipped on this Windows host.
-- [ ] Re-run full/incremental setup only when it can avoid the existing CPU-only Torch vdedup GPU force-reinstall; earlier full and incremental runs passed before the current bootstrap-only changes.
+- [x] Re-run final-revision incremental repository-only setup: exit 0, all 55 public and 8 private module entries processed, launchers refreshed, and five representative `--help` commands passed externally with `PYTHONPATH` cleared.
+- [x] Verify after final incremental setup: 164 commands, manifest entries, and `.cmd` wrappers; zero missing/colliding/unmanaged/obsolete wrappers; `pip check` reports no broken requirements.
+- [x] Confirm vdedup GPU requirement wheels were reused from the local pip cache during the final incremental run; CPU-only force-reinstall behavior remains and CUDA is not qualified.
+- [ ] Replay a full clean setup from a blank disposable environment on the final bootstrap revision; prior full setup passed before the latest bootstrap corrections and was not confirmed blank.
 - [x] Stage, commit, and push the corrections as `97659e67c97a54900106ffe3b7b085c117d86de0`.
 - [x] Keep draft PR #37 open: https://github.com/MaxCarlson/scripts/pull/37 (base `main`; no applicable workflow runs reported).
 - [ ] If a suitable Windows environment becomes available, verify real shell symlink integration separately; current machine reports WinError 1314 and user/system integration remains intentionally disabled.
