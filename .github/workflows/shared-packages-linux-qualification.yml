@@ -88,7 +88,7 @@ jobs:
       - name: Verify standalone wheel imports, CLI and dependencies
         run: |
           .ci-venv/bin/python -I -m pip check
-          .ci-venv/bin/python -I - <<'PY'
+          .ci-venv/bin/python -I - "$GITHUB_WORKSPACE" <<'PY'
           import importlib
           import importlib.metadata as metadata
           import sys
