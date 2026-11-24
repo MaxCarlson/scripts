@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import pytest
 
@@ -23,7 +25,7 @@ def test_monitor_preflight_uses_authenticated_host_api_and_container_gateway():
         if request.url.path.endswith("/models"):
             return httpx.Response(200, json={"models": [{"provider_model_id": "qwen38_23GB", "state": "loaded"}]})
         if request.url.path.endswith("/status") and not request.url.path.endswith("/recording/status"):
-            return httpx.Response(200, json={"availability": "connected"})
+                return httpx.Response(200, json=_valid_status_payload("http://127.0.0.1:8788"))
         if request.url.path.endswith("/requests"):
             return httpx.Response(200, json={"capture_state": "available", "requests": []})
         return httpx.Response(200, json={"recording": {"mode": "content", "healthy": True, "dropped_count": 0}})
@@ -66,15 +68,53 @@ def test_recording_coverage_fails_closed_when_history_is_missing():
                                      recording="content", client=client, timeout_seconds=0)
 
 
-def _client(recording: dict, availability: str = "available", model_id: str = "model") -> httpx.Client:
+def _valid_status_payload(
+    host_origin: str = "http://127.0.0.1:8788", availability: str = "available"
+) -> dict:
+    return {
+        "availability": availability,
+        "refreshed_at": datetime.now(timezone.utc).isoformat(),
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "gateway_enabled": True,
+        "gateway_upstream": "http://127.0.0.1:1235",
+        "runtime_identity": {
+            "instance_id": "monitor-1", "config_fingerprint": "sha256:" + "a" * 64, "gateway_enabled": True,
+            "gateway_upstream": "http://127.0.0.1:1235", "host_origin": host_origin,
+        },
+        "coordinator_readiness": {
+            "status": "ready", "is_ready": True, "coordinator_url": "http://127.0.0.1:1235",
+            "observed_at": datetime.now(timezone.utc).isoformat(), "runtime_identity": {"instance_id": "rc-1"},
+            "active_restrictions": [],
+        },
+    }
+
+
+def _client(
+    recording: dict, availability: str = "available", model_id: str = "model",
+    host_origin: str = "http://127.0.0.1:8788",
+) -> httpx.Client:
+    status_payload = _valid_status_payload(host_origin, availability)
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/v1/models"):
             return httpx.Response(200, json={"data": [{"id": model_id}]})
         if request.url.path.endswith("/api/inference/v1/status"):
-            return httpx.Response(200, json={"availability": availability})
+            return httpx.Response(200, json=status_payload)
         if request.url.path.endswith("/api/inference/v1/requests"):
             return httpx.Response(200, json={"capture_state": "available", "requests": []})
         return httpx.Response(200, json={"recording": recording})
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def _client_with_status_payload(status_payload: dict) -> httpx.Client:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/v1/models"):
+            return httpx.Response(200, json={"data": [{"id": "model"}]})
+        if request.url.path.endswith("/api/inference/v1/status"):
+            return httpx.Response(200, json=status_payload)
+        if request.url.path.endswith("/api/inference/v1/requests"):
+            return httpx.Response(200, json={"capture_state": "available", "requests": []})
+        return httpx.Response(200, json={"recording": {"mode": "off", "status": "disabled"}})
 
     return httpx.Client(transport=httpx.MockTransport(handler))
 
@@ -83,7 +123,8 @@ def test_monitor_preflight_requires_exact_recording_mode():
     result = validate_monitor(
         agent="opencode", model="openai/qwen38_23GB", api_format="openai_chat_completions",
         recording="content", monitor_url="http://monitor:8788/v1",
-        client=_client({"mode": "content", "healthy": True, "dropped_count": 0}, model_id="qwen38_23GB"),
+        client=_client({"mode": "content", "healthy": True, "dropped_count": 0}, model_id="qwen38_23GB",
+                       host_origin="http://monitor:8788"),
     )
     assert result["verified"] is True
     assert result["recording_mode"] == "content"
@@ -120,7 +161,7 @@ def test_monitor_preflight_requires_live_request_capture():
     client = _client({"mode": "off", "status": "disabled"})
     client._transport = httpx.MockTransport(lambda request: (
         httpx.Response(200, json={"data": [{"id": "model"}]}) if request.url.path.endswith("/v1/models") else
-        httpx.Response(200, json={"availability": "available"}) if request.url.path.endswith("/api/inference/v1/status") else
+        httpx.Response(200, json=_valid_status_payload()) if request.url.path.endswith("/api/inference/v1/status") else
         httpx.Response(200, json={"capture_state": "unavailable", "requests": []}) if request.url.path.endswith("/api/inference/v1/requests") else
         httpx.Response(200, json={"recording": {"status": "disabled"}})
     ))
@@ -160,78 +201,337 @@ def test_build_monitor_headers_auto_bootstraps_managed_capability(monkeypatch):
     assert "Cookie" not in headers
 
 
-def test_monitor_preflight_evaluates_coordinator_admission():
-    def _client_with_status(status_payload: dict) -> httpx.Client:
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path.endswith("/v1/models"):
-                return httpx.Response(200, json={"data": [{"id": "model"}]})
-            if request.url.path.endswith("/api/inference/v1/status"):
-                return httpx.Response(200, json=status_payload)
-            if request.url.path.endswith("/api/inference/v1/requests"):
-                return httpx.Response(200, json={"capture_state": "available", "requests": []})
-            return httpx.Response(200, json={"recording": {"mode": "off", "status": "disabled"}})
-
-        return httpx.Client(transport=httpx.MockTransport(handler))
-
+def test_monitor_preflight_qualifies_protected_route_without_future_admission():
     # 1. Direct :1234 upstream fails closed
     with pytest.raises(MonitorPreflightError, match="bypassing Resource Coordinator"):
         validate_monitor(
             agent="opencode",
             model="openai/model",
             api_format="openai_chat_completions",
-            client=_client_with_status({"availability": "available", "upstream_base_url": "http://127.0.0.1:1234/v1"}),
+            client=_client_with_status_payload({"availability": "available", "upstream_base_url": "http://127.0.0.1:1234/v1"}),
         )
 
-    # 2. Explicit coordinator_admitted=False fails closed
-    with pytest.raises(MonitorPreflightError, match="admission is disabled"):
-        validate_monitor(
-            agent="opencode",
-            model="openai/model",
-            api_format="openai_chat_completions",
-            client=_client_with_status({"availability": "available", "coordinator_admitted": False}),
-        )
-
-    # 3. Real llm_monitor/inference_web.py /api/inference/v1/status schema (no upstream/admission fields)
-    real_producer_status = {
-        "schema_version": 1,
-        "availability": "connected",
-        "revision": 4,
-        "refreshed_at": "2026-11-23T23:50:00+00:00",
-        "capabilities": {"request_lifecycle": {"state": "available", "source": "gateway"}},
-        "recording": {"mode": "content", "healthy": True, "dropped_count": 0},
-        "hardware_samples": [],
-    }
-    res_unproven = validate_monitor(
-        agent="opencode",
-        model="openai/model",
-        api_format="openai_chat_completions",
-        client=_client_with_status(real_producer_status),
-    )
-    assert res_unproven["coordinator_admitted"] is False
-    assert res_unproven["observed_per_request_admission"]["reason"] == "producer_contract_missing"
-
-    # 4. Complete bound producer contract proves coordinator admission
+    # Route readiness qualifies dispatch; admission of a future request is not knowable here.
     res_proven = validate_monitor(
         agent="opencode",
         model="openai/model",
         api_format="openai_chat_completions",
-        client=_client_with_status({
-            **real_producer_status,
+        client=_client_with_status_payload({
+            "schema_version": 1,
+            "availability": "connected",
+            "refreshed_at": datetime.now(timezone.utc).isoformat(),
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "gateway_enabled": True,
             "gateway_upstream": "http://127.0.0.1:1235",
             "runtime_identity": {
                 "instance_id": "inst-1",
-                "config_fingerprint": "sha256:abc",
+                "config_fingerprint": "sha256:" + "a" * 64,
                 "gateway_enabled": True,
+                "gateway_upstream": "http://127.0.0.1:1235",
+                "host_origin": "http://127.0.0.1:8788",
             },
-            "coordinator_admission": {
-                "status": "verified",
+            "coordinator_readiness": {
+                "status": "ready",
+                "is_ready": True,
                 "coordinator_url": "http://127.0.0.1:1235",
-                "verified_at": "2026-11-23T23:50:00+00:00",
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "runtime_identity": {"instance_id": "rc-1"},
+                "active_restrictions": [],
             },
         }),
     )
-    assert res_proven["coordinator_admitted"] is True
+    assert res_proven["verified"] is True
     assert res_proven["configured_protected_routing"]["verified"] is True
     assert res_proven["qualified_runtime_identity"]["instance_id"] == "inst-1"
-    assert res_proven["observed_per_request_admission"]["status"] == "verified"
+    assert res_proven["coordinator_readiness"]["status"] == "ready"
+    assert res_proven["dispatch_admission"]["status"] == "not_yet_observed"
+
+
+def test_monitor_preflight_rejects_missing_readiness_timestamp():
+    status = {
+        "availability": "connected",
+        "refreshed_at": datetime.now(timezone.utc).isoformat(),
+        "gateway_enabled": True,
+        "gateway_upstream": "http://127.0.0.1:1235",
+        "runtime_identity": {
+            "instance_id": "inst-1", "config_fingerprint": "sha256:" + "a" * 64, "gateway_enabled": True,
+            "gateway_upstream": "http://127.0.0.1:1235", "host_origin": "http://127.0.0.1:8788",
+        },
+        "coordinator_readiness": {
+            "status": "ready", "is_ready": True, "coordinator_url": "http://127.0.0.1:1235",
+            "runtime_identity": {"instance_id": "rc-1"}, "active_restrictions": [],
+        },
+    }
+    with pytest.raises(MonitorPreflightError, match="timestamp"):
+        validate_monitor(agent="opencode", model="openai/model", api_format="openai_chat_completions",
+                         client=_client_with_status_payload(status))
+
+
+def test_monitor_preflight_rejects_missing_service_snapshot_timestamp():
+    status = _valid_status_payload()
+    status.pop("refreshed_at")
+    with pytest.raises(MonitorPreflightError, match="service snapshot is missing"):
+        validate_monitor(agent="opencode", model="openai/model", api_format="openai_chat_completions",
+                         client=_client_with_status_payload(status))
+
+
+def test_monitor_preflight_rejects_stale_or_contradictory_runtime_evidence():
+    stale = _valid_status_payload()
+    stale["observed_at"] = (datetime.now(timezone.utc) - timedelta(seconds=45)).isoformat()
+    with pytest.raises(MonitorPreflightError, match="stale or invalid"):
+        validate_monitor(agent="opencode", model="openai/model", api_format="openai_chat_completions",
+                         client=_client_with_status_payload(stale))
+
+    mismatched = _valid_status_payload()
+    mismatched["runtime_identity"]["gateway_upstream"] = "http://127.0.0.1:1236"
+    with pytest.raises(MonitorPreflightError, match="does not match effective gateway upstream"):
+        validate_monitor(agent="opencode", model="openai/model", api_format="openai_chat_completions",
+                         client=_client_with_status_payload(mismatched))
+
+    conflicting = _valid_status_payload()
+    conflicting["upstream_base_url"] = "http://127.0.0.1:1234/v1"
+    with pytest.raises(MonitorPreflightError, match="contradictory upstream"):
+        validate_monitor(agent="opencode", model="openai/model", api_format="openai_chat_completions",
+                         client=_client_with_status_payload(conflicting))
+
+    invalid_fingerprint = _valid_status_payload()
+    invalid_fingerprint["runtime_identity"]["config_fingerprint"] = "sha256:short"
+    with pytest.raises(MonitorPreflightError, match="invalid configuration fingerprint"):
+        validate_monitor(agent="opencode", model="openai/model", api_format="openai_chat_completions",
+                         client=_client_with_status_payload(invalid_fingerprint))
+
+
+def test_monitor_preflight_rejects_legacy_and_unavailable_coordinator_status():
+    with pytest.raises(MonitorPreflightError, match="legacy Monitor status"):
+        validate_monitor(agent="opencode", model="openai/model", api_format="openai_chat_completions",
+                         client=_client_with_status_payload({"availability": "connected"}))
+
+    unavailable = _valid_status_payload()
+    unavailable["coordinator_readiness"].update(status="unavailable", is_ready=False)
+    with pytest.raises(MonitorPreflightError, match="Coordinator readiness is unavailable"):
+        validate_monitor(agent="opencode", model="openai/model", api_format="openai_chat_completions",
+                         client=_client_with_status_payload(unavailable))
+
+
+def test_cloud_agent_monitoring_remains_compatible_with_legacy_status():
+    evidence = validate_monitor(
+        agent="codex", model="openai/model", recording="off",
+        client=_client_with_status_payload({"availability": "connected"}),
+    )
+    assert evidence["verified"] is True
+    assert evidence["configured_protected_routing"]["verified"] is False
+
+
+@pytest.mark.parametrize("restriction", ["maintenance_active", "recovery_required"])
+def test_monitor_preflight_rejects_active_coordinator_restrictions(restriction):
+    status = {
+            "availability": "connected", "observed_at": datetime.now(timezone.utc).isoformat(),
+                "refreshed_at": datetime.now(timezone.utc).isoformat(),
+            "gateway_enabled": True,
+        "gateway_upstream": "http://127.0.0.1:1235",
+        "runtime_identity": {
+            "instance_id": "inst-1", "config_fingerprint": "sha256:" + "a" * 64, "gateway_enabled": True,
+            "gateway_upstream": "http://127.0.0.1:1235", "host_origin": "http://127.0.0.1:8788",
+        },
+        "coordinator_readiness": {
+            "status": "blocked", "is_ready": False, "coordinator_url": "http://127.0.0.1:1235",
+            "observed_at": datetime.now(timezone.utc).isoformat(), "runtime_identity": {"instance_id": "rc-1"},
+            "active_restrictions": [restriction],
+        },
+    }
+    with pytest.raises(MonitorPreflightError, match=restriction):
+        validate_monitor(agent="opencode", model="openai/model", api_format="openai_chat_completions",
+                         client=_client_with_status_payload(status))
+
+
+def test_actual_monitor_status_producer_qualifies_benchmark_consumer(tmp_path, monkeypatch):
+    from fastapi import APIRouter
+    from fastapi import FastAPI
+    from fastapi.responses import JSONResponse
+    from fastapi.testclient import TestClient
+    from llm_monitor.inference_web import create_inference_web_app
+    from llm_monitor.inference_models import CaptureCapabilities
+    import sys
+    from types import SimpleNamespace
+
+    class CapabilityManager:
+        instance_id = "monitor-1"
+
+        @staticmethod
+        def verify_token(token, _scope, instance_id):
+            return token == "valid" and instance_id == "monitor-1"
+
+    def create_app(*, api_router, **_kwargs):
+        app = FastAPI()
+        app.include_router(api_router)
+
+        @app.middleware("http")
+        async def require_capability(request, call_next):
+            if request.url.path.startswith("/api/"):
+                token = request.headers.get("authorization", "").removeprefix("Bearer ")
+                verifier = getattr(app.state, "capability_verifier", None)
+                if verifier is None or not verifier(token, request):
+                    return JSONResponse({"detail": "unauthorized"}, status_code=401)
+            return await call_next(request)
+
+        return app
+
+    monkeypatch.setitem(sys.modules, "web_ui_tools", SimpleNamespace(create_app=create_app))
+    monkeypatch.setenv("LLM_MONITOR_AUTHORIZATION", "Bearer valid")
+
+    class Service:
+        gpu_sampler = None
+
+        @staticmethod
+        def start():
+            pass
+
+        @staticmethod
+        def stop():
+            pass
+
+        def snapshot(self):
+            return {
+                "capabilities": CaptureCapabilities.passive_inventory(available=True).to_dict(),
+                "server": {"connection_state": "connected"}, "revision": 4,
+                "refreshed_at": datetime.now(timezone.utc).isoformat(), "recording": {},
+                "hardware_samples": [], "models": [{"provider_model_id": "model", "state": "loaded"}],
+                "requests": [],
+            }
+
+    class Gateway:
+        upstream = "http://127.0.0.1:1235/v1"
+        correlation_registry = None
+
+        @staticmethod
+        def router():
+            router = APIRouter()
+
+            @router.get("/v1/models")
+            def models():
+                return {"data": [{"id": "model"}]}
+
+            return router
+
+        @staticmethod
+        def close():
+            pass
+
+    import httpx as monitor_httpx
+
+    coordinator_state = {"payload": {
+            "status": "online", "is_ready": True,
+            "service_state": "ready",
+            "runtime": {"instance_id": "rc-1", "revision": "source-1"},
+            "gpu_inference": {"is_restart_inhibited": False, "recovery": {"required": False}},
+                "maintenance": {"state": "idle", "restart_inhibited": False, "gpu_admission_permitted": True},
+                "gaming": {"state": "inactive"},
+    }}
+
+    def coordinator_get(url, **kwargs):
+        if coordinator_state["payload"] is None:
+            request = monitor_httpx.Request("GET", url)
+            raise monitor_httpx.ConnectError("offline", request=request)
+        return monitor_httpx.Response(
+            200, request=monitor_httpx.Request("GET", url), json=coordinator_state["payload"]
+        )
+
+    monkeypatch.setattr(monitor_httpx, "get", coordinator_get)
+    static_dir = tmp_path / "static"
+    (static_dir / "assets").mkdir(parents=True)
+    (static_dir / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    app = create_inference_web_app(
+        Service(), login_code="local-code", static_dir=static_dir, gateway=Gateway(),
+        capability_manager=CapabilityManager(),
+        runtime_identity={
+            "instance_id": "monitor-1", "config_fingerprint": "sha256:" + "d" * 64, "gateway_enabled": True,
+            "gateway_upstream": Gateway.upstream, "host_origin": "http://127.0.0.1:8788",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    with TestClient(app, base_url="http://127.0.0.1:8788") as producer_client:
+        def dispatch_to_monitor(request: httpx.Request) -> httpx.Response:
+            headers = dict(request.headers)
+            response = producer_client.request(request.method, str(request.url), headers=headers)
+            return httpx.Response(response.status_code, headers=response.headers, content=response.content, request=request)
+
+        with httpx.Client(transport=httpx.MockTransport(dispatch_to_monitor)) as benchmark_client:
+            evidence = validate_monitor(
+                agent="opencode", model="openai/model", monitor_url="http://host.docker.internal:8788/v1",
+                monitor_host_url="http://127.0.0.1:8788", api_format="openai_chat_completions",
+                client=benchmark_client,
+            )
+            coordinator_state["payload"]["service_state"] = "standalone"
+            with pytest.raises(MonitorPreflightError, match="coordinator_service_not_ready_or_unknown"):
+                validate_monitor(
+                    agent="opencode", model="openai/model", monitor_url="http://host.docker.internal:8788/v1",
+                    monitor_host_url="http://127.0.0.1:8788", api_format="openai_chat_completions",
+                    client=benchmark_client,
+                )
+            coordinator_state["payload"]["service_state"] = "ready"
+            coordinator_state["payload"]["maintenance"] = {
+                "state": "active", "restart_inhibited": True, "gpu_admission_permitted": False,
+            }
+            with pytest.raises(MonitorPreflightError, match="maintenance_active_or_unknown"):
+                validate_monitor(
+                    agent="opencode", model="openai/model", monitor_url="http://host.docker.internal:8788/v1",
+                    monitor_host_url="http://127.0.0.1:8788", api_format="openai_chat_completions",
+                    client=benchmark_client,
+                )
+            coordinator_state["payload"]["maintenance"] = {
+                "state": "idle", "restart_inhibited": False, "gpu_admission_permitted": True,
+            }
+            coordinator_state["payload"]["gpu_inference"]["recovery"] = {"required": True}
+            with pytest.raises(MonitorPreflightError, match="recovery_required_or_unknown"):
+                validate_monitor(
+                    agent="opencode", model="openai/model", monitor_url="http://host.docker.internal:8788/v1",
+                    monitor_host_url="http://127.0.0.1:8788", api_format="openai_chat_completions",
+                    client=benchmark_client,
+                )
+            coordinator_state["payload"] = None
+            with pytest.raises(MonitorPreflightError, match="readiness is unavailable"):
+                validate_monitor(
+                    agent="opencode", model="openai/model", monitor_url="http://host.docker.internal:8788/v1",
+                    monitor_host_url="http://127.0.0.1:8788", api_format="openai_chat_completions",
+                    client=benchmark_client,
+                )
+
+    assert evidence["verified"] is True
+    assert evidence["qualified_runtime_identity"]["instance_id"] == "monitor-1"
+    assert evidence["configured_protected_routing"]["upstream_base_url"] == Gateway.upstream
+    assert evidence["coordinator_readiness"]["runtime_identity"]["instance_id"] == "rc-1"
+    assert evidence["dispatch_admission"]["status"] == "not_yet_observed"
+
+
+def test_post_execution_evidence_rejects_monitor_or_coordinator_replacement():
+    from agent_benchmark.suite import _require_monitor_runtime_continuity
+
+    before = {
+        "qualified_runtime_identity": {"instance_id": "monitor-1", "config_fingerprint": "sha256:" + "a" * 64},
+        "configured_protected_routing": {"verified": True, "upstream_base_url": "http://127.0.0.1:1235"},
+        "coordinator_readiness": {"runtime_identity": {"instance_id": "rc-1", "revision": "one"}},
+    }
+    _require_monitor_runtime_continuity(before, before)
+
+    changed_monitor = {
+        **before,
+        "qualified_runtime_identity": {"instance_id": "monitor-2", "config_fingerprint": "sha256:" + "b" * 64},
+    }
+    with pytest.raises(MonitorPreflightError, match="runtime changed"):
+        _require_monitor_runtime_continuity(before, changed_monitor)
+
+    changed_configuration = {
+        **before,
+        "qualified_runtime_identity": {"instance_id": "monitor-1", "config_fingerprint": "sha256:" + "c" * 64},
+    }
+    with pytest.raises(MonitorPreflightError, match="runtime changed"):
+        _require_monitor_runtime_continuity(before, changed_configuration)
+
+    changed_coordinator = {
+        **before,
+        "coordinator_readiness": {"runtime_identity": {"instance_id": "rc-2", "revision": "two"}},
+    }
+    with pytest.raises(MonitorPreflightError, match="runtime changed"):
+        _require_monitor_runtime_continuity(before, changed_coordinator)
 

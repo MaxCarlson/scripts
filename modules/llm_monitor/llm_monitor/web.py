@@ -282,6 +282,14 @@ def run_web(
             recorder=recorder,
             history_store=store,
             capability_manager=capability_manager,
+            runtime_identity={
+                "instance_id": descriptor.instance_id,
+                "config_fingerprint": descriptor.config_fingerprint,
+                "gateway_enabled": descriptor.gateway_enabled,
+                "gateway_upstream": gateway.upstream if gateway is not None else None,
+                "host_origin": url,
+                "started_at": descriptor.started_at,
+            },
         )
     except Exception as err:
         control_server.stop()

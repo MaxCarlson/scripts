@@ -91,6 +91,77 @@ def test_inference_routes_are_authenticated_versioned_and_read_only(tmp_path):
     assert list(tmp_path.glob("*.sqlite*")) == []
 
 
+def test_authenticated_status_exposes_bound_gateway_and_bounded_coordinator_readiness(tmp_path, monkeypatch):
+    import httpx
+    from datetime import datetime, timezone
+
+    class FakeGateway:
+        upstream = "http://127.0.0.1:1235/v1"
+
+        @staticmethod
+        def router():
+            from fastapi import APIRouter
+
+            return APIRouter()
+
+        @staticmethod
+        def close():
+            pass
+
+    coordinator_response = {
+        "status": "online",
+        "service_state": "ready",
+        "is_ready": True,
+        "runtime": {"instance_id": "rc-1", "config_fingerprint": "sha256:rc"},
+        "upstream_url": "http://127.0.0.1:1234",
+        "gpu_inference": {"is_restart_inhibited": False, "recovery": {"required": False}},
+        "maintenance": {"state": "idle", "restart_inhibited": False, "gpu_admission_permitted": True},
+        "gaming": {"state": "inactive"},
+    }
+    observed = []
+
+    def get(url, **kwargs):
+        observed.append((url, kwargs))
+        return httpx.Response(200, json=coordinator_response, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", get)
+    service = FakeService()
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    app = create_inference_web_app(
+        service,
+        login_code="local-code",
+        static_dir=tmp_path,
+        gateway=FakeGateway(),
+        runtime_identity={
+            "instance_id": "monitor-1",
+            "config_fingerprint": "sha256:monitor",
+            "gateway_enabled": True,
+            "gateway_upstream": FakeGateway.upstream,
+            "host_origin": "http://127.0.0.1:8788",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "control_token": "must-not-leak",
+        },
+    )
+
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "local-code"}, headers={"Origin": "http://localhost"})
+        payload = client.get("/api/inference/v1/status", headers={"Origin": "http://localhost"}).json()
+
+    assert payload["gateway_enabled"] is True
+    assert payload["gateway_upstream"] == FakeGateway.upstream
+    assert payload["runtime_identity"]["instance_id"] == "monitor-1"
+    assert payload["runtime_identity"]["config_fingerprint"] == "sha256:monitor"
+    assert payload["coordinator_readiness"]["status"] == "ready"
+    assert payload["coordinator_readiness"]["runtime_identity"]["instance_id"] == "rc-1"
+    assert payload["coordinator_readiness"]["observed_at"]
+    assert "control_token" not in str(payload)
+    assert "must-not-leak" not in str(payload)
+    assert observed[0][0] == "http://127.0.0.1:1235/_coordinator/status"
+    assert observed[0][1]["timeout"] <= 1.0
+    assert observed[0][1]["trust_env"] is False
+
+
 def test_web_app_requires_static_assets(tmp_path):
     service = FakeService()
 

@@ -191,7 +191,7 @@ class PreflightCheckError(RuntimeError):
     """Raised when environment prerequisites (Docker, Harbor) fail."""
 
 
-_ADMISSION_MAX_AGE = timedelta(minutes=5)
+_MONITOR_QUALIFICATION_MAX_AGE = timedelta(seconds=30)
 _COMMON_INTERNAL_SECRET_ENV_VARS = frozenset({
     "RESOURCE_COORDINATOR_OPERATOR_TOKEN",
     "RESOURCE_COORDINATOR_RECOVERY_TOKEN",
@@ -257,7 +257,7 @@ def _verify_dispatch_route(
     *,
     monitor_admission_evidence: dict[str, Any] | None = None,
 ) -> None:
-    """Fail closed unless the dispatch route is protected RC :1235 or has bound monitor + RC admission."""
+    """Require fresh protected route/runtime readiness; Coordinator admits each request at dispatch time."""
     from urllib.parse import urlsplit
 
     agent_norm = plan.agent.lower().strip()
@@ -273,7 +273,7 @@ def _verify_dispatch_route(
             raise PreflightCheckError(f"Cannot execute benchmark due to unsafe inference route: {structural_blocker}")
         if not isinstance(monitor_admission_evidence, dict) or monitor_admission_evidence.get("verified") is not True:
             raise PreflightCheckError(
-                "Cannot execute monitored local inference without verified monitor admission evidence"
+                "Cannot execute monitored local inference without verified Monitor route/runtime qualification"
             )
         gateway_url = str(monitor_admission_evidence.get("gateway_url") or "").rstrip("/")
         if not plan.base_url or gateway_url != plan.base_url.rstrip("/"):
@@ -281,7 +281,7 @@ def _verify_dispatch_route(
 
         ev_model = str(monitor_admission_evidence.get("model") or "")
         if not ev_model or ev_model.split("/", 1)[-1] != plan.model.split("/", 1)[-1]:
-            raise PreflightCheckError("Monitored admission evidence model does not match planned model")
+            raise PreflightCheckError("Monitored route qualification model does not match planned model")
 
         routing = monitor_admission_evidence.get("configured_protected_routing")
         if not isinstance(routing, dict) or routing.get("verified") is not True:
@@ -302,29 +302,45 @@ def _verify_dispatch_route(
             or not runtime_id.get("instance_id")
             or not runtime_id.get("config_fingerprint")
             or not runtime_id.get("host_origin")
+            or str(runtime_id.get("gateway_upstream") or "").rstrip("/") != upstream_url.rstrip("/")
         ):
             raise PreflightCheckError("Monitored local inference route lacks qualified monitor runtime identity")
 
-        admission = monitor_admission_evidence.get("observed_per_request_admission")
-        if (
-            not isinstance(admission, dict)
-            or admission.get("status") != "verified"
-            or admission.get("instance_id") != runtime_id.get("instance_id")
-            or monitor_admission_evidence.get("coordinator_admitted") is not True
-        ):
-            raise PreflightCheckError(
-                "Monitored local inference route lacks verified Resource Coordinator (:1235) admission evidence"
-            )
-        verified_at_raw = admission.get("verified_at")
-        if not isinstance(verified_at_raw, str) or not verified_at_raw:
-            raise PreflightCheckError("Monitored admission evidence is missing verified_at timestamp")
+        readiness = monitor_admission_evidence.get("coordinator_readiness")
+        if (not isinstance(readiness, dict) or readiness.get("status") != "ready"
+                or readiness.get("is_ready") is not True or readiness.get("active_restrictions") != []):
+            raise PreflightCheckError("Monitored local inference lacks ready, unrestricted Coordinator evidence")
+        coordinator_url = str(readiness.get("coordinator_url") or "")
         try:
-            verified_at = datetime.fromisoformat(verified_at_raw)
+            coordinator_origin = urlsplit(coordinator_url)
+            coordinator_port = coordinator_origin.port
         except ValueError as exc:
-            raise PreflightCheckError("Monitored admission evidence has malformed verified_at timestamp") from exc
+            raise PreflightCheckError("Coordinator readiness URL is malformed") from exc
+        if (coordinator_port != 1235 or (coordinator_origin.hostname or "").lower() not in {
+            "127.0.0.1", "localhost", "::1", "host.docker.internal"
+        } or f"{coordinator_origin.scheme}://{coordinator_origin.netloc}" != f"{parsed_up.scheme}://{parsed_up.netloc}"):
+            raise PreflightCheckError("Coordinator readiness does not match the configured protected upstream")
+        coordinator_runtime = readiness.get("runtime_identity")
+        if not isinstance(coordinator_runtime, dict) or not coordinator_runtime.get("instance_id"):
+            raise PreflightCheckError("Coordinator readiness lacks runtime-bound identity")
+        observed_at_raw = monitor_admission_evidence.get("qualification_observed_at")
+        coordinator_observed_at_raw = readiness.get("observed_at")
+        if not isinstance(observed_at_raw, str) or not isinstance(coordinator_observed_at_raw, str):
+            raise PreflightCheckError("Monitor qualification is missing an observed timestamp")
+        try:
+            observed_at = datetime.fromisoformat(observed_at_raw.replace("Z", "+00:00"))
+            coordinator_observed_at = datetime.fromisoformat(coordinator_observed_at_raw.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise PreflightCheckError("Monitor qualification has malformed observed timestamp") from exc
         now = datetime.now(timezone.utc)
-        if verified_at.utcoffset() is None or verified_at > now or (now - verified_at) > _ADMISSION_MAX_AGE:
-            raise PreflightCheckError("Monitored admission evidence is stale or has invalid timestamp")
+        if any(
+            value.utcoffset() is None or value > now or (now - value) > _MONITOR_QUALIFICATION_MAX_AGE
+            for value in (observed_at, coordinator_observed_at)
+        ):
+            raise PreflightCheckError("Monitor qualification is stale or has invalid timestamp")
+        dispatch_admission = monitor_admission_evidence.get("dispatch_admission")
+        if not isinstance(dispatch_admission, dict) or dispatch_admission.get("status") != "not_yet_observed":
+            raise PreflightCheckError("Monitor evidence confuses pre-dispatch readiness with request admission")
         return
     url_blocker = validate_harbor_inference_base_url(plan.agent, plan.base_url)
     if url_blocker:

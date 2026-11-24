@@ -356,7 +356,7 @@ def test_monitored_study_preparation_preserves_planning_and_enforces_receipt_at_
                 },
                 "qualified_runtime_identity": {
                     "instance_id": "inst-1",
-                    "config_fingerprint": "sha256:abc",
+                    "config_fingerprint": "sha256:" + "a" * 64,
                     "host_origin": "http://127.0.0.1:8788",
                     "gateway_enabled": True,
                 },

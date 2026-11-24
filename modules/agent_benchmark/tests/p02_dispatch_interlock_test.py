@@ -61,6 +61,7 @@ def study(tmp_path, monkeypatch):
         readiness=SimpleNamespace(is_runnable=True),
         selected_tasks=["task"],
         agent="opencode",
+        model="fixture-model",
         base_url=manifest["provenance"]["effective_base_url"],
     )
     monkeypatch.setattr("agent_benchmark.harbor.runner.check_docker_readiness", lambda: (True, "ok"))
@@ -98,6 +99,32 @@ def study(tmp_path, monkeypatch):
             study_manifest=manifest,
             study_policy=manifest["prompt_policy"],
             registry_path=registry,
+            monitor_admission_evidence={
+                "verified": True,
+                "gateway_url": manifest["provenance"]["effective_base_url"],
+                "model": plan.model,
+                "qualification_observed_at": datetime.now(timezone.utc).isoformat(),
+                "configured_protected_routing": {
+                    "verified": True,
+                    "upstream_base_url": "http://127.0.0.1:1235",
+                },
+                "qualified_runtime_identity": {
+                    "instance_id": "monitor-1",
+                    "config_fingerprint": "sha256:" + "a" * 64,
+                    "gateway_enabled": True,
+                    "gateway_upstream": "http://127.0.0.1:1235",
+                    "host_origin": "http://127.0.0.1:8788",
+                },
+                "coordinator_readiness": {
+                    "status": "ready",
+                    "is_ready": True,
+                    "coordinator_url": "http://127.0.0.1:1235",
+                    "observed_at": datetime.now(timezone.utc).isoformat(),
+                    "runtime_identity": {"instance_id": "rc-1"},
+                    "active_restrictions": [],
+                },
+                "dispatch_admission": {"status": "not_yet_observed"},
+            },
         )
 
     return path, receipt, calls, run

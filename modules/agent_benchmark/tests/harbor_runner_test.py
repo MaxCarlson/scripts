@@ -449,7 +449,7 @@ def test_runner_fails_closed_on_bypass_and_unverified_routes(tmp_path: Path, mon
     )
     with pytest.raises(PreflightCheckError):
         build_harbor_command(forged_plan, jobs_dir=tmp_path / "jobs")
-    with pytest.raises(PreflightCheckError, match="unsafe inference route|monitor admission evidence"):
+    with pytest.raises(PreflightCheckError, match="unsafe inference route|route/runtime qualification"):
         execute_harbor_run(
             forged_plan,
             execute=True,
@@ -527,10 +527,10 @@ def test_monitored_route_requires_coordinator_admission_evidence_at_dispatch(tmp
     assert mon_plan.readiness.is_runnable is True
 
     # 1. Missing evidence fails closed in both build_harbor_command and execute_harbor_run
-    with pytest.raises(PreflightCheckError, match="monitor admission evidence"):
+    with pytest.raises(PreflightCheckError, match="route/runtime qualification"):
         build_harbor_command(mon_plan, jobs_dir=tmp_path / "jobs")
 
-    with pytest.raises(PreflightCheckError, match="monitor admission evidence"):
+    with pytest.raises(PreflightCheckError, match="route/runtime qualification"):
         execute_harbor_run(
             mon_plan,
             execute=True,
@@ -538,7 +538,7 @@ def test_monitored_route_requires_coordinator_admission_evidence_at_dispatch(tmp
             jobs_dir=tmp_path / "jobs",
         )
 
-    # 2. Unbound boolean dict without bound routing/identity/admission still fails closed
+    # 2. Unbound boolean dict without bound route/runtime/readiness still fails closed
     with pytest.raises(PreflightCheckError):
         execute_harbor_run(
             mon_plan,
@@ -548,7 +548,6 @@ def test_monitored_route_requires_coordinator_admission_evidence_at_dispatch(tmp
             monitor_admission_evidence={
                 "verified": True,
                 "gateway_url": "http://host.docker.internal:8788/v1",
-                "coordinator_admitted": True,
             },
         )
 
@@ -559,32 +558,33 @@ def test_monitored_route_requires_coordinator_admission_evidence_at_dispatch(tmp
         "verified": True,
         "gateway_url": "http://host.docker.internal:8788/v1",
         "model": "openai/qwen38_23GB",
-        "coordinator_admitted": True,
+        "qualification_observed_at": now.isoformat(),
         "configured_protected_routing": {
             "verified": True,
             "upstream_base_url": "http://127.0.0.1:1235",
         },
         "qualified_runtime_identity": {
             "instance_id": "inst-1",
-            "config_fingerprint": "sha256:abc",
+            "config_fingerprint": "sha256:" + "a" * 64,
             "host_origin": "http://127.0.0.1:8788",
             "gateway_enabled": True,
+            "gateway_upstream": "http://127.0.0.1:1235",
         },
-        "observed_per_request_admission": {
-            "status": "verified",
-            "instance_id": "inst-1",
+        "coordinator_readiness": {
+            "status": "ready",
+            "is_ready": True,
             "coordinator_url": "http://127.0.0.1:1235",
-            "verified_at": now.isoformat(),
+            "observed_at": now.isoformat(),
+            "runtime_identity": {"instance_id": "rc-1"},
+            "active_restrictions": [],
         },
+        "dispatch_admission": {"status": "not_yet_observed", "enforced_by": "http://127.0.0.1:1235"},
     }
 
-    # 3. Stale, mismatched model, or mismatched instance_id fails closed
+    # 3. Stale readiness or mismatched model fails closed
     stale_ev = {
         **valid_evidence,
-        "observed_per_request_admission": {
-            **valid_evidence["observed_per_request_admission"],
-            "verified_at": (now - timedelta(minutes=10)).isoformat(),
-        },
+        "qualification_observed_at": (now - timedelta(minutes=10)).isoformat(),
     }
     with pytest.raises(PreflightCheckError, match="stale"):
         build_harbor_command(mon_plan, jobs_dir=tmp_path / "jobs", monitor_admission_evidence=stale_ev)
@@ -593,15 +593,15 @@ def test_monitored_route_requires_coordinator_admission_evidence_at_dispatch(tmp
     with pytest.raises(PreflightCheckError, match="model"):
         build_harbor_command(mon_plan, jobs_dir=tmp_path / "jobs", monitor_admission_evidence=bad_model_ev)
 
-    bad_inst_ev = {
+    bad_coordinator_ev = {
         **valid_evidence,
-        "observed_per_request_admission": {
-            **valid_evidence["observed_per_request_admission"],
-            "instance_id": "inst-other",
+        "coordinator_readiness": {
+            **valid_evidence["coordinator_readiness"],
+            "active_restrictions": ["recovery_required"],
         },
     }
-    with pytest.raises(PreflightCheckError, match="admission evidence"):
-        build_harbor_command(mon_plan, jobs_dir=tmp_path / "jobs", monitor_admission_evidence=bad_inst_ev)
+    with pytest.raises(PreflightCheckError, match="unrestricted Coordinator"):
+        build_harbor_command(mon_plan, jobs_dir=tmp_path / "jobs", monitor_admission_evidence=bad_coordinator_ev)
 
     # 4. Complete bound admission evidence builds command
     cmd = build_harbor_command(

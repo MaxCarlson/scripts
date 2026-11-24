@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
+import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
@@ -43,6 +46,7 @@ def create_inference_web_app(
     recorder: Any | None = None,
     history_store: Any | None = None,
     capability_manager: Any | None = None,
+    runtime_identity: dict[str, Any] | None = None,
 ) -> FastAPI:
     """Create the standalone UI app without opening a telemetry database."""
     try:
@@ -72,11 +76,32 @@ def create_inference_web_app(
             }
         if hasattr(service, "gpu_sampler") and service.gpu_sampler and service.gpu_sampler.is_available:
             capabilities["gpu_samples"] = {"state": "available", "source": "resource_metrics.nvidia_smi"}
+        gateway_upstream = getattr(gateway, "upstream", None) if gateway is not None else None
+        identity = _public_runtime_identity(
+            runtime_identity,
+            gateway_enabled=gateway is not None,
+            gateway_upstream=gateway_upstream,
+        )
+        observed_at = datetime.now(timezone.utc).isoformat()
+        coordinator_readiness = _coordinator_readiness(gateway_upstream) if gateway_upstream else {
+            "status": "unavailable",
+            "is_ready": False,
+            "coordinator_url": None,
+            "observed_at": observed_at,
+            "runtime_identity": None,
+            "active_restrictions": ["gateway_disabled"],
+        }
         return {
             "schema_version": 1,
             "availability": snapshot["server"]["connection_state"],
             "revision": snapshot["revision"],
             "refreshed_at": snapshot["refreshed_at"],
+            "observed_at": observed_at,
+            "gateway_enabled": gateway is not None,
+            "gateway_upstream": gateway_upstream,
+            "upstream_base_url": gateway_upstream,
+            "runtime_identity": identity,
+            "coordinator_readiness": coordinator_readiness,
             "capabilities": capabilities,
             "recording": snapshot["recording"],
             "hardware_samples": snapshot.get("hardware_samples", []),
@@ -413,3 +438,113 @@ def create_inference_web_app(
     if recorder is not None:
         app.add_event_handler("shutdown", recorder.stop)
     return app
+
+
+def _public_runtime_identity(
+    descriptor: dict[str, Any] | None,
+    *,
+    gateway_enabled: bool,
+    gateway_upstream: str | None,
+) -> dict[str, Any] | None:
+    if not isinstance(descriptor, dict):
+        return None
+    fields = ("instance_id", "config_fingerprint", "gateway_upstream", "host_origin", "started_at")
+    result = {key: descriptor[key] for key in fields if isinstance(descriptor.get(key), str)}
+    if isinstance(descriptor.get("gateway_enabled"), bool):
+        result["gateway_enabled"] = descriptor["gateway_enabled"]
+    result.setdefault("gateway_enabled", gateway_enabled)
+    result.setdefault("gateway_upstream", gateway_upstream)
+    return result
+
+
+def _coordinator_readiness(gateway_upstream: str) -> dict[str, Any]:
+    """Read a bounded, secret-free readiness snapshot from the configured Coordinator."""
+    observed_at = datetime.now(timezone.utc).isoformat()
+    coordinator_url = None
+    try:
+        upstream = urlsplit(gateway_upstream)
+        if (upstream.scheme not in {"http", "https"} or not upstream.hostname or upstream.port != 1235
+                or upstream.username is not None or upstream.password is not None or upstream.query or upstream.fragment):
+            raise ValueError("gateway upstream is not a loopback Coordinator URL")
+        if upstream.hostname.lower() not in {"127.0.0.1", "localhost", "::1", "host.docker.internal"}:
+            raise ValueError("gateway upstream is not a loopback Coordinator URL")
+        coordinator_url = f"{upstream.scheme}://{upstream.netloc}"
+        response = httpx.get(
+            f"{coordinator_url}/_coordinator/status",
+            timeout=0.75,
+            follow_redirects=False,
+            trust_env=False,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Coordinator status response is not an object")
+    except (httpx.HTTPError, ValueError, TypeError) as error:
+        return {
+            "status": "unavailable",
+            "is_ready": False,
+            "coordinator_url": coordinator_url,
+            "observed_at": observed_at,
+            "runtime_identity": None,
+            "active_restrictions": [f"coordinator_unavailable:{type(error).__name__}"],
+        }
+
+    restrictions: list[str] = []
+    service_state = payload.get("service_state")
+    if service_state != "ready":
+        restrictions.append("coordinator_service_not_ready_or_unknown")
+    if payload.get("is_ready") is not True:
+        restrictions.append("coordinator_not_ready")
+    gpu = payload.get("gpu_inference")
+    if not isinstance(gpu, dict):
+        restrictions.append("coordinator_safety_status_unavailable")
+    else:
+        if gpu.get("is_restart_inhibited") is not False:
+            restrictions.append("restart_inhibited_or_unknown")
+        if gpu.get("inhibition"):
+            restrictions.append("safety_inhibition_active")
+        recovery = gpu.get("recovery")
+        if not isinstance(recovery, dict) or recovery.get("required") is not False:
+            restrictions.append("recovery_required_or_unknown")
+    maintenance = payload.get("maintenance")
+    if not isinstance(maintenance, dict):
+        restrictions.append("maintenance_status_unavailable")
+    else:
+        maintenance_state = maintenance.get("state")
+        if maintenance_state not in {"idle", "inactive", "disabled"}:
+            restrictions.append("maintenance_active_or_unknown")
+        if maintenance.get("restart_inhibited") is not False:
+            restrictions.append("maintenance_restart_inhibited_or_unknown")
+        if maintenance.get("gpu_admission_permitted") is not True:
+            restrictions.append("maintenance_gpu_admission_restricted_or_unknown")
+        if maintenance.get("recovery_required_reason"):
+            restrictions.append("maintenance_recovery_required")
+    gaming = payload.get("gaming")
+    if not isinstance(gaming, dict):
+        restrictions.append("gaming_status_unavailable")
+    elif gaming.get("state") not in {"inactive", "disabled"}:
+        restrictions.append("gaming_mode_active_or_unknown")
+
+    raw_runtime = payload.get("runtime")
+    runtime = None
+    if isinstance(raw_runtime, dict):
+        safe_fields = ("version", "revision", "pid", "process_create_time")
+        runtime = {key: raw_runtime[key] for key in safe_fields if isinstance(raw_runtime.get(key), (str, int, float))}
+        pid, created = runtime.get("pid"), runtime.get("process_create_time")
+        if isinstance(pid, int) and isinstance(created, (int, float)):
+            runtime["instance_id"] = f"{pid}:{created:.6f}"
+        elif isinstance(raw_runtime.get("instance_id"), str):
+            runtime["instance_id"] = raw_runtime["instance_id"]
+    if not isinstance(runtime, dict) or not runtime.get("instance_id"):
+        restrictions.append("coordinator_runtime_identity_unavailable")
+
+    ready = payload.get("status") == "online" and payload.get("is_ready") is True and not restrictions
+    return {
+        "status": "ready" if ready else "blocked",
+        "is_ready": ready,
+        "service_state": service_state if isinstance(service_state, str) else "unavailable",
+        "coordinator_url": coordinator_url,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "runtime_identity": runtime,
+        "active_restrictions": restrictions,
+    }

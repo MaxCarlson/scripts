@@ -814,6 +814,24 @@ def _run_one_generic(store: RunStore, task: str, *, backend_id: str) -> dict[str
         }
 
 
+def _require_monitor_runtime_continuity(before: dict[str, Any], after: dict[str, Any]) -> None:
+    """Reject post-run evidence if Monitor or Coordinator runtime/config changed during dispatch."""
+    monitor_before = before.get("qualified_runtime_identity")
+    monitor_after = after.get("qualified_runtime_identity")
+    readiness_before = before.get("coordinator_readiness")
+    readiness_after = after.get("coordinator_readiness")
+    coordinator_before = readiness_before.get("runtime_identity") if isinstance(readiness_before, dict) else None
+    coordinator_after = readiness_after.get("runtime_identity") if isinstance(readiness_after, dict) else None
+    if (
+        monitor_after != monitor_before
+        or coordinator_after != coordinator_before
+        or after.get("configured_protected_routing") != before.get("configured_protected_routing")
+    ):
+        from .suite_monitor import MonitorPreflightError
+
+        raise MonitorPreflightError("Monitor or Coordinator runtime changed during the benchmark task")
+
+
 def _run_one(store: RunStore, task: str) -> dict[str, Any]:
     manifest = store.manifest
     backend_id = manifest.get("backend", "harbor")
@@ -930,6 +948,7 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
                 recording=manifest["provenance"]["recording_required"],
                 api_format=manifest["provenance"]["effective_api_format"],
             )
+            _require_monitor_runtime_continuity(monitor_health, monitor_health_after)
             if monitor_health_after["dropped_observations"] != monitor_health["dropped_observations"]:
                 from .suite_monitor import MonitorPreflightError
 
