@@ -10,6 +10,8 @@ Historical checkpoint preserved: `audit/post-p6-source-retirement-20261119` / `c
 
 The fresh audit covers the 23 directories in `scripts_setup/transferred_modules.py` and the five in `scripts_setup/shared_packages.py`; three overlap, so the unique inventory is 25 directories. Seventeen are proposed for Git-tracked source retirement in two review units, and eight remain protected.
 
+Count reconciliation: PR #35 proposes 13 toolkit-source removals and PR #34 proposes four shared-source removals; `25 - 13 - 4 = 8` holds. A continuation handoff referred to “13 remaining holds,” which conflicts with the verified registries and current PR diffs; no additional five candidate directories were found outside the 25-directory inventory. The per-directory table and eight explicit hold contracts below are the audited disposition.
+
 - `retire/toolkit-sources-current-main`: 13 toolkit-owned source directories. This PR can be reviewed independently of PyPI publication.
 - `retire/shared-sources-current-main`: four shared-library copies. It uses the qualified local wheelhouse, but a default clean scripts install still needs public package availability; do not merge this PR until clean-index qualification is possible.
 - Replacement PR #35 is open against current main on `retire/toolkit-sources-current-main`.
