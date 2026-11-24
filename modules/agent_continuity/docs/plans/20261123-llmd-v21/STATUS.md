@@ -2,7 +2,7 @@
 
 - **Branch:** `feature/llmd-v21-implementation-20261123`
 - **Base:** `origin/docs/llmd-v21-feature-spec-20261123` at `17dfb0b8d82d4754da87f8c0825c107d4b8a1d40`
-- **Status:** LLMD-01–LLMD-21 implementation and corrective review fixes are complete and validated; final commit/push is in progress on the authorized feature branch. No merge performed.
+- **Status:** LLMD-01–LLMD-21 implementation and corrective review fixes are complete, validated, committed, and pushed on the authorized feature branch. No merge performed.
 - **Authorization:** Implement LLMD-01–LLMD-21, fake-provider tests, docs, compatibility fixes, feature-branch commit and push. No provider bootstrap in tests, model loading, destructive registry action, breaking change, or merge.
 - **Review evidence:** The task handoff supplies the LLMD-19 constraints; the committed evaluation brief has no returned Gemini verdict/findings. The plan records this provenance limit.
 - **Latest integration snapshot:** Refreshed `origin/main`; feature branch is 5 commits ahead and 61 behind. None of the 61 intervening commits changed `agent_continuity` or its direct shared runtime dependencies. Current main changed unrelated `scripts_help` registry entries; the LLMD entry remained at 1.1.0 and is synchronized to 1.4.1 on this branch. No merge/rebase was performed.
@@ -27,8 +27,8 @@
 
 ## Delivered
 
-- Previously committed implementation remains pushed on `feature/llmd-v21-implementation-20261123`; corrective changes passed task-only diff review and are being committed and pushed separately.
+- Previously committed implementation remains pushed on `feature/llmd-v21-implementation-20261123`; corrective changes were committed as `7e467fe0` (`fix(agent-continuity): guard reviewer and provider transitions`) and pushed to `origin`.
 
 ## Verification and final state
 
-- The feature branch remains unmerged. The final report records the corrective commit and push SHA.
+- The feature branch remains unmerged at corrective commit `7e467fe0`. The worktree is clean after delivery.
