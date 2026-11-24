@@ -63,4 +63,4 @@
 - [x] Require `switch -r -R` for inactive slots and reject completed slots.
 - [x] Emit one JSON document for existing-session `start -j`; preserve text output.
 - [x] Run focused and full module tests, scoped Ruff, version consistency, and diff checks.
-- [ ] Inspect cached main integration paths, commit, and push without merge/rebase.
+- [x] Inspect cached main integration paths, commit, and push without merge/rebase.

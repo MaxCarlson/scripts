@@ -2,7 +2,7 @@
 
 - **Branch:** `feature/llmd-v21-implementation-20261123`
 - **Base:** `origin/docs/llmd-v21-feature-spec-20261123` at `17dfb0b8d82d4754da87f8c0825c107d4b8a1d40`
-- **Status:** LLMD-01–LLMD-24 remain complete. The v1.5.2 correctness follow-up is in implementation and validation on the existing authorized feature branch. LLMD-25/26 remain deferred. No merge performed.
+- **Status:** LLMD-01–LLMD-24 remain complete. The v1.5.2 correctness follow-up is implemented, validated, committed, and pushed on the existing authorized feature branch. LLMD-25/26 remain deferred. No merge performed.
 - **Authorization:** Repair the specified environment, post-exit override, lifecycle/CAS, and JSON findings; add regression tests/docs; validate; commit and push. No live Codex/AGY execution, local inference, destructive registry action, breaking change, or merge.
 - **Review evidence:** The task handoff supplies the LLMD-19 constraints; the committed evaluation brief has no returned Gemini verdict/findings. The plan records this provenance limit.
 - **Integration assessment:** The cached `origin/main` snapshot is 61 commits ahead and 10 commits behind this branch (`git rev-list --left-right --count HEAD...origin/main` returned `10 61`). A live fetch/`ls-remote` could not refresh it because the Windows SSH helper was denied creation of its MSYS named object (`NtCreateDirectoryObject ... 0xC0000022`). Of the scoped paths reviewed, only `scripts_help` has overlapping changes; its main-side changes are unrelated registry entries. No `agent_continuity` runtime changes were found in the 61 cached commits. No merge/rebase was performed; the comparison may miss newer remote changes.
@@ -54,4 +54,4 @@
 - Focused selection: `python -m pytest --basetemp=.pytest_tmp_root/llmd-v152-env-repair2 -q -o addopts= tests/dispatcher_correctness_followup_test.py tests/dispatcher_launch_test.py tests/dispatcher_v2_test.py tests/cli_acceptance_test.py -k "new_launch_preview_and_pending_launch_share_resolved_environment or new_launch_dry_run_json_reports_resolved_environment or positional_start or named_start or invalid_native_values_prevent_new_launch_and_registry_mutation or start_existing_session_json"` — 21 passed, 118 deselected.
 - Full module suite: `python -m pytest --basetemp=.pytest_tmp_root/llmd-v152-full-final -q -o addopts=` — 229 passed. The module autouse provider guard remained active; no real Codex/AGY launch was made.
 - `python -m ruff check agent_continuity tests --config pyproject.toml` passed; version is synchronized at 1.5.2 across `pyproject.toml`, `agent_continuity.__init__`, and the help registry; `git diff --check` passed.
-- Final task-only review, commit and push are pending.
+- Final task-only review passed. Implementation commit `c969b10524e03184391f6a2e8084cf455bc8388c` was pushed to `feature/llmd-v21-implementation-20261123`; this checkpoint records delivery. No merge/rebase was performed.
