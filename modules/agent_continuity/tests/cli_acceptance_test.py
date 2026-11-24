@@ -117,7 +117,7 @@ def test_cli_end_to_end_find_inbox_doctor_and_errors(tmp_path: Path, capsys: pyt
     assert main(["-H", str(home), "doctor", "-v", "-j"]) == 0
     doc_data = json.loads(capsys.readouterr().out)
     assert doc_data["ok"] is True
-    assert doc_data["database"]["schema_version"] == 2
+    assert doc_data["database"]["schema_version"] == 3
 
     # Missing workflow returns nonzero with structured JSON error
     rc = main(["-H", str(home), "find", "-w", "nonexistent", "-j"])

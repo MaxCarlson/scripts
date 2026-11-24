@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
 import time
+import uuid
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -115,6 +117,100 @@ class DispatcherService:
             source_adapter_version=ADAPTER_VERSION,
             payload=payload,
         )
+
+    @staticmethod
+    def _terminal_uuid(value: str) -> str:
+        try:
+            return str(uuid.UUID(str(value).strip()))
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "TERMINAL_SESSION_ID must contain a valid UUID for terminal-scoped launch history.",
+            ) from exc
+
+    def record_terminal_launch(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Append one immutable event for a terminal-scoped launch-state snapshot."""
+        terminal_id = self._terminal_uuid(record.get("terminal_session_id"))
+        launch_id = str(record.get("launch_id") or "").strip()
+        environment_id = str(record.get("environment_id") or "").strip()
+        status = str(record.get("status") or "").strip()
+        started_at = str(record.get("launch_started_at") or "").strip()
+        if not launch_id or not environment_id or not started_at:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Terminal launch records require launch, environment, and start identities.")
+        if status not in {"running", "exited", "failed", "interrupted"}:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported terminal launch status {status!r}.")
+        settings = record.get("settings") or {}
+        if not isinstance(settings, dict):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Terminal launch settings summary must be an object.")
+        try:
+            json.dumps(settings, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Terminal launch settings summary must be JSON-safe.") from exc
+        payload = {
+            **{key: record.get(key) for key in (
+                "terminal_session_owner_pid", "gui_id", "gui_alias", "slot_id", "slot_name",
+                "provider", "native_session_id", "launch_exited_at", "exit_code", "requested_cwd",
+                "effective_cwd", "native_cwd", "git_repository", "git_worktree", "git_branch", "git_commit",
+            )},
+            "launch_id": launch_id,
+            "terminal_session_id": terminal_id,
+            "launch_started_at": started_at,
+            "status": status,
+            "settings": settings,
+        }
+        provider = str(record.get("provider") or "").strip() or None
+        session_id = str(record.get("native_session_id") or "").strip() or None
+        event = self._event(
+            EventType.DISPATCHER_TERMINAL_LAUNCH_RECORDED,
+            environment_id=environment_id,
+            provider=provider,
+            session_id=session_id,
+            payload=payload,
+            timestamp=now_utc_iso(),
+        )
+        with _mutation_lock(self.home_dir):
+            self._sync()
+            existing = self._row(
+                "SELECT * FROM dispatcher_terminal_launches WHERE launch_id = ?", (launch_id,)
+            )
+            if existing:
+                expected = (existing["terminal_session_id"], existing["slot_id"], existing["provider"], existing["environment_id"])
+                actual = (terminal_id, payload.get("slot_id"), provider, environment_id)
+                if actual != expected:
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, "Terminal launch update conflicts with its recorded identity.")
+                if existing["native_session_id"] and session_id != existing["native_session_id"]:
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, "Terminal launch update cannot replace its captured native session ID.")
+            self.continuity._emit_and_materialize([event])
+        return {**payload, "environment_id": environment_id, "event_id": event.event_id}
+
+    def list_terminal_launches(self, terminal_session_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Return history only for the validated calling terminal UUID."""
+        terminal_id = self._terminal_uuid(terminal_session_id)
+        if limit < 1 or limit > 1000:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Terminal history count must be between 1 and 1000.")
+        self._sync()
+        rows = self._rows(
+            """SELECT * FROM dispatcher_terminal_launches WHERE terminal_session_id = ?
+               ORDER BY launch_started_at DESC, launch_id DESC LIMIT ?""",
+            (terminal_id, limit),
+        )
+        for row in rows:
+            row["settings"] = json.loads(row.pop("settings_json") or "{}")
+        return rows
+
+    def list_recent_terminal_launches(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Return cross-terminal launch history for read-only diagnostics."""
+        if limit < 1 or limit > 1000:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Recent history count must be between 1 and 1000.")
+        self._sync()
+        rows = self._rows(
+            """SELECT * FROM dispatcher_terminal_launches
+               ORDER BY launch_started_at DESC, launch_id DESC LIMIT ?""",
+            (limit,),
+        )
+        for row in rows:
+            row["settings"] = json.loads(row.pop("settings_json") or "{}")
+        return rows
 
     def _gui(self, identifier: str) -> dict[str, Any]:
         self._sync()

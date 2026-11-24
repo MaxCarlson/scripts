@@ -695,6 +695,36 @@ class SQLiteMaterializer:
                     ),
                 )
 
+        elif etype == EventType.DISPATCHER_TERMINAL_LAUNCH_RECORDED.value:
+            conn.execute(
+                """
+                INSERT INTO dispatcher_terminal_launches(
+                    launch_id, terminal_session_id, terminal_session_owner_pid,
+                    gui_id, gui_alias, slot_id, slot_name, provider, native_session_id,
+                    environment_id, launch_started_at, launch_exited_at, status, exit_code,
+                    requested_cwd, effective_cwd, native_cwd,
+                    git_repository, git_worktree, git_branch, git_commit, settings_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(launch_id) DO UPDATE SET
+                    terminal_session_owner_pid = excluded.terminal_session_owner_pid,
+                    native_session_id = COALESCE(excluded.native_session_id, dispatcher_terminal_launches.native_session_id),
+                    launch_exited_at = COALESCE(excluded.launch_exited_at, dispatcher_terminal_launches.launch_exited_at),
+                    status = excluded.status,
+                    exit_code = COALESCE(excluded.exit_code, dispatcher_terminal_launches.exit_code),
+                    settings_json = excluded.settings_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(p["launch_id"]), str(p["terminal_session_id"]), p.get("terminal_session_owner_pid"),
+                    p.get("gui_id"), p.get("gui_alias"), p.get("slot_id"), p.get("slot_name"),
+                    event.provider, event.native_session_id, event.environment_id,
+                    str(p["launch_started_at"]), p.get("launch_exited_at"), str(p["status"]),
+                    p.get("exit_code"), p.get("requested_cwd"), p.get("effective_cwd"), p.get("native_cwd"),
+                    p.get("git_repository"), p.get("git_worktree"), p.get("git_branch"), p.get("git_commit"),
+                    json.dumps(p.get("settings") or {}, sort_keys=True, ensure_ascii=False), ts,
+                ),
+            )
+
         elif etype == EventType.CHECKPOINT_RECORDED.value:
             conn.execute(
                 """
