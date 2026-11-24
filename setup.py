@@ -1327,9 +1327,11 @@ def main():
 
     sub_setups = [
         (SCRIPTS_DIR / "pyscripts" / "setup.py", []),
-        (SCRIPTS_DIR / "pscripts" / "setup.py", []),
         (SCRIPTS_DIR / "shell-scripts" / "setup.py", []),
         (MODULES_DIR / "setup.py", []),
+        # Install public shared libraries (for example compresser/procparsers)
+        # before private packages that declare them as dependencies.
+        (SCRIPTS_DIR / "pscripts" / "setup.py", []),
     ]
     for full_script_path, extra_args in sub_setups:
         try:
@@ -1341,6 +1343,20 @@ def main():
         title = "Python Modules" if is_modules else f"Sub-setup: {title_rel_path}"
         with setup_group(title, total, modules=is_modules):
             run_setup(full_script_path, *(common_setup_args + extra_args), soft_fail_modules=soft_fail_modules)
+
+    # Public module setup runs before pscripts so shared dependencies are ready.
+    # Refresh wrappers after pscripts installs its console entry points.
+    with setup_group("Console Launcher Refresh", 1):
+        launcher_script = SCRIPTS_SETUP_PACKAGE_DIR / "launcher_generator.py"
+        run_setup(
+            launcher_script,
+            "--apply",
+            "--repo-root",
+            str(scripts_dir),
+            "--bin-dir",
+            str(bin_dir),
+            "--verbose",
+        )
 
     with setup_group("Shell PATH Configuration", 1):
         setup_path_script = SCRIPTS_SETUP_PACKAGE_DIR / "setup_path.py"

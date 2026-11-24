@@ -1,12 +1,25 @@
 """Integration tests verifying the 4 repository setup entry points use launcher_generator."""
 import os
 from pathlib import Path
+
 import pytest
 
 from scripts_setup.launcher_generator import (
-    MANAGED_SIGNATURE_WINDOWS,
     MANAGED_SIGNATURE_POSIX,
+    MANAGED_SIGNATURE_WINDOWS,
 )
+
+
+def test_root_setup_installs_public_modules_before_pscripts():
+    """Private packages need public shared distributions such as compresser first."""
+    setup_source = (Path(__file__).resolve().parents[1] / "setup.py").read_text(encoding="utf-8")
+
+    public_modules = setup_source.index('(MODULES_DIR / "setup.py", [])')
+    private_modules = setup_source.index('(SCRIPTS_DIR / "pscripts" / "setup.py", [])')
+    launcher_refresh = setup_source.index('launcher_script = SCRIPTS_SETUP_PACKAGE_DIR / "launcher_generator.py"')
+
+    assert public_modules < private_modules
+    assert launcher_refresh > private_modules
 
 
 @pytest.fixture
@@ -62,7 +75,7 @@ def test_pyscripts_setup_wrapper_generation(mock_setup_env):
     """Test pyscripts/setup.py delegates to launcher_generator and preserves unmanaged."""
     repo, bin_dir, _, fake_py = mock_setup_env
 
-    from pyscripts.setup import _make_windows_wrapper, _make_posix_wrapper
+    from pyscripts.setup import _make_posix_wrapper, _make_windows_wrapper
 
     # 1. Unmanaged wrapper in place
     custom_cmd = bin_dir / "custom_script.cmd"
@@ -104,9 +117,18 @@ def test_bootstrap_latest_write_console_proxy(mock_setup_env):
     expected_sig = MANAGED_SIGNATURE_WINDOWS if os.name == "nt" else MANAGED_SIGNATURE_POSIX
     assert expected_sig in content
 
-    # Should raise FileExistsError if already exists
+    # A stale managed wrapper is repaired, while an unmanaged one is preserved.
+    dest.write_text(content.replace("test_proxy", "stale_proxy"), encoding="utf-8")
+    write_console_proxy(dest, "test_proxy", windows=(os.name == "nt"), venv_dir=venv_dir)
+    repaired = dest.read_text(encoding="utf-8")
+    assert expected_sig in repaired
+    assert "stale_proxy" not in repaired
+
+    unmanaged = dest.with_name("unmanaged" + dest.suffix)
+    unmanaged.write_text("echo user-owned launcher", encoding="utf-8")
     with pytest.raises(FileExistsError):
-        write_console_proxy(dest, "test_proxy", windows=(os.name == "nt"), venv_dir=venv_dir)
+        write_console_proxy(unmanaged, unmanaged.stem, windows=(os.name == "nt"), venv_dir=venv_dir)
+    assert unmanaged.read_text(encoding="utf-8") == "echo user-owned launcher"
 
 
 def test_setup_utils_windows_cmd_wrapper(mock_setup_env):
@@ -128,6 +150,8 @@ def test_setup_is_package_importable_detects_init_failure(tmp_path: Path, monkey
     import subprocess
     import venv
 
+    # Importing root setup.py otherwise creates/re-execs into the repository venv.
+    monkeypatch.setenv("SKIP_VENV_BOOTSTRAP", "1")
     venv_dir = tmp_path / "venv"
     venv.create(venv_dir, with_pip=False, symlinks=(os.name != "nt"))
     venv_python = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")

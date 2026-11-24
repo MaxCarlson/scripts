@@ -424,10 +424,24 @@ REGISTRY: dict = {
             },
             {
                 "name": "mangadl (module)",
-                "path": "modules/mangadl",
-                "desc": "Concurrent manga/gallery downloader with resumable jobs, integrity audits, SSD-aware workers, safe partial cleanup, and preview-first Kavita collection tools",
+                "path": "pscripts/modules/mangadl",
+                "desc": "Private gallery and library management command",
                 "help_cmd": ["mangadl", "--help"],
-                 "version": "3.2.0",
+                "version": "3.4.0",
+            },
+            {
+                "name": "ytaedl (private module)",
+                "path": "pscripts/modules/ytaedl",
+                "desc": "Private batch media downloader command",
+                "help_cmd": ["ytaedl", "--help"],
+                "version": "2.18.0",
+            },
+            {
+                "name": "aebndl (private module)",
+                "path": "pscripts/modules/aebndl_module",
+                "desc": "Private AEBN downloader command",
+                "help_cmd": ["aebndl", "--help"],
+                "version": "0.8.1",
             },
             {
                 "name": "edit_video_file.py",

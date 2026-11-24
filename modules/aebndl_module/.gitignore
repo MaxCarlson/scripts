@@ -1,8 +1,0 @@
-
-.vscode/settings.json
-.vscode/launch.json
-*.egg-info
-*__pycache__
-/work_dir
-/output_dir
-*.log

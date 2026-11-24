@@ -168,6 +168,33 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
     root = repo_root.resolve()
     commands: Dict[str, CommandEntry] = {}
 
+    def add_command(entry: CommandEntry) -> None:
+        previous = commands.get(entry.name)
+        if previous and previous.program_id != entry.program_id:
+            raise ValueError(
+                f"Console command '{entry.name}' has multiple owners: "
+                f"{previous.program_id} ({previous.source_path}) and "
+                f"{entry.program_id} ({entry.source_path})"
+            )
+        commands[entry.name] = entry
+
+    def declared_distribution(directory: Path) -> str | None:
+        project_file = directory / "pyproject.toml"
+        if not project_file.is_file():
+            return None
+        try:
+            with project_file.open("rb") as handle:
+                name = tomllib.load(handle).get("project", {}).get("name")
+        except (OSError, ValueError):
+            return None
+        return name.strip().lower().replace("_", "-") if isinstance(name, str) else None
+
+    canonical_aebndl = None
+    for candidate in (root / "modules" / "aebndl_module", root / "pscripts" / "modules" / "aebndl_module"):
+        if declared_distribution(candidate) == "aebndl":
+            canonical_aebndl = candidate.resolve()
+            break
+
     try:
         from scripts_setup.transferred_modules import (
             is_transferred_cli_command,
@@ -194,33 +221,42 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
             is_shared_module_dir,
         )
 
-    # 1. Modules under modules/*/pyproject.toml
+    # 1. Public modules using PEP 621, Poetry, or literal setup.py metadata
     modules_dir = root / "modules"
     if modules_dir.is_dir():
         for mod in sorted(modules_dir.iterdir()):
             if is_transferred_module_dir(mod) or is_shared_module_dir(mod):
                 continue
             pyproject = mod / "pyproject.toml"
-            if not pyproject.is_file():
-                continue
-            try:
-                with pyproject.open("rb") as f:
-                    data = tomllib.load(f)
-            except Exception:
-                continue
+            if pyproject.is_file():
+                try:
+                    with pyproject.open("rb") as f:
+                        data = tomllib.load(f)
+                except Exception:
+                    continue
+                project = data.get("project", {})
+                poetry = data.get("tool", {}).get("poetry", {})
+                dist_name = project.get("name", poetry.get("name", mod.name))
+                dist_version = project.get("version", poetry.get("version", "0.1.0"))
+                scripts = project.get("scripts") or poetry.get("scripts", {})
+            else:
+                setup_py = mod / "setup.py"
+                setup_metadata = _read_setup_py_console_scripts(setup_py) if setup_py.is_file() else None
+                if setup_metadata is None:
+                    continue
+                dist_name, dist_version, entry_points = setup_metadata
+                scripts = dict(entry_points)
 
-            project = data.get("project", {})
-            dist_name = project.get("name", mod.name)
+            if str(dist_name).strip().lower().replace("_", "-") == "aebndl" and canonical_aebndl and mod.resolve() != canonical_aebndl:
+                continue
             if is_transferred_distribution(dist_name) or is_shared_distribution(dist_name):
                 continue
-            dist_version = project.get("version", "0.1.0")
-            scripts = project.get("scripts", {})
 
             source_rel = str(mod.relative_to(root)).replace("\\", "/")
             for script_name, ep in scripts.items():
                 if is_transferred_cli_command(script_name):
                     continue
-                commands[script_name] = CommandEntry(
+                add_command(CommandEntry(
                     name=script_name,
                     program_id=f"module:{dist_name}",
                     kind="console_script",
@@ -231,7 +267,7 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
                     version=dist_version,
                     distribution=dist_name,
                     entry_point=ep,
-                )
+                ))
 
     # Shared libraries are installed distributions, not repository-owned source modules.
     for distribution_name in SHARED_DISTRIBUTION_REQUIREMENTS:
@@ -246,7 +282,7 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
                 continue
             if is_transferred_cli_command(entry_point.name):
                 continue
-            commands[entry_point.name] = CommandEntry(
+            add_command(CommandEntry(
                 name=entry_point.name,
                 program_id=f"package:{owner}",
                 kind="console_script",
@@ -257,7 +293,7 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
                 version=version,
                 distribution=owner,
                 entry_point=entry_point.value,
-            )
+            ))
 
     # 2. Modules under pscripts/modules/*/pyproject.toml if present
     pscripts_mod_dir = root / "pscripts" / "modules"
@@ -270,24 +306,26 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
                 if setup_metadata is None:
                     continue
                 dist_name, dist_version, scripts = setup_metadata
+                if dist_name.strip().lower().replace("_", "-") == "aebndl" and canonical_aebndl and mod.resolve() != canonical_aebndl:
+                    continue
+                if is_transferred_distribution(dist_name):
+                    continue
                 source_rel = str(mod.relative_to(root)).replace("\\", "/")
                 for script_name, entry_point in scripts:
-                    commands[script_name] = CommandEntry(
+                    if is_transferred_cli_command(script_name):
+                        continue
+                    add_command(CommandEntry(
                         name=script_name,
                         program_id=f"module:{dist_name}",
                         kind="console_script",
                         source_path=source_rel,
-                        target=(
-                            f".venv/Scripts/{script_name}.exe"
-                            if os.name == "nt"
-                            else f".venv/bin/{script_name}"
-                        ),
+                        target=f".venv/Scripts/{script_name}.exe" if os.name == "nt" else f".venv/bin/{script_name}",
                         target_windows=f".venv/Scripts/{script_name}.exe",
                         target_posix=f".venv/bin/{script_name}",
                         version=dist_version,
                         distribution=dist_name,
                         entry_point=entry_point,
-                    )
+                    ))
                 continue
             try:
                 with pyproject.open("rb") as f:
@@ -297,12 +335,14 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
 
             project = data.get("project", {})
             dist_name = project.get("name", mod.name)
+            if str(dist_name).strip().lower().replace("_", "-") == "aebndl" and canonical_aebndl and mod.resolve() != canonical_aebndl:
+                continue
             dist_version = project.get("version", "0.1.0")
             scripts = project.get("scripts", {})
 
             source_rel = str(mod.relative_to(root)).replace("\\", "/")
             for script_name, ep in scripts.items():
-                commands[script_name] = CommandEntry(
+                add_command(CommandEntry(
                     name=script_name,
                     program_id=f"module:{dist_name}",
                     kind="console_script",
@@ -313,7 +353,7 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
                     version=dist_version,
                     distribution=dist_name,
                     entry_point=ep,
-                )
+                ))
 
     # 3. Standalone Python scripts under pyscripts/*.py
     pyscripts_dir = root / "pyscripts"
@@ -324,7 +364,7 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
             name = script.stem
             version = _read_embedded_version(script)
             rel_path = str(script.relative_to(root)).replace("\\", "/")
-            commands[name] = CommandEntry(
+            add_command(CommandEntry(
                 name=name,
                 program_id=f"pyscript:{rel_path}",
                 kind="python_file",
@@ -333,7 +373,7 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
                 target_windows=rel_path,
                 target_posix=rel_path,
                 version=version,
-            )
+            ))
 
     # 4. Standalone shell scripts under shell-scripts/*.sh
     shell_dir = root / "shell-scripts"
@@ -341,7 +381,7 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
         for script in sorted(shell_dir.glob("*.sh")):
             name = script.stem
             rel_path = str(script.relative_to(root)).replace("\\", "/")
-            commands[name] = CommandEntry(
+            add_command(CommandEntry(
                 name=name,
                 program_id=f"shell:{rel_path}",
                 kind="shell_script",
@@ -350,7 +390,7 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
                 target_windows=rel_path,
                 target_posix=rel_path,
                 version="0.1.0",
-            )
+            ))
 
     return commands
 
@@ -470,6 +510,16 @@ exec "$LAUNCHER_PY" -I "$ROOT/scripts_setup/launcher.py" --manifest "$MANIFEST" 
 """
 
 
+def _write_wrapper_text(wrapper_path: Path, content: str, is_windows: bool) -> None:
+    """Write a generated template with exactly one platform newline sequence."""
+    normalized = content.replace("\r\n", "\n")
+    wrapper_path.write_text(
+        normalized,
+        encoding="utf-8",
+        newline="\r\n" if is_windows else "\n",
+    )
+
+
 def write_wrapper(
     wrapper_path: Path,
     command_name: str,
@@ -485,7 +535,7 @@ def write_wrapper(
         if not overwrite_unmanaged and not is_managed_wrapper(wrapper_path):
             return False
 
-    content = generate_windows_wrapper(command_name) if is_windows else generate_posix_wrapper(command_name)
+    content = (generate_windows_wrapper(command_name) if is_windows else generate_posix_wrapper(command_name)).replace("\r\n", "\n")
     wrapper_path.parent.mkdir(parents=True, exist_ok=True)
 
     if wrapper_path.is_file() and not wrapper_path.is_symlink():
@@ -496,8 +546,7 @@ def write_wrapper(
         except OSError:
             pass
 
-    newline = "\r\n" if is_windows else "\n"
-    wrapper_path.write_text(content, encoding="utf-8", newline=newline)
+    _write_wrapper_text(wrapper_path, content, is_windows)
     if not is_windows:
         try:
             wrapper_path.chmod(0o755)
@@ -658,7 +707,7 @@ def migrate_wrappers(
             continue
 
         content = generate_windows_wrapper(cmd_name) if is_windows else generate_posix_wrapper(cmd_name)
-        wrapper_path.write_text(content, encoding="utf-8")
+        _write_wrapper_text(wrapper_path, content, is_windows)
         if not is_windows:
             try:
                 wrapper_path.chmod(0o755)

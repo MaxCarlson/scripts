@@ -79,7 +79,7 @@ The installed `mangadl.exe compress plan -I ./ -d ./hent1imageperpage/ -f all
 12 recipes, lossless+lossy, caps200 images/750 attempts/900 seconds.
 
 Local editable metadata refreshed with `pip install --no-deps --no-build-isolation
--e ./modules/compresser -e ./modules/mangadl`; source/metadata3.1.0 agree.
+-e ./modules/compresser -e ./pscripts/modules/mangadl`; source/metadata3.1.0 agree.
 Pip emitted existing invalid-distribution warnings but completed successfully.
 Parent status excludes inaccessible pscripts. Unrelated untracked bridge work is
 preserved. Commit/push authorized; pause again after publishing this follow-up,

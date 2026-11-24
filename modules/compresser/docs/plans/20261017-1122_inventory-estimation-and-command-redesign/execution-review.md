@@ -274,7 +274,7 @@ the progress-fixture test was added. See STATUS.md for exact stage commands/resu
 Use repo Python with worktree source paths, not its original editable-install sources:
 
 ```powershell
-$env:PYTHONPATH = "$PWD/modules/compresser;$PWD/modules/mangadl;$PWD/modules;$PWD/modules/scripts_help"
+$env:PYTHONPATH = "$PWD/modules/compresser;$PWD/pscripts/modules/mangadl;$PWD/modules;$PWD/modules/scripts_help"
 & C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m pytest modules/compresser/tests -q -p no:cacheprovider --basetemp=modules/compresser/.pytest_tmp_root/next-check --tb=short
 ```
 
