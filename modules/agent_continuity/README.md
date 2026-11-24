@@ -139,6 +139,26 @@ By default, state is stored under `~/.agent_continuity` (override with `AGENT_CO
 └── index.sqlite                # Derived SQLite WAL index (single designated writer)
 ```
 
+## Native launch options and cwd previews (LLMD-22–24)
+
+Pass provider options only after LLMD's explicit `--` separator. LLMD keeps the tokens as argv elements, retains the selected native session ID, and does not interpret a provider shell string:
+
+```powershell
+llmd continue GUI AGENT -C "C:\worktrees\feature" -a -- --sandbox workspace-write --ask-for-approval on-request
+llmd start GUI AGENT -p codex --new -a -C "C:\worktrees\feature" -- --sandbox workspace-write --ask-for-approval on-request
+llmd switch -g GUI -n AGENT -p agy -a -- --sandbox --model gemini-test --effort high
+llmd review -g GUI -n IMPLEMENTER -R REVIEWER -p codex -a -- --sandbox workspace-write
+llmd return -g GUI -n IMPLEMENTER -a -- --sandbox workspace-write
+```
+
+Codex options currently accepted are `--sandbox/-s` (`read-only`, `workspace-write`, `danger-full-access`), `--ask-for-approval/-a` (`on-request`, `never`), `--model/-m`, repeatable `--enable`/`--disable`, and `--search`, `--no-alt-screen`, `--no-daemon`. AGY accepts boolean `--sandbox`, `--model`, and `--effort` (`low`, `medium`, `high`, `xhigh`, `max`). Identity, execution, bootstrap, config/profile/settings, and LLMD-owned directory options are rejected. AGY `--mode` and permission bypass flags are rejected. `llmd open` rejects native provider options because one terminal request may include different providers.
+
+Without `-a`, `continue`, existing-session `start`, `switch`, `review`, and `return` show a launch preview. It includes the executable and structured argv, cwd, environment/runtime, selected native session, and requested permission settings. `verified_effective` is always `null`; LLMD does not claim that requested settings have been enforced. Preview resolves the executable from PATH without launching or version-probing Codex/AGY.
+
+`-C/--cwd` on an existing session is invocation-scoped and must refer to an existing directory in the recorded runtime. Windows-to-WSL paths are checked against the exact recorded distribution using argv-only `wsl.exe --exec test -d`. If the requested path belongs to a different detected Git repository/worktree, preview reports `repository_context_changed`; the session's stored cwd and provenance remain unchanged. For new sessions, the explicitly selected cwd is recorded as the new session's initial provenance.
+
+New-session bootstrap remains the fixed read-only initialization step and captures the provider's exact session ID. Native launch options are applied only when LLMD resumes that captured ID interactively. Options 4–6 after exit use the selected destination provider's validated allowlist before transition; unsupported combinations fail without changing activation state.
+
 ## Testing
 
 ```powershell

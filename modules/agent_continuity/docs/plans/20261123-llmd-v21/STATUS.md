@@ -2,10 +2,18 @@
 
 - **Branch:** `feature/llmd-v21-implementation-20261123`
 - **Base:** `origin/docs/llmd-v21-feature-spec-20261123` at `17dfb0b8d82d4754da87f8c0825c107d4b8a1d40`
-- **Status:** LLMD-01–LLMD-21 implementation and corrective review fixes are complete, validated, committed, and pushed on the authorized feature branch. No merge performed.
-- **Authorization:** Implement LLMD-01–LLMD-21, fake-provider tests, docs, compatibility fixes, feature-branch commit and push. No provider bootstrap in tests, model loading, destructive registry action, breaking change, or merge.
+- **Status:** LLMD-01–LLMD-24 are implemented and validated on the existing authorized feature branch. LLMD-25/26 remain deferred. No merge performed.
+- **Authorization:** Implement LLMD-22–LLMD-24, provider-test safety hardening, docs, compatibility fixes, feature-branch commit and push. No real provider execution in tests, local inference, destructive registry action, breaking change, or merge.
 - **Review evidence:** The task handoff supplies the LLMD-19 constraints; the committed evaluation brief has no returned Gemini verdict/findings. The plan records this provenance limit.
-- **Latest integration snapshot:** Refreshed `origin/main`; feature branch is 5 commits ahead and 61 behind. None of the 61 intervening commits changed `agent_continuity` or its direct shared runtime dependencies. Current main changed unrelated `scripts_help` registry entries; the LLMD entry remained at 1.1.0 and is synchronized to 1.4.1 on this branch. No merge/rebase was performed.
+- **Integration assessment:** The cached `origin/main` snapshot is 61 commits ahead and 7 commits behind this branch. A fetch could not refresh it because shared `.git/worktrees` metadata is outside the writable workspace. Of the scoped paths reviewed, only `scripts_help` has overlapping changes; its main-side changes are unrelated registry entries. No `agent_continuity` runtime changes were found in the 61 cached commits. No merge/rebase was performed; the comparison may miss newer remote changes.
+
+## LLMD-22–24 implementation checkpoint
+
+- Worktree resumed at `b64d91aee9346579499bc878fec6f95365432f35` on `feature/llmd-v21-implementation-20261123`; the tree was clean. Workspace read/write access was confirmed by creating and removing a temporary probe.
+- Installed CLI help was queried only (no inference): `codex resume --help` and `agy.exe --help`. Codex resume allowlist is `--sandbox/-s`, `--ask-for-approval/-a`, `--model/-m`, repeatable `--enable`/`--disable`, `--search`, `--no-alt-screen`, and `--no-daemon`. AGY allowlist is boolean `--sandbox`, `--model`, and `--effort`; `--mode` and permission bypass are rejected.
+- Implemented structured post-`--` argv, cwd validation/preview, per-invocation permission reporting, and a global fake-provider PATH/process guard. `open` native overrides are explicitly rejected. Fixed bootstrap remains isolated from user options.
+- LLMD-25 persistent launch profiles and LLMD-26 native lock diagnostics are deferred.
+- Installed help was queried without inference. Focused provider-customization tests passed, the complete module suite passed (181 tests), module-scoped Ruff passed, and `git diff --check` passed. Test commands are recorded below; the delivery report records the final SHA.
 
 ## Preparation
 
@@ -31,4 +39,9 @@
 
 ## Verification and final state
 
-- The feature branch remains unmerged at corrective commit `7e467fe0`. The worktree is clean after delivery.
+- Focused tests: `python -m pytest --basetemp=.pytest_tmp_root/llmd-22-focused -q tests/dispatcher_launch_test.py tests/dispatcher_v2_test.py tests/dispatcher_cli_test.py tests/cli_acceptance_test.py` — passed.
+- Authoritative module suite: `python -m pytest --basetemp=.pytest_tmp_root/llmd-22-24-authoritative-rerun -q -o addopts=` — **181 passed in 63.97s**.
+- Ruff: `python -m ruff check agent_continuity tests --config pyproject.toml` from `modules/agent_continuity` — passed. `git diff --check` — passed.
+- A repository-root Ruff run also encountered 2,531 pre-existing issues outside this module; module-scoped Ruff is the applicable clean result.
+- Version advanced from 1.4.1 to 1.5.0 and was synchronized in the help registry.
+- The feature branch remains unmerged; see the delivery report for the final commit SHA and push result.

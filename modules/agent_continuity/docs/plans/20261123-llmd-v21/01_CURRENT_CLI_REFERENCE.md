@@ -36,7 +36,7 @@ The durable event spool and rebuildable SQLite index contain GUI records, agent-
 | `attach` | Bind a verified existing native session ID | `-g`, `-n`, `-p`, `-i`, optional `-e/--environment`, `-C/--cwd`, `-L/--launch-id`, `-a` |
 | `start [GUI] [AGENT]` | Initialize a new native provider session | `-g`, `-n`, `-p`, `-C`, `-e`, `-a`, `-N/--new`; **two distinct parsing paths** |
 | `switch` | Start or select a different provider session under an existing slot | `-g`, `-n`, `-p`, `-r/--reuse-previous`, `-C`, `-e`, `-a` |
-| `continue [GUI] [AGENT]` | Resume selected/historical session | `-g`, `-n`, `-a`, `-p`, `-i`, `-R/--reactivate`, `-A/--all` in picker |
+| `continue [GUI] [AGENT]` | Resume selected/historical session | `-g`, `-n`, `-a`, `-p`, `-i`, `-R/--reactivate`, `-A/--all` in picker, `-C/--cwd` |
 | `open` | Submit multi-pane launch plan to Windows Terminal | `-g`, `-k/--panes-per-tab` 1–4, `-t/--terminal`, `-w/--window`, `-a` |
 | `pane-run` | Internal terminal-launcher wrapper | `-s/--slot-id`, `-L/--launch-id`; unintentionally visible as `==SUPPRESS==` in global help |
 
@@ -109,3 +109,13 @@ Examined repository source at the pinned baseline, the published README, and use
 ## Implementation update (feature branch)
 
 The original baseline notes above remain historical. The authorized implementation adds `review`/`return`, `list -N/--history-count`, and exit-menu options 5/6. Option 4 continues to switch providers within the same slot. New-session creation through `start` retains the explicit `-N -a` convention. Review and switch relationships are durable events with rebuildable projections; all automated provider bootstrap tests use fake child processes.
+
+### Native launch customization (LLMD-22–24)
+
+Provider arguments are parsed as opaque argv only after a literal `--` on `start`, `continue`, `switch`, `review`, and `return`. Codex resume supports LLMD's allowlist: `--sandbox/-s`, `--ask-for-approval/-a`, `--model/-m`, repeatable `--enable`/`--disable`, `--search`, `--no-alt-screen`, and `--no-daemon`. AGY supports boolean `--sandbox`, `--model`, and `--effort`; AGY `--mode` is rejected because it changes execution mode. Provider help was checked with `codex resume --help` and `agy.exe --help`; no session or model turn was started.
+
+Session-identity, bootstrap/print/exec, config/profile/settings, and provider cwd/worktree/add-dir flags are rejected because LLMD owns those choices. `open`/terminal-pane launches reject provider passthrough for mixed-provider safety. Options 4–6 validate passed options for their selected destination before changing lifecycle state.
+
+`-C/--cwd` on existing sessions applies to one invocation and does not update stored session provenance. Local directories must exist. Windows-to-WSL paths must be absolute and are checked against the session's recorded distribution with argv-only `wsl.exe --exec test -d`. Preview resolves PATH without invoking/version-probing a provider and shows argv, cwd, environment, session, requested permissions, and a null/unverified effective-permissions field. New-session bootstrap remains fixed and read-only; user overrides are forwarded only on resuming the exact captured ID.
+
+LLMD-25 persistent launch profiles and LLMD-26 native lock diagnostics are deferred.

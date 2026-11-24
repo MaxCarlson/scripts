@@ -40,3 +40,17 @@
 - [x] Run requested broad module suite (170 passed), Ruff, version consistency, and diff checks.
 - [x] Review task-only diff and final branch status.
 - [x] Commit and push the corrective changes on the implementation branch; do not merge.
+
+## Batch F — Native launch customization (LLMD-22–24)
+
+- [x] Verify installed Codex resume and AGY CLI help; record allowlisted native flags and provider-specific ordering.
+- [x] Parse argv after `--` for start, continue, switch, review, and return; reject identity, execution, bootstrap, and directory conflicts.
+- [x] Add invocation-scoped `-C/--cwd` validation for local and recorded WSL environments; surface repository/worktree changes without rewriting session cwd provenance.
+- [x] Add pure launch previews with executable/argv, cwd, environment, exact session, requested permissions, and explicitly unverified effective settings.
+- [x] Keep overrides out of fixed read-only bootstrap and apply them only to exact-ID interactive resume.
+- [x] Explicitly reject unsupported open/terminal-pane native overrides.
+- [x] Harden every module test against real provider subprocesses with fake provider discovery and an argv/process guard.
+- [x] Cover quoting, spaces, repeatable flags, conflicts, Windows wrappers, WSL, previews, failed launches, and preserved session/history identity.
+- [x] Update README, current CLI reference, feature register, module version, and deferred LLMD-25/26 status.
+- [x] Run focused tests, full module suite, Ruff, and diff checks; inspect integration risk against main without merge/rebase.
+- [ ] Commit and push task changes on the existing feature branch; do not merge.

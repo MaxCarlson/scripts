@@ -11,7 +11,7 @@ Improve LLMD daily operation while keeping its durable GUI/slot/session model, r
 
 A GUI alias refers to an existing ChatGPT GUI conversation; LLMD does not create a ChatGPT chat. An agent *slot* may retain several native Codex/AGY sessions over time. The selected session is the latest activation; lifecycle `active`/`inactive`/`completed` is separate from observed runtime state.
 
-## 2. Complete feature backlog — LLMD-01 through LLMD-21
+## 2. Complete feature backlog — LLMD-01 through LLMD-24
 
 | ID | Priority | Feature | Deliverable / acceptance |
 |---|---|---|---|
@@ -36,6 +36,11 @@ A GUI alias refers to an existing ChatGPT GUI conversation; LLMD does not create
 | **LLMD-19** | P0 | Reviewer handoff and return | Persistent review cycles link an original slot to a distinct reviewer slot; `review` resumes or explicitly starts the reviewer, and `return` deactivates it and reactivates/resumes the exact original session without duplicating native sessions or slots |
 | **LLMD-20** | P0 | Exit-menu switch to an existing local agent | Option 5 opens a searchable picker of inactive agents under the current GUI, prioritizes the linked original when present, validates its exact existing session, then atomically deactivates the departing slot and activates/resumes the destination; it never creates a native session |
 | **LLMD-21** | P0 | Exit-menu create and switch to a new agent | Option 6 collects a new slot name, Codex/AGY provider, and confirmed working directory; after explicit confirmation it creates the slot, initializes one provider session, durably selects its exact captured ID, then deactivates the departing slot |
+| **LLMD-22** | P0 | Provider-native argv passthrough | `start`, `continue`, `switch`, `review`, and `return` accept structured tokens only after `--`; exact session identity and LLMD-owned bootstrap/directory/session flags remain protected. Unsupported `open` passthrough is rejected explicitly |
+| **LLMD-23** | P0 | Invocation-scoped working directory | `-C/--cwd` applies to supported resume paths, validates local or recorded-WSL runtime directories, flags detected repository/worktree context changes, and never rewrites existing native-session cwd provenance |
+| **LLMD-24** | P0 | Launch preview and permission diagnostics | Before provider execution, show resolved executable/argv, cwd, recorded runtime/environment, exact session (or captured-ID placeholder), and requested permission flags. Effective permissions are always marked unverified |
+
+**Deferred:** LLMD-25 (persistent launch profiles) and LLMD-26 (native lock diagnostics) are out of scope for v2.1 because they add persistent policy/locking semantics beyond invocation-scoped argv and existing LLMD runtime locks.
 
 **Evidence for LLMD-18:** the named form currently calls `begin_launch` before registration and fails `Agent slot not found`. The positional form calls `dispatcher.register`. This is a verified inconsistency, not an inference about the user's environment.
 
@@ -137,6 +142,28 @@ The affirmative confirmation is the interactive equivalent of explicit `-N -a`; 
 
 **Acceptance:** option 5 picker search/order/filtering; linked-original prioritization; same-GUI restriction; empty/missing/pending/completed destination rejection; exact existing Codex and AGY sessions; destination in-use and stale-head failures without source mutation; concurrency with `continue`/`review`/`return`; no new launch; option 6 duplicate/blank names, provider selection, invalid/unconfirmed cwd, cancellation, authorization, disposable fake bootstrap, exact native-ID selection, prior-history preservation, and interrupted/ambiguous launch recovery. Every case uses a disposable registry and fake provider process.
 
+### Batch F — Native launch customization, cwd validation, and preview
+
+**Scope:** LLMD-22–LLMD-24. New-session authorization remains explicit (`start --new -a`; reviewer creation `review -N -a`; post-exit option 6 confirmation). User-native options apply only to the interactive resume after bootstrap has captured and durably associated the exact session ID.
+
+**CLI syntax:**
+
+```text
+llmd continue GUI AGENT -C WORKTREE -a -- --sandbox workspace-write --ask-for-approval on-request
+llmd start GUI AGENT -p codex --new -a -C WORKTREE -- --sandbox workspace-write --ask-for-approval on-request
+llmd switch -g GUI -n AGENT -p agy -a -- --sandbox --model MODEL --effort high
+llmd review -g GUI -n ORIGINAL -R REVIEWER -p codex -a -- --sandbox workspace-write
+llmd return -g GUI -n ORIGINAL -a -- --sandbox workspace-write
+```
+
+The separator is mandatory. The verified Codex `resume` allowlist is `--sandbox/-s`, `--ask-for-approval/-a`, `--model/-m`, repeatable `--enable`/`--disable`, and boolean `--search`, `--no-alt-screen`, `--no-daemon`. AGY accepts boolean `--sandbox`, `--model`, and `--effort`; `--mode` is rejected as an execution-mode override. Identity selection (`--last`, `--conversation`, etc.), bootstrap/print/exec controls, LLMD-owned cwd/worktree/add-dir controls, config/profile/settings overrides, and AGY permission bypass are rejected. `open`/terminal-pane native overrides are rejected because `open` may contain mixed providers; launch one selected slot with `continue` instead. Option 4–6 transitions validate options against the selected destination provider before any lifecycle transition.
+
+`-C/--cwd` overrides only the current interactive launch for an existing session. Validate local paths as existing directories; for Windows-to-WSL paths require an absolute path and check it with argv-only `wsl.exe --distribution <recorded-distro> --exec test -d <path>`. A different repository/worktree root is surfaced in preview. Do not update native-session provenance when resuming with an override. For a newly created session, `-C` is the selected initial cwd and is recorded as its provenance.
+
+Preview resolves the executable from PATH without invoking the provider, outputs a structured argv vector (never a shell string), cwd, environment ID/runtime/distro/ownership, session identity or bootstrap placeholder, and requested permission settings. `verified_effective` remains `null` because a preview cannot prove provider enforcement. No configuration is persisted. New-session bootstrap retains its fixed read-only prompt/flags and ID capture, then passes user overrides only to the captured-ID interactive resume.
+
+**Acceptance:** exact Codex/AGY option placement from installed `--help`; explicit separator and spaces preserved as argv tokens; allowed repeated Codex feature flags; rejection of session identity, execution, bootstrap, settings, and directory conflicts; preview purity; requested-vs-effective permission diagnostics; cwd existence/runtime checks on Windows and WSL2; repository/worktree change detection; existing native cwd/history preserved; fake bootstrap receives no user overrides while interactive resume receives them; provider failure retains exact session/pending recovery state. Global pytest fixtures prepend controlled fake provider names, filter installed provider paths, and fail on every unexpected provider spawn, including resume commands. Tests must never invoke live Codex/AGY.
+
 ## 4. Non-negotiable invariants
 
 - No destructive operations, deleting sessions, registry reset, loss of history or in-place worktree changes.
@@ -146,6 +173,7 @@ The affirmative confirmation is the interactive equivalent of explicit `-N -a`; 
 - Keep exact provider session IDs and environment ownership; never construct guessed IDs or parse placeholder strings as verified native sessions.
 - New `-N` list flag is command-scoped and must not change existing `start -N/--new`.
 - Respect `NO_COLOR`, non-TTY, readable plain-text output, and existing JSON contracts.
+- Keep provider overrides invocation-scoped and argv-only; never pass them into fixed bootstrap, persist them as profiles, or claim effective permission changes from requested flags alone.
 - Preserve all original flags/API behavior absent an explicitly documented migration decision.
 
 ## 5. Test strategy and evidence requirements
