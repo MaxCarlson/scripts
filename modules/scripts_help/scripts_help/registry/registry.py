@@ -301,13 +301,6 @@ REGISTRY: dict = {
                 "version": "1.1.0",
             },
             {
-                "name": "agent-bench (module)",
-                "path": "modules/agent_benchmark",
-                "desc": "Plan, execute, recover, and report persistent Harbor benchmark cohorts with monitored and compact CLI modes",
-                "help_cmd": ["agent-bench", "--help"],
-                "version": "1.22.0",
-            },
-            {
                 "name": "run_tests.py",
                 "path": "pyscripts/run_tests.py",
                 "desc": "Interactive pytest runner: verbosity + scope menus, or use CLI flags",
