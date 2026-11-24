@@ -198,7 +198,7 @@ runmux load
 
 ## Optional LLM Monitor Integration
 
-Runmux Web optionally integrates the read-only observability and diagnostics API from the `llm_monitor` module.
+Runmux Web optionally integrates the read-only observability and diagnostics API from the toolkit-owned `llm-monitor` distribution.
 
 ### Configuration & Activation
 
@@ -216,7 +216,8 @@ runmux web
 ### Safety & Architecture
 
 - **Read-Only Invariant:** Monitoring endpoints never trigger recording, model inference, parameter mutation, job recovery, or Runmux process termination.
-- **Python Compatibility:** Ordinary Runmux runs on Python 3.10+. Monitoring capabilities require Python 3.11+ and the optional `llm_monitor` package; when running on Python 3.10 or without `llm_monitor`, Runmux starts normally and reports the integration status as `unavailable`.
+- **Python Compatibility:** Ordinary Runmux runs on Python 3.10+. Monitoring capabilities require Python 3.11+ and the optional `llm_monitor` package; when running on Python 3.10 or without `llm_monitor`, Runmux starts normally and reports the integration status as `unavailable` (`package_missing` when the package is absent).
+- **Installation:** The scripts repository does not install or vendor `llm-monitor`. To enable the optional integration, install the canonical package into the same Python environment as Runmux from an `llm-agent-toolkit` checkout (`python -m pip install -e modules/llm_monitor` from the toolkit repository root). Runmux remains usable without it.
 - **Existing-Only Database:** If a telemetry database is configured, Runmux verifies it is an existing file before opening it in read-only mode. It will never create a database or start a background recorder.
 - **Authenticated REST Endpoints:**
   - `GET /api/llm-monitor/v1/status`: Capability availability and configuration (no provider I/O).

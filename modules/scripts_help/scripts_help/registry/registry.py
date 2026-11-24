@@ -566,13 +566,6 @@ REGISTRY: dict = {
                 "version": "0.4.0",
             },
             {
-                "name": "llm_monitor (module)",
-                "path": "modules/llm_monitor",
-                "desc": "Read-only local LLM diagnostics, historical telemetry, alerts, and standalone inference overview",
-                "help_cmd": ["python", "-m", "llm_monitor", "--help"],
-                "version": "0.8.1",
-            },
-            {
                 "name": "runmux (module)",
                 "path": "modules/runmux",
                 "desc": "Managed process runner with a native terminal workspace and optional read-only browser",

@@ -31,6 +31,7 @@ RETIRED_TOOLKIT_SOURCE_DIRS = frozenset({
     "benchmark_core",
     "interactive_reports",
     "ai_orchestrator",
+    "llm_monitor",
     "knowledge_manager",
     "llm-interface",
     "llm-models",

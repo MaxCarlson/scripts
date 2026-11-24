@@ -240,7 +240,7 @@ def test_retired_toolkit_modules_are_not_listed_as_scripts_programs() -> None:
         "agent_sync", "agt", "agent_benchmark", "benchmark_core",
         "interactive_reports", "ai_orchestrator", "knowledge_manager",
         "llm-interface", "llm-models", "llm-patcher", "lmstui",
-        "local_agent_bridge", "web_ai_automator",
+            "local_agent_bridge", "web_ai_automator", "llm_monitor",
     }
 
     def walk(items):
