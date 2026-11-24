@@ -215,6 +215,25 @@ CREATE TABLE IF NOT EXISTS dispatcher_pending_launches (
     failure_detail TEXT
 );
 
+CREATE TABLE IF NOT EXISTS dispatcher_review_cycles (
+    cycle_id TEXT PRIMARY KEY,
+    original_slot_id TEXT NOT NULL REFERENCES agent_slots(slot_id),
+    reviewer_slot_id TEXT NOT NULL REFERENCES agent_slots(slot_id),
+    original_provider TEXT NOT NULL,
+    original_environment_id TEXT NOT NULL,
+    original_session_id TEXT NOT NULL,
+    original_state TEXT NOT NULL,
+    reviewer_provider TEXT,
+    reviewer_environment_id TEXT,
+    reviewer_session_id TEXT,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_dispatcher_review_cycle_slots
+    ON dispatcher_review_cycles(original_slot_id, reviewer_slot_id, status);
+
 CREATE INDEX IF NOT EXISTS idx_workflows_slug ON workflows(slug);
 CREATE INDEX IF NOT EXISTS idx_gui_workflow ON gui_conversations(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_gui_canonical_url ON gui_conversations(canonical_url);
