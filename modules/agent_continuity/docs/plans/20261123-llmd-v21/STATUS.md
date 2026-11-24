@@ -2,7 +2,7 @@
 
 - **Branch:** `feature/llmd-v21-implementation-20261123`
 - **Base:** `origin/docs/llmd-v21-feature-spec-20261123` at `17dfb0b8d82d4754da87f8c0825c107d4b8a1d40`
-- **Status:** Implementation and verification complete; feature-branch commit and push are next.
+- **Status:** Complete; implementation and status documentation are committed and pushed on the feature branch. No merge performed.
 - **Authorization:** Implement LLMD-01–LLMD-21, fake-provider tests, docs, compatibility fixes, feature-branch commit and push. No provider bootstrap in tests, model loading, destructive registry action, breaking change, or merge.
 - **Review evidence:** The task handoff supplies the LLMD-19 constraints; the committed evaluation brief has no returned Gemini verdict/findings. The plan records this provenance limit.
 
@@ -21,10 +21,10 @@
 - Batch D/E implementation — durable pending/active/returned reviewer-cycle projection; atomic exact-session transition event; `review`/`return`; exit option 5 exact inactive-session picker with linked-original priority; option 6 explicit new-slot/provider/cwd confirmation and exact-ID bootstrap handoff. Focused tests exercise fake provider processes, stale and concurrent transitions, cancellation/failure, list/continue visibility, distinct worktrees, and projection rebuild.
 - Final module validation: `python -m pytest --basetemp=.pytest_tmp_root/llmd-v21-authoritative -q -o addopts=` — **159 passed in 484.09s**. Full Ruff, package version consistency, and `git diff --check` also passed. All provider bootstrap/resume subprocesses were faked; no Codex/AGY session was launched.
 
-## In progress
+## Delivered
 
-- Final diff review, commit, and push to the feature branch; no merge.
+- Reviewed the task-only diff, committed the LLMD implementation, and pushed `feature/llmd-v21-implementation-20261123` to `origin`.
 
-## Verification and next action
+## Verification and final state
 
-- Next: stage only LLMD task paths, commit, push to `origin/feature/llmd-v21-implementation-20261123`, then verify the published branch SHA and clean worktree.
+- The pushed feature branch contains the complete LLMD-01 through LLMD-21 implementation; the user can open a pull request for review. The branch remains unmerged.

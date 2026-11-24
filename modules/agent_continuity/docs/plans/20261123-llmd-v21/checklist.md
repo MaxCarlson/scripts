@@ -37,4 +37,4 @@
 - [x] Run focused module tests after each sequential batch; repair failures before advancing.
 - [x] Run requested broad module suite (159 passed), Ruff, version consistency, and diff checks.
 - [x] Review task-only diff and final branch status.
-- [ ] Commit and push the implementation branch; do not merge.
+- [x] Commit and push the implementation branch; do not merge.
