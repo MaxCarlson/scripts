@@ -77,6 +77,107 @@ def test_native_args_reject_identity_execution_and_directory_overrides():
     assert _validated_native_args("agy", ["--sandbox", "--effort", "high"]) == ["--sandbox", "--effort", "high"]
 
 
+@pytest.mark.parametrize(
+    ("provider", "args"),
+    [
+        ("codex", ["-s", "unsupported"]),
+        ("codex", ["--sandbox", "unsupported"]),
+        ("codex", ["-s=unsupported"]),
+        ("codex", ["--sandbox=unsupported"]),
+        ("codex", ["-a", "always"]),
+        ("codex", ["--ask-for-approval", "always"]),
+        ("codex", ["-a=always"]),
+        ("codex", ["--ask-for-approval=always"]),
+        ("agy", ["--effort", "turbo"]),
+        ("agy", ["--effort=turbo"]),
+        ("codex", ["-s", "workspace-write", "--sandbox", "read-only"]),
+        ("codex", ["-a", "never", "--ask-for-approval", "on-request"]),
+    ],
+)
+def test_native_args_validate_enumerated_values_and_alias_duplicates(provider, args):
+    from agent_continuity.dispatcher_cli import _validated_native_args
+
+    with pytest.raises(ContinuityError, match="Unsupported|may only be specified once"):
+        _validated_native_args(provider, args)
+
+
+@pytest.mark.parametrize(
+    ("provider", "args", "expected"),
+    [
+        ("codex", ["-s", "workspace-write", "-a", "on-request"],
+         ["-s", "workspace-write", "-a", "on-request"]),
+        ("codex", ["-s=read-only", "--ask-for-approval=never"],
+         ["-s", "read-only", "--ask-for-approval", "never"]),
+        ("agy", ["--effort=xhigh"], ["--effort", "xhigh"]),
+    ],
+)
+def test_native_args_accept_aliases_and_equals_forms_without_losing_option_spelling(provider, args, expected):
+    from agent_continuity.dispatcher_cli import _validated_native_args
+
+    assert _validated_native_args(provider, args) == expected
+
+
+def test_new_and_existing_previews_report_final_agy_sandbox_and_codex_aliases(tmp_path):
+    from agent_continuity.dispatcher_cli import _launch_preview, _new_launch_preview
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.create_gui("GUI", apply=True)
+    dispatcher.create_slot(gui="GUI", name="Agent", apply=True)
+    dispatcher.attach_session(gui="GUI", name="Agent", provider="agy", session_id="agy-exact", apply=True)
+    existing = _launch_preview(dispatcher, "agy", "agy-exact", "local", None, ["--sandbox"])
+    created = _new_launch_preview(dispatcher, "agy", "local", None, ["--sandbox"])
+    codex = _new_launch_preview(dispatcher, "codex", "local", None,
+                                ["-s=workspace-write", "-a", "never"])
+
+    assert existing["permission_settings"]["requested"] == {"--sandbox": True}
+    assert created["permission_settings"]["requested"] == {"--sandbox": True}
+    assert codex["permission_settings"]["requested"] == {
+        "--sandbox": ["workspace-write"], "--ask-for-approval": ["never"],
+    }
+    assert all(preview["permission_settings"]["verified_effective"] is None
+               for preview in (existing, created, codex))
+
+
+@pytest.mark.parametrize(
+    "command_args",
+    [
+        ("start", "GUI", "Agent", "-p", "codex", "-N", "-a", "--", "--sandbox=invalid"),
+        ("switch", "-g", "GUI", "-n", "Original", "-p", "agy", "-a", "--", "--effort=turbo"),
+        ("review", "-g", "GUI", "-n", "Original", "-R", "Reviewer", "-p", "agy", "-N", "-a",
+         "--", "--effort", "turbo"),
+    ],
+)
+def test_invalid_native_values_prevent_new_launch_and_registry_mutation(tmp_path, monkeypatch, command_args):
+    from agent_continuity.dispatcher_cli import build_parser, dispatch
+
+    home = tmp_path / "registry"
+    seed = DispatcherService(home_dir=home)
+    if command_args[0] != "start":
+        seed.create_gui("GUI", apply=True)
+        seed.create_slot(gui="GUI", name="Original", apply=True)
+        seed.attach_session(gui="GUI", name="Original", provider="codex", session_id="original-exact", apply=True)
+    before_guis = seed.list_guis(active_only=False)
+    before_slots = seed.list_slots(gui="GUI", active_only=False) if before_guis else []
+    before_pending = seed.list_pending_launches(gui="GUI") if before_guis else []
+    provider_calls = []
+
+    def unexpected_provider_call(*args, **kwargs):
+        provider_calls.append((args, kwargs))
+        raise AssertionError("Invalid native arguments reached provider initialization.")
+
+    monkeypatch.setattr(subprocess, "run", unexpected_provider_call)
+    parser = build_parser()
+    args = parser.parse_args(["-H", str(home), *command_args])
+    with pytest.raises(ContinuityError, match="Unsupported"):
+        dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())
+
+    after = DispatcherService(home_dir=home)
+    assert after.list_guis(active_only=False) == before_guis
+    assert (after.list_slots(gui="GUI", active_only=False) if before_guis else []) == before_slots
+    assert (after.list_pending_launches(gui="GUI") if before_guis else []) == before_pending
+    assert provider_calls == []
+
+
 def test_continue_preview_is_pure_reports_requested_settings_and_worktree_change(tmp_path, monkeypatch):
     from agent_continuity.dispatcher_cli import build_parser, dispatch
 

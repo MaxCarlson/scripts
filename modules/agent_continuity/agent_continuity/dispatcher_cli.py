@@ -317,11 +317,14 @@ def _validated_native_args(provider: str, native_args: Sequence[str]) -> list[st
                   "-a": "--ask-for-approval", "--model": "--model", "-m": "--model",
                   "--enable": "repeat", "--disable": "repeat"}
         flags = {"--search", "--no-alt-screen", "--no-daemon"}
-        allowed_settings = {"--sandbox", "--ask-for-approval"}
+        enumerated_values = {
+            "--sandbox": {"read-only", "workspace-write", "danger-full-access"},
+            "--ask-for-approval": {"on-request", "never"},
+        }
     elif provider == "agy":
         values = {"--model": "--model", "--effort": "--effort"}
         flags = {"--sandbox"}
-        allowed_settings = set()
+        enumerated_values = {"--effort": {"low", "medium", "high", "xhigh", "max"}}
     else:
         raise ContinuityError(ErrorCode.INVALID_INPUT, f"Native options are unsupported for provider {provider!r}.")
 
@@ -357,25 +360,44 @@ def _validated_native_args(provider: str, native_args: Sequence[str]) -> list[st
             value = inline_value
             if not value:
                 raise ContinuityError(ErrorCode.INVALID_INPUT, f"Provider option {option} requires a value.")
-            result.extend([option, value])
         else:
             index += 1
             if index >= len(native_args) or not isinstance(native_args[index], str) or not native_args[index] or native_args[index].startswith("-"):
                 raise ContinuityError(ErrorCode.INVALID_INPUT, f"Provider option {option} requires a value.")
-            result.extend([option, native_args[index]])
+            value = native_args[index]
+        accepted_values = enumerated_values.get(canonical)
+        if accepted_values is not None and value not in accepted_values:
+            if canonical == "--sandbox":
+                raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported Codex sandbox setting {value!r}.")
+            if canonical == "--ask-for-approval":
+                raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported Codex approval setting {value!r}.")
+            if canonical == "--effort":
+                raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported AGY effort {value!r}.")
+        result.extend([option, value])
         index += 1
 
-    # Keep requested permission data parseable for preview diagnostics.
-    for index, token in enumerate(result[:-1]):
-        if token in allowed_settings:
-            value = result[index + 1]
-            if token == "--ask-for-approval" and value not in {"on-request", "never"}:
-                raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported Codex approval setting {value!r}.")
-            if token == "--effort" and value not in {"low", "medium", "high", "xhigh", "max"}:
-                raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported AGY effort {value!r}.")
-            if provider == "codex" and token == "--sandbox" and value not in {"read-only", "workspace-write", "danger-full-access"}:
-                raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported Codex sandbox setting {value!r}.")
     return result
+
+
+def _requested_permission_settings(provider: str, native_args: Sequence[str]) -> dict[str, Any]:
+    """Return canonical requested permission settings, without claiming provider enforcement."""
+    validated = _validated_native_args(provider, native_args)
+    aliases = {"-s": "--sandbox", "-a": "--ask-for-approval"}
+    requested: dict[str, Any] = {}
+    index = 0
+    while index < len(validated):
+        token = validated[index]
+        canonical = aliases.get(token, token)
+        if provider == "agy" and canonical == "--sandbox":
+            requested[canonical] = True
+            index += 1
+            continue
+        if provider == "codex" and canonical in {"--sandbox", "--ask-for-approval"}:
+            requested[canonical] = [validated[index + 1]]
+            index += 2
+            continue
+        index += 2 if token in {"--model", "-m", "--enable", "--disable", "--effort"} else 1
+    return requested
 
 
 def _resolve_environment(dispatcher: DispatcherService, selector: str):
@@ -432,13 +454,7 @@ def _launch_preview(dispatcher: DispatcherService, provider: str, session_id: st
     environment_id = environment.environment_id
     argv = _native_argv(dispatcher, provider, session_id, environment_id=environment_id, cwd=cwd,
                         native_args=native_args)
-    requested: dict[str, Any] = {}
-    validated = _validated_native_args(provider, native_args)
-    for index, token in enumerate(validated):
-        if token in {"--sandbox", "--ask-for-approval"} and provider == "agy":
-            requested[token] = True
-        elif token in {"--sandbox", "--ask-for-approval"} and index + 1 < len(validated):
-            requested.setdefault(token, []).append(validated[index + 1])
+    requested = _requested_permission_settings(provider, native_args)
     native = dispatcher.materializer.get_session(provider, environment_id, session_id)
     recorded_root = _repository_root(native.cwd_native if native else None)
     requested_root = _repository_root(cwd) if cwd else recorded_root
@@ -476,13 +492,7 @@ def _new_launch_preview(dispatcher: DispatcherService, provider: str, environmen
                           cwd=cwd, native_args=native_args)
     environment = _resolve_environment(dispatcher, environment_id)
     environment_id = environment.environment_id
-    requested: dict[str, Any] = {}
-    validated = _validated_native_args(provider, native_args)
-    for index, token in enumerate(validated[:-1]):
-        if token == "--sandbox" and provider == "agy":
-            requested[token] = True
-        elif token in {"--sandbox", "--ask-for-approval"}:
-            requested.setdefault(token, []).append(validated[index + 1])
+    requested = _requested_permission_settings(provider, native_args)
     return {
         "bootstrap_argv": bootstrap,
         "interactive_resume_argv_template": resume,
