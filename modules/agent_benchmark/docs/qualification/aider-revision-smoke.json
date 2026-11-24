@@ -1,0 +1,6 @@
+{
+  "id": "aider-revision-smoke",
+  "dataset": "aider/aider-polyglot",
+  "source_revision": "f30b14415dd733c83627204bad0af69a89ceb46f",
+  "tasks": ["polyglot_python_beer-song"]
+}

@@ -1,0 +1,206 @@
+{
+  "schema": "monitor-coordinator-live-noninference-qualification-v1",
+  "assignment_commit": "b2b66f214290227e4a0e19cbd6d6bd6a52d6c2e5",
+  "branch": "agent/harbor-route-preflight-20261123",
+  "started_at_utc": "2026-11-24T01:17:59Z",
+  "completed_at_utc": "2026-11-24T01:30:10Z",
+  "overall_status": "aborted_safely_due_to_resource_and_mining_telemetry_change",
+  "inference_dispatched": false,
+  "model_loaded_or_unloaded": false,
+  "images_downloaded": false,
+  "containers_created": 0,
+  "source_corrections": [],
+  "endpoint_identities": {
+    "resource_coordinator": {
+      "url": "http://127.0.0.1:1235/_coordinator/status",
+      "method": "GET",
+      "status": "online",
+      "service_state": "ready",
+      "is_ready": true,
+      "runtime": {
+        "pid": 53788,
+        "process_create_time_epoch": 1795476264.4233377,
+        "version": "1.0.0"
+      },
+      "upstream_url": "http://127.0.0.1:1234",
+      "safety_state": {
+        "maintenance": "idle",
+        "restart_inhibited": false,
+        "gpu_admission_permitted": true,
+        "recovery_required_reason": null,
+        "gaming": "inactive"
+      }
+    },
+    "lm_studio_model_inventory": {
+      "url": "http://127.0.0.1:1234/v1/models",
+      "method": "GET",
+      "http_status": 200,
+      "latency_ms": 49,
+      "model_count": 0,
+      "model_ids": []
+    },
+    "production_monitor": {
+      "url": "http://127.0.0.1:8788",
+      "status": "not_running",
+      "managed_descriptor_found": false,
+      "loopback_listener_found": false,
+      "authenticated_status_probe": "skipped_no_managed_monitor"
+    },
+    "docker_desktop": {
+      "initial_service_state": "stopped",
+      "startup_requested": true,
+      "engine_ready": false,
+      "final_service_state": "stopped",
+      "final_processes_present": false
+    },
+    "mining": {
+      "process_name": "krig-miner",
+      "pid": 25568,
+      "present_before_during_and_after": true,
+      "hashrate_or_share_telemetry_collected": false
+    }
+  },
+  "qualification_stages": {
+    "direct_protected_route": {
+      "status": "observed_ready_then_unavailable_after_cleanup_model_inventory_empty",
+      "coordinator_latency_ms": [637, 141, 73, 147, 44],
+      "monitor_timeout_ms": 750,
+      "within_monitor_timeout": true,
+      "slowest_observation_ms": 637,
+      "safety_restrictions_active": [],
+      "benchmark_execution_ready": false,
+      "final_post_cleanup_probe": {"exit_code": 1, "latency_ms": 2035, "result": "timeout", "listener_on_1235": false, "runtime_pid_53788_present": false},
+      "reason": "LM Studio model inventory returned zero models; after cleanup the Coordinator no longer answered and its prior listener/process were absent. No restart was attempted."
+    },
+    "monitored_route": {
+      "status": "blocked_not_qualified",
+      "production_monitor_contract_verified": false,
+      "candidate_monitor_started": false,
+      "container_facing_route_tested": false,
+      "reason": "Production Monitor was not running; Docker engine did not become responsive. Qualification was aborted before candidate startup."
+    },
+    "isolated_study": {
+      "status": "not_evaluated",
+      "network_qualification_receipt": "not_checked_or_created",
+      "reason": "No container-facing network qualification was completed; no study or inference was started."
+    }
+  },
+  "commands": [
+    {
+      "command": "Invoke-RestMethod -Method Get -Uri http://127.0.0.1:1235/_coordinator/status -TimeoutSec 2",
+      "exit_code": 0,
+      "runs": 5,
+      "latency_ms": [637, 141, 73, 147, 44]
+    },
+    {
+      "command": "Invoke-RestMethod -Method Get -Uri http://127.0.0.1:1234/v1/models -TimeoutSec 2",
+      "exit_code": 0,
+      "http_status": 200,
+      "latency_ms": 49,
+      "model_count": 0
+    },
+    {
+      "command": "agent-bench suite doctor --llm-monitor --monitor-url http://host.docker.internal:8788/v1 --monitor-host-url http://127.0.0.1:8788 --format json",
+      "exit_code": 1,
+      "status": "blocked",
+      "managed_monitor": "MONITOR_NOT_RUNNING",
+      "auth_channel": "skipped_monitor_not_ready",
+      "docker": "DOCKER_UNAVAILABLE",
+      "gateway_mapping": "static_mapping_valid_only"
+    },
+    {
+      "command": "Start-Process $env:ProgramFiles\\Docker\\Docker\\Docker Desktop.exe -WindowStyle Hidden",
+      "result": "process_started_pid_71588"
+    },
+    {
+      "command": "docker info --format Server={{.ServerVersion}} Name={{.Name}} OS={{.OperatingSystem}}",
+      "reported_exit_code": 0,
+      "result": "HTTP 500 Internal Server Error from dockerDesktopLinuxEngine/v1.56/info; exit code did not establish readiness"
+    },
+    {
+      "command": "docker version --format client={{.Client.Version}} server={{.Server.Version}}",
+      "result": "hung_without_output; interrupted_after_about_15_seconds",
+      "exit_code_after_interrupt": 1
+    },
+    {
+      "command": "docker desktop stop --timeout 20",
+      "exit_code": 0,
+      "result": "graceful_stop_confirmed"
+    },
+    {
+      "command": "Invoke-RestMethod -Method Get -Uri http://127.0.0.1:1235/_coordinator/status -TimeoutSec 2",
+      "exit_code": 1,
+      "latency_ms": 2035,
+      "result": "TaskCanceledException timeout; port 1235 listener and prior runtime PID absent"
+    }
+  ],
+  "resource_observations": {
+    "baseline_samples": [
+      {"time_utc": "2026-11-24T01:17:59Z", "free_memory_gib": 26.24, "disk_read_mib_s": 1.1, "disk_write_mib_s": 3.4, "disk_queue": 3, "gpu_utilization_pct": 99, "gpu_memory_mib": 22662, "gpu_temperature_c": 62.65, "gpu_power_w": 504.93},
+      {"time_utc": "2026-11-24T01:18:03Z", "free_memory_gib": 26.19, "disk_read_mib_s": 2.3, "disk_write_mib_s": 6.2, "disk_queue": 5, "gpu_utilization_pct": 99, "gpu_memory_mib": 22472, "gpu_temperature_c": 62.04, "gpu_power_w": 512.39},
+      {"time_utc": "2026-11-24T01:18:08Z", "free_memory_gib": 26.98, "disk_read_mib_s": 1.0, "disk_write_mib_s": 3.4, "disk_queue": 3, "gpu_utilization_pct": 99, "gpu_memory_mib": 22367, "gpu_temperature_c": 62.86, "gpu_power_w": 505.52}
+    ],
+    "during_docker_startup": {
+      "time_utc": null,
+      "timestamp_note": "The critical sample timestamp was not captured; it was taken after Docker/WSL processes appeared and before the bounded stop.",
+      "free_memory_gib": 19.86,
+      "vmmem_wsl_working_set_gib": 6.48,
+      "disk_read_mib_s": 72.4,
+      "disk_write_mib_s": 9.7,
+      "disk_queue": 11,
+      "gpu_utilization_pct": 7,
+      "gpu_memory_mib": 22804,
+      "gpu_temperature_c": 43.75,
+      "gpu_power_w": 65.81,
+      "krig_pid": 25568,
+      "wsl_distributions_observed_running": ["Ubuntu", "docker-desktop"]
+    },
+    "after_cleanup_samples": [
+      {"time_utc": "2026-11-24T01:28:10Z", "free_memory_gib": 21.61, "disk_read_mib_s": 6.1, "disk_write_mib_s": 0.5, "disk_queue": 0, "gpu_utilization_pct": 100, "gpu_memory_mib": 22634, "gpu_temperature_c": 64.81, "gpu_power_w": 545.97, "krig_pid": 25568},
+      {"time_utc": "2026-11-24T01:28:14Z", "free_memory_gib": 23.71, "disk_read_mib_s": 0.2, "disk_write_mib_s": 4.9, "disk_queue": 2, "gpu_utilization_pct": 99, "gpu_memory_mib": 22700, "gpu_temperature_c": 64.05, "gpu_power_w": 522.73, "krig_pid": 25568},
+      {"time_utc": "2026-11-24T01:30:10Z", "free_memory_gib": 25.74, "disk_read_mib_s": 0.4, "disk_write_mib_s": 9.5, "disk_queue": 0, "gpu_utilization_pct": 99, "gpu_memory_mib": 22671, "gpu_temperature_c": 63.35, "gpu_power_w": 520.91, "krig_pid": 25568}
+    ],
+    "interpretation": "A material GPU utilization/power drop and increased WSL memory/disk activity coincided with Docker Desktop startup; readings returned near baseline after shutdown. Causality and actual hashrate/share impact were not measured."
+  },
+  "cleanup": {
+    "diagnostic_containers_created": 0,
+    "candidate_monitor_processes_created": 0,
+    "docker_desktop_stopped": true,
+    "docker_service_stopped": true,
+    "docker_desktop_processes_absent": true,
+    "wsl_distributions": {"Ubuntu": "Stopped", "docker-desktop": "Stopped"},
+    "resource_coordinator_restarted": false,
+    "resource_readings_returned_near_baseline": true
+  },
+  "next_smallest_benchmark": {
+    "name": "one-task frozen Aider Polyglot Harbor smoke",
+    "manifest_path_from_agent_benchmark_module": "docs/qualification/aider-revision-smoke.json",
+    "not_executed": true,
+    "execution_authorized_by_this_assignment": false,
+    "documented_model_selector": "openai/qwen38_23GB",
+    "model_selector_verified_live": false,
+    "working_directory_from_worktree_root": "modules/agent_benchmark",
+    "powershell_pythonpath_setup": "$env:PYTHONPATH = @((Resolve-Path .).Path, (Resolve-Path ..\\benchmark_core).Path, (Resolve-Path ..\\termdash).Path, (Resolve-Path ..\\interactive_reports).Path, (Resolve-Path ..\\llm_monitor).Path, (Resolve-Path ..\\web_ui_tools).Path, (Resolve-Path ..\\resource_metrics).Path, (Resolve-Path ..\\script_logging).Path) -join ';'",
+    "plan_command_from_modules/agent_benchmark": "python -m agent_benchmark.cli suite plan -M .\\docs\\qualification\\aider-revision-smoke.json -a opencode -m openai/qwen38_23GB -L -R content -A openai_chat_completions -U http://host.docker.internal:8789/v1 -H http://127.0.0.1:8789",
+    "execution_command_from_modules/agent_benchmark": "python -m agent_benchmark.cli suite run -M .\\docs\\qualification\\aider-revision-smoke.json -a opencode -m openai/qwen38_23GB -L -R content -A openai_chat_completions -j 1 -F -U http://host.docker.internal:8789/v1 -H http://127.0.0.1:8789 -x",
+    "prerequisites": [
+      "A separately authorized inference window; this command dispatches one real benchmark inference.",
+      "Docker Linux engine healthy and an approved Harbor worker image already present; do not pull images during qualification.",
+      "A managed candidate Monitor on port 8789 with isolated descriptor/state/database paths, gateway enabled, and upstream http://127.0.0.1:1235.",
+      "Fresh authenticated Monitor status and Coordinator readiness with matching runtime identities, protected upstream, and no active safety restrictions.",
+      "The model selector must appear in a fresh LM Studio model inventory; the live inventory in this qualification was empty.",
+      "Harbor 0.25.0 and the frozen Aider dataset revision must pass the suite's pre-dispatch checks.",
+      "Host resource and mining telemetry must remain stable before and during the run."
+    ],
+    "isolated_study_network_receipt_required": false
+  },
+  "credentials_or_tokens_persisted": false,
+  "remaining_blockers": [
+    "Docker Desktop engine returned HTTP 500 and a Docker version request hung; no container route can be qualified until daemon startup is healthy under an authorized low-contention window.",
+    "LM Studio reported zero models, so no benchmark is execution-ready.",
+    "Coordinator port 1235 had no listener and its prior runtime PID was absent on the final post-cleanup check; cause is unknown and it was not restarted.",
+    "Production Monitor on port 8788 was absent; no authenticated Monitor status or runtime contract could be verified.",
+    "No Harbor image inventory was read because the Docker engine was unavailable; no image was pulled or container created.",
+    "KRig hashrate/share telemetry was not collected, so the transient GPU telemetry change cannot be translated into mining output impact."
+  ]
+}
