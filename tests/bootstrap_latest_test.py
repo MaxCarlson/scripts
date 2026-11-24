@@ -6,16 +6,42 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 SPEC = importlib.util.spec_from_file_location("bootstrap_latest", Path(__file__).resolve().parents[1] / "bootstrap_latest.py")
 assert SPEC and SPEC.loader
 bootstrap = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bootstrap)
 
 
+@pytest.fixture(autouse=True)
+def isolate_shared_distribution_installation(monkeypatch):
+    """Keep bootstrap unit tests independent from the caller's Python environment."""
+    from scripts_setup import shared_packages
+
+    monkeypatch.setattr(shared_packages, "ensure_shared_distributions", lambda **_kwargs: True)
+
+
 def project(path: Path, name: str) -> Path:
     path.mkdir(parents=True)
     (path / "pyproject.toml").write_text(f'[project]\nname = "{name}"\nversion = "2.0"\n', encoding="utf-8")
     return path
+
+
+def test_run_validates_shared_packages_before_local_sources(tmp_path, monkeypatch):
+    from scripts_setup import shared_packages
+
+    calls = []
+    monkeypatch.setattr(
+        shared_packages,
+        "ensure_shared_distributions",
+        lambda **kwargs: calls.append(kwargs) or True,
+    )
+    monkeypatch.setattr(bootstrap, "installed_versions", dict)
+    monkeypatch.setattr(bootstrap, "console_scripts", lambda _names: [])
+
+    assert bootstrap.run(tmp_path, dry_run=True, verbose=True) == 0
+    assert calls == [{"dry_run": True, "verbose": True}]
 
 
 def test_package_sources_core_first_and_duplicate_canonical(tmp_path):

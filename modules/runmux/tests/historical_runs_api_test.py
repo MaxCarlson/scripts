@@ -196,7 +196,7 @@ def test_history_adapter_and_routes_are_allowlisted_and_truthful(tmp_path: Path)
     assert lineage["descendants"][0]["id"] == child_id
 
     app = create_runmux_web_app(tmp_path, login_code="secret", enable_telemetry_history=False)
-    paths = {route.path for route in app.routes}
+    paths = set(app.openapi()["paths"])
     assert {"/api/runs", "/api/runs/history", "/api/runs/{run_id}/events", "/api/runs/{run_id}/lineage"} <= paths
 
 

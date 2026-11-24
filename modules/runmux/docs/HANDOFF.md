@@ -18,7 +18,7 @@ Runmux has completed and integrated all planned Web UI and native TUI core miles
    - **Documented Exit Codes**:
      - `0`: Success (server started/discovered running; status reported running or not running; stop completed or already not running).
      - `1`: Operational error, timeout, port collision, or unverifiable instance.
-     - `2`: Missing optional dependencies (`runmux[web]` or `web-ui-tools`).
+     - `2`: Missing optional dependencies (`runmux[web]`, which installs `mxc-web-ui-tools`).
 
 2. **LLM Monitor Integration (Stages 0–5)**:
    - Host-side backend (`llm_monitor_integration.py` & `/api/llm-monitor/v1/` routes) merged at `39603daa`.

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.metadata as metadata
 import json
 import os
 import re
@@ -18,7 +19,7 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib  # type: ignore
 
-GENERATOR_VERSION = "0.2.0"
+GENERATOR_VERSION = "0.3.0"
 MANAGED_SIGNATURE_WINDOWS = f"@REM Scripts Toolkit Managed Wrapper v{GENERATOR_VERSION}"
 MANAGED_SIGNATURE_POSIX = f"# Scripts Toolkit Managed Wrapper v{GENERATOR_VERSION}"
 
@@ -114,7 +115,7 @@ def _read_embedded_version(path: Path) -> str:
 
 
 def _read_setup_py_console_scripts(path: Path) -> tuple[str, str, list[tuple[str, str]]] | None:
-    """Read literal distribution metadata without executing a setup.py file."""
+    """Read literal package identity and console entry points without executing setup.py."""
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     except (OSError, SyntaxError, UnicodeDecodeError):
@@ -137,7 +138,11 @@ def _read_setup_py_console_scripts(path: Path) -> tuple[str, str, list[tuple[str
             entry_points = ast.literal_eval(keywords.get("entry_points", ast.Constant({})))
         except (KeyError, ValueError, TypeError):
             continue
-        if not isinstance(distribution, str) or not isinstance(version, str) or not isinstance(entry_points, dict):
+        if (
+            not isinstance(distribution, str)
+            or not isinstance(version, str)
+            or not isinstance(entry_points, dict)
+        ):
             continue
 
         scripts = entry_points.get("console_scripts", [])
@@ -196,6 +201,11 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
             is_transferred_distribution,
             is_transferred_module_dir,
         )
+        from scripts_setup.shared_packages import (
+            SHARED_DISTRIBUTION_REQUIREMENTS,
+            is_shared_distribution,
+            is_shared_module_dir,
+        )
     except ImportError:
         _here = Path(__file__).resolve().parent
         if str(_here.parent) not in sys.path:
@@ -205,12 +215,17 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
             is_transferred_distribution,
             is_transferred_module_dir,
         )
+        from scripts_setup.shared_packages import (
+            SHARED_DISTRIBUTION_REQUIREMENTS,
+            is_shared_distribution,
+            is_shared_module_dir,
+        )
 
     # 1. Public modules using PEP 621, Poetry, or literal setup.py metadata
     modules_dir = root / "modules"
     if modules_dir.is_dir():
         for mod in sorted(modules_dir.iterdir()):
-            if is_transferred_module_dir(mod):
+            if is_transferred_module_dir(mod) or is_shared_module_dir(mod):
                 continue
             pyproject = mod / "pyproject.toml"
             if pyproject.is_file():
@@ -234,7 +249,7 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
 
             if str(dist_name).strip().lower().replace("_", "-") == "aebndl" and canonical_aebndl and mod.resolve() != canonical_aebndl:
                 continue
-            if is_transferred_distribution(dist_name):
+            if is_transferred_distribution(dist_name) or is_shared_distribution(dist_name):
                 continue
 
             source_rel = str(mod.relative_to(root)).replace("\\", "/")
@@ -253,6 +268,32 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
                     distribution=dist_name,
                     entry_point=ep,
                 ))
+
+    # Shared libraries are installed distributions, not repository-owned source modules.
+    for distribution_name in SHARED_DISTRIBUTION_REQUIREMENTS:
+        try:
+            distribution = metadata.distribution(distribution_name)
+        except metadata.PackageNotFoundError:
+            continue
+        owner = distribution.metadata.get("Name") or distribution_name
+        version = distribution.version
+        for entry_point in distribution.entry_points:
+            if entry_point.group != "console_scripts" or not entry_point.name:
+                continue
+            if is_transferred_cli_command(entry_point.name):
+                continue
+            add_command(CommandEntry(
+                name=entry_point.name,
+                program_id=f"package:{owner}",
+                kind="console_script",
+                source_path=f"installed-distribution:{owner}",
+                target=f".venv/Scripts/{entry_point.name}.exe" if os.name == "nt" else f".venv/bin/{entry_point.name}",
+                target_windows=f".venv/Scripts/{entry_point.name}.exe",
+                target_posix=f".venv/bin/{entry_point.name}",
+                version=version,
+                distribution=owner,
+                entry_point=entry_point.value,
+            ))
 
     # 2. Modules under pscripts/modules/*/pyproject.toml if present
     pscripts_mod_dir = root / "pscripts" / "modules"
@@ -446,13 +487,7 @@ def generate_windows_wrapper(command_name: str) -> str:
         "  exit /b 127\r\n"
         ")\r\n"
         'set "_LAUNCHER_PY=%_VENV_PY%"\r\n'
-        'if exist "%_ROOT%..\\llm-agent-toolkit\\.venv\\Scripts\\python.exe" (\r\n'
-        '  set "_LAUNCHER_PY=%_ROOT%..\\llm-agent-toolkit\\.venv\\Scripts\\python.exe"\r\n'
-        ")\r\n"
-        'if defined LLM_AGENT_TOOLKIT_ROOT if exist "%LLM_AGENT_TOOLKIT_ROOT%\\.venv\\Scripts\\python.exe" (\r\n'
-        '  set "_LAUNCHER_PY=%LLM_AGENT_TOOLKIT_ROOT%\\.venv\\Scripts\\python.exe"\r\n'
-        ")\r\n"
-        '"%_LAUNCHER_PY%" -I -m script_logging.launcher --manifest "%_MANIFEST%" --command "%~n0" --wrapper "%~f0" --target-python "%_VENV_PY%" -- %*\r\n'
+        '"%_LAUNCHER_PY%" -I "%_ROOT%scripts_setup\\launcher.py" --manifest "%_MANIFEST%" --command "%~n0" --wrapper "%~f0" --target-python "%_VENV_PY%" -- %*\r\n'
         "exit /b %ERRORLEVEL%\r\n"
     )
 
@@ -471,13 +506,7 @@ if [ ! -x "$VENV_PY" ]; then
   exit 127
 fi
 LAUNCHER_PY="$VENV_PY"
-if [ -x "$ROOT/../llm-agent-toolkit/.venv/bin/python" ]; then
-  LAUNCHER_PY="$ROOT/../llm-agent-toolkit/.venv/bin/python"
-fi
-if [ -n "${{LLM_AGENT_TOOLKIT_ROOT:-}}" ] && [ -x "${{LLM_AGENT_TOOLKIT_ROOT}}/.venv/bin/python" ]; then
-  LAUNCHER_PY="${{LLM_AGENT_TOOLKIT_ROOT}}/.venv/bin/python"
-fi
-exec "$LAUNCHER_PY" -I -m script_logging.launcher --manifest "$MANIFEST" --command "${{0##*/}}" --wrapper "$0" --target-python "$VENV_PY" -- "$@"
+exec "$LAUNCHER_PY" -I "$ROOT/scripts_setup/launcher.py" --manifest "$MANIFEST" --command "${{0##*/}}" --wrapper "$0" --target-python "$VENV_PY" -- "$@"
 """
 
 

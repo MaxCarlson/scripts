@@ -150,6 +150,8 @@ def test_setup_is_package_importable_detects_init_failure(tmp_path: Path, monkey
     import subprocess
     import venv
 
+    # Importing root setup.py otherwise creates/re-execs into the repository venv.
+    monkeypatch.setenv("SKIP_VENV_BOOTSTRAP", "1")
     venv_dir = tmp_path / "venv"
     venv.create(venv_dir, with_pip=False, symlinks=(os.name != "nt"))
     venv_python = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
