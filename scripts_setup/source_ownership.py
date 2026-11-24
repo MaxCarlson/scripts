@@ -18,7 +18,7 @@ def check_changes(changes: list[tuple[str, str, str, str]], exceptions: list[dic
     shared = shared if shared is not None else set(SHARED_MODULE_DIRECTORY_TO_DISTRIBUTION)
     for action, path, before, after in changes:
         parts = PurePosixPath(path).parts
-        if len(parts) < 3 or parts[0] != "modules":
+        if len(parts) < 2 or parts[0] != "modules":
             continue
         module = parts[1]
         if module in shared:

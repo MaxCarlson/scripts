@@ -23,6 +23,7 @@ class OwnershipTests(unittest.TestCase):
 
     def test_retired_directory_reintroduction_is_rejected(self):
         self.assertTrue(check_changes([("A", "modules/agent_sync/new.py", "0", "new")], []))
+        self.assertTrue(check_changes([("A", "modules/agent_sync", "0", "new")], []))
 
 
 if __name__ == "__main__":
