@@ -27,6 +27,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 RETIRED_TOOLKIT_SOURCE_DIRS = frozenset({
     "agent_sync",
     "agt",
+    "agent_benchmark",
+    "benchmark_core",
+    "interactive_reports",
+    "ai_orchestrator",
     "knowledge_manager",
     "llm-interface",
     "llm-models",

@@ -1,81 +1,94 @@
-# Post-P6 source retirement — fresh reconciliation
+# Post-P6 source retirement — current-main reconciliation
 
-Date: 2026-11-23
-Branch: `retire/toolkit-sources-20261123`
-Base: scripts `main` at `c87db5b68ae14ce5398c4a8cd16ed23289bcfacf`
-Historical checkpoint: `audit/post-p6-source-retirement-20261119` at `cc3273f0e1571816de4864af17ab2e1d36bde58e`
+Audit date: 2026-11-23
 
-## Summary
+Current scripts base: `main` / `b60155b94efb54da703ed166fb9a01bb8982d1d4`
 
-This branch is a fresh retirement proposal from current `scripts/main`. It does not merge or alter the historical retirement branch, its 16 verified quarantines, its seven raw ownership/data holds, its five untracked evidence JSON files, or the preserved quarantine archive. It removes nine toolkit-only duplicate source trees from this branch after confirming their canonical toolkit paths and current installation exclusions. Four additional candidates were retained after direct optional-consumer references were confirmed. The primary checkout remains unchanged.
+Historical checkpoint preserved: `audit/post-p6-source-retirement-20261119` / `cc3273f0e1571816de4864af17ab2e1d36bde58e`
 
-PR #22 remains the shared-library integration prerequisite. It is open and unmerged at `8d4a00b38090b700c5328419b5cb06df2bde4e28`, base `main` at `c87db5b68ae14ce5398c4a8cd16ed23289bcfacf`. Its hosted Ubuntu qualification run `45185412715` passed. Shared-library retirement is proposed separately on a branch based on PR #22, not included here.
+## Decision and branch layout
 
-## Candidate dispositions
+The fresh audit covers the 23 directories in `scripts_setup/transferred_modules.py` and the five in `scripts_setup/shared_packages.py`; three overlap, so the unique inventory is 25 directories. Seventeen are proposed for Git-tracked source retirement in two review units, and eight remain protected.
 
-The source catalogs contain 23 toolkit-transferred names and five shared-package names. Their overlap is `resource_metrics`, `script_logging`, and `web_ui_tools`, yielding 25 unique directories.
+- `retire/toolkit-sources-current-main`: 13 toolkit-owned source directories. This PR can be reviewed independently of PyPI publication.
+- `retire/shared-sources-current-main`: four shared-library copies. It uses the qualified local wheelhouse, but a default clean scripts install still needs public package availability; do not merge this PR until clean-index qualification is possible.
+- Replacement PR #34 is open as draft against current main at shared-branch head `f7b119a0b37024624ed6299c0247c213ff93a1e7`. The toolkit-only replacement PR is being checkpointed separately.
+- Both branches start at current `scripts/main`. They do not merge the historical retirement branch or alter the primary checkout.
+- Old PR #27 and #28 are stale relative to current main; #28's former base is the now-merged `reconcile/scripts-mxc-main-20261120` branch. They will be closed with replacement links after both current-main PRs are available; neither will be merged.
 
-| Directory | Canonical owner | Current source comparison / dependency | Disposition |
+No files were permanently deleted or moved. Git-tracked removals exist only in isolated feature worktrees and can be restored from the base commit. The historical quarantine, seven prior holds, five raw evidence files, `.tmp_build/`, primary diagnostics, and other agents' worktrees remain intact.
+
+## Complete 25-directory disposition
+
+| Directory | Canonical owner and source comparison | Consumers, data, or remaining risk | Disposition |
 |---|---|---|---|
-| `agent_abilities` | llm-agent-toolkit | Canonical package exists; two tracked Gitlinks reference nested repositories whose complete contents/ownership are not retired here. | HOLD — nested Gitlinks |
-| `agent_benchmark` | llm-agent-toolkit | Canonical package exists; preserve benchmark history, artifacts, and the prior explicit ownership/data hold. | HOLD — benchmark data/consumer |
-| `agent_memory` | llm-agent-toolkit | Canonical package exists; tracked SQLite index and differing default data paths require separate data migration decision. | HOLD — database/data paths |
-| `agent_skills` | llm-agent-toolkit | Canonical package exists; two tracked Gitlinks reference nested repositories whose complete contents/ownership are not retired here. | HOLD — nested Gitlinks |
-| `agent_sync` | llm-agent-toolkit | 49 files; all source paths exist canonically; 47 identical and two toolkit adaptations (`adapters/local.py`, `config.py`). Its database discovery entry is retained read-only for legacy data. | RETIRED in this branch |
-| `agt` | llm-agent-toolkit | 27 files; all source paths exist canonically; 25 identical and two canonical updates (`client.py`, `probe_webapi.py`). | RETIRED in this branch |
-| `ai_orchestrator` | llm-agent-toolkit | 11 files; all source paths exist canonically; only packaging metadata differs. `modules/xinstall/advisor.py` imports its optional CLI manager and uses it when available. | HOLD — optional XInstall advisor |
-| `benchmark_core` | llm-agent-toolkit | Canonical package exists; preserve prior benchmark dependency/data hold pending coordinated consumer disposition. | HOLD — benchmark consumer |
-| `interactive_reports` | llm-agent-toolkit | 14 files; source tree identical to canonical toolkit tree. Held `benchmark_core` imports it for optional HTML report generation. | HOLD — held benchmark consumer |
-| `knowledge_manager` | llm-agent-toolkit | 71 source files are present canonically; canonical implementation/metadata/docs include newer updates and one additional test. No module-local database is moved; `db_manager` keeps its read-only legacy database discovery entry. | RETIRED in this branch |
-| `llm-interface` | llm-agent-toolkit | 42 files; all source paths exist canonically; changes are canonical API-parser/module/metadata adaptations. | RETIRED in this branch |
-| `llm_local` | llm-agent-toolkit | Six files; source tree identical to canonical toolkit tree. Held `agent_memory` optionally imports it for note classification. | HOLD — held Agent Memory consumer |
-| `llm_monitor` | llm-agent-toolkit | 176 files; all source paths exist canonically; toolkit metadata and TUI test are newer. Runmux, `agent_benchmark`, `benchmark_core`, and `resource_coordinator` optionally import monitor APIs. | HOLD — active optional consumers |
-| `llm-models` | llm-agent-toolkit | Five files; all source paths exist canonically; only packaging metadata differs. | RETIRED in this branch |
-| `llm-patcher` | llm-agent-toolkit | 15 source files are present canonically; toolkit package entry points differ. Both help registries now use the installed module invocation, not the retired file path. | RETIRED in this branch |
-| `lmstui` | llm-agent-toolkit | 31 files; all source paths exist canonically; one documentation file differs. | RETIRED in this branch |
-| `local_agent_bridge` | llm-agent-toolkit | 123 files; all source paths exist canonically; toolkit setup scripts, metadata, and tests contain newer adaptations. The scripts help entry is removed. | RETIRED in this branch |
-| `orchestrator_web_viewer` | llm-agent-toolkit | Canonical package exists, but active optional integrations remain in `modules/termdash` and `modules/ytaedl`. | HOLD — active consumer API |
-| `resource_coordinator` | llm-agent-toolkit | Canonical package exists; preserve the explicit H4/runtime-state hold and configuration/data. | HOLD — runtime state/H4 |
-| `resource_metrics` | shared-python-modules | Shared distribution is `mxc-resource-metrics`; retirement belongs to the dependent PR #22 source tree and qualified-wheel validation. | PR B candidate; not in this branch |
-| `script_logging` | shared-python-modules | Shared distribution is `mxc-script-logging`; preserve existing telemetry data and retire only in dependent PR #22 after wheel/import checks. | PR B candidate; not in this branch |
-| `termdash` | shared-python-modules | Shared distribution is `mxc-termdash`; consumers are covered by PR #22 and dependent wheel qualification. Optional viewer imports remain an independent viewer hold. | PR B candidate; not in this branch |
-| `cross_platform` | shared-python-modules | Shared distribution is `mxc-platform-utils`; retirement belongs to PR #22 and wheel/import validation. | PR B candidate; not in this branch |
-| `web_ui_tools` | shared-python-modules | Shared distribution is `mxc-web-ui-tools`; ownership is coordinated through PR #22 and the dependent shared-source retirement branch. | PR B candidate; not in this branch |
-| `web_ai_automator` | llm-agent-toolkit | 15 files; all source paths exist canonically; 13 identical and two canonical API/metadata updates. No recent source activity; historical changes are preserved by Git and canonical toolkit. | RETIRED in this branch |
+| `agent_abilities` | llm-agent-toolkit source exists; scripts also carries two Gitlinks absent from the canonical tree. | `refs/agentskills` and `refs/openai-skills` are pinned nested repositories; preserve until ownership/content is coordinated. | HOLD — Gitlinks |
+| `agent_benchmark` | llm-agent-toolkit has all source paths and one additional test; 250 of 254 common files match, four differ. | Benchmark/monitor optional integration is internal to the toolkit-owned benchmark group; tracked fixtures remain in canonical Git history. | RETIRE — toolkit PR |
+| `agent_memory` | Toolkit source is newer in five files and has an additional test; tracked SQLite database blob matches. | Different default storage paths; tracked index plus primary-checkout WAL/SHM sidecars may be active. No database or sidecar touched. | HOLD — data/path integrity |
+| `agent_skills` | Toolkit source exists; scripts also carries the two nested Gitlinks absent from canonical toolkit. | Preserve both pinned repositories pending ownership review. | HOLD — Gitlinks |
+| `agent_sync` | 49 source paths; 47 match and two are toolkit adaptations. | Legacy database discovery remains read-only in `db_manager`; no database moved. | RETIRE — toolkit PR |
+| `agt` | 27 paths; 25 match and two are newer in toolkit. | No scripts runtime consumer found. | RETIRE — toolkit PR |
+| `ai_orchestrator` | Toolkit has the source; scripts' only direct consumer is XInstall's optional advisor. | XInstall catches the missing optional import and returns no recommendation; fallback smoke passed. | RETIRE — toolkit PR |
+| `benchmark_core` | 35 paths match toolkit. | Remaining consumers are the toolkit-owned `agent_benchmark` and `interactive_reports` group, retired together. | RETIRE — toolkit PR |
+| `interactive_reports` | 14 paths match toolkit. | Only active Python consumer found is the toolkit-owned Benchmark Core group. | RETIRE — toolkit PR |
+| `knowledge_manager` | Canonical toolkit contains all common source paths plus a newer test and newer implementation/metadata/docs. | Legacy SQLite discovery remains read-only; no database moved. | RETIRE — toolkit PR |
+| `llm-interface` | Canonical toolkit carries the API-parser/module and packaging adaptations. | No remaining scripts source consumer found. | RETIRE — toolkit PR |
+| `llm_local` | Six paths match toolkit. | Agent Memory classifier imports it; keep while Agent Memory data/path is held. | HOLD — consumer/data dependency |
+| `llm_monitor` | Toolkit source exists; packaging and TUI tests have canonical updates. | Scripts Runmux and Resource Coordinator use optional APIs; scripts copy remains until a dependency contract is coordinated. Its scripts optional extras now use `mxc-*` ranges. | HOLD — active consumers |
+| `llm-models` | Five paths; implementation matches and packaging metadata is toolkit-specific. | No scripts source consumer found. | RETIRE — toolkit PR |
+| `llm-patcher` | Canonical toolkit has all source files plus a newer import test; entry points differ intentionally. | Scripts Help no longer depends on the source file path. | RETIRE — toolkit PR |
+| `lmstui` | 31 paths; one README differs, executable source matches. | No scripts source consumer found. | RETIRE — toolkit PR |
+| `local_agent_bridge` | Toolkit has all common paths plus three source/test additions and newer setup/metadata. | Scripts Help source-path entry removed; no remaining runtime consumer found. | RETIRE — toolkit PR |
+| `orchestrator_web_viewer` | Toolkit has all common paths and three additional canonical files. | TermDash documents `TERMDASH_WEB_ATTACH` and imports `orchestrator_web_viewer.api.termdash` when enabled. Removing this scripts copy would silently disable that optional integration for scripts users. | HOLD — TermDash integration contract |
+| `resource_coordinator` | Toolkit canonical source exists; scripts tree contains H4-specific tests/config/state. | Active H4 work and ignored qualification/runtime artifacts; do not remove. | HOLD — H4 activity/data |
+| `resource_metrics` | Canonical shared distribution is `mxc-resource-metrics`; source imports remain available from the wheel. | Resource Coordinator H4 bundle builder exports the scripts tree as pinned `resource-metrics==0.2.0`. | HOLD — H4 snapshot contract |
+| `script_logging` | Shared canonical package supplies `mxc-script-logging`; 12 of 14 compared paths match, with launcher/init adaptations. | Telemetry databases are not touched; validation target now installs the wheel. | RETIRE — shared-source PR |
+| `termdash` | Shared canonical package supplies `mxc-termdash`; imports and CLI name remain unchanged. | Validation targets install the wheel; optional viewer source is removed in the same PR. | RETIRE — shared-source PR |
+| `cross_platform` | Shared canonical package supplies `mxc-platform-utils`; import remains `cross_platform`. | Validation target installs wheel and no longer references the retired source. | RETIRE — shared-source PR |
+| `web_ai_automator` | Toolkit has all common paths; 13 of 15 match and two are canonical API/metadata updates. | No active scripts consumer found. | RETIRE — toolkit PR |
+| `web_ui_tools` | Eight package paths match the shared canonical package. | Runmux and LLM Monitor continue through the optional `mxc-web-ui-tools` distribution; source-path test injection removed. | RETIRE — shared-source PR |
 
-### Historical seven holds
+## Consumer and data review
 
-`agent_abilities`, `agent_skills`, `agent_benchmark`, `benchmark_core`, `agent_memory`, and `resource_coordinator` remain held for the reasons above. The former `web_ui_tools` ownership hold is carried forward as a dependent PR #22 shared-distribution candidate; this branch does not alter it. `orchestrator_web_viewer` is an additional consumer hold newly confirmed during this reconciliation.
+- The toolkit-owned candidates are absent from scripts installation/discovery already; the historical transferred-module registry remains so scripts continues to exclude their distributions and CLI names.
+- Newly cleared candidates have canonical counterparts and no remaining scripts-only runtime consumer. XInstall's `ai_orchestrator` advisor import is optional and its fallback smoke passed. The untracked primary `ytaedl` tree is not among the tracked retirement candidates and no source import into `orchestrator_web_viewer` was found.
+- `orchestrator_web_viewer` remains held even though its canonical source is in the toolkit: current TermDash source explicitly supports opt-in attachment through `TERMDASH_WEB_ATTACH`. A future coordinated contract must preserve or deliberately retire that behavior before the scripts source copy is removed.
+- `web_ui_tools` ownership was re-evaluated: canonical ownership is the shared package, and direct scripts consumers declare/use the installed namespaced dependency.
+- `llm_monitor/pyproject.toml` on the shared branch had legacy optional requirement names. They were corrected to `mxc-web-ui-tools>=0.2.0,<0.3` and `mxc-resource-metrics>=0.3.0,<0.4`; package version is bumped to `0.9.0` per repository metadata-change policy. Import names and APIs are unchanged.
+- The retained `orchestrator_web_viewer` copy had an optional extra pinned to legacy `termdash>=0.3.0`. Its scripts-side metadata now uses `mxc-termdash>=0.10.0,<0.11`, retains the Windows `windows-curses` extra used by canonical toolkit metadata, and bumps the local compatibility package to `0.3.0`; a focused metadata test covers this contract. The directory itself remains present because TermDash's documented opt-in attachment still imports it.
+- `validation-targets.json` now installs TermDash, script logging, and platform utilities from the qualified wheelhouse and removes source paths; current-main targets, including MangaDL, were preserved.
+- The current-main `procparsers` package-layout repair and MangaDL/media migration were present in the b601 base and are unchanged in both retirement worktrees (`git diff b601... -- modules/procparsers modules/mangadl` is empty). The recent cross-platform storage-media implementation remains in `mxc-platform-utils`; its source file and qualified installed wheel copy have identical SHA-256 `2395da6af28acc1fb0dfa17e09a1e016a497f4dff815d46205968c4f30db631c`.
+- Primary checkout is still at `b60155b94efb54da703ed166fb9a01bb8982d1d4` with tracked state unchanged. `diagnostics/` and `modules/ytaedl/` are untracked; Agent Memory SQLite `-wal` and `-shm` sidecars are untracked runtime state, with ignored test/cache data also present. They were not staged, moved, or removed. Some nested Ytaedl pytest-temp paths deny enumeration, so no claim is made about their contents.
 
-## Filesystem and Git evidence
+## Verification evidence
 
-Before removal, each of the nine selected directories was enumerated in this isolated worktree. The inventory matched Git's tracked file count and byte total; each had zero untracked files, zero ignored-status entries, zero symlinks/reparse points, and zero enumeration errors. No SQLite databases, credentials, user configuration, logs, or runtime state were found in the selected source trees. Primary checkout ignored state was not modified. A fresh isolated worktree from current main avoids carrying over historical quarantine artifacts.
+- Fresh scripts main wheelhouse contains the five qualified wheel artifacts. All five SHA-256 values matched both `.github/qualified-wheelhouse/SHA256SUMS.txt` and the shared repository's `dist/SHA256SUMS.txt`; distribution metadata names/versions matched the approved contract.
+- Offline `pip install --no-index --no-deps --target .retirement-site` installed the five wheel artifacts. Under an isolated importer, all five Python imports resolved from that target directory. TermDash `--help` passed. This validates wheel contents/import provenance, not transitive dependency resolution.
+- Toolkit branch: `scripts_setup/tests/transferred_modules_test.py`, `scripts_setup/tests/shared_packages_test.py`, and Scripts Help tests — 58 passed.
+- Shared branch: the same setup/ownership/Help selection plus LLM Monitor and retained-viewer optional-dependency metadata tests — 62 passed.
+- Shared branch Runmux CLI/web-option selection before the final split — 65 passed. After the split, `web_cli_test.py` — 11 passed; a combined web CLI/adapter/API test selection emitted 22 passing cases but did not complete in the bounded Windows session and was stopped, consistent with the known host socket-pair limitation. No post-removal HTTP success is claimed. Prior PR #22 Ubuntu qualification had passed 12 synthetic HTTP tests and 104 selected consumer tests before source removal; this is historical evidence, not a post-removal run.
+- XInstall optional advisor smoke returned no recommendation when `ai_orchestrator` was unavailable.
+- `bootstrap_latest.py --dry-run` on both branches: 56 packages found, five missing, zero unreadable/unknown, 156 launchers absent in the fresh worktree, zero failures. It previewed missing private `pscripts` initialization and three shared wheel installs; no setup mutation occurred.
+- The shared branch LLM Monitor CLI selection had 23 passes and two failures in Windows-only server-descriptor owner-ACL verification. `icacls` on the disposable descriptor exposed only SYSTEM, Administrators, and OWNER RIGHTS, not the current username that the unchanged verifier requires. This runtime code is unchanged from main; Ubuntu HTTP/consumer results are the appropriate platform evidence. The package metadata test passed.
+- The existing developer `.venv` is not a clean qualification environment: its `pip check` reports missing distributions (including mxc dependencies and stale legacy consumer requirements). No dependency installation was attempted after DNS/index access failed. Therefore a fresh full bootstrap and clean `pip check` remain unverified here; the dry-run and wheel-only install are not substitutes.
+- Linux workflow and Windows root-setup qualification are owned by another agent and were not changed or dispatched.
 
-The toolkit `main` tree contains every tracked source-relative path for all nine removed candidates. Compared source counts and path-specific differences are listed above. No module-specific source-side commit exists in the five-day window before the audit cutoff. The existing installer and launcher ownership boundary excludes transferred modules; tests continue to verify those exclusions. The two `db_manager` candidates (`modules/agent_sync/sync.db` and `modules/knowledge_manager/knowledge.db`) are retained as read-only discovery locations so legacy user databases remain discoverable if present.
+## Rollback and integration sequence
 
-Source-path consumers found and handled:
+Before either PR merges, restore any directory with `git restore --source=b60155b94efb54da703ed166fb9a01bb8982d1d4 -- modules/<directory>` in the corresponding worktree, then commit the restoration. After merge, use a normal revert commit; do not reset or rewrite history. No primary checkout synchronization or local data cleanup is authorized in this assignment.
 
-- Scripts Help and compatibility help registry no longer advertise removed modules as scripts programs. Their `llm-patcher` file-path invocation was replaced first with `python -m llm_patcher`, then the obsolete menu entry was removed from both registries.
-- The `agent_sync` and `knowledge_manager` database discovery entries remain intentionally read-only and never initialize or move a database.
-- XInstall's LLM advisor imports `ai_orchestrator` optionally; retained until its optional backend has a post-retirement contract.
-- Agent Memory's classifier imports `llm_local` optionally; retained with the protected Agent Memory source.
-- Held Benchmark Core and Agent Benchmark import `interactive_reports` and `llm_monitor` for optional report/monitor functions; Runmux also imports monitor APIs. These source trees are retained to preserve those active consumers.
-- `orchestrator_web_viewer` stays present because TermDash and Ytaedl import its optional API.
+1. Review the toolkit-only retirement PR first; it does not depend on package publication.
+2. Keep shared-source retirement pending public clean-index qualification for all five packages (or another explicitly approved ordinary install source). Wheelhouse qualification is staged and reversible but does not establish default bootstrap availability.
+3. After any merge, use the repository's approved local synchronization procedure only on a clean compatible main checkout. Preserve `diagnostics/`, `modules/ytaedl/`, Agent Memory sidecars, ignored data, and all historical evidence for separate inventory before any cleanup.
+4. Re-run post-removal setup, launcher, `pip check`, consumer, and Ubuntu HTTP qualification after reconciliation; do not merge the historical 2026-11-19 retirement branch wholesale.
 
-Historical plan and cutover reports remain historical evidence and were not rewritten to change their as-of-date findings.
+## Primary-checkout synchronization and local residual plan (not applied)
 
-## Validation
+- The primary checkout is already at current `main` snapshot `b60155b94efb54da703ed166fb9a01bb8982d1d4`. Candidate directories remain tracked source files; their removal should arrive only by reviewing and later merging the two replacement PRs.
+- A read-only `git ls-files` inventory counted 1,319 tracked files across the 25 candidate trees, two untracked Agent Memory SQLite sidecars, and at least 34,657 ignored paths. The ignored count is incomplete: enumeration reported permission denied under `cross_platform/.pytest_tmp`, `knowledge_manager/tests/.pytest_tmp`, and `termdash/.pytest_cache`. Treat every ignored item and inaccessible subtree as protected; do not use a clean checkout status as evidence that those contents are disposable.
+- Preserve primary untracked `diagnostics/`, untracked `modules/ytaedl/`, Agent Memory SQLite `-wal`/`-shm` runtime sidecars, ignored caches, and denied-enumeration Ytaedl pytest-temp descendants. None is part of the PR diffs.
+- After separately authorized PR merges, verify exact merge SHAs and run the repository synchronization utility only against a clean compatible `main`. Because the primary checkout contains user-owned untracked state, do not run `git clean`, broad reset, or recursive cleanup. If a fast-forward could collide with any untracked path, synchronize a fresh worktree instead and leave primary untouched.
+- Git removes only tracked paths from the active tree. Before any later local residual quarantine, inventory each candidate path with tracked/untracked/ignored listings, reparse-point checks, and hashes; classify runtime databases, credentials, configuration, and logs; then use the persistent quarantine process under separate authorization. Do not infer that merged PRs authorize removal of ignored/untracked data.
+- Outstanding holds: `agent_abilities` and `agent_skills` (nested Gitlinks `refs/agentskills` at `7f094a2f794fbf6ccf805f601cdc497110b8a8cd` and `refs/openai-skills` at `894d404ce8df5fa06ffa4ae2cb7352e06f8b2abc`; canonical nested ownership/recoverability is unresolved); `agent_memory` (tracked index plus active WAL/SHM and divergent defaults); `llm_local` (Agent Memory's optional classification still uses it; Agent Sync also references it in current main but is included in the toolkit-only retirement proposal); `llm_monitor` (Runmux has direct optional runtime imports and monitor state); `resource_coordinator` (active H4 work/config/state); `resource_metrics` (H4 bundle builder exports the scripts source and pins the old distribution); and `orchestrator_web_viewer` (documented TermDash opt-in integration).
 
-- Pre-removal ownership test was observed failing specifically because `agent_sync` still existed; after staging removals, the new absence assertions pass.
-- `python -m pytest -q scripts_setup/tests/transferred_modules_test.py modules/scripts_help/tests/scripts_help_test.py` — 49 passed with `PYTHONPATH` explicitly selecting this worktree's Scripts Help package.
-- `python -m pytest -q -k 'not test_pscripts_duplicate_aebndl_skips_when_canonical_module_exists' scripts_setup/tests modules/setup_utils/tests modules/scripts_help/tests/scripts_help_test.py` with `SKIP_VENV_BOOTSTRAP=1` and worktree `PYTHONPATH` — 62 passed, one deselected. The deselected test requires the uninitialized private `pscripts` submodule; no submodule or checkout was modified.
-- `python bootstrap_latest.py --dry-run` — 61 installed packages, zero missing packages, zero failures; this fresh worktree has 69 script wrappers and 90 console-command wrappers absent (159 total) and the dry-run would generate them. It also reported that the missing `pscripts` submodule would be initialized; dry-run performed no setup changes.
-- Existing scripts `.venv` `python -I -m pip check` — no broken requirements found.
-- A first broader setup-test attempt without `SKIP_VENV_BOOTSTRAP=1` failed because importing `setup.py` invoked `uv` and the sandbox denied writes to its default AppData cache. Re-running with the repository's supported skip-bootstrap test flag passed the applicable selection above.
-- Full bootstrap, dependent wheelhouse validation, and broader post-removal consumer checks remain in progress and must pass before proposing this branch as ready for review.
-
-## Rollback and next steps
-
-This is staged Git removal only in the isolated branch. Restore a directory by running `git restore --source=c87db5b68ae14ce5398c4a8cd16ed23289bcfacf -- modules/<directory>` in this worktree before commit, or after commit by applying the same path restore and committing a revert. No quarantine or primary checkout content was purged. Do not merge the historical retirement branch.
-
-Next: finish PR A validation and submit it against `main`. PR A removes nine directories and retains 11 of 20 toolkit-only source trees because of the six original holds, viewer API consumer, and four optional consumers above. Separately base PR B on PR #22, remove the five shared-package source directories, install the committed qualified `mxc-*` wheels in a clean environment, verify imports and `pip check`, and run targeted setup/Runmux/TermDash/cross-platform tests. PR B remains dependent on PR #22; package-index production readiness remains a separate gate.
+No merge, push, package publication, local inference, primary checkout cleanup, or runtime-data removal has occurred in this checkpoint.
