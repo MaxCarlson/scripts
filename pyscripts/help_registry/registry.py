@@ -276,20 +276,6 @@ REGISTRY: dict = {
                 "desc": "Download HuggingFace datasets to a local directory (simpler variant)",
                 "help_cmd": ["python", "pyscripts/download_dataset.py", "--help"],
             },
-            {
-                "name": "llm-patcher (module)",
-                "path": "modules/llm-patcher",
-                "desc": "Apply LEP/v1 LLM Edit Protocol patches from file, stdin, or clipboard",
-                "help_cmd": ["python", "modules/llm-patcher/cli.py", "--help"],
-                "version": "0.1.0",
-            },
-            {
-                "name": "web_ai_automator (module)",
-                "path": "modules/web_ai_automator",
-                "desc": "Automate interaction with web-based AI platforms via Chrome/Firefox",
-                "help_cmd": ["python", "-m", "web_ai_automator", "--help"],
-                "version": "0.1.0",
-            },
         ],
     },
 
@@ -495,13 +481,6 @@ REGISTRY: dict = {
     "Knowledge & Project Management": {
         "desc": "Manage projects, tasks, backups, and tmux sessions",
         "items": [
-            {
-                "name": "knowledge_manager (module)",
-                "path": "modules/knowledge_manager",
-                "desc": "Manage projects, tasks, and LLM assets with local files and interactive TUI",
-                "help_cmd": ["python", "-m", "knowledge_manager", "--help"],
-                "version": "0.5.1",
-            },
             {
                 "name": "backup_module (module)",
                 "path": "modules/backup_module",
