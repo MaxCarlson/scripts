@@ -32,6 +32,7 @@ from threading import Thread, Lock
 SCRIPTS_DIR = Path(__file__).resolve().parent
 VENV_DIR = SCRIPTS_DIR / ".venv"
 IS_WINDOWS = os.name == "nt"
+REPOSITORY_ONLY_ENV = "SCRIPTS_REPOSITORY_ONLY"
 
 def _which(cmd: str) -> str | None:
     return shutil.which(cmd) if (shutil := __import__("shutil")) else None
@@ -1174,13 +1175,8 @@ def _run_post_install_drift_check(no_update_help: bool) -> None:
     _offer_registry_update_via_ai(drift, _build_update_prompt)
 
 
-# ─────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────
-def main():
-    global _is_verbose
-    _log_init()
-
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse root setup options without performing setup work."""
     parser = argparse.ArgumentParser(description="Master setup script for managing project components.")
     parser.add_argument("-R", "--scripts-dir", type=Path, required=False,
                         help="Base directory for the project scripts. Defaults to $SCRIPTS or ~/scripts.")
@@ -1189,53 +1185,151 @@ def main():
     parser.add_argument("-B", "--bin-dir", type=Path, required=False,
                         help="Target directory for symlinked executables. Defaults to <scripts-dir>/bin.")
     parser.add_argument(
-        "-f", "--force-reinstall",
-        action="store_true",
-        default=False,
+        "-f", "--force-reinstall", action="store_true", default=False,
         help="Force re-installation even when modules already match the desired install mode.",
     )
     parser.add_argument(
-        "-s",
-        "--skip-reinstall",
-        action=argparse.BooleanOptionalAction,
-        default=None,
+        "-s", "--skip-reinstall", action=argparse.BooleanOptionalAction, default=None,
         help="Skip reinstall when modules already match the desired install mode.",
     )
     parser.add_argument("-p", "--production", action="store_true",
                         help="Install Python modules in production mode (non-editable).")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Enable detailed output.")
-    parser.add_argument("-q", "--quiet", action="store_true",
-                        help="Suppress some fallback INFO logs.")
-    parser.add_argument("-E", "--no-venv", dest="no_venv", action="store_true", help="(Advanced) Skip venv bootstrap even if not in ./.venv.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable detailed output.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress some fallback INFO logs.")
+    parser.add_argument("-E", "--no-venv", dest="no_venv", action="store_true",
+                        help="(Advanced) Skip venv bootstrap even if not in ./.venv.")
     parser.add_argument(
-        "-F", "--fail-fast",
-        action="store_true",
-        default=False,
+        "-F", "--fail-fast", action="store_true", default=False,
         help="Halt immediately when modules/setup.py fails (default is to continue and warn).",
     )
     parser.add_argument(
-        "-I", "--repair-invalid-aebndl-dists",
-        action="store_true",
-        default=False,
+        "-I", "--repair-invalid-aebndl-dists", action="store_true", default=False,
         help="Remove invalid ~*aebndl* pip distribution leftovers from the repo venv before setup continues.",
     )
     parser.add_argument(
-        "-U", "--no-update-help",
-        action="store_true",
-        default=False,
+        "-U", "--no-update-help", action="store_true", default=False,
         help="Skip the post-install help registry drift check and AI update offer.",
     )
+    parser.add_argument(
+        "-r", "--repository-only", action="store_true",
+        help="Install repository packages and generate local launchers without user or system integration.",
+    )
+    parser.add_argument(
+        "-K", "--skills-dir", type=Path, action="append", default=None,
+        help="Skill-link destination (repeatable; normal integration only).",
+    )
+    args = parser.parse_args(argv)
+    if args.force_reinstall and args.skip_reinstall is True:
+        parser.error("--force-reinstall conflicts with --skip-reinstall")
+    return args
 
-    args = parser.parse_args()
+
+def _configure_repository_only(repository_only: bool) -> None:
+    """Set or clear the child-process marker for the current setup invocation."""
+    if repository_only:
+        os.environ[REPOSITORY_ONLY_ENV] = "1"
+    else:
+        os.environ.pop(REPOSITORY_ONLY_ENV, None)
+
+
+def _build_sub_setups(setup_root: Path, repository_only: bool) -> list[tuple[Path, list[str]]]:
+    """Return setup hooks, omitting integration wrappers in repository-only mode."""
+    if repository_only:
+        return [
+            (setup_root / "modules" / "setup.py", []),
+            (setup_root / "pscripts" / "modules" / "setup.py", []),
+        ]
+    return [
+        (setup_root / "pyscripts" / "setup.py", []),
+        (setup_root / "shell-scripts" / "setup.py", []),
+        (setup_root / "modules" / "setup.py", []),
+        (setup_root / "pscripts" / "setup.py", []),
+    ]
+
+
+def _run_wsl2_integration(repository_only: bool, verbose: bool) -> None:
+    with setup_group("WSL2 Integration", 1):
+        if repository_only:
+            status_line("win32yank setup skipped (--repository-only)", "unchanged")
+            return
+        try:
+            release = platform.uname().release
+        except Exception:
+            release = ""
+        if "microsoft" in release.lower() and "WSL" in release.upper():
+            run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_wsl2.py", "--verbose")
+        else:
+            status_line("win32yank setup skipped: not WSL2", "unchanged")
+
+
+def _run_auto_activation(dotfiles_dir: Path, verbose: bool) -> None:
+    try:
+        from python_setup.venv_activation import setup_auto_activation
+        ps_changed, bash_changed = setup_auto_activation(dotfiles_dir, verbose=verbose)
+        if ps_changed or bash_changed:
+            log_success("Auto-activation configured for Python venvs")
+            if ps_changed:
+                log_info(f"PowerShell: source {dotfiles_dir / 'dynamic' / 'venv_auto_activation.ps1'} in your profile")
+            if bash_changed:
+                log_info(f"Bash/Zsh: source {dotfiles_dir / 'dynamic' / 'venv_auto_activation.sh'} in your rc file")
+        else:
+            status_line("Auto-activation already configured", "unchanged")
+    except Exception as e:
+        log_warning(f"Could not setup venv auto-activation: {e}")
+        log_info("You can manually run: setup-venv-activation -D /path/to/dotfiles")
+
+
+def _run_environment_integrations(
+    *,
+    repository_only: bool,
+    scripts_dir: Path,
+    dotfiles_dir: Path,
+    bin_dir: Path,
+    skills_dirs: list[Path] | None,
+    verbose: bool,
+) -> None:
+    """Run user-environment hooks only for the default, integrated setup mode."""
+    if repository_only:
+        with setup_group("User Environment Integration", 4):
+            status_line("PATH/profile/skills/activation hooks skipped (--repository-only)", "unchanged")
+        return
+
+    with setup_group("Shell PATH Configuration", 1):
+        path_args = ["--bin-dir", str(bin_dir), "--dotfiles-dir", str(dotfiles_dir), "--verbose"]
+        run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_path.py", *path_args)
+
+    with setup_group("PowerShell Profile Wiring", 1):
+        run_setup(
+            SCRIPTS_SETUP_PACKAGE_DIR / "setup_pwsh_profile.py",
+            "--scripts-dir", str(scripts_dir), "--dotfiles-dir", str(dotfiles_dir), "--verbose",
+        )
+
+    with setup_group("Agent Skill Symlinks", 1):
+        skill_args = ["--verbose"]
+        for skills_dir in skills_dirs or []:
+            skill_args.extend(["--skills-dir", str(skills_dir)])
+        run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_skills.py", *skill_args)
+
+    with setup_group("Virtual Environment Auto-Activation", 1):
+        _run_auto_activation(dotfiles_dir, verbose)
+
+
+# ─────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────
+def main():
+    global _is_verbose
+    _log_init()
+
+    args = parse_args()
+    _configure_repository_only(args.repository_only)
+    if args.repository_only:
+        args.no_update_help = True
     _is_verbose = args.verbose
     with setup_group("Environment Checks", 1):
         leftover_count = report_or_repair_invalid_aebndl_dists(repair=args.repair_invalid_aebndl_dists)
         detail = "clean" if not leftover_count else f"{leftover_count} pip leftover(s) noted in setup_log.log"
         status_line("aebndl pip distribution health", "unchanged", detail)
-
-    if args.force_reinstall and args.skip_reinstall is True:
-        parser.error("--force-reinstall conflicts with --skip-reinstall")
 
     if args.no_venv:
         os.environ["SKIP_VENV_BOOTSTRAP"] = "1"
@@ -1298,17 +1392,7 @@ def main():
             else:
                 log_warning(f"{name} setup files not found in {path} or it's not a directory.")
 
-    # WSL2 helper
-    try:
-        rel = platform.uname().release
-    except Exception:
-        rel = ""
-    if "microsoft" in rel.lower() and "WSL" in rel.upper():
-        with setup_group("WSL2 Integration", 1):
-            run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_wsl2.py", "--verbose")
-    else:
-        with setup_group("WSL2 Integration", 1):
-            status_line("win32yank setup skipped: not WSL2", "unchanged")
+    _run_wsl2_integration(args.repository_only, args.verbose)
 
     # Sub-setups
     common_setup_args = [
@@ -1325,14 +1409,9 @@ def main():
     if args.production:
         common_setup_args.append("--production")
 
-    sub_setups = [
-        (SCRIPTS_DIR / "pyscripts" / "setup.py", []),
-        (SCRIPTS_DIR / "shell-scripts" / "setup.py", []),
-        (MODULES_DIR / "setup.py", []),
-        # Install public shared libraries (for example compresser/procparsers)
-        # before private packages that declare them as dependencies.
-        (SCRIPTS_DIR / "pscripts" / "setup.py", []),
-    ]
+    # Repository-only mode still installs packages, but managed wrapper discovery
+    # replaces these alias-writing and symlink-oriented setup wrappers.
+    sub_setups = _build_sub_setups(SCRIPTS_DIR, repository_only=args.repository_only)
     for full_script_path, extra_args in sub_setups:
         try:
             title_rel_path = full_script_path.relative_to(SCRIPTS_DIR)
@@ -1358,40 +1437,14 @@ def main():
             "--verbose",
         )
 
-    with setup_group("Shell PATH Configuration", 1):
-        setup_path_script = SCRIPTS_SETUP_PACKAGE_DIR / "setup_path.py"
-        path_args = ["--bin-dir", str(bin_dir), "--dotfiles-dir", str(dotfiles_dir)]
-        path_args.append("--verbose")
-        run_setup(setup_path_script, *path_args)
-
-    # Optional: wire PowerShell profile if on Windows/WSL
-    with setup_group("PowerShell Profile Wiring", 1):
-        run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_pwsh_profile.py",
-                  "--scripts-dir", str(scripts_dir),
-                  "--dotfiles-dir", str(dotfiles_dir),
-                  "--verbose")
-
-    # Discover and symlink SKILL.md-based skills to CLI directories
-    with setup_group("Agent Skill Symlinks", 1):
-        skill_args = ["--verbose"]
-        run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_skills.py", *skill_args)
-
-    # Setup automatic venv activation
-    with setup_group("Virtual Environment Auto-Activation", 1):
-        try:
-            from python_setup.venv_activation import setup_auto_activation
-            ps_changed, bash_changed = setup_auto_activation(dotfiles_dir, verbose=args.verbose)
-            if ps_changed or bash_changed:
-                log_success("Auto-activation configured for Python venvs")
-                if ps_changed:
-                    log_info(f"PowerShell: source {dotfiles_dir / 'dynamic' / 'venv_auto_activation.ps1'} in your profile")
-                if bash_changed:
-                    log_info(f"Bash/Zsh: source {dotfiles_dir / 'dynamic' / 'venv_auto_activation.sh'} in your rc file")
-            else:
-                status_line("Auto-activation already configured", "unchanged")
-        except Exception as e:
-            log_warning(f"Could not setup venv auto-activation: {e}")
-            log_info("You can manually run: setup-venv-activation -D /path/to/dotfiles")
+    _run_environment_integrations(
+        repository_only=args.repository_only,
+        scripts_dir=scripts_dir,
+        dotfiles_dir=dotfiles_dir,
+        bin_dir=bin_dir,
+        skills_dirs=args.skills_dir,
+        verbose=args.verbose,
+    )
 
     if args.verbose:
         try:
@@ -1400,7 +1453,10 @@ def main():
             pass
 
     with setup_group("Help Registry Drift Check", 1):
-        _run_post_install_drift_check(args.no_update_help)
+        if args.repository_only:
+            status_line("Help registry drift check skipped (--repository-only)", "unchanged")
+        else:
+            _run_post_install_drift_check(args.no_update_help)
 
     failure_messages = [message for message in warnings if "failed" in message.lower()]
     run_failed = bool(errors or failure_messages)

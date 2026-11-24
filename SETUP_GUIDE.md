@@ -37,6 +37,32 @@ python setup.py -v
 python setup.py -R ~/scripts/ -D ~/dotfiles/ -B ~/src/scripts/bin/
 ```
 
+### Repository-Only Setup
+
+Use repository-only mode when you need the project environment and local `bin/`
+launchers without wiring the current user or system:
+
+```powershell
+python setup.py --repository-only
+# Short form:
+python setup.py -r
+```
+
+This mode still installs the public modules and, when the pinned `pscripts`
+submodule is available, its modules. It refreshes managed launchers and the
+manifest, including standalone Python scripts under `pscripts/pyscripts/`. It
+skips user PATH/PYTHONPATH registration, shell and PowerShell profile snippets,
+agent-skill links, venv auto-activation, WSL system setup, and interactive help
+registry updates. The mode is carried into setup subprocesses through the
+`SCRIPTS_REPOSITORY_ONLY` environment marker.
+
+Normal setup retains those integrations. Skill links can be directed to one or
+more explicit destinations instead of the default CLI skill folders:
+
+```powershell
+python setup.py --skills-dir C:\tools\codex-skills --skills-dir D:\shared\skills
+```
+
 ## How It Works
 
 ### 1. Virtual Environment Bootstrap
