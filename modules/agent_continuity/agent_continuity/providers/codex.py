@@ -7,7 +7,7 @@ import shlex
 import shutil
 import sqlite3
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -45,6 +45,9 @@ class CodexAdapter(ProviderAdapter):
     ) -> None:
         self._which = which_fn
         self._home_dir = home_dir or Path.home()
+
+    def find_executable(self) -> str | None:
+        return self._which("codex")
 
     def detect_installation(self) -> ProviderInstallation:
         exe = self._which("codex")
@@ -265,10 +268,12 @@ class CodexAdapter(ProviderAdapter):
         cwd: str | None = None,
         environment_id: str = "",
         runtime_kind: str = "",
+        native_args: Sequence[str] = (),
     ) -> ResumePlan:
         argv = ["codex", "resume"]
         if cwd:
             argv.extend(["-C", cwd])
+        argv.extend(native_args)
         argv.append(native_session_id)
         return ResumePlan(
             provider=self.provider_name,
