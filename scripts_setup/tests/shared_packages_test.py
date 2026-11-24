@@ -16,12 +16,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_retired_shared_source_directories_are_absent() -> None:
-    retired_source_dirs = {"script_logging", "termdash", "cross_platform"}
+    retired_source_dirs = {"script_logging", "termdash", "cross_platform", "web_ui_tools"}
     assert not any((REPO_ROOT / "modules" / module_dir).exists() for module_dir in retired_source_dirs)
     # resource_metrics remains temporarily for resource_coordinator's pinned H4 bundle builder.
     assert (REPO_ROOT / "modules" / "resource_metrics").is_dir()
-    # web_ui_tools remains pending the explicit scripts-ownership review.
-    assert (REPO_ROOT / "modules" / "web_ui_tools").is_dir()
 
 
 def test_validation_targets_do_not_install_retired_shared_source_paths() -> None:
@@ -31,7 +29,7 @@ def test_validation_targets_do_not_install_retired_shared_source_paths() -> None
     text = json.dumps(manifest)
     assert not any(
         f"modules/{module_dir}" in text
-        for module_dir in ("script_logging", "termdash", "cross_platform")
+        for module_dir in ("script_logging", "termdash", "cross_platform", "web_ui_tools")
     )
 
 

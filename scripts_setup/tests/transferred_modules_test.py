@@ -24,6 +24,8 @@ from scripts_setup.shared_packages import SHARED_MODULE_DIRECTORY_TO_DISTRIBUTIO
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+RETIRED_SHARED_TRANSFERRED_SOURCE_DIRS = frozenset({"script_logging", "web_ui_tools"})
+
 
 def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scripts_modules() -> None:
     assert len(TRANSFERRED_MODULE_DIRS) == 23
@@ -38,8 +40,11 @@ def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scri
         assert is_transferred_module_dir(REPO_ROOT / "modules" / directory)
         assert is_transferred_distribution(dist_name)
         assert is_transferred_distribution(dist_name.replace("-", "_"))
-        # Original source directory must remain untouched on disk!
-        assert (REPO_ROOT / "modules" / directory).is_dir()
+        source_dir = REPO_ROOT / "modules" / directory
+        if directory in RETIRED_SHARED_TRANSFERRED_SOURCE_DIRS:
+            assert not source_dir.exists()
+        else:
+            assert source_dir.is_dir()
 
 
 def test_dependency_resolver_excludes_all_23_transferred_modules() -> None:
