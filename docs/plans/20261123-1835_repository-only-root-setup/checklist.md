@@ -27,8 +27,8 @@
 - [x] Run repository-only `--help` with inherited PYTHONPATH/PIP destination overrides; exit 0 and no external target sentinels.
 - [x] Run an actual POSIX symlink-venv bootstrap reproduction in Ubuntu WSL: venv `python` resolved to the same base binary as system Python, venv `sys.prefix` matched `.venv`, and setup selected `.venv/bin/python` for re-execution. The pytest form is skipped on this Windows host.
 - [ ] Re-run full/incremental setup only when it can avoid the existing CPU-only Torch vdedup GPU force-reinstall; earlier full and incremental runs passed before the current bootstrap-only changes.
-- [ ] Stage, commit, and push the current corrections and updated qualification documentation.
-- [x] Keep draft PR #37 open: https://github.com/MaxCarlson/scripts/pull/37 (base `main`; current PR checks not reported).
+- [x] Stage, commit, and push the corrections as `97659e67c97a54900106ffe3b7b085c117d86de0`.
+- [x] Keep draft PR #37 open: https://github.com/MaxCarlson/scripts/pull/37 (base `main`; no applicable workflow runs reported).
 - [ ] If a suitable Windows environment becomes available, verify real shell symlink integration separately; current machine reports WinError 1314 and user/system integration remains intentionally disabled.
 
 ## Known qualification limits

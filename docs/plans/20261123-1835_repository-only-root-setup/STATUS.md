@@ -4,7 +4,7 @@
 - Branch: `fix/isolated-root-setup-20261124`
 - Base: `b60155b94efb54da703ed166fb9a01bb8982d1d4`
 - Workspace: `C:\Users\mcarls\src\scripts\.worktrees\isolated-root-setup-20261124`
-- Latest previously pushed commit: `868c95552d20e370cf80b5a85568ef81c0e39bfa`; final isolation corrections and this status update are being prepared for the next checkpoint.
+- Latest implementation commit: `97659e67c97a54900106ffe3b7b085c117d86de0`; plan metadata is being aligned with this pushed checkpoint.
 - PR: `https://github.com/MaxCarlson/scripts/pull/37` (draft, open). GitHub mergeability metadata varied between reads; local merge-tree against base was clean.
 - Follow-up corrections include package import detection, managed launcher cleanup, dependency compatibility, venv identity by `sys.prefix`, recognition of abbreviated/combined repository-only flags, and sanitization of inherited Python/pip destination overrides.
 - Private source: pinned `pscripts` Gitlink `d25e095f1ced76ec9e7904e0bf12db592defc798`; nested downloader dependency `af6bb8b1db14c8434c0a9da446ec49bbf067ab9b` is initialized.
@@ -18,5 +18,5 @@
 - Windows smoke: repository-only `--help` exited 0 from the worktree venv with inherited `PYTHONPATH`, `PIP_TARGET`, `PIP_PREFIX`, `PIP_USER`, and `PIP_ROOT`; no external target sentinels were created.
 - Current environment health from earlier setup: `pip check` reported no broken requirements; pip warned about an invalid `~ympy` leftover. Torch is CPU-only, so CUDA operation is not qualified.
 - Windows privilege boundary: the symlink helper reports WinError 1314 without a no-op fallback. Full profile/shell integration was not run or altered.
-- Remaining: commit/push the final corrections and update PR #37 with this evidence. Keep the PR draft until clean/incremental qualification for the final revision is complete; no merge.
+- Remaining: align the plan metadata, update PR #37 with this final head and evidence, and keep the PR draft until clean/incremental qualification for the final revision is complete; no merge.
 - Coordination: preserve retirement qualification branches PRs #34/#35, shared-package PR #22, and LLMD v2.1 work. No overlapping source changes were made.
