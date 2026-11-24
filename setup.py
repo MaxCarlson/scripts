@@ -116,6 +116,54 @@ def report_or_repair_invalid_aebndl_dists(*, repair: bool = False) -> int:
 def _venv_python() -> Path:
     return VENV_DIR / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
 
+def _repository_only_requested(argv: list[str] | None = None) -> bool:
+    arguments = sys.argv[1:] if argv is None else argv
+    return "-r" in arguments or "--repository-only" in arguments
+
+def _resolve_repository_only_paths(
+    repository_root: Path,
+    scripts_override: Path | None,
+    bin_override: Path | None,
+) -> tuple[Path, Path]:
+    root = repository_root.resolve()
+    scripts_dir = (scripts_override if scripts_override is not None else root).resolve()
+    if scripts_dir != root:
+        raise ValueError(f"--repository-only requires --scripts-dir to resolve to the invoked repository: {root}")
+
+    bin_dir = (bin_override if bin_override is not None else root / "bin").resolve()
+    try:
+        relative_bin = bin_dir.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"--repository-only requires --bin-dir inside the invoked repository: {root}") from exc
+    if not relative_bin.parts:
+        raise ValueError("--repository-only requires --bin-dir to be a subdirectory of the invoked repository")
+    return scripts_dir, bin_dir
+
+def _prevalidate_repository_only_invocation(argv: list[str] | None = None) -> None:
+    """Reject unsafe repository-only targets before venv bootstrap can write files."""
+    arguments = sys.argv[1:] if argv is None else argv
+    if not _repository_only_requested(arguments):
+        return
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("-r", "--repository-only", action="store_true")
+    parser.add_argument("-R", "--scripts-dir", type=Path)
+    parser.add_argument("-B", "--bin-dir", type=Path)
+    parser.add_argument("-E", "--no-venv", action="store_true")
+    args, _ = parser.parse_known_args(arguments)
+
+    if args.no_venv:
+        print("[ERROR] --repository-only requires the invoked repository's .venv; --no-venv is incompatible.", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        _resolve_repository_only_paths(SCRIPTS_DIR, args.scripts_dir, args.bin_dir)
+        expected_venv = SCRIPTS_DIR.resolve() / ".venv"
+        if VENV_DIR.resolve() != expected_venv:
+            raise ValueError(f"--repository-only requires .venv inside the invoked repository: {expected_venv}")
+    except (OSError, ValueError) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
 def _venv_site_packages_pyver() -> str | None:
     """Return the pythonX.Y version string found in .venv/lib/, or None."""
     lib_dir = VENV_DIR / "lib"
@@ -139,8 +187,14 @@ def _create_venv():
     _ensure_pip_in_venv(_venv_python())
 
 def _bootstrap_venv_if_needed():
-    # Allow skipping (for legacy/advanced scenarios)
-    if os.environ.get("SKIP_VENV_BOOTSTRAP") == "1":
+    repository_only = _repository_only_requested()
+    if repository_only:
+        _prevalidate_repository_only_invocation()
+
+    # A repository-only run must never inherit a caller's bootstrap bypass.
+    if repository_only:
+        os.environ.pop("SKIP_VENV_BOOTSTRAP", None)
+    elif os.environ.get("SKIP_VENV_BOOTSTRAP") == "1":
         return
 
     # If we're already using the repo venv python, nothing to do
@@ -1221,7 +1275,61 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.force_reinstall and args.skip_reinstall is True:
         parser.error("--force-reinstall conflicts with --skip-reinstall")
+    if args.repository_only and args.no_venv:
+        parser.error("--repository-only requires the invoked repository's .venv and cannot be combined with --no-venv")
     return args
+
+
+def _resolve_setup_directories(args: argparse.Namespace) -> tuple[Path, Path, Path]:
+    """Resolve setup source and output paths, confining repository-only work to this checkout."""
+    env_scripts = os.environ.get("SCRIPTS", "").strip()
+    env_dotfiles = os.environ.get("DOTFILES", "").strip()
+
+    if args.repository_only:
+        scripts_dir, bin_dir = _resolve_repository_only_paths(SCRIPTS_DIR, args.scripts_dir, args.bin_dir)
+        dotfiles_dir = args.dotfiles_dir if args.dotfiles_dir is not None else Path.home() / "dotfiles"
+        return scripts_dir, dotfiles_dir, bin_dir
+
+    if args.scripts_dir:
+        scripts_dir = args.scripts_dir
+    elif env_scripts:
+        scripts_dir = Path(env_scripts)
+    else:
+        scripts_dir = SCRIPTS_DIR
+
+    if args.dotfiles_dir:
+        dotfiles_dir = args.dotfiles_dir
+    elif env_dotfiles:
+        dotfiles_dir = Path(env_dotfiles)
+    else:
+        dotfiles_dir = Path.home() / "dotfiles"
+
+    bin_dir = args.bin_dir if args.bin_dir else scripts_dir / "bin"
+    return scripts_dir, dotfiles_dir, bin_dir
+
+
+def _validate_repository_only_interpreter() -> None:
+    """Ensure repository-only installation runs in the invoked checkout's own venv."""
+    repository_root = SCRIPTS_DIR.resolve()
+    expected_venv = repository_root / ".venv"
+    actual_venv = VENV_DIR.resolve()
+    venv_python = _venv_python()
+
+    if actual_venv != expected_venv:
+        raise RuntimeError(f"Repository-only setup requires .venv inside the invoked repository: {expected_venv}")
+    if not venv_python.is_file():
+        raise RuntimeError(f"Repository-only setup cannot find its venv interpreter: {venv_python}")
+    try:
+        active_python = Path(sys.executable).resolve()
+        expected_python = venv_python.resolve()
+        active_prefix = Path(sys.prefix).resolve()
+    except OSError as exc:
+        raise RuntimeError(f"Could not resolve the repository .venv interpreter: {exc}") from exc
+    if active_python != expected_python or active_prefix != expected_venv:
+        raise RuntimeError(
+            "Repository-only setup must run with the invoked repository's .venv interpreter "
+            f"({venv_python}); active interpreter is {sys.executable} with prefix {sys.prefix}."
+        )
 
 
 def _configure_repository_only(repository_only: bool) -> None:
@@ -1319,13 +1427,21 @@ def _run_environment_integrations(
 # ─────────────────────────────────────────────────────────
 def main():
     global _is_verbose
-    _log_init()
-
     args = parse_args()
     _configure_repository_only(args.repository_only)
     if args.repository_only:
         args.no_update_help = True
     _is_verbose = args.verbose
+
+    try:
+        scripts_dir, dotfiles_dir, bin_dir = _resolve_setup_directories(args)
+        if args.repository_only:
+            _validate_repository_only_interpreter()
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    _log_init()
     with setup_group("Environment Checks", 1):
         leftover_count = report_or_repair_invalid_aebndl_dists(repair=args.repair_invalid_aebndl_dists)
         detail = "clean" if not leftover_count else f"{leftover_count} pip leftover(s) noted in setup_log.log"
@@ -1333,27 +1449,6 @@ def main():
 
     if args.no_venv:
         os.environ["SKIP_VENV_BOOTSTRAP"] = "1"
-
-    # Resolve directories with fallback defaults
-    env_scripts = os.environ.get("SCRIPTS", "").strip()
-    env_dotfiles = os.environ.get("DOTFILES", "").strip()
-
-    if args.scripts_dir:
-        scripts_dir = args.scripts_dir
-    elif env_scripts:
-        scripts_dir = Path(env_scripts)
-    else:
-        # Default to the directory containing this setup.py script
-        scripts_dir = SCRIPTS_DIR
-
-    if args.dotfiles_dir:
-        dotfiles_dir = args.dotfiles_dir
-    elif env_dotfiles:
-        dotfiles_dir = Path(env_dotfiles)
-    else:
-        dotfiles_dir = Path.home() / "dotfiles"
-
-    bin_dir = args.bin_dir if args.bin_dir else scripts_dir / "bin"
 
     if args.skip_reinstall is None:
         skip_reinstall = not args.force_reinstall

@@ -12,6 +12,7 @@ import pytest
 
 from scripts_setup import launcher_generator, setup_utils
 from scripts_setup import setup_skills
+from scripts_setup import shared_packages
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -180,6 +181,214 @@ def test_repository_only_flag_is_preserved_by_venv_reexecution(tmp_path, monkeyp
     setup._bootstrap_venv_if_needed()
 
     assert exec_calls[0][1][-1] == "--repository-only"
+
+
+def test_repository_only_ignores_inherited_skip_venv_and_reexecutes_repository_venv(tmp_path, monkeypatch):
+    setup = _load_root_setup()
+    venv_python = tmp_path / "Scripts" / "python.exe"
+    create_venv = Mock()
+    exec_calls = []
+    monkeypatch.setenv("SKIP_VENV_BOOTSTRAP", "1")
+    monkeypatch.setattr(setup, "_venv_python", lambda: venv_python)
+    monkeypatch.setattr(setup, "_create_venv", create_venv)
+    monkeypatch.setattr(setup.os, "execv", lambda executable, argv: exec_calls.append((executable, argv)))
+    monkeypatch.setattr(setup.sys, "executable", str(tmp_path / "system-python.exe"))
+    monkeypatch.setattr(setup.sys, "argv", ["setup.py", "--repository-only"])
+
+    setup._bootstrap_venv_if_needed()
+
+    create_venv.assert_called_once_with()
+    assert exec_calls and exec_calls[0][0] == str(venv_python)
+
+
+def test_repository_only_rejects_explicit_no_venv_even_with_inherited_skip(tmp_path, monkeypatch):
+    setup = _load_root_setup()
+    monkeypatch.setenv("SKIP_VENV_BOOTSTRAP", "1")
+    monkeypatch.setattr(setup.sys, "argv", ["setup.py", "--repository-only", "--no-venv"])
+
+    with pytest.raises(SystemExit) as error:
+        setup._bootstrap_venv_if_needed()
+
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("redirected", [False, True])
+def test_repository_only_rejects_external_bin_before_creating_venv(tmp_path, monkeypatch, redirected):
+    setup = _load_root_setup()
+    create_venv = Mock()
+    monkeypatch.delenv("SKIP_VENV_BOOTSTRAP", raising=False)
+    monkeypatch.setattr(setup, "_venv_python", lambda: tmp_path / "missing-venv" / "python.exe")
+    monkeypatch.setattr(setup, "_create_venv", create_venv)
+    monkeypatch.setattr(setup.os, "execv", Mock())
+    bin_override = setup.SCRIPTS_DIR / "redirected-bin" if redirected else tmp_path / "external-bin"
+    if redirected:
+        original_resolve = Path.resolve
+
+        def resolve_with_redirect(path, *args, **kwargs):
+            if path == bin_override:
+                return tmp_path / "external-bin"
+            return original_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", resolve_with_redirect)
+    monkeypatch.setattr(setup.sys, "argv", ["setup.py", "--repository-only", "--bin-dir", str(bin_override)])
+
+    with pytest.raises(SystemExit) as error:
+        setup._bootstrap_venv_if_needed()
+
+    assert error.value.code == 2
+    create_venv.assert_not_called()
+
+
+def test_repository_only_rejects_incompatible_active_interpreter(tmp_path, monkeypatch):
+    setup = _load_root_setup()
+    repository_venv = setup.SCRIPTS_DIR / ".venv"
+    monkeypatch.setattr(setup, "VENV_DIR", repository_venv)
+    monkeypatch.setattr(setup, "_venv_python", lambda: repository_venv / "Scripts" / "python.exe")
+    monkeypatch.setattr(setup.sys, "executable", str(tmp_path / "other-venv" / "Scripts" / "python.exe"))
+    monkeypatch.setattr(setup.sys, "prefix", str(tmp_path / "other-venv"))
+
+    with pytest.raises(RuntimeError, match="active interpreter"):
+        setup._validate_repository_only_interpreter()
+
+
+def test_repository_only_rejects_venv_redirected_outside_invoked_repository(tmp_path, monkeypatch):
+    setup = _load_root_setup()
+    monkeypatch.setattr(setup, "VENV_DIR", tmp_path / "external-venv")
+
+    with pytest.raises(RuntimeError, match=".venv inside the invoked repository"):
+        setup._validate_repository_only_interpreter()
+
+
+def test_repository_only_rejects_redirected_scripts_root_before_creating_venv(tmp_path, monkeypatch):
+    setup = _load_root_setup()
+    create_venv = Mock()
+    monkeypatch.delenv("SKIP_VENV_BOOTSTRAP", raising=False)
+    monkeypatch.setattr(setup, "_venv_python", lambda: tmp_path / "missing-venv" / "python.exe")
+    monkeypatch.setattr(setup, "_create_venv", create_venv)
+    monkeypatch.setattr(setup.os, "execv", Mock())
+    redirect = setup.SCRIPTS_DIR / "redirected-source"
+    original_resolve = Path.resolve
+
+    def resolve_with_redirect(path, *args, **kwargs):
+        if path == redirect:
+            return tmp_path / "external-source"
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve_with_redirect)
+    monkeypatch.setattr(setup.sys, "argv", ["setup.py", "--repository-only", "--scripts-dir", str(redirect)])
+
+    with pytest.raises(SystemExit) as error:
+        setup._bootstrap_venv_if_needed()
+
+    assert error.value.code == 2
+    create_venv.assert_not_called()
+
+
+def test_repository_only_rejects_external_venv_before_creating_or_updating_it(tmp_path, monkeypatch):
+    setup = _load_root_setup()
+    external_venv = tmp_path / "external-venv"
+    create_venv = Mock()
+    monkeypatch.delenv("SKIP_VENV_BOOTSTRAP", raising=False)
+    monkeypatch.setattr(setup, "VENV_DIR", external_venv)
+    monkeypatch.setattr(setup, "_venv_python", lambda: external_venv / "Scripts" / "python.exe")
+    monkeypatch.setattr(setup, "_create_venv", create_venv)
+    monkeypatch.setattr(setup.os, "execv", Mock())
+    monkeypatch.setattr(setup.sys, "argv", ["setup.py", "--repository-only"])
+
+    with pytest.raises(SystemExit) as error:
+        setup._bootstrap_venv_if_needed()
+
+    assert error.value.code == 2
+    create_venv.assert_not_called()
+
+
+def _prepare_repository_only_main(setup, monkeypatch, run_setup_calls):
+    monkeypatch.setattr(setup, "_log_init", lambda: None)
+    monkeypatch.setattr(setup, "_validate_repository_only_interpreter", lambda: None, raising=False)
+    monkeypatch.setattr(setup, "report_or_repair_invalid_aebndl_dists", lambda repair=False: 0)
+    monkeypatch.setattr(setup, "init_timer", lambda: None)
+    monkeypatch.setattr(setup, "ensure_module_installed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(setup, "run_setup", lambda path, *args, **kwargs: run_setup_calls.append((Path(path), args)))
+    monkeypatch.setattr(shared_packages, "ensure_shared_distributions", lambda **kwargs: True)
+    monkeypatch.setattr(setup, "_run_wsl2_integration", lambda *args, **kwargs: None)
+    setup.errors.clear()
+    setup.warnings.clear()
+
+
+def test_repository_only_orchestration_ignores_conflicting_environment_and_uses_invoked_root(monkeypatch, tmp_path):
+    setup = _load_root_setup()
+    external_scripts = tmp_path / "primary-scripts"
+    external_dotfiles = tmp_path / "primary-dotfiles"
+    run_setup_calls = []
+    _prepare_repository_only_main(setup, monkeypatch, run_setup_calls)
+    monkeypatch.setenv("SCRIPTS", str(external_scripts))
+    monkeypatch.setenv("DOTFILES", str(external_dotfiles))
+    monkeypatch.setattr(setup.sys, "argv", ["setup.py", "--repository-only"])
+
+    with pytest.raises(SystemExit) as result:
+        setup.main()
+    assert result.value.code == 0
+
+    installer_args = [args for path, args in run_setup_calls if path.name == "setup.py"]
+    assert installer_args
+    for args in installer_args:
+        assert "--scripts-dir" in args
+        assert args[args.index("--scripts-dir") + 1] == str(setup.SCRIPTS_DIR)
+        assert args[args.index("--bin-dir") + 1] == str(setup.SCRIPTS_DIR / "bin")
+    launcher_args = next(args for path, args in run_setup_calls if path.name == "launcher_generator.py")
+    assert launcher_args[launcher_args.index("--repo-root") + 1] == str(setup.SCRIPTS_DIR)
+    assert launcher_args[launcher_args.index("--bin-dir") + 1] == str(setup.SCRIPTS_DIR / "bin")
+    assert all("setup_path.py" not in str(path) and "setup_pwsh_profile.py" not in str(path) for path, _ in run_setup_calls)
+    assert not external_scripts.exists()
+    assert not external_dotfiles.exists()
+
+
+@pytest.mark.parametrize("override", ["--scripts-dir", "--bin-dir"])
+def test_repository_only_orchestration_rejects_external_targets_before_install(override, monkeypatch, tmp_path):
+    setup = _load_root_setup()
+    run_setup_calls = []
+    _prepare_repository_only_main(setup, monkeypatch, run_setup_calls)
+    log_init = Mock()
+    monkeypatch.setattr(setup, "_log_init", log_init)
+    external_target = tmp_path / "outside-repository"
+    monkeypatch.setattr(setup.sys, "argv", ["setup.py", "--repository-only", override, str(external_target)])
+    shared_check = Mock(return_value=True)
+    monkeypatch.setattr(shared_packages, "ensure_shared_distributions", shared_check)
+
+    with pytest.raises(SystemExit) as error:
+        setup.main()
+
+    assert error.value.code == 2
+    log_init.assert_not_called()
+    shared_check.assert_not_called()
+    assert run_setup_calls == []
+    assert not external_target.exists()
+
+
+def test_repository_only_orchestration_rejects_bin_path_redirected_outside_repository(monkeypatch, tmp_path):
+    setup = _load_root_setup()
+    run_setup_calls = []
+    _prepare_repository_only_main(setup, monkeypatch, run_setup_calls)
+    redirect = setup.SCRIPTS_DIR / "redirected-bin"
+    external_target = tmp_path / "external-bin"
+    original_resolve = Path.resolve
+
+    def resolve_with_redirect(path, *args, **kwargs):
+        if path == redirect:
+            return external_target
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve_with_redirect)
+    monkeypatch.setattr(setup.sys, "argv", ["setup.py", "--repository-only", "--bin-dir", str(redirect)])
+    shared_check = Mock(return_value=True)
+    monkeypatch.setattr(shared_packages, "ensure_shared_distributions", shared_check)
+
+    with pytest.raises(SystemExit) as error:
+        setup.main()
+
+    assert error.value.code == 2
+    shared_check.assert_not_called()
+    assert run_setup_calls == []
 
 
 def test_modules_setup_skips_user_pythonpath_registration_in_repository_only_mode(tmp_path, monkeypatch):
