@@ -110,6 +110,18 @@ jobs:
               assert dist.version == version, (distribution, dist.version)
               assert any(origin.is_relative_to(site) for site in site_dirs), (module_name, origin)
               print(f"{distribution}=={version} -> {origin}")
+
+          procparsers_distribution = metadata.distribution("procparsers")
+          procparsers = importlib.import_module("procparsers")
+          procparsers_origin = Path(procparsers.__file__).resolve()
+          expected_procparsers_origin = (
+              Path(sys.argv[1]) / "modules" / "procparsers" / "src" / "procparsers" / "__init__.py"
+          ).resolve()
+          assert procparsers_origin == expected_procparsers_origin, (
+              procparsers_origin,
+              expected_procparsers_origin,
+          )
+          print(f"procparsers=={procparsers_distribution.version} -> {procparsers_origin}")
           legacy = ("resource-metrics", "script-logging", "web-ui-tools", "termdash", "cross-platform")
           for distribution in legacy:
               try:
@@ -162,6 +174,12 @@ jobs:
             modules/system_manager/tests/process_watch_sampler_test.py \
             modules/scheduler/tests/test_logger.py \
             modules/scheduler/tests/test_history.py
+
+      - name: Test parent-tree Gitlink validation
+        run: |
+          timeout --signal=TERM --kill-after=15s 5m .ci-venv/bin/python -m pytest -q \
+            --basetemp="$RUNNER_TEMP/gitlink-validation-pytest-tmp" \
+            scripts_setup/tests/gitlink_validation_test.py
 
       - name: Check whether scoped private-repository deploy keys are configured
         id: pscripts-ssh
@@ -286,9 +304,9 @@ jobs:
           GIT_SSH_COMMAND="ssh -F $ssh_dir/config -o BatchMode=yes" \
             git submodule update --init --recursive pscripts
           test -f pscripts/setup.py
-          test "$(git -C pscripts rev-parse HEAD)" = "1640d1b80e60116aab74c9e89be67a83090a3727"
-          test "$(git -C pscripts/modules/aebn-vod-downloader-custom rev-parse HEAD)" = "af6bb8b1db14c8434c0a9da446ec49bbf067ab9b"
-          echo "Pinned pscripts and nested Gitlink revisions verified; temporary SSH credentials will be removed."
+          python scripts_setup/gitlink_validation.py . pscripts pscripts --label "pscripts"
+          python scripts_setup/gitlink_validation.py pscripts modules/aebn-vod-downloader-custom pscripts/modules/aebn-vod-downloader-custom --label "nested AEBN dependency"
+          echo "Parent-tree Gitlinks and checked-out revisions match; temporary SSH credentials will be removed."
 
       - name: Run the Bash latest bootstrap in a clean scripts environment
         if: steps.pscripts.outcome == 'success'
@@ -304,7 +322,7 @@ jobs:
         if: steps.pscripts.outcome == 'success'
         run: |
           .venv/bin/python -I -m pip check
-          .venv/bin/python -I - <<'PY'
+          .venv/bin/python -I - "$GITHUB_WORKSPACE" <<'PY'
           import importlib
           import importlib.metadata as metadata
           import re
@@ -375,6 +393,14 @@ jobs:
           PY
           ./bin/termdash --help
           ./bin/runmux --help
+          (
+            cd "$RUNNER_TEMP"
+            for command in mangadl ytaedl aebndl; do
+              launcher="$GITHUB_WORKSPACE/bin/$command"
+              test -x "$launcher"
+              env -u PYTHONPATH "$launcher" --help
+            done
+          )
 
       - name: Run scripts-owned launcher tests in an isolated collector process
         if: steps.pscripts.outcome == 'success'
