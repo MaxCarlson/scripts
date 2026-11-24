@@ -34,6 +34,59 @@ VENV_DIR = SCRIPTS_DIR / ".venv"
 IS_WINDOWS = os.name == "nt"
 REPOSITORY_ONLY_ENV = "SCRIPTS_REPOSITORY_ONLY"
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse root setup options without performing setup work."""
+    parser = argparse.ArgumentParser(description="Master setup script for managing project components.")
+    parser.add_argument("-R", "--scripts-dir", type=Path, required=False,
+                        help="Base directory for the project scripts. Defaults to $SCRIPTS or ~/scripts.")
+    parser.add_argument("-D", "--dotfiles-dir", type=Path, required=False,
+                        help="Root directory of dotfiles. Defaults to $DOTFILES or ~/dotfiles.")
+    parser.add_argument("-B", "--bin-dir", type=Path, required=False,
+                        help="Target directory for symlinked executables. Defaults to <scripts-dir>/bin.")
+    parser.add_argument(
+        "-f", "--force-reinstall", action="store_true", default=False,
+        help="Force re-installation even when modules already match the desired install mode.",
+    )
+    parser.add_argument(
+        "-s", "--skip-reinstall", action=argparse.BooleanOptionalAction, default=None,
+        help="Skip reinstall when modules already match the desired install mode.",
+    )
+    parser.add_argument("-p", "--production", action="store_true",
+                        help="Install Python modules in production mode (non-editable).")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable detailed output.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress some fallback INFO logs.")
+    parser.add_argument("-E", "--no-venv", dest="no_venv", action="store_true",
+                        help="(Advanced) Skip venv bootstrap even if not in ./.venv.")
+    parser.add_argument(
+        "-F", "--fail-fast", action="store_true", default=False,
+        help="Halt immediately when modules/setup.py fails (default is to continue and warn).",
+    )
+    parser.add_argument(
+        "-I", "--repair-invalid-aebndl-dists", action="store_true", default=False,
+        help="Remove invalid ~*aebndl* pip distribution leftovers from the repo venv before setup continues.",
+    )
+    parser.add_argument(
+        "-U", "--no-update-help", action="store_true", default=False,
+        help="Skip the post-install help registry drift check and AI update offer.",
+    )
+    parser.add_argument(
+        "-r", "--repository-only", action="store_true",
+        help="Install repository packages and generate local launchers without user or system integration.",
+    )
+    parser.add_argument(
+        "-K", "--skills-dir", type=Path, action="append", default=None,
+        help="Skill-link destination (repeatable; normal integration only).",
+    )
+    args = parser.parse_args(argv)
+    if args.force_reinstall and args.skip_reinstall is True:
+        parser.error("--force-reinstall conflicts with --skip-reinstall")
+    if args.repository_only and args.no_venv:
+        parser.error("--repository-only requires the invoked repository's .venv and cannot be combined with --no-venv")
+    return args
+
+
+_BOOTSTRAP_ARGS = parse_args() if __name__ == "__main__" else None
+
 def _which(cmd: str) -> str | None:
     return shutil.which(cmd) if (shutil := __import__("shutil")) else None
 
@@ -117,20 +170,8 @@ def _venv_python() -> Path:
     return VENV_DIR / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
 
 def _repository_only_requested(argv: list[str] | None = None) -> bool:
-    arguments = sys.argv[1:] if argv is None else argv
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("-r", "--repository-only", action="store_true")
-    try:
-        args, _ = parser.parse_known_args(arguments)
-    except SystemExit:
-        # If argparse cannot disambiguate an abbreviated option, fail closed
-        # when the token could be requesting repository-only mode.
-        return any(
-            argument.startswith("--repository-only")
-            or (argument.startswith("-") and not argument.startswith("--") and "r" in argument[1:])
-            for argument in arguments
-        )
-    return args.repository_only
+    """Return repository-only mode using the same parser as the full CLI."""
+    return parse_args(argv).repository_only
 
 
 def _sanitize_repository_only_environment() -> None:
@@ -178,18 +219,10 @@ def _resolve_repository_only_paths(
         raise ValueError("--repository-only requires --bin-dir to be a subdirectory of the invoked repository")
     return scripts_dir, bin_dir
 
-def _prevalidate_repository_only_invocation(argv: list[str] | None = None) -> None:
+def _prevalidate_repository_only_invocation(args: argparse.Namespace) -> None:
     """Reject unsafe repository-only targets before venv bootstrap can write files."""
-    arguments = sys.argv[1:] if argv is None else argv
-    if not _repository_only_requested(arguments):
+    if not args.repository_only:
         return
-
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("-r", "--repository-only", action="store_true")
-    parser.add_argument("-R", "--scripts-dir", type=Path)
-    parser.add_argument("-B", "--bin-dir", type=Path)
-    parser.add_argument("-E", "--no-venv", action="store_true")
-    args, _ = parser.parse_known_args(arguments)
 
     if args.no_venv:
         print("[ERROR] --repository-only requires the invoked repository's .venv; --no-venv is incompatible.", file=sys.stderr)
@@ -225,11 +258,14 @@ def _create_venv():
         subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
     _ensure_pip_in_venv(_venv_python())
 
-def _bootstrap_venv_if_needed():
-    repository_only = _repository_only_requested()
+def _bootstrap_venv_if_needed(args: argparse.Namespace | None = None):
+    if args is None:
+        args = parse_args()
+
+    repository_only = args.repository_only
     if repository_only:
         _sanitize_repository_only_environment()
-        _prevalidate_repository_only_invocation()
+        _prevalidate_repository_only_invocation(args)
 
     # A repository-only run must never inherit a caller's bootstrap bypass.
     if repository_only:
@@ -265,8 +301,10 @@ def _bootstrap_venv_if_needed():
     if Path(sys.prefix).resolve() != VENV_DIR.resolve():
         os.execv(str(vpy), [str(vpy), *sys.argv])
 
-# Run the bootstrap ASAP (before any pip installs or sub-setups)
-_bootstrap_venv_if_needed()
+# Run the bootstrap ASAP (before any pip installs or sub-setups). Script invocations
+# parse the authoritative CLI first so help and invalid arguments exit without setup writes.
+if _BOOTSTRAP_ARGS is not None:
+    _bootstrap_venv_if_needed(_BOOTSTRAP_ARGS)
 
 # From this point on, we are guaranteed to be running under ./.venv/bin/python
 
@@ -1286,57 +1324,6 @@ def _run_post_install_drift_check(no_update_help: bool) -> None:
     _offer_registry_update_via_ai(drift, _build_update_prompt)
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse root setup options without performing setup work."""
-    parser = argparse.ArgumentParser(description="Master setup script for managing project components.")
-    parser.add_argument("-R", "--scripts-dir", type=Path, required=False,
-                        help="Base directory for the project scripts. Defaults to $SCRIPTS or ~/scripts.")
-    parser.add_argument("-D", "--dotfiles-dir", type=Path, required=False,
-                        help="Root directory of dotfiles. Defaults to $DOTFILES or ~/dotfiles.")
-    parser.add_argument("-B", "--bin-dir", type=Path, required=False,
-                        help="Target directory for symlinked executables. Defaults to <scripts-dir>/bin.")
-    parser.add_argument(
-        "-f", "--force-reinstall", action="store_true", default=False,
-        help="Force re-installation even when modules already match the desired install mode.",
-    )
-    parser.add_argument(
-        "-s", "--skip-reinstall", action=argparse.BooleanOptionalAction, default=None,
-        help="Skip reinstall when modules already match the desired install mode.",
-    )
-    parser.add_argument("-p", "--production", action="store_true",
-                        help="Install Python modules in production mode (non-editable).")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable detailed output.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress some fallback INFO logs.")
-    parser.add_argument("-E", "--no-venv", dest="no_venv", action="store_true",
-                        help="(Advanced) Skip venv bootstrap even if not in ./.venv.")
-    parser.add_argument(
-        "-F", "--fail-fast", action="store_true", default=False,
-        help="Halt immediately when modules/setup.py fails (default is to continue and warn).",
-    )
-    parser.add_argument(
-        "-I", "--repair-invalid-aebndl-dists", action="store_true", default=False,
-        help="Remove invalid ~*aebndl* pip distribution leftovers from the repo venv before setup continues.",
-    )
-    parser.add_argument(
-        "-U", "--no-update-help", action="store_true", default=False,
-        help="Skip the post-install help registry drift check and AI update offer.",
-    )
-    parser.add_argument(
-        "-r", "--repository-only", action="store_true",
-        help="Install repository packages and generate local launchers without user or system integration.",
-    )
-    parser.add_argument(
-        "-K", "--skills-dir", type=Path, action="append", default=None,
-        help="Skill-link destination (repeatable; normal integration only).",
-    )
-    args = parser.parse_args(argv)
-    if args.force_reinstall and args.skip_reinstall is True:
-        parser.error("--force-reinstall conflicts with --skip-reinstall")
-    if args.repository_only and args.no_venv:
-        parser.error("--repository-only requires the invoked repository's .venv and cannot be combined with --no-venv")
-    return args
-
-
 def _resolve_setup_directories(args: argparse.Namespace) -> tuple[Path, Path, Path]:
     """Resolve setup source and output paths, confining repository-only work to this checkout."""
     env_scripts = os.environ.get("SCRIPTS", "").strip()
@@ -1483,7 +1470,7 @@ def _run_environment_integrations(
 # ─────────────────────────────────────────────────────────
 def main():
     global _is_verbose
-    args = parse_args()
+    args = _BOOTSTRAP_ARGS if _BOOTSTRAP_ARGS is not None else parse_args()
     _configure_repository_only(args.repository_only)
     if args.repository_only:
         args.no_update_help = True

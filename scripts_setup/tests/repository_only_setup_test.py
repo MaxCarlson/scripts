@@ -60,12 +60,83 @@ def test_root_setup_accepts_repository_only_short_and_long_flags(argv):
     assert args.repository_only is True
 
 
-@pytest.mark.parametrize("argv", [["--repository-on"], ["-rv"]])
+@pytest.mark.parametrize("argv", [["--repository-on"], ["-rv"], ["-vr"]])
 def test_repository_only_detection_accepts_argparse_abbreviations_and_combined_flags(argv):
     setup = _load_root_setup()
 
     assert setup._repository_only_requested(argv)
     assert setup.parse_args(argv).repository_only
+
+
+def test_repository_only_combined_flags_parse_attached_external_destination_before_bootstrap(tmp_path, monkeypatch):
+    setup = _load_root_setup()
+    external_scripts = tmp_path / "external-scripts"
+    external_dotfiles = tmp_path / "external-dotfiles"
+    external_pythonpath = tmp_path / "external-pythonpath"
+    external_pip_target = tmp_path / "external-pip-target"
+    create_venv = Mock()
+    monkeypatch.setenv("SCRIPTS", str(external_scripts))
+    monkeypatch.setenv("DOTFILES", str(external_dotfiles))
+    monkeypatch.setenv("PYTHONPATH", str(external_pythonpath))
+    monkeypatch.setenv("PIP_TARGET", str(external_pip_target))
+    monkeypatch.setenv("SKIP_VENV_BOOTSTRAP", "1")
+    monkeypatch.setattr(setup, "_create_venv", create_venv)
+    monkeypatch.setattr(setup.sys, "argv", ["setup.py", "-vrB" + str(tmp_path / "external-bin")])
+
+    with pytest.raises(SystemExit) as error:
+        setup._bootstrap_venv_if_needed()
+
+    assert error.value.code == 2
+    create_venv.assert_not_called()
+    assert "PYTHONPATH" not in os.environ
+    assert "PIP_TARGET" not in os.environ
+    assert os.environ["SCRIPTS"] == str(external_scripts)
+    assert os.environ["DOTFILES"] == str(external_dotfiles)
+    assert os.environ["PYTHONNOUSERSITE"] == "1"
+    assert not external_scripts.exists()
+    assert not external_dotfiles.exists()
+    assert not external_pythonpath.exists()
+    assert not external_pip_target.exists()
+
+
+@pytest.mark.parametrize(("arguments", "expected_exit"), [(["--help"], 0), (["--unknown-setup-option"], 2)])
+def test_root_cli_help_and_invalid_arguments_exit_before_bootstrap(tmp_path, arguments, expected_exit):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    setup_copy = repository / "setup.py"
+    setup_copy.write_bytes((REPO_ROOT / "setup.py").read_bytes())
+    probe = tmp_path / "bootstrap_probe.py"
+    probe.write_text(
+        "import os, runpy, subprocess, sys\n"
+        "calls = []\n"
+        "subprocess.check_call = lambda *args, **kwargs: calls.append('check_call')\n"
+        "subprocess.run = lambda *args, **kwargs: type('Result', (), {'returncode': 1})()\n"
+        "os.execv = lambda *args: calls.append('execv')\n"
+        "setup_path = sys.argv[1]\n"
+        "setup_args = sys.argv[2:]\n"
+        "sys.argv = [setup_path, *setup_args]\n"
+        "try:\n"
+        "    runpy.run_path(setup_path, run_name='__main__')\n"
+        "except SystemExit as exc:\n"
+        "    print(f'EXIT={exc.code}')\n"
+        "print(f'BOOTSTRAP_CALLS={calls!r}')\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.pop("SKIP_VENV_BOOTSTRAP", None)
+    env.pop("SCRIPTS_REPOSITORY_ONLY", None)
+    result = subprocess.run(
+        [sys.executable, str(probe), str(setup_copy), *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert f"EXIT={expected_exit}" in result.stdout
+    assert "BOOTSTRAP_CALLS=[]" in result.stdout
+    assert not (repository / ".venv").exists()
 
 
 def test_root_setup_accepts_repeated_skill_destinations():
