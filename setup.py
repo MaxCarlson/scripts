@@ -1485,6 +1485,22 @@ def main():
         raise SystemExit(2) from exc
 
     _log_init()
+    _local_rb = SCRIPTS_DIR.parent / "shared-python-modules" / "packages" / "repo-bootstrap" / "src"
+    if _local_rb.is_dir() and str(_local_rb) not in sys.path:
+        sys.path.insert(0, str(_local_rb))
+    try:
+        from repo_bootstrap.console_ui import ConsoleUI, format_duration
+        _ui = ConsoleUI(verbose=args.verbose)
+        _ui.header("Scripts", "Bootstrap")
+        _ui.kv("Mode", "repository-only" if args.repository_only else ("production" if args.production else "editable"))
+        _ui.kv("Python", f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+        _ui.kv("Environment", str(VENV_DIR) if args.verbose else ".venv")
+        _ui.write("")
+    except ImportError:
+        _ui = None
+        format_duration = None
+    _setup_started = time.monotonic()
+
     with setup_group("Environment Checks", 1):
         leftover_count = report_or_repair_invalid_aebndl_dists(repair=args.repair_invalid_aebndl_dists)
         detail = "clean" if not leftover_count else f"{leftover_count} pip leftover(s) noted in setup_log.log"
@@ -1615,6 +1631,15 @@ def main():
             shutil.copyfile(GLOBAL_LOG, ERROR_LOG)
         except OSError as exc:
             log_error(f"Failed to copy verbose setup log to '{ERROR_LOG}': {exc}")
+    if _ui is not None:
+        _ui.write("")
+        _ui.rule("muted")
+        if errors:
+            _ui.write(_ui.style(f"{_ui.glyphs.fail} Bootstrap finished with {len(errors)} error(s)", "bold_red"))
+        else:
+            _ui.write(_ui.style(f"{_ui.glyphs.ok} Bootstrap completed successfully", "bold_green"))
+        if format_duration is not None:
+            _ui.write(_ui.style(f"Elapsed: {format_duration(time.monotonic() - _setup_started)}", "muted"))
     sys.exit(1 if errors else 0)
 
 if __name__ == "__main__":
