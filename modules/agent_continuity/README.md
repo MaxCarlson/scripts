@@ -141,7 +141,7 @@ By default, state is stored under `~/.agent_continuity` (override with `AGENT_CO
 └── index.sqlite                # Derived SQLite WAL index (single designated writer)
 ```
 
-## Native launch options and cwd previews (LLMD-22–24)
+## Native launch options and cwd previews (LLMD-22–24, LLMD-30–31)
 
 Pass provider options only after LLMD's explicit `--` separator. LLMD keeps the tokens as argv elements, retains the selected native session ID, and does not interpret a provider shell string:
 
@@ -153,13 +153,30 @@ llmd review -g GUI -n IMPLEMENTER -R REVIEWER -p codex -a -- --sandbox workspace
 llmd return -g GUI -n IMPLEMENTER -a -- --sandbox workspace-write
 ```
 
-Codex options currently accepted are `--sandbox/-s` (`read-only`, `workspace-write`, `danger-full-access`), `--ask-for-approval/-a` (`on-request`, `never`), `--model/-m`, repeatable `--enable`/`--disable`, and `--search`, `--no-alt-screen`, `--no-daemon`. AGY accepts boolean `--sandbox`, `--model`, and `--effort` (`low`, `medium`, `high`, `xhigh`, `max`). Identity, execution, bootstrap, config/profile/settings, and LLMD-owned directory options are rejected. AGY `--mode` and permission bypass flags are rejected. `llmd open` rejects native provider options because one terminal request may include different providers.
+Managed Codex options include `--sandbox/-s` (`read-only`, `workspace-write`, `danger-full-access`), `--ask-for-approval/-a` (`on-request`, `never`), `--model/-m`, `--profile/-p`, repeatable `--add-dir`, `--enable`, and `--disable`, `-c/--config` for supported settings, plus `--search`, `--no-alt-screen`, `--no-daemon`, `--strict-config`, and `--approve-for-me`. Managed AGY options include `--sandbox`, `--model`, `--effort` (`low`, `medium`, `high`, `xhigh`, `max`), repeatable `--add-dir`, `--agent`, and safe inline JSON `--settings`. LLMD validates managed enums and paths, and summarizes only allowlisted non-sensitive settings.
+
+Other provider flags require explicit authorization before the separator: `llmd continue GUI AGENT -U -a -- --future-native-flag value`. `-U/--allow-native-unknown` permits generic argv forwarding only. It does not permit session selection, execution/bootstrap controls, cwd/worktree changes, remote execution, executable selection, permission bypasses, secrets, or raw prompts/configuration. Unknown permission-related flags are named in the preview with values omitted and remain unverified. Native options are invocation-scoped; they are not replayed by `llmd last` or passed between agents/providers automatically. `llmd open` continues to reject provider arguments because one pane request may contain different providers.
 
 Without `-a`, `continue`, existing-session `start`, `switch`, `review`, and `return` show a launch preview. It includes the executable and structured argv, cwd, environment/runtime, selected native session, and requested permission settings. `verified_effective` is always `null`; LLMD does not claim that requested settings have been enforced. Preview resolves the executable from PATH without launching or version-probing Codex/AGY.
 
 `-C/--cwd` on an existing session is invocation-scoped and must refer to an existing directory in the recorded runtime. Windows-to-WSL paths are checked against the exact recorded distribution using argv-only `wsl.exe --exec test -d`. If the requested path belongs to a different detected Git repository/worktree, preview reports `repository_context_changed`; the session's stored cwd and provenance remain unchanged. For new sessions, the explicitly selected cwd is recorded as the new session's initial provenance.
 
 New-session bootstrap remains the fixed read-only initialization step and captures the provider's exact session ID. Native launch options are applied only when LLMD resumes that captured ID interactively. New-session `start` and `switch` resolve one concrete environment for preview and pending-launch state, including when `-e` is omitted and the current slot is in WSL. Historical `continue` and `switch -r` use compare-and-swap against the current activation; `switch -r` also requires `-R` for inactive agents and rejects completed agents. `start -j` emits one JSON document for both selected-session and new-session previews.
+
+## Terminal-scoped launch history (LLMD-27–29)
+
+LLMD reads `TERMINAL_SESSION_ID` and `TERMINAL_SESSION_OWNER_PID` from the environment without changing either variable. A valid terminal-session UUID scopes `llmd last`; a missing or malformed UUID is an error and never falls back to global activity. Owner PID is diagnostic metadata only. Launch history is stored as immutable events with a rebuildable SQLite projection and separate launch IDs for concurrent invocations and terminal panes.
+
+```powershell
+llmd last                 # latest launch from this terminal
+llmd last -j              # one JSON document
+llmd last -N 10           # latest ten launches from this terminal
+llmd last -a               # resume the exact recorded native session
+llmd last -R -a            # explicitly reactivate an inactive slot, then resume
+llmd recent -N 20 -j       # read-only history across terminals
+```
+
+`last -a` revalidates the recorded GUI, slot and exact native session before resuming. It does not replay stored cwd, native arguments, or permission overrides; use explicit current-invocation options when needed. Completed slots cannot be resumed, and inactive slots require both `-R` and `-a`. `recent` is read-only. Terminal history captures requested/effective launch cwd separately from recorded native cwd, along with available Git repository/worktree/branch/commit and supported safe settings; unavailable Git metadata remains null.
 
 ## Testing
 

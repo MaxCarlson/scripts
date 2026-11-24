@@ -64,3 +64,26 @@
 - [x] Emit one JSON document for existing-session `start -j`; preserve text output.
 - [x] Run focused and full module tests, scoped Ruff, version consistency, and diff checks.
 - [x] Inspect cached main integration paths, commit, and push without merge/rebase.
+
+## Batch G — Terminal-specific launch context (LLMD-27–29)
+
+- [x] Add immutable launch-history events and a rebuildable terminal-scoped SQLite projection.
+- [x] Record stable GUI/slot IDs, exact session/environment identity, launch/exit outcome, cwd provenance, Git context, and safe settings summaries.
+- [x] Add `last`, JSON/history forms, exact-session resume and explicit inactive reactivation; add read-only `recent`.
+- [x] Reject absent/malformed terminal IDs for scoped queries without global fallback; keep owner PID diagnostic only.
+- [x] Cover terminal/pane concurrency, interrupted launches, post-exit switches, Windows/WSL, exact session resume, and persistence compatibility.
+- [x] Run focused tests and full module tests with fake-provider isolation; update docs and checkpoint Batch G.
+
+## Batch H — Comprehensive native CLI support (LLMD-30/31)
+
+- [x] Make commonly used provider permissions, sandbox/approval, additional directories, model, reasoning, config, and profile options first-class managed settings.
+- [x] Add explicit `--allow-native-unknown` for safe generic argv passthrough without weakening conflicts or permission preview.
+- [x] Preserve exact session identity, fixed read-only bootstrap, provider-specific command order, and invocation-scoped settings.
+- [x] Assess `open`/pane propagation and explicitly reject combinations that cannot be safely represented.
+- [x] Cover managed validation, permissions preview, paths/quoting, provider ordering, WSL, failures, and no secret/raw config persistence.
+- [x] Run focused/full tests, Ruff, installation smoke, version consistency, and diff checks; checkpoint Batch H without merging.
+
+## Deferred
+
+- [ ] LLMD-25 persistent launch profiles (next planned batch).
+- [ ] LLMD-26 native lock diagnostics (deferred).

@@ -67,10 +67,12 @@ def test_native_args_reject_identity_execution_and_directory_overrides():
 
     for provider, args in (("codex", ["--last"]), ("codex", ["--cd", "other"]),
                            ("agy", ["--conversation", "other"]), ("agy", ["--print"]),
-                           ("agy", ["--mode", "plan"]), ("agy", ["--add-dir", "other"]),
+                           ("agy", ["--mode", "plan"]),
                            ("codex", ["--sandbox"])):
         with pytest.raises(ContinuityError):
             _validated_native_args(provider, args)
+
+    assert _validated_native_args("agy", ["--add-dir", "other"]) == ["--add-dir", "other"]
     assert _validated_native_args("codex", ["--enable", "feature-a", "--enable", "feature-b"]) == [
         "--enable", "feature-a", "--enable", "feature-b",
     ]
