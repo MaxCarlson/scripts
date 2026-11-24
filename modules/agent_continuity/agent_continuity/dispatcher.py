@@ -870,13 +870,15 @@ class DispatcherService:
         )
 
     def record_pending_review_cycle(self, *, gui: str, cycle: dict[str, Any],
-                                    expected_original: tuple[str, str, str], apply: bool = False) -> dict[str, Any]:
+                                    expected_original: tuple[str, str, str],
+                                    allow_inactive_original: bool = False, apply: bool = False) -> dict[str, Any]:
         """Persist review intent after explicit launch authorization, before provider bootstrap."""
         conversation = self._gui(gui)
         original = self._slot(conversation["gui_id"], cycle["original_slot_id"])
         reviewer = self._slot(conversation["gui_id"], cycle["reviewer_slot_id"])
-        if cycle.get("status") != "pending" or original["state"] != "active":
-            raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending review cycle requires an active original agent.")
+        original_states = {"active", "inactive"} if allow_inactive_original else {"active"}
+        if cycle.get("status") != "pending" or original["state"] not in original_states:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending review cycle requires an eligible original agent.")
         event = self._event(
             EventType.DISPATCHER_SLOTS_TRANSITIONED,
             environment_id=expected_original[1],
@@ -889,7 +891,7 @@ class DispatcherService:
                 latest_history = self._history(original["slot_id"])
                 latest_identity = ((latest_history[-1]["provider"], latest_history[-1]["environment_id"],
                                    latest_history[-1]["native_session_id"]) if latest_history else None)
-                if latest_original["state"] != "active" or latest_identity != expected_original:
+                if latest_original["state"] not in original_states or latest_identity != expected_original:
                     raise ContinuityError(ErrorCode.INVALID_INPUT, "Original agent changed before review launch; retry.")
                 if self._row("SELECT 1 FROM dispatcher_pending_launches WHERE slot_id=? AND status='pending'",
                              (reviewer["slot_id"],)) is None:
@@ -991,6 +993,7 @@ class DispatcherService:
         expected_destination: tuple[str, str, str] | None,
         cwd: str | None = None,
         launch_id: str | None = None,
+        allow_inactive_source: bool = False,
         provenance: str = "agent_transition",
         review_cycle: dict[str, Any] | None = None,
         apply: bool = False,
@@ -1007,9 +1010,10 @@ class DispatcherService:
         def validate() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
             current_source = self._slot(conversation["gui_id"], source_slot_id)
             current_destination = self._slot(conversation["gui_id"], destination_slot_id)
-            if current_source["state"] != "active" or current_destination["state"] == "completed":
+            source_states = {"active", "inactive"} if allow_inactive_source else {"active"}
+            if current_source["state"] not in source_states or current_destination["state"] == "completed":
                 raise ContinuityError(ErrorCode.INVALID_INPUT,
-                                      "Transition requires an active source and a noncompleted destination.")
+                                      "Transition requires an eligible source and a noncompleted destination.")
             source_history = self._history(source_slot_id)
             destination_history = self._history(destination_slot_id)
             for slot, history, expected in ((current_source, source_history, expected_source),
@@ -1153,6 +1157,8 @@ class DispatcherService:
         environment_selector: str | None = None,
         cwd: str | None = None,
         launch_id: str | None = None,
+        expected_current: tuple[str, str, str] | None = None,
+        check_current: bool = False,
         apply: bool = False,
         provenance: str = "explicit_attach",
     ) -> dict[str, Any]:
@@ -1169,7 +1175,9 @@ class DispatcherService:
         history = self._history(slot["slot_id"])
         if history and (history[-1]["provider"], history[-1]["environment_id"], history[-1]["native_session_id"]) == (
             provider_name, env.environment_id, session
-        ):
+        ) and (not check_current or expected_current == (
+            history[-1]["provider"], history[-1]["environment_id"], history[-1]["native_session_id"]
+        )):
             return {"action": "attach", "applied": False, "summary": "Session is already selected for this slot.",
                     "details": {"slot_id": slot["slot_id"], "session_id": session}, "events": []}
 
@@ -1230,6 +1238,11 @@ class DispatcherService:
                         raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch was already resolved or failed.")
                 current_slot = self._slot(conversation["gui_id"], slot["slot_id"])
                 latest = self._history(current_slot["slot_id"])
+                latest_identity = ((latest[-1]["provider"], latest[-1]["environment_id"],
+                                    latest[-1]["native_session_id"]) if latest else None)
+                if check_current and latest_identity != expected_current:
+                    raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                          "Agent selection changed while provider switch was prepared; retry.")
                 if latest and (latest[-1]["provider"], latest[-1]["environment_id"], latest[-1]["native_session_id"]) == (
                     provider_name, env.environment_id, session
                 ):

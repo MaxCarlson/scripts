@@ -7,6 +7,7 @@
 - [x] Preserve explicit `-N -a` authorization and duplicate-session prompts.
 - [x] Revalidate launch state atomically; protect pending and concurrent starts.
 - [x] Add bidirectional post-exit provider switching without slot/history loss.
+- [x] Revalidate option-4 current activation under lock; inherit/restore exact native environment and cwd; return to exit menu after cancellation.
 - [x] Validate normal exits and cancellation with fake providers; full abnormal/captured-pending coverage remains in module suite.
 
 ## Batch B — CLI presentation and history
@@ -30,11 +31,12 @@
 - [x] Implement `review` resume/new flow and exact `-N -a` authorization.
 - [x] Implement `return` plus context-aware post-exit return action.
 - [x] Prevent duplicate sessions/slots and stale/concurrent transitions.
+- [x] Review inactive originals without lifecycle/session loss; explicit return reactivates the exact original session.
 - [x] Cover Codex/AGY, different worktrees, interruption/cancel/abnormal-exit paths.
 
 ## Final
 
 - [x] Run focused module tests after each sequential batch; repair failures before advancing.
-- [x] Run requested broad module suite (159 passed), Ruff, version consistency, and diff checks.
+- [x] Run requested broad module suite (170 passed), Ruff, version consistency, and diff checks.
 - [x] Review task-only diff and final branch status.
-- [x] Commit and push the implementation branch; do not merge.
+- [ ] Commit and push the corrective changes on the implementation branch; do not merge.

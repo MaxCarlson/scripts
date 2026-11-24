@@ -491,6 +491,7 @@ def _run_pane(
                     destination_state=transition_source.get("destination_state", "active"),
                     expected_source=transition_source["expected_source"], expected_destination=None,
                     cwd=cwd, launch_id=launch_id, provenance=transition_source.get("provenance", "agent_transition"),
+                    allow_inactive_source=transition_source.get("allow_inactive_source", False),
                     review_cycle=transition_source.get("review_cycle"), apply=True,
                 )
             else:
@@ -551,30 +552,34 @@ def _run_pane(
         print(f"{slot['name']} exited with code {result.returncode}; slot and current session remain unchanged.", file=output_stream)
         return result.returncode
     opposite_provider = "agy" if provider == "codex" else "codex"
-    print(f"\n{slot['name']} has exited.\n[1] Keep active (default)\n[2] Mark completed\n[3] Mark inactive\n"
-          f"[4] Switch to {opposite_provider.upper()}\n[5] Switch to an existing agent\n[6] Create a new agent", file=output_stream)
-    try:
-        choice = input_stream.readline().strip()
-    except (EOFError, OSError):
-        choice = ""
-    if choice == "4":
-        result = _switch_after_exit(dispatcher, slot, opposite_provider,
-                                    input_stream=input_stream, output_stream=output_stream)
-        if show_summary:
-            _render_scoped_summary(dispatcher, slot, output_stream)
-        return result
-    if choice == "5":
-        result = _switch_to_existing_agent(dispatcher, slot, input_stream=input_stream,
-                                           output_stream=output_stream)
-        if show_summary:
-            _render_scoped_summary(dispatcher, slot, output_stream)
-        return result
-    if choice == "6":
-        result = _create_agent_after_exit(dispatcher, slot, input_stream=input_stream,
-                                          output_stream=output_stream)
-        if show_summary:
-            _render_scoped_summary(dispatcher, slot, output_stream)
-        return result
+    while True:
+        print(f"\n{slot['name']} has exited.\n[1] Keep active (default)\n[2] Mark completed\n[3] Mark inactive\n"
+              f"[4] Switch to {opposite_provider.upper()}\n[5] Switch to an existing agent\n[6] Create a new agent", file=output_stream)
+        try:
+            choice = input_stream.readline().strip()
+        except (EOFError, OSError):
+            choice = ""
+        if choice == "4":
+            result = _switch_after_exit(dispatcher, slot, opposite_provider,
+                                        input_stream=input_stream, output_stream=output_stream)
+            if result is None:
+                continue
+            if show_summary:
+                _render_scoped_summary(dispatcher, slot, output_stream)
+            return result
+        if choice == "5":
+            result = _switch_to_existing_agent(dispatcher, slot, input_stream=input_stream,
+                                               output_stream=output_stream)
+            if show_summary:
+                _render_scoped_summary(dispatcher, slot, output_stream)
+            return result
+        if choice == "6":
+            result = _create_agent_after_exit(dispatcher, slot, input_stream=input_stream,
+                                              output_stream=output_stream)
+            if show_summary:
+                _render_scoped_summary(dispatcher, slot, output_stream)
+            return result
+        break
     state = {"2": "completed", "3": "inactive"}.get(choice, "active")
     if state != "active":
         dispatcher.set_slot_state(gui=slot["gui_alias"], name=slot["name"], state=state, apply=True)
@@ -596,8 +601,12 @@ def _switch_after_exit(
     *,
     input_stream: TextIO,
     output_stream: TextIO,
-) -> int:
+) -> int | None:
     """Switch the exited slot to an exact prior provider session or explicitly new one."""
+    expected_current = _session_identity(slot)
+    if expected_current is None:
+        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                              "Provider switch requires an exact current session; no launch was reserved.")
     sessions = dispatcher.sessions_for_provider(gui=slot["gui_alias"], name=slot["name"], provider=provider)
     target = None
     if sessions:
@@ -610,29 +619,36 @@ def _switch_after_exit(
             if not _ask_confirmation(input_stream, output_stream,
                                      f"Start a new {provider.upper()} conversation under this slot?", default=False):
                 print("Provider switch canceled; current selection and history were unchanged.", file=output_stream)
-                return 0
+                return None
         else:
             print("Provider switch canceled; current selection and history were unchanged.", file=output_stream)
-            return 0
+            return None
     elif not _ask_confirmation(input_stream, output_stream,
                                f"No previous {provider.upper()} session is registered. Start a new conversation?",
                                default=False):
         print("Provider switch canceled; current selection and history were unchanged.", file=output_stream)
-        return 0
+        return None
 
     if target:
+        _provider_environment(dispatcher, target["environment_id"])
         dispatcher.attach_session(
             gui=slot["gui_alias"], name=slot["name"], provider=target["provider"],
             session_id=target["native_session_id"], environment_selector=target["environment_id"],
+            expected_current=expected_current, check_current=True,
             apply=True, provenance="post_exit_provider_switch",
         )
         current = dispatcher.get_slot(gui=slot["gui_alias"], name=slot["name"])
         return _run_pane(dispatcher, slot_id=current["slot_id"], launch_id=None,
                          input_stream=input_stream, output_stream=output_stream, show_summary=False)
 
+    environment_id = expected_current[1]
+    _provider_environment(dispatcher, environment_id)
+    native = dispatcher.materializer.get_session(*expected_current)
+    cwd = native.cwd_native if native else None
     launch = dispatcher.begin_launch(
         gui=slot["gui_alias"], name=slot["name"], provider=provider,
-        cwd=dispatcher.current_working_directory(slot), apply=True,
+        cwd=cwd, environment_selector=environment_id, expected_current=expected_current,
+        check_current=True, apply=True,
     )
     return _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=launch["details"]["launch_id"],
                      input_stream=input_stream, output_stream=output_stream, show_summary=False)
@@ -643,6 +659,35 @@ def _session_identity(slot: dict[str, Any]) -> tuple[str, str, str] | None:
     if not current:
         return None
     return current["provider"], current["environment_id"], current["native_session_id"]
+
+
+def _provider_environment(dispatcher: DispatcherService, environment_id: str):
+    environment = next((item for item in dispatcher.materializer.list_environments()
+                         if item.environment_id == environment_id), None)
+    if environment is None:
+        raise ContinuityError(ErrorCode.ENVIRONMENT_NOT_FOUND,
+                              "The selected session environment is not registered; provider switch was not started.")
+    runtime = detect_runtime_kind()
+    if environment.runtime_kind == "wsl":
+        if not environment.distro:
+            raise ContinuityError(ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE,
+                                  "The selected WSL environment has no recorded distribution identity.")
+        if runtime == "windows":
+            if not (shutil.which("wsl.exe") or shutil.which("wsl")):
+                raise ContinuityError(ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE,
+                                      "Cannot switch to the recorded WSL environment because wsl.exe is unavailable.")
+        elif runtime == "wsl":
+            local_distro = os.environ.get("WSL_DISTRO_NAME")
+            if not local_distro or local_distro.casefold() != environment.distro.casefold():
+                raise ContinuityError(ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE,
+                                      "The selected WSL session belongs to a different or unknown distribution.")
+        else:
+            raise ContinuityError(ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE,
+                                  f"Cannot launch the selected WSL environment from runtime {runtime!r}.")
+    elif environment.runtime_kind != runtime:
+        raise ContinuityError(ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE,
+                              f"Cannot launch the selected {environment.runtime_kind} environment from runtime {runtime!r}.")
+    return environment
 
 
 def _valid_existing_session(row: dict[str, Any]) -> bool:
@@ -708,7 +753,7 @@ def _switch_to_existing_agent(
     provenance = "post_exit_agent_switch"
     if returning:
         current_cycle = dict(current_cycle)
-        destination_state = current_cycle["original_state"]
+        destination_state = "active"
         cycle_payload = {**current_cycle, "status": "returned"}
         provenance = "review_return"
     dispatcher.complete_agent_transition(
@@ -792,8 +837,9 @@ def _review_cycle_payload(original: dict[str, Any], reviewer_slot_id: str, revie
 def _review(dispatcher: DispatcherService, args: argparse.Namespace,
             input_stream: TextIO, output_stream: TextIO) -> int:
     original = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
-    if original["state"] != "active" or original["current"] is None:
-        raise ContinuityError(ErrorCode.INVALID_INPUT, "Review requires an active original agent with an exact selected session.")
+    if original["state"] not in {"active", "inactive"} or original["current"] is None:
+        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                              "Review requires an active or inactive original with an exact selected session.")
     if args.reviewer_agent.casefold() == original["name"].casefold():
         raise ContinuityError(ErrorCode.INVALID_INPUT, "Reviewer must use a distinct agent slot.")
     original_identity = _session_identity(original)
@@ -835,12 +881,14 @@ def _review(dispatcher: DispatcherService, args: argparse.Namespace,
         target_slot_id = prepared["details"]["slot_id"]
         cycle = _review_cycle_payload(original, target_slot_id, status="pending")
         dispatcher.record_pending_review_cycle(gui=args.gui, cycle=cycle,
-                                              expected_original=original_identity, apply=True)
+                                              expected_original=original_identity,
+                                              allow_inactive_original=original["state"] == "inactive", apply=True)
         return _run_pane(
             dispatcher, slot_id=target_slot_id, launch_id=prepared["details"]["launch_id"],
             input_stream=input_stream, output_stream=output_stream,
             transition_source={"slot_id": original["slot_id"], "expected_source": original_identity,
                               "review_cycle": {**cycle, "status": "active"},
+                              "allow_inactive_source": original["state"] == "inactive",
                               "provenance": "reviewer_bootstrap"},
         )
     cycle = _review_cycle_payload(original, reviewer["slot_id"], reviewer["current"])
@@ -849,6 +897,7 @@ def _review(dispatcher: DispatcherService, args: argparse.Namespace,
         provider=reviewer_identity[0], environment_id=reviewer_identity[1], session_id=reviewer_identity[2],
         source_state="inactive", destination_state="active", expected_source=original_identity,
         expected_destination=reviewer_identity, cwd=args.cwd or dispatcher.current_working_directory(reviewer),
+        allow_inactive_source=original["state"] == "inactive",
         provenance="reviewer_resume", review_cycle=cycle, apply=True,
     )
     latest = dispatcher.get_slot(gui=args.gui, name=reviewer["slot_id"])
@@ -875,7 +924,7 @@ def _return(dispatcher: DispatcherService, args: argparse.Namespace,
     dispatcher.complete_agent_transition(
         gui=args.gui, source_slot_id=reviewer["slot_id"], destination_slot_id=original["slot_id"],
         provider=original_identity[0], environment_id=original_identity[1], session_id=original_identity[2],
-        source_state="inactive", destination_state=cycle["original_state"], expected_source=reviewer_identity,
+        source_state="inactive", destination_state="active", expected_source=reviewer_identity,
         expected_destination=original_identity, cwd=dispatcher.current_working_directory(original),
         provenance="review_return", review_cycle={**cycle, "status": "returned"}, apply=True,
     )
@@ -1223,7 +1272,11 @@ def _listing(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[st
         total = len(rows)
         selected = rows if limit is None else rows[:limit]
         include_history(selected, gui)
-        return {'action': 'list', 'gui': gui, 'slots': selected, 'total': total,
+        gui_record = next((item for item in dispatcher.list_guis()
+                           if item['alias'].casefold() == gui.casefold()), None)
+        return {'action': 'list', 'gui': gui,
+                'last_activity_at': gui_record.get('last_activity_at') if gui_record else None,
+                'slots': selected, 'total': total,
                 'shown': len(selected), 'omitted': total - len(selected), 'limit': limit}
     guis = dispatcher.list_guis()
     total = len(guis)
