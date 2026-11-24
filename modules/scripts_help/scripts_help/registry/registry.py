@@ -298,7 +298,7 @@ REGISTRY: dict = {
                 "path": "modules/agent_continuity",
                 "desc": "Select GUI conversations and named Codex/AGY agent slots, inspect history, and request grouped terminal launches",
                 "help_cmd": ["llmd", "--help"],
-                "version": "1.1.0",
+                "version": "1.5.2",
             },
             {
                 "name": "run_tests.py",
