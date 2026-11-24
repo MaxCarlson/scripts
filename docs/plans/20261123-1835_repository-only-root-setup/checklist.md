@@ -22,7 +22,8 @@
 - [x] Verify no external `DOTFILES` sentinel was created by repository-only setup.
 - [x] Validate Windows symlink privilege failure separately; do not substitute a no-op or change profile/system state.
 - [x] Run focused setup regressions (58 passed, 1 submodule-dependent test deselected), the vdedup compatibility test (1 passed), Python compilation, Ruff, and CRLF-aware whitespace checks.
-- [ ] Run final task-only diff/status checks, then stage, commit, push, and prepare the scoped PR.
+- [x] Review and stage only the eight intended follow-up files; commit as `d3bb18ba263b49d4d12a9999d120fc79654474f0` and push to the feature branch.
+- [x] Open draft PR #37: https://github.com/MaxCarlson/scripts/pull/37 (base `main`, current mergeability reported true; no workflow runs or status checks reported yet).
 - [ ] If a suitable Windows environment becomes available, verify real shell symlink integration separately; current machine reports WinError 1314 and user/system integration remains intentionally disabled.
 
 ## Known qualification limits
