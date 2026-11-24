@@ -57,3 +57,5 @@
 - [ ] Hosted full authenticated bootstrap, launcher and consumer regressions, final `pip check`, and Ubuntu synthetic Runmux HTTP tests on the final composition.
 - [ ] Complete owning agent's Windows root-setup qualification; retain the known Windows HTTP socket-pair limitation.
 - [ ] Keep seven ownership/data/dependency holds and do not merge or synchronize primary `scripts/main` without separate approval.
+- [x] Refresh PR metadata: #34 is open/draft/mergeable at `f7b119a0`; #35 is open/non-draft/mergeable at `f4f8e15`.
+- [ ] Coordinate PR #35's Monitor hold wording and dependent review/merge order with a separate Monitor-removal PR after hosted qualification; do not merge either PR here.
