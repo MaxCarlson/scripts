@@ -10,6 +10,11 @@ from unittest.mock import Mock
 
 import pytest
 
+try:
+    import tomllib
+except ImportError:  # Python 3.10 and earlier
+    import tomli as tomllib
+
 from scripts_setup import launcher_generator, setup_utils
 from scripts_setup import setup_skills
 from scripts_setup import shared_packages
@@ -61,6 +66,19 @@ def test_root_setup_accepts_repeated_skill_destinations():
     args = setup.parse_args(["-K", str(first), "--skills-dir", str(second)])
 
     assert args.skills_dir == [first, second]
+
+
+def test_scripts_setup_distribution_packages_its_runtime_imports():
+    pyproject_path = REPO_ROOT / "scripts_setup" / "pyproject.toml"
+    config = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    setuptools_config = config["tool"]["setuptools"]
+
+    assert setuptools_config["packages"] == ["scripts_setup"]
+    assert setuptools_config["package-dir"]["scripts_setup"] == "."
+    assert (REPO_ROOT / "scripts_setup" / "__init__.py").is_file()
+
+    setup = _load_root_setup()
+    assert setup._expected_import_modules(REPO_ROOT / "scripts_setup", "scripts_setup_utils") == ["scripts_setup"]
 
 
 def test_repository_only_subsets_keep_installers_and_skip_user_integration_wrappers(tmp_path):
@@ -338,6 +356,7 @@ def test_repository_only_orchestration_ignores_conflicting_environment_and_uses_
     launcher_args = next(args for path, args in run_setup_calls if path.name == "launcher_generator.py")
     assert launcher_args[launcher_args.index("--repo-root") + 1] == str(setup.SCRIPTS_DIR)
     assert launcher_args[launcher_args.index("--bin-dir") + 1] == str(setup.SCRIPTS_DIR / "bin")
+    assert "--cleanup" in launcher_args
     assert all("setup_path.py" not in str(path) and "setup_pwsh_profile.py" not in str(path) for path, _ in run_setup_calls)
     assert not external_scripts.exists()
     assert not external_dotfiles.exists()
@@ -440,6 +459,33 @@ def test_launcher_generation_writes_private_script_wrapper_and_manifest(tmp_path
     assert '"private_tool"' in manifest
     assert report.created_count >= 1
     assert second.created_count == 0
+
+
+def test_repository_only_launcher_cleanup_removes_only_obsolete_managed_wrappers(tmp_path):
+    (tmp_path / "pyscripts").mkdir()
+    (tmp_path / "pyscripts" / "active_tool.py").write_text("print('ready')\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    obsolete = bin_dir / ("obsolete_tool.cmd" if os.name == "nt" else "obsolete_tool")
+    unmanaged = bin_dir / ("custom_tool.cmd" if os.name == "nt" else "custom_tool")
+    obsolete.write_text(launcher_generator.generate_windows_wrapper("obsolete_tool"), encoding="utf-8")
+    unmanaged.write_text("custom user launcher\n", encoding="utf-8")
+    backup_dir = tmp_path / "backup"
+
+    report = launcher_generator.migrate_wrappers(
+        tmp_path,
+        bin_dir,
+        dry_run=False,
+        backup_dir=backup_dir,
+        cleanup=True,
+    )
+
+    active = bin_dir / ("active_tool.cmd" if os.name == "nt" else "active_tool")
+    assert not obsolete.exists()
+    assert active.is_file()
+    assert unmanaged.read_text(encoding="utf-8") == "custom user launcher\n"
+    assert (backup_dir / obsolete.name).is_file()
+    assert report.removed_obsolete_count == 1
 
 
 def test_skill_symlinks_use_only_explicit_destinations(tmp_path, monkeypatch):

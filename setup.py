@@ -909,6 +909,22 @@ def _check_version_action(module_dir: Path, verbose: bool) -> str:
 def _expected_import_modules(module_dir: Path, pkg_name: str) -> list[str]:
     """Infer top-level Python module name(s) expected to be importable for module_dir."""
     if (module_dir / "__init__.py").is_file():
+        pyproject_file = module_dir / "pyproject.toml"
+        if pyproject_file.is_file():
+            try:
+                with open(pyproject_file, "rb") as f:
+                    data = tomllib.load(f)
+                setuptools_config = data.get("tool", {}).get("setuptools", {})
+                package_dir = setuptools_config.get("package-dir", {})
+                root_packages = [
+                    name
+                    for name in setuptools_config.get("packages", [])
+                    if package_dir.get(name) == "."
+                ]
+                if root_packages:
+                    return root_packages
+            except Exception:
+                pass
         return [pkg_name.replace("-", "_")]
     candidates: list[str] = []
     src_dir = module_dir / "src"
@@ -1522,15 +1538,17 @@ def main():
     # Refresh wrappers after pscripts installs its console entry points.
     with setup_group("Console Launcher Refresh", 1):
         launcher_script = SCRIPTS_SETUP_PACKAGE_DIR / "launcher_generator.py"
-        run_setup(
-            launcher_script,
+        launcher_args = [
             "--apply",
             "--repo-root",
             str(scripts_dir),
             "--bin-dir",
             str(bin_dir),
             "--verbose",
-        )
+        ]
+        if args.repository_only:
+            launcher_args.append("--cleanup")
+        run_setup(launcher_script, *launcher_args)
 
     _run_environment_integrations(
         repository_only=args.repository_only,
