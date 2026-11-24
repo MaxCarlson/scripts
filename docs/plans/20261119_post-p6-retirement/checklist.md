@@ -14,5 +14,5 @@
 - [x] Complete hosted qualification for PR #38 (`45347357571`), PR #39 (`45348359248`), PR #41 (`45347910359`), and PR #42 (`45347914913`); all passed their clean bootstrap, launcher, consumer, and dependency-health steps.
 - [ ] Diagnose toolkit PR #5 only if actionable hosted evidence appears. Four runs (`45333414610`, `45334638802`, `45345602914`, `45345628821`) show all eight jobs failing with no step payloads; log downloads return 404. Local Runmux compatibility remains 19 passed; do not blindly retry.
 - [ ] Coordinate H4 bundle source/metadata and Monitor API contracts with its owner. Preserve active `.worktrees/resource-coordinator-phase-d` and state; only remove `llm_monitor`, `resource_coordinator`, or `resource_metrics` sources after the canonical package contract and immutable bundle qualification pass.
-- [ ] Keep PR #34 gated on ordinary package-index availability and clean-index install qualification.
+- [ ] Keep PR #34 gated on ordinary package-index availability and clean-index install qualification. As of 2026-11-25, three packages resolve (`mxc-resource-metrics`, `mxc-script-logging`, `mxc-platform-utils`); `mxc-web-ui-tools` and `mxc-termdash` do not.
 - [ ] Do not merge, publish, synchronize the primary checkout, or migrate runtime data without the existing separate authorization.
