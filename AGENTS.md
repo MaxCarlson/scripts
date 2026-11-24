@@ -31,3 +31,7 @@ This file applies to work in `scripts/`. Codex loads it automatically. Use `REPO
 - After any commit on a task worktree or non-main task branch, push it to its upstream immediately. If no upstream exists and `origin` is the configured project remote, push with `git push -u origin HEAD`. Never push main automatically.
 - Handoff task-branch commits and task-branch post-commit pushes are authorized by default as described above. Explicit instructions to stop before committing or pushing override that default. If no configured remote is usable or a push fails, report the blocker and do not claim publication. Do not merge or publish a release without explicit user authorization. A continuous-execution waiver must say which other actions it authorizes.
 - Stop for manual validation at a stage boundary when the active plan requires it or the user asks for it.
+
+## Transferred source ownership
+
+Develop modules listed in `scripts_setup/transferred_modules.py` in `llm-agent-toolkit`; modules listed in `scripts_setup/shared_packages.py` belong to `shared-python-modules`, including entries appearing in both registries. The copies retained under `scripts/modules/` are not the development location. Retirements and necessary reconciliation changes require a narrowly scoped entry in `.github/source-ownership-exceptions.json` identifying the exact path, Git change action, before and after object IDs, and reason. Review each exception with the change; do not use an exception to reintroduce a retired implementation.
