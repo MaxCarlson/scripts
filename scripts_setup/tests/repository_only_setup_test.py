@@ -484,8 +484,11 @@ def test_repository_only_rejects_external_bin_before_creating_venv(
 def test_repository_only_rejects_incompatible_active_interpreter(tmp_path, monkeypatch):
     setup = _load_root_setup()
     repository_venv = setup.SCRIPTS_DIR / ".venv"
+    venv_python = tmp_path / "repository-venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.touch()
     monkeypatch.setattr(setup, "VENV_DIR", repository_venv)
-    monkeypatch.setattr(setup, "_venv_python", lambda: repository_venv / "Scripts" / "python.exe")
+    monkeypatch.setattr(setup, "_venv_python", lambda: venv_python)
     monkeypatch.setattr(setup.sys, "executable", str(tmp_path / "other-venv" / "Scripts" / "python.exe"))
     monkeypatch.setattr(setup.sys, "prefix", str(tmp_path / "other-venv"))
 
