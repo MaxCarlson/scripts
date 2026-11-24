@@ -12,11 +12,12 @@
 - [x] Keep current-main validation targets and the recent media/procparsers work intact.
 - [x] Create and push isolated qualification refs for `main + PR #33 + PR #35` and the combined `main + PR #33 + PR #34 + PR #35`; preserve the PR branches.
 - [x] Refresh local retirement checks on the exact qualification SHAs: 62 tests on toolkit-only, 65 ownership/Help/Gitlink tests on combined, and 13 Runmux CLI/package-metadata tests on combined.
+- [x] Recheck the five staged wheel SHA-256 values and isolated import provenance on the combined ref; all five `mxc-*` versions resolve from the qualification target and all five legacy distributions are absent there.
 - [x] Correct the TermDash/viewer disposition: `mxc-termdash` source can retire; `orchestrator_web_viewer` remains held because the optional `TERMDASH_WEB_ATTACH` path calls its API.
 - [x] Record dependency contracts and evidence for all eight remaining holds in `STATUS.md`, including nested Gitlink SHAs, Agent Memory DB paths/sidecars, optional `llm_local`, Monitor APIs/state, H4 bundle/source pins, and viewer metadata/API parity.
 - [x] Record the active Resource Coordinator H4 worktree's exact dirty/untracked state without modifying it.
 - [ ] Complete a fresh dependency-resolved bootstrap and clean `pip check` after an approved wheel/index source is available.
-- [ ] Dispatch and complete hosted Linux qualification on both retirement refs. Attempt blocked: `gh auth status` reports an invalid saved token and API DNS lookup failure; GitHub connector has no workflow-dispatch operation; native Chrome app control timed out. No retirement-ref run IDs exist.
+- [ ] Dispatch and complete hosted Linux qualification on both retirement refs. Attempt blocked: `gh auth status` reports an invalid saved token and API DNS lookup failure; GitHub connector has no workflow-dispatch operation; native Chrome app control timed out. Read-only Actions queries confirm zero `workflow_dispatch` runs on both refs.
 - [ ] Complete full authenticated submodule checkout/bootstrap, complete-environment `pip check`, installed import provenance, launcher ownership, post-removal Runmux HTTP tests, and consumer regressions in hosted Linux CI.
 - [ ] Complete clean Windows root bootstrap through its owning agent; preserve the known Windows descriptor/socket limitation.
 - [x] Push replacement branches and open replacement review PRs #34 and #35; do not merge.
