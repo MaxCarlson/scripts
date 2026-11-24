@@ -1,0 +1,7 @@
+[
+  {
+    "type": "retirement",
+    "path": "modules/agent_memory",
+    "reason": "Canonical implementation is in llm-agent-toolkit/modules/agent_memory; the sole tracked SQLite artifact is retained as data, and legacy stores remain discoverable or can be copied with agent-memory migrate."
+  }
+]
