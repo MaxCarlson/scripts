@@ -9,6 +9,15 @@
 - Combined H4 offline suite: 70 passed, 1 skipped, 4 failed on this host. Failures are environment-bound Windows checks: two require Task Scheduler service `Schedule`, one cannot validate the test credential ACL in the restricted host, and one cannot query Windows session/task inventory. No guest lifecycle ran.
 - Remaining: review exact branch diff and commit/push for H4 owner integration. No inference or live state mutation occurred.
 
+## Canonical LLM Monitor bundle integration (2026-11-24)
+
+- Separate follow-up branch `feat/h4-canonical-llm-monitor-20261124`, based on the pushed Resource Metrics checkpoint `8d98af2f731f6592668c6eaa5e89db87a91de72a`.
+- Built canonical `llm-monitor==0.9.0` from Toolkit commit `edd54bd07ec9b1058e9c35e57ca320aaf993b6b2` in a disposable source archive; staged wheel SHA-256 `4357bd80029cad52d1f848db7903427d95c10e447dcce78836bda07a769688d5` and recorded repository, commit, filename, version, and digest.
+- Removed the scripts `modules/llm_monitor` path from the managed Resource Coordinator launcher. H4 proxy-chain tests now import `OpenAIInferenceGateway`, `RequestEventHub`, and `LiveInferenceStore` from the pinned canonical wheel; acceptance `PYTHONPATH` includes both canonical wheels and fails if either is absent.
+- Added a synthetic Runmux state test through `RunmuxMonitoringAdapter`; it verified schema version 1 and one discovered synthetic session without a network request or inference.
+- Full focused offline H4 selection: **77 passed, 1 skipped, 4 deselected**. Deselected cases require unavailable host Scheduler/session inventory or credential ACL access. Ruff, compileall, and `git diff --check` passed.
+- The physical `modules/llm_monitor` source retirement is not part of this H4 branch; other scripts consumers and clean-bootstrap package installation must be reconciled in the separate retirement batch.
+
 ## H4.9 final compatibility & mainline reconciliation (2026-11-15)
 
 - Source implementation branch: `agent/rc-h4-final-compatibility-20261115` (`591d41b4921f2809a5bd3e4dc47567986c3107a4`), descended from H4.8 `5faaf5bcc737fc6cc7b1a195a088d55d590e21c4`.

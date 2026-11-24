@@ -619,10 +619,7 @@ def _validate_restore_task_definition(task: StartupTask, definition: str, manage
 def render_launcher(paths: InstallationPaths, runtime: Optional[InstallationRuntime] = None) -> str:
     """Render the managed launcher while keeping all values as quoted literals."""
     listener_port = (runtime or InstallationRuntime()).listen_port
-    modules = paths.repository / "modules"
-    python_path = os.pathsep.join(
-        str(modules / part) for part in ("resource_coordinator", "llm_monitor")
-    )
+    python_path = str(paths.repository / "modules" / "resource_coordinator")
     configured_state = ""
     if paths.config.is_file():
         configured_state = load_config(paths.config).service.state_persistence_path

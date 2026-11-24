@@ -311,6 +311,13 @@ def test_task_profile_uses_verified_source_root_from_extracted_bundle_layout(tmp
         "def test_windows_disposable_task_registration_snapshot_restore_and_verification():\n    pass\n",
         encoding="utf-8",
     )
+    wheelhouse = bundle_root / "dependencies" / "wheelhouse"
+    wheelhouse.mkdir(parents=True)
+    for wheel_name in (
+        "mxc_resource_metrics-0.3.0-py3-none-any.whl",
+        "llm_monitor-0.9.0-py3-none-any.whl",
+    ):
+        shutil.copy2(TOOLS_DIR / "wheelhouse" / wheel_name, wheelhouse / wheel_name)
     manifest = bundle_root / "manifest.json"
     manifest.write_text("{}", encoding="utf-8")
     run_root = tmp_path / "h4-rc-task-bundle-layout"
@@ -369,6 +376,7 @@ def test_task_profile_uses_verified_source_root_from_extracted_bundle_layout(tmp
     assert rc == 0
     assert captured["cwd"] == mod_root.resolve()
     assert str(mod_root.resolve()) in captured["pythonpath"]
+    assert str(wheelhouse / "llm_monitor-0.9.0-py3-none-any.whl") in captured["pythonpath"]
     assert captured["flag"] == "1"
     assert (
         "tests/test_windows_task_transport_integration.py::test_windows_disposable_task_registration_snapshot_restore_and_verification"
