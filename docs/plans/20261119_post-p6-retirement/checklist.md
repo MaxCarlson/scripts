@@ -13,7 +13,8 @@
 - [ ] Complete a fresh dependency-resolved bootstrap and clean `pip check` after an approved wheel/index source is available.
 - [ ] Complete post-removal Ubuntu HTTP and consumer qualification through the owning workflow agent.
 - [ ] Complete clean Windows root bootstrap through its owning agent; preserve the known Windows descriptor/socket limitation.
-- [ ] Push replacement branches and open replacement review PRs; do not merge.
+- [x] Push replacement branches and open replacement review PRs #34 and #35; do not merge.
+- [x] Close stale PRs #27 and #28 with comments linking their current-main replacements.
 - [ ] Merge the toolkit-only PR only with separate approval; keep shared-source PR pending clean-index package availability.
 - [ ] Do not synchronize/clean primary checkout, quarantine local residuals, or alter any hold without a separate inventory and approval.
 

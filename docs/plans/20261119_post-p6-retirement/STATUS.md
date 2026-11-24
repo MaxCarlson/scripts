@@ -12,9 +12,10 @@ The fresh audit covers the 23 directories in `scripts_setup/transferred_modules.
 
 - `retire/toolkit-sources-current-main`: 13 toolkit-owned source directories. This PR can be reviewed independently of PyPI publication.
 - `retire/shared-sources-current-main`: four shared-library copies. It uses the qualified local wheelhouse, but a default clean scripts install still needs public package availability; do not merge this PR until clean-index qualification is possible.
-- Replacement PR #34 is open as draft against current main at shared-branch head `f7b119a0b37024624ed6299c0247c213ff93a1e7`. The toolkit-only replacement PR is being checkpointed separately.
+- Replacement PR #35 is open against current main on `retire/toolkit-sources-current-main`.
+- Replacement PR #34 is open as draft against current main on `retire/shared-sources-current-main`, at shared-branch commit `f7b119a0b37024624ed6299c0247c213ff93a1e7`.
 - Both branches start at current `scripts/main`. They do not merge the historical retirement branch or alter the primary checkout.
-- Old PR #27 and #28 are stale relative to current main; #28's former base is the now-merged `reconcile/scripts-mxc-main-20261120` branch. They will be closed with replacement links after both current-main PRs are available; neither will be merged.
+- Old PRs #27 and #28 were closed as superseded after replacements #35 and #34 were opened. PR #28's former base was the now-merged `reconcile/scripts-mxc-main-20261120` branch; neither old PR was merged.
 
 No files were permanently deleted or moved. Git-tracked removals exist only in isolated feature worktrees and can be restored from the base commit. The historical quarantine, seven prior holds, five raw evidence files, `.tmp_build/`, primary diagnostics, and other agents' worktrees remain intact.
 
@@ -91,4 +92,4 @@ Before either PR merges, restore any directory with `git restore --source=b60155
 - Git removes only tracked paths from the active tree. Before any later local residual quarantine, inventory each candidate path with tracked/untracked/ignored listings, reparse-point checks, and hashes; classify runtime databases, credentials, configuration, and logs; then use the persistent quarantine process under separate authorization. Do not infer that merged PRs authorize removal of ignored/untracked data.
 - Outstanding holds: `agent_abilities` and `agent_skills` (nested Gitlinks `refs/agentskills` at `7f094a2f794fbf6ccf805f601cdc497110b8a8cd` and `refs/openai-skills` at `894d404ce8df5fa06ffa4ae2cb7352e06f8b2abc`; canonical nested ownership/recoverability is unresolved); `agent_memory` (tracked index plus active WAL/SHM and divergent defaults); `llm_local` (Agent Memory's optional classification still uses it; Agent Sync also references it in current main but is included in the toolkit-only retirement proposal); `llm_monitor` (Runmux has direct optional runtime imports and monitor state); `resource_coordinator` (active H4 work/config/state); `resource_metrics` (H4 bundle builder exports the scripts source and pins the old distribution); and `orchestrator_web_viewer` (documented TermDash opt-in integration).
 
-No merge, push, package publication, local inference, primary checkout cleanup, or runtime-data removal has occurred in this checkpoint.
+The two replacement branches have been pushed; PR #35 is open, PR #34 is draft, and stale PRs #27/#28 are closed. No merge, package publication, local inference, primary checkout cleanup, or runtime-data removal has occurred in this checkpoint.
