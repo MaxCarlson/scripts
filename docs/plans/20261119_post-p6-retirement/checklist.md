@@ -37,3 +37,10 @@
 - Combined: `qualify/retirement-combined-pr33-pr34-pr35-20261124` at `f4a06aab3a24fe2bb672f5b63ba0b06d8e2e752a` — 65 ownership/Help/Gitlink tests and 13 Runmux CLI/package-metadata tests passed locally.
 - Hosted PR #33 run `45302927058` is the workflow-correction baseline only; it predates source removal. It does not satisfy either post-retirement hosted gate.
 - PR #34 remains draft and PR #35 remains open. No merge occurred.
+
+## Continuation checkpoint
+
+- [x] Open ownership-protection draft PR #36; local focused selection passed 19 tests and its hosted ownership check passed.
+- [x] Dispatch hosted Linux qualification for the exact toolkit-only and combined refs (runs 45321529713 and 45321531381).
+- [ ] Inspect both hosted runs to completion and record exact outcomes; qualify clean bootstrap and post-removal HTTP before making readiness claims.
+- [ ] Complete guard review, remaining ownership/launcher documentation checks, and all eight hold contracts.
