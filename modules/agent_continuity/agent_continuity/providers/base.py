@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -87,6 +89,10 @@ class ProviderAdapter(ABC):
 
     provider_name: str
 
+    def find_executable(self) -> str | None:
+        """Resolve the provider path without running it (safe for previews and tests)."""
+        return shutil.which(self.provider_name)
+
     @abstractmethod
     def detect_installation(self) -> ProviderInstallation:
         """Inspect executable presence, runnability, and native store path without modifying config."""
@@ -134,6 +140,7 @@ class ProviderAdapter(ABC):
         cwd: str | None = None,
         environment_id: str = "",
         runtime_kind: str = "",
+        native_args: Sequence[str] = (),
     ) -> ResumePlan:
         """Construct a verified native resume command array without executing it."""
 
