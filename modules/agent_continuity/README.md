@@ -14,7 +14,7 @@ Human-readable output uses semantic colors for GUI names, agents, providers, tim
 
 Listings and selectors adapt to the available terminal width using terminal-cell measurements. Wide terminals use aligned rows; narrower terminals stack fields and clip only when required to fit. Full native IDs are kept when space permits. GUI groups have visible headings and separators, and empty groups are labeled. The same style palette is used by human-readable selectors, post-exit choices, `history`, `last`/`recent`, `doctor`, launch previews, and diagnostics.
 
-`-c/--color auto|always|never` controls human-readable output on supported subcommands. `auto` enables ANSI only for interactive terminals with color support; `NO_COLOR` disables color in all modes, including `always`. Redirected output defaults to plain text. JSON schemas and values are unchanged and ANSI-free. Captured ANSI output demonstrates emitted control codes; it does not by itself prove how a particular terminal renders them.
+`-c/--color auto|always|never` controls human-readable output on supported subcommands, including the interactive menu and nested selectors. `auto` enables ANSI for interactive terminals unless `TERM=dumb`; on Windows it temporarily enables VT processing on the actual output console and restores the prior console mode when the command ends. This does not change persistent terminal settings. `NO_COLOR` disables color in all modes, including `always`, and redirected output defaults to plain text. JSON schemas and values are unchanged and ANSI-free. Captured ANSI output demonstrates emitted control codes; it does not by itself prove how a particular terminal renders them.
 
 ```powershell
 llmd list

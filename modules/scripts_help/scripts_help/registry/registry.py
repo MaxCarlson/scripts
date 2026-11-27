@@ -298,7 +298,7 @@ REGISTRY: dict = {
                 "path": "modules/agent_continuity",
                 "desc": "Manage named Codex/AGY agents, terminal-scoped history, launch options, and semantic terminal output",
                 "help_cmd": ["llmd", "--help"],
-                "version": "1.7.0",
+                "version": "1.7.1",
             },
             {
                 "name": "run_tests.py",

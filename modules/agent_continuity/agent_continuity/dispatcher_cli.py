@@ -40,6 +40,7 @@ from .terminal_format import (
     runtime_semantic,
     semantic_color,
     state_color,
+    temporary_vt_processing,
 )
 
 _BOOTSTRAP_PROMPT = "Session initialization only. Reply READY and await further instructions."
@@ -930,7 +931,7 @@ def _current_native_cwd(dispatcher: DispatcherService, current: dict[str, Any] |
 
 
 def _render_launch_preview(preview: dict[str, Any], stream: TextIO, color: str | None = None) -> None:
-    enabled = color_enabled(color or _current_color_mode(), is_tty=stream.isatty())
+    enabled = color_enabled(color or _current_color_mode(), is_tty=stream.isatty(), stream=stream)
     print(semantic_color("Launch preview", "gui", enabled=enabled) +
           semantic_color(" (requested permissions are not verified as effective):", "warning", enabled=enabled),
           file=stream)
@@ -1323,10 +1324,11 @@ def _run_pane(
         if launch_id:
             dispatcher.mark_launch_failed(launch_id=launch_id, detail=f"provider exited with {result.returncode}", apply=True)
         print(semantic_color(f"{slot['name']} exited with code {result.returncode}; slot and current session remain unchanged.",
-                             "error", enabled=color_enabled("auto", is_tty=output_stream.isatty())), file=output_stream)
+                             "error", enabled=color_enabled(_current_color_mode(), is_tty=output_stream.isatty(),
+                                                            stream=output_stream)), file=output_stream)
         return result.returncode
     opposite_provider = "agy" if provider == "codex" else "codex"
-    use_color = color_enabled(_current_color_mode(), is_tty=output_stream.isatty())
+    use_color = color_enabled(_current_color_mode(), is_tty=output_stream.isatty(), stream=output_stream)
     while True:
         print(f"\n{semantic_color(slot['name'], 'agent', enabled=use_color)} "
               f"{outcome_semantic('has exited successfully', enabled=use_color)}\n"
@@ -1597,7 +1599,7 @@ def _switch_to_existing_agent(
                                       ("name", "current_provider", "current_session_id", "state")).casefold()
         row["runtime_status"] = _runtime_label(dispatcher, str(row.get("current_provider") or "UNKNOWN"),
                                                row.get("current_environment_id"), row.get("current_session_id"))
-    selector_color = color_enabled(_current_color_mode(), is_tty=output_stream.isatty())
+    selector_color = color_enabled(_current_color_mode(), is_tty=output_stream.isatty(), stream=output_stream)
     action, selected = select_item(
         rows, title=f"LLMD — Switch agent in {source['gui_alias']}",
         render_line=lambda row: _agent_selector_line(row, shutil.get_terminal_size((100, 24)).columns,
@@ -2001,7 +2003,8 @@ def _run_picker(dispatcher: DispatcherService, args: argparse.Namespace, input_s
     if not items:
         print("No eligible agents have a resumable session.", file=output_stream)
         return 0
-    picker_color = color_enabled(getattr(args, "color", "auto"), is_tty=output_stream.isatty())
+    picker_color = color_enabled(getattr(args, "color", "auto"), is_tty=output_stream.isatty(),
+                                 stream=output_stream)
     action, item = select_item(items, title="LLMD — Resume Agent",
         render_line=lambda row: _continue_picker_line(row, shutil.get_terminal_size((100, 24)).columns,
                                                      enabled=picker_color),
@@ -2197,7 +2200,7 @@ def _doctor_report(dispatcher: DispatcherService, gui: str | None = None, agent:
 
 
 def _render_doctor_report(report: dict[str, Any], stream: TextIO, color: str = "auto") -> None:
-    enabled = color_enabled(color, is_tty=stream.isatty())
+    enabled = color_enabled(color, is_tty=stream.isatty(), stream=stream)
     registry = report["registry"]
     database = registry["database"]
     print(semantic_color("LLMD Doctor", "gui", enabled=enabled), file=stream)
@@ -2326,7 +2329,7 @@ def _sort_slot_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _render_listing(
     result: dict[str, Any], stream: TextIO, color: str, *, dispatcher: DispatcherService | None = None,
 ) -> None:
-    use_color = color_enabled(color, is_tty=stream.isatty())
+    use_color = color_enabled(color, is_tty=stream.isatty(), stream=stream)
     width = shutil.get_terminal_size((100, 24)).columns
     name_width = max(12, min(32, width - 78))
     session_width = max(8, width - name_width - 57)
@@ -2464,7 +2467,7 @@ def _last_terminal_history(dispatcher: DispatcherService, args: argparse.Namespa
 
 def _render_terminal_launches(launches: list[dict[str, Any]], stream: TextIO, *, show_terminal_id: bool,
                               color: str = "auto") -> None:
-    enabled = color_enabled(color, is_tty=stream.isatty())
+    enabled = color_enabled(color, is_tty=stream.isatty(), stream=stream)
     if not launches:
         print(semantic_color("No matching terminal launch history.", "unknown", enabled=enabled), file=stream)
         return
@@ -2568,7 +2571,8 @@ def _resume_terminal_launch(
 def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input_stream: TextIO, output_stream: TextIO) -> int:
     token = _COLOR_MODE.set(getattr(args, "color", "auto"))
     try:
-        return _dispatch_impl(args, parser, input_stream=input_stream, output_stream=output_stream)
+        with temporary_vt_processing(output_stream, _current_color_mode()):
+            return _dispatch_impl(args, parser, input_stream=input_stream, output_stream=output_stream)
     finally:
         _COLOR_MODE.reset(token)
 
@@ -2580,7 +2584,8 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
             return 2
         from .interactive import run_interactive
 
-        return run_interactive(DispatcherService(home_dir=args.home), input_stream=input_stream, output_stream=output_stream)
+        return run_interactive(DispatcherService(home_dir=args.home), input_stream=input_stream,
+                               output_stream=output_stream, color_mode=getattr(args, "color", "auto"))
 
     if args.command in {"start", "continue"}:
         args.gui = _resolve_name(args.gui_pos, args.gui, "GUI")
@@ -2827,7 +2832,8 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
     if json_mode:
         print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True, default=_json_default), file=output_stream)
     else:
-        output_color = color_enabled(getattr(args, "color", "auto"), is_tty=output_stream.isatty())
+        output_color = color_enabled(getattr(args, "color", "auto"), is_tty=output_stream.isatty(),
+                                     stream=output_stream)
         if result.get("action") == "list":
             _render_listing(result, output_stream, args.color, dispatcher=dispatcher)
             return 0

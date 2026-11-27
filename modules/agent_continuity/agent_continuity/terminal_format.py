@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import re
+import sys
 import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
+from typing import TextIO
 
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
@@ -129,9 +134,75 @@ def outcome_semantic(outcome: str, *, enabled: bool) -> str:
     return semantic_color(outcome, semantic, enabled=enabled)
 
 
-def color_enabled(mode: str, *, is_tty: bool) -> bool:
-    import os
+_ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
 
+
+def _console_handle(stream: TextIO) -> tuple[object, int] | None:
+    """Return the Windows console API and OS handle for this output stream."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(stream.fileno())
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        return kernel32, handle
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _console_mode_for_stream(stream: TextIO) -> int | None:
+    console = _console_handle(stream)
+    if console is None:
+        return None
+    import ctypes
+
+    kernel32, handle = console
+    flags = ctypes.c_uint32()
+    kernel32.GetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    kernel32.GetConsoleMode.restype = ctypes.c_int
+    if not kernel32.GetConsoleMode(ctypes.c_void_p(handle), ctypes.byref(flags)):
+        return None
+    return int(flags.value)
+
+
+def _set_console_mode_for_stream(stream: TextIO, flags: int) -> bool:
+    console = _console_handle(stream)
+    if console is None:
+        return False
+    import ctypes
+
+    kernel32, handle = console
+    kernel32.SetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.SetConsoleMode.restype = ctypes.c_int
+    return bool(kernel32.SetConsoleMode(ctypes.c_void_p(handle), flags))
+
+
+@contextmanager
+def temporary_vt_processing(stream: TextIO, mode: str) -> Iterator[bool]:
+    """Temporarily enable Windows VT output for this console and restore its mode."""
+    if (os.name != "nt" or "NO_COLOR" in os.environ or mode == "never" or not stream.isatty()
+            or (mode == "auto" and os.environ.get("TERM", "").casefold() == "dumb")):
+        yield False
+        return
+    original = _console_mode_for_stream(stream)
+    if original is None:
+        yield False
+        return
+    if original & _ENABLE_VIRTUAL_TERMINAL_PROCESSING:
+        yield True
+        return
+    if not _set_console_mode_for_stream(stream, original | _ENABLE_VIRTUAL_TERMINAL_PROCESSING):
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        _set_console_mode_for_stream(stream, original)
+
+
+def color_enabled(mode: str, *, is_tty: bool, stream: TextIO | None = None) -> bool:
     if "NO_COLOR" in os.environ or mode == "never":
         return False
     if mode == "always":
@@ -139,16 +210,11 @@ def color_enabled(mode: str, *, is_tty: bool) -> bool:
     if mode != "auto" or not is_tty or os.environ.get("TERM", "").casefold() == "dumb":
         return False
     if os.name == "nt":
-        try:
-            import ctypes
-
-            mode_flags = ctypes.c_uint()
-            handle = ctypes.windll.kernel32.GetStdHandle(-11)
-            if not handle or not ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode_flags)):
-                return False
-            return bool(mode_flags.value & 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
-        except (AttributeError, OSError):
+        output = stream or sys.stdout
+        if not output.isatty():
             return False
+        mode_flags = _console_mode_for_stream(output)
+        return bool(mode_flags is not None and mode_flags & _ENABLE_VIRTUAL_TERMINAL_PROCESSING)
     return True
 
 

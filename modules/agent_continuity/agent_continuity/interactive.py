@@ -138,7 +138,7 @@ def select_item(
         matches = filter_items(items, query, key=filter_key)
         selected = min(selected, max(0, len(matches) - 1))
         output_stream.write("\x1b[2J\x1b[H")
-        enabled = color_enabled(color_mode, is_tty=output_stream.isatty())
+        enabled = color_enabled(color_mode, is_tty=output_stream.isatty(), stream=output_stream)
         output_stream.write(f"{semantic_color(title, 'gui', enabled=enabled)}\n\nSearch: {query}\n\n")
         header_text = header() if callable(header) else header
         if header_text:
@@ -194,16 +194,18 @@ def _confirm(output_stream: TextIO, input_stream: TextIO, summary: str) -> bool:
     return _ask(output_stream, input_stream, f"\n{summary}\nApply? [y/N] ").strip().casefold() in {"y", "yes"}
 
 
-def _provider_choice(input_stream: TextIO, output_stream: TextIO) -> str | None:
+def _provider_choice(input_stream: TextIO, output_stream: TextIO, *, color_mode: str = "auto") -> str | None:
     action, item = select_item(
         [{"name": "AGY", "provider": "agy"}, {"name": "Codex", "provider": "codex"}],
         title="Choose Provider", render_line=lambda row: row["name"],
-        input_stream=input_stream, output_stream=output_stream,
+        input_stream=input_stream, output_stream=output_stream, color_mode=color_mode,
     )
     return item["provider"] if action == "selected" and item else None
 
 
-def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, output_stream: TextIO) -> int:
+def run_interactive(
+    dispatcher: DispatcherService, *, input_stream: TextIO, output_stream: TextIO, color_mode: str = "auto",
+) -> int:
     """Run the four-step menu using the same durable service operations as CLI commands."""
     from argparse import Namespace
 
@@ -212,7 +214,7 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
     def terminal_width() -> int:
         return shutil.get_terminal_size((100, 24)).columns
 
-    selector_color = color_enabled("auto", is_tty=output_stream.isatty())
+    selector_color = color_enabled(color_mode, is_tty=output_stream.isatty(), stream=output_stream)
 
     while True:
         action, gui = select_item(
@@ -220,7 +222,7 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
             render_line=lambda row: _gui_selector_line(row, terminal_width(), enabled=selector_color),
             header=lambda: _gui_selector_line({}, terminal_width(), header=True, enabled=selector_color),
             input_stream=input_stream, output_stream=output_stream, allow_new=True,
-            filter_key="alias",
+            filter_key="alias", color_mode=color_mode,
         )
         if action == "exit":
             return 0
@@ -240,7 +242,7 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
                 render_line=lambda row: _agent_selector_line(row, terminal_width(), enabled=selector_color),
                 header=lambda: _agent_selector_line({}, terminal_width(), header=True, enabled=selector_color),
                 input_stream=input_stream, output_stream=output_stream,
-                allow_new=True, allow_open_all=True,
+                allow_new=True, allow_open_all=True, color_mode=color_mode,
             )
             if action == "exit":
                 return 0
@@ -294,7 +296,7 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
                     )
                 action, choice = select_item(
                     options, title="Choose Session Action", render_line=lambda row: row["name"],
-                    input_stream=input_stream, output_stream=output_stream,
+                    input_stream=input_stream, output_stream=output_stream, color_mode=color_mode,
                 )
                 if action == "exit":
                     return 0
@@ -312,7 +314,8 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
                     if state_name in {"inactive", "completed"} and _confirm(output_stream, input_stream, f"Mark {slot['name']} {state_name}?"):
                         dispatcher.set_slot_state(gui=gui_name, name=slot["name"], state=state_name, apply=True)
                     break
-                provider = current["current"]["provider"] if choice["action"] == "continue" else _provider_choice(input_stream, output_stream)
+                provider = (current["current"]["provider"] if choice["action"] == "continue"
+                            else _provider_choice(input_stream, output_stream, color_mode=color_mode))
                 if provider is None:
                     continue
                 if choice["action"] == "reuse":
@@ -330,6 +333,7 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
                         ),
                         input_stream=input_stream,
                         output_stream=output_stream,
+                        color_mode=color_mode,
                     )
                     if session_action == "exit":
                         return 0

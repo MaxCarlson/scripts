@@ -224,3 +224,105 @@ def test_empty_groups_and_history_mark_selected_or_unresolved(monkeypatch):
     assert "selected" in rendered
     assert "<unresolved>" in rendered
     assert "\x1b[31m<unresolved>\x1b[0m" in rendered
+
+
+def test_interactive_passes_requested_color_mode_to_nested_selectors(monkeypatch):
+    from agent_continuity import interactive
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    class TTYStringIO(StringIO):
+        def isatty(self):
+            return True
+
+    class Dispatcher:
+        def list_guis(self):
+            return [{"alias": "GUI", "last_activity_at": None}]
+
+        def list_slots(self, *, gui):
+            return []
+
+    responses = iter([("selected", {"alias": "GUI"}), ("back", None), ("exit", None)])
+    observed_modes = []
+    rendered_rows = []
+
+    def select_item(*args, **kwargs):
+        observed_modes.append(kwargs.get("color_mode"))
+        response = next(responses)
+        if response[0] == "selected":
+            rendered_rows.append(kwargs["render_line"](response[1]))
+        return response
+
+    monkeypatch.setattr(interactive, "select_item", select_item)
+    output = TTYStringIO()
+    assert interactive.run_interactive(
+        Dispatcher(), input_stream=TTYStringIO(), output_stream=output, color_mode="always"
+    ) == 0
+
+    assert observed_modes == ["always", "always", "always"]
+    assert "\x1b[94;1mGUI\x1b[0m" in rendered_rows[0]
+
+
+def test_dispatch_passes_color_mode_into_interactive_entrypoint(tmp_path, monkeypatch):
+    from agent_continuity import dispatcher_cli, interactive
+
+    class TTYStringIO(StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(dispatcher_cli, "DispatcherService", lambda **_kwargs: object())
+    observed = []
+
+    def run_interactive(_dispatcher, **kwargs):
+        observed.append(kwargs["color_mode"])
+        return 0
+
+    monkeypatch.setattr(interactive, "run_interactive", run_interactive)
+    parser = build_parser()
+    args = parser.parse_args(["-H", str(tmp_path), "-c", "never"])
+    assert dispatch(args, parser, input_stream=TTYStringIO(), output_stream=TTYStringIO()) == 0
+    assert observed == ["never"]
+
+
+def test_provider_selector_receives_the_explicit_color_mode(monkeypatch):
+    from agent_continuity import interactive
+
+    observed = []
+    monkeypatch.setattr(interactive, "select_item",
+                        lambda *_args, **kwargs: observed.append(kwargs["color_mode"]) or
+                        ("selected", {"provider": "agy"}))
+    assert interactive._provider_choice(StringIO(), StringIO(), color_mode="never") == "agy"
+    assert observed == ["never"]
+
+
+def test_windows_auto_color_temporarily_enables_and_restores_vt(monkeypatch):
+    import os
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.setattr(fmt, "os", os, raising=False)
+    monkeypatch.setattr(os, "name", "nt")
+    state = {"mode": 0x0001}
+    calls = []
+
+    class TTYStringIO(StringIO):
+        def isatty(self):
+            return True
+
+    output = TTYStringIO()
+    monkeypatch.setattr(fmt, "_console_mode_for_stream", lambda stream: state["mode"])
+
+    def set_mode(stream, mode):
+        calls.append(mode)
+        state["mode"] = mode
+        return True
+
+    monkeypatch.setattr(fmt, "_set_console_mode_for_stream", set_mode)
+
+    with fmt.temporary_vt_processing(output, "auto") as enabled:
+        assert enabled
+        assert state["mode"] == 0x0005
+        assert fmt.color_enabled("auto", is_tty=True, stream=output)
+
+    assert state["mode"] == 0x0001
+    assert calls == [0x0005, 0x0001]
