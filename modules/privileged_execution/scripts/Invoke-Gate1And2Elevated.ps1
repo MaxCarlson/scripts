@@ -21,7 +21,7 @@ param(
     [pscredential]$AgentCredential,
     [pscredential]$UnauthorizedCredential,
     [switch]$CreateTempTestAccounts,
-    [string]$H4SourceDir = 'C:\Users\mcarls\src\scripts\.worktrees\rc-h4-task-discovery-20261115\modules\resource_coordinator\tools\h4_qualification',
+    [string]$H4SourceDir = ([IO.Path]::Combine($env:USERPROFILE, 'src\llm-agent-toolkit\modules\resource_coordinator\tools\h4_qualification')),
     [string]$EvidenceOut = 'C:\ProgramData\PrivExec\gate1-2-evidence.json'
 )
 

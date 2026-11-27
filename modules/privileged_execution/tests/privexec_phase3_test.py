@@ -1056,3 +1056,10 @@ def test_gate3_runner_console_attachment_and_observability_contract() -> None:
         "broker_killed_on_cleanup",
     ):
         assert field in gate3_text
+
+
+def test_h4_gate_runners_default_to_canonical_toolkit_qualification_tools() -> None:
+    for name in ("Invoke-Gate1And2Elevated.ps1", "Invoke-Gate3Elevated.ps1"):
+        text = (SCRIPTS_DIR / name).read_text(encoding="utf-8")
+        assert "llm-agent-toolkit\\modules\\resource_coordinator\\tools\\h4_qualification" in text
+        assert "rc-h4-task-discovery-20261115" not in text

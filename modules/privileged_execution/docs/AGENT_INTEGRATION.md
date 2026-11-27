@@ -18,7 +18,7 @@ pwsh -NoProfile -File C:\Users\mcarls\src\scripts-privexec\modules\privileged_ex
     -Mode CrossAccountIsolated `
     -OperatorAccount "XERES\mcarls" `
     -AgentAccount "XERES\PrivExecAgent" `
-    -H4SourceDir "C:\Users\mcarls\src\scripts\.worktrees\rc-h4-task-discovery-20261115\modules\resource_coordinator\tools\h4_qualification"
+    -H4SourceDir "$env:USERPROFILE\src\llm-agent-toolkit\modules\resource_coordinator\tools\h4_qualification"
 ```
 
 ## 2. Operator Authorization of Capability Grants
