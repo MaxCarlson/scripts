@@ -1,11 +1,32 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [Alias('Module')]
+    [Alias('Module', 'AffectedTarget', 'AffectedConsumer')]
     [string[]]$Target,
 
     [Parameter()]
     [switch]$ListTargets,
+
+    [Parameter()]
+    [switch]$Selective,
+
+    [Parameter()]
+    [string[]]$PytestNodeId,
+
+    [Parameter()]
+    [string[]]$PytestFile,
+
+    [Parameter()]
+    [string[]]$PytestModule,
+
+    [Parameter()]
+    [string]$PythonExecutable,
+
+    [Parameter()]
+    [switch]$ReuseEvidence,
+
+    [Parameter()]
+    [string]$TemporaryRoot,
 
     [Parameter()]
     [switch]$SkipBootstrap,
@@ -592,6 +613,51 @@ if ($ListTargets) {
     }
 
     exit 0
+}
+
+$HasSelectiveSelectors = @($PytestNodeId).Count -gt 0 -or @($PytestFile).Count -gt 0 -or @($PytestModule).Count -gt 0
+if (-not $Selective -and $HasSelectiveSelectors) {
+    throw 'Pytest selectors require -Selective.'
+}
+
+if ($Selective) {
+    if (-not $Target -or $Target.Count -eq 0 -or $Target -contains 'all') {
+        throw 'Selective validation requires one or more explicit affected-consumer targets; use -Target or -AffectedTarget.'
+    }
+    if (-not $HasSelectiveSelectors) {
+        throw 'Selective validation requires at least one -PytestNodeId, -PytestFile, or -PytestModule selector.'
+    }
+    if ($IncludeProductionReadOnly) {
+        throw 'Selective pytest does not run production read-only validation.'
+    }
+
+    foreach ($Name in $Target | Select-Object -Unique) {
+        if (-not $Manifest['targets'].Contains($Name)) {
+            throw "Unknown validation target '$Name'. Run ./Invoke-Tests.ps1 -ListTargets to list available targets."
+        }
+        if (-not $Manifest['targets'][$Name].Contains('selective_validation')) {
+            throw "Validation target '$Name' does not support selective pytest."
+        }
+    }
+
+    $SelectivePython = if ($PythonExecutable) { $PythonExecutable } else { Resolve-PythonExecutable }
+    $SelectiveArguments = @('-m', 'scripts_setup.selective_validation', '--repo-root', $RepoRoot, '--python-executable', $SelectivePython)
+    foreach ($Name in $Target | Select-Object -Unique) { $SelectiveArguments += @('--target', $Name) }
+    foreach ($NodeId in $PytestNodeId) { $SelectiveArguments += @('--node-id', $NodeId) }
+    foreach ($File in $PytestFile) { $SelectiveArguments += @('--file', $File) }
+    foreach ($ModuleName in $PytestModule) { $SelectiveArguments += @('--module', $ModuleName) }
+    if ($ReuseEvidence) { $SelectiveArguments += '--reuse-evidence' }
+    if ($TemporaryRoot) { $SelectiveArguments += @('--temporary-root', $TemporaryRoot) }
+
+    Push-Location -LiteralPath $RepoRoot
+    try {
+        & $SelectivePython @SelectiveArguments
+        $SelectiveExitCode = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+    }
+    exit $SelectiveExitCode
 }
 
 $SelectedTargets = if ($Target -and $Target.Count -gt 0) {
