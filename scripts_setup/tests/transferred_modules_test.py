@@ -37,6 +37,7 @@ RETIRED_TOOLKIT_SOURCE_DIRS = frozenset({
     "llm-patcher",
     "lmstui",
     "local_agent_bridge",
+    "resource_metrics",
     "web_ai_automator",
 })
 

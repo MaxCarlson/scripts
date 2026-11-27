@@ -16,7 +16,7 @@ dependencies = [
     "starlette>=0.37.0",
     "uvicorn>=0.30.0",
     "psutil>=5.9.0",
-    "resource-metrics>=0.1.0",
+    "mxc-resource-metrics>=0.3.0,<0.4",
     "pyyaml>=6.0",
     "rich>=13.7,<15",
 ]
