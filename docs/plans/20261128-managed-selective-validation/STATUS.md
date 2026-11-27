@@ -1,6 +1,6 @@
 # Status
 
-The initial selective-validation branch is at `14f2683d`. This follow-up corrects evidence reuse, pytest-process provenance, redaction, temporary-root placement, and cross-platform PYTHONPATH handling on the same isolated feature branch. No Toolkit or retirement-candidate files are changed.
+Selective-validation evidence-integrity corrections are complete on `feature/managed-selective-validation-20261128`, pushed at `c381241d`. The follow-up corrects evidence reuse, pytest-process provenance, redaction, temporary-root placement, and cross-platform PYTHONPATH handling. No Toolkit or retirement-candidate files are changed.
 
 ## Current findings
 
@@ -19,4 +19,4 @@ The initial selective-validation branch is at `14f2683d`. This follow-up correct
 
 ## Next
 
-Commit and push this follow-up after the focused verification. Agent-Environment can use the documented interface; Toolkit-native adoption remains separable. Keep generated run receipts and temp directories outside source commits.
+The branch is ready for review and Agent-Environment adoption. Toolkit-native adoption remains separable. Keep generated run receipts and temp directories outside source commits.

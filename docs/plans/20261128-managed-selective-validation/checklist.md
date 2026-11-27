@@ -14,4 +14,4 @@
 - [x] Record exact commands, interpreter, worktree/revision, dependencies/import identities, duration, exit status, and concise failure details.
 - [x] Document Agent-Environment `test-verify` usage without changing skill/policy files.
 - [x] Run focused tests, Python lint, manifest parsing, PowerShell parser validation, and real subprocess provenance regression.
-- [ ] Review task-only diff, commit, and push feature branch.
+- [x] Review task-only diff, commit, and push feature branch.
