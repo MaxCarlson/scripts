@@ -103,13 +103,13 @@ Full dependency-resolved bootstrap, `pip check` against the complete installed a
 
 ## Current hold and integration gates
 
-The original eight holds now have separate canonical or scripts-side checkpoints for Gitlinks, Agent Memory, `llm_local`, and the viewer. Pinned VCS source installation is qualified without publication; hosted runs for PRs #38, #39, #41, and #42 passed. PRs #38/#39 are stacked on the prior #35 retirement history and are not merge candidates as-is; prepare incremental replacement PRs after #35 is integrated. Ordered integration remains gated on approval. The remaining source-ownership holds are the three H4-coupled modules below.
+The original eight holds now have separate canonical or scripts-side checkpoints for Gitlinks, Agent Memory, `llm_local`, and the viewer. Pinned VCS source installation is qualified without publication; hosted runs for PRs #38, #39, #41, and #42 passed. PRs #38/#39 are stacked on the prior #35 retirement history and are not merge candidates as-is; prepare incremental replacement PRs after #35 is integrated. Ordered integration remains gated on approval. The 2026-11-27 continuation below qualifies two of the three H4-coupled source retirements on isolated successors; they remain unmerged. Resource Coordinator remains gated on owner reconciliation.
 
 | Held directory | Evidence and required follow-up |
 |---|---|
-| `llm_monitor` | Runmux dynamically imports Monitor APIs and H4 uses Monitor APIs/state. Toolkit PR #5 updates package metadata; four hosted matrix runs (`45333414610`, `45334638802`, `45345602914`, `45345628821`) failed all eight jobs before steps. Direct job metadata for `45345602914` shows `runner_id=0`, no runner name, empty step arrays, and 1–2 second job durations; job-log download returns 404. Local Runmux adapter/API tests passed 19. | Keep scripts Monitor source until H4 bundle and ordinary install contracts are reconciled. This is a hosted runner-assignment failure with no code-level failure evidence; do not retry until diagnostics become available. |
-| `resource_coordinator` | The registered `.worktrees/resource-coordinator-phase-d` is dirty at `a3bbb53` with H4 handoffs and untracked design/plan files. A separate H4 branch `fix/rc-h4-task-discovery-20261115` at `1b71f5c4` contains later bundle tooling. | Preserve the active phase-D worktree and state. Coordinate the snapshot/API contract with its owner before edits or retirement. |
-| `resource_metrics` | H4 bundle tooling at `1b71f5c4` stages the scripts `modules/resource_metrics` tree and records `resource-metrics==0.2.0`; the canonical shared package contract is `mxc-resource-metrics==0.3.0`. | H4 must adopt the canonical distribution contract and qualify an immutable bundle before this source can retire. Do not modify H4's active worktree. |
+| `llm_monitor` | The isolated Scripts successor `retire/llm-monitor-successor-20261127` has implementation commit `ee0bdd899fda12366e2c7b4329e48ae616c1c52d`; its bundle wheel is built from Toolkit `e10544f63ceb2f2082bc716edb4d6227087b8e03` and has SHA-256 `bc503adab4b02416f56cd1c286ab827116e2ba527afcd49790a79704c4175adb`. | Canonical launcher/bundle/import-provenance, synthetic proxy, H4 integrity, and source-ownership checks pass. Docs and Phase-D evidence remain. Branch is stacked on the Metrics successor and is unmerged; no PR was created. |
+| `resource_coordinator` | Scripts `ee0bdd89` vs Toolkit `e10544f6`: 23 common files differ, including 8 runtime files, 9 tests, 2 H4 tooling files, 3 docs, and package metadata; 7 files are unique to each side. Toolkit-only runtime adds delegation and contains newer lifecycle/safety behavior. | Only the safe dependency metadata correction was made on Toolkit branch `retire/resource-coordinator-metrics-dependency-20261127`. Keep the Scripts source retirement gated on Phase-D owner reconciliation and H4 snapshot/API review. Preserve the dirty owner worktree. |
+| `resource_metrics` | Scripts successor `retire/resource-metrics-successor-20261127` is pushed at `dd076e98d26fb93185ab6c4c3a6d1d36a5ff5bf3`; its in-bundle wheel is the verified published `mxc-resource-metrics==0.3.0` artifact, SHA-256 `a1e0e66c5d1b8bed507af26a906d0728b1da65fa14684be4a369da4b60ccac71`. | Bundle snapshots omit the old source; dependency and ownership metadata plus focused offline regressions pass. Branch is unmerged; H4 owner review remains required before live deployment. |
 
 Prepared, separately pushed source-retirement batches: Agent Abilities/Skills (`retire/agent-abilities-skills-20261125`), `llm_local` (PR #38), viewer (PR #39), and Agent Memory (`retire/agent-memory-20261125`). Canonical changes are isolated on toolkit branches, including Gitlink initialization and Agent Memory data portability. Exact PyPI lookups found no `agent-memory`, `llm-local`, or `orchestrator-web-viewer` projects. A fresh disposable venv installed all three packages from pinned GitHub VCS refs with dependencies resolved; the viewer's `termdash` extra used the qualified `mxc-termdash` wheelhouse. `pip check` passed and all three import origins resolved under the venv. PRs #38, #39, #41, and #42 hosted qualifications passed. No branch was merged and no package was published.
 
@@ -182,3 +182,52 @@ Scripts main advanced during final qualification. The final fetched Scripts base
 Final pushed refs: Scripts PR #34 `df546641c3809150a203270fcdff1cd4afb4568c`; stacked Scripts PR #39 `b13f3062629439825659114d8193ce9b6571c46b`; Toolkit PR #5 `4973c76782290776e0002fead128011aad80d42b`. Final disposable integration trees were Scripts `b47b16b734a792b3d7236c87c96e1da542aa7697` and Toolkit `309c47dde51f19e0c33c53aaa994157ea053644e`. On those refs, the combined synthetic qualification passed 110 tests, the production Scripts ownership checker returned 0, and `pip check` reported no broken requirements. The exact PyPI install plan was also re-resolved from the public index; all three installed launchers and all canonical import origins were verified.
 
 The pushed branches remain separate and draft. No PR merge, package publication, primary-checkout change, live-data migration, or protected H4/Phase-D operation occurred. Pause at the ordered approval gate: Toolkit PR #5, Scripts PR #34, then Scripts PR #39.
+
+## 2026-11-27 Metrics, Monitor, and Coordinator continuation
+
+The Scripts successors were based on the available `origin/main` checkpoint
+`61722b3c04bc36d32e0eaa51b2a478ab155a6dea` and remain unmerged. Implementation
+heads are recorded below; this status/checklist refresh is committed after the
+Monitor implementation head:
+
+- Resource Metrics: `retire/resource-metrics-successor-20261127` at
+  `dd076e98d26fb93185ab6c4c3a6d1d36a5ff5bf3`. The H4 bundle embeds the
+  published `mxc-resource-metrics==0.3.0` wheel
+  (`a1e0e66c5d1b8bed507af26a906d0728b1da65fa14684be4a369da4b60ccac71`),
+  exports only Resource Coordinator source for both snapshots, and loads the
+  wheel by its verified path. Scripts consumer metadata and source ownership
+  records are updated. Focused retirement/policy tests: 24 passed; H4
+  compatibility/integrity/Windows harness: 38 passed; ownership CLI passed.
+- LLM Monitor: `retire/llm-monitor-successor-20261127` at
+  `ee0bdd899fda12366e2c7b4329e48ae616c1c52d`, stacked on Metrics. The duplicate
+  package implementation, tests, and web assets are removed; README, examples,
+  historical docs, and Phase-D evidence remain tracked unchanged. Its bundled
+  wheel was built from Toolkit `e10544f63ceb2f2082bc716edb4d6227087b8e03`,
+  SHA-256 `bc503adab4b02416f56cd1c286ab827116e2ba527afcd49790a79704c4175adb`.
+  Source/registry tests: 25 passed; canonical bundle/Runmux: 2 passed;
+  synthetic proxy chain: 4 passed; H4 harness: 39 passed; ownership CLI passed.
+- Toolkit metadata: `retire/resource-coordinator-metrics-dependency-20261127`
+  at `6b09559c287fb434ede42c4e64f5e5097c6982fd`, based on Toolkit
+  `e10544f63ceb2f2082bc716edb4d6227087b8e03`. The canonical Coordinator
+  dependency is bounded to `mxc-resource-metrics>=0.3.0,<0.4`; its metadata
+  regression passed and a locally built wheel advertises
+  `Requires-Dist: mxc-resource-metrics<0.4,>=0.3.0`.
+
+Current Scripts-versus-Toolkit Resource Coordinator comparison at those refs:
+23 common files differ and 7 files are unique to each side. Of the common
+differences, 8 are runtime modules (admission/gateway, config/state, policy,
+process/service lifecycle, installation), 9 are tests, 2 are H4 tools, 3 are
+H4 docs/evidence, and 1 is package metadata. The Toolkit-only files include
+delegation runtime and reservation tests; the Scripts-only files are the H4
+bundle plans, test, and pinned wheel artifacts. The runtime differences include
+newer delegation, manual-override, restart/backoff, and terminal-error
+handling. Only the independent dependency metadata was reconciled; no runtime
+implementation was copied across the active owner boundary.
+
+The two Scripts branches would raise the integrated retirement count from
+22/25 to 24/25 after their ordered integration (Metrics before stacked Monitor).
+Resource Coordinator remains the concrete H4/Phase-D owner gate. The dirty
+`.worktrees/resource-coordinator-phase-d` documentation/design state was
+verified unchanged; primary Scripts dirty/untracked data and Toolkit's
+untracked `pkg/` were also preserved. No PRs were created and no merge, package
+publication, live deployment, or local adoption was performed.

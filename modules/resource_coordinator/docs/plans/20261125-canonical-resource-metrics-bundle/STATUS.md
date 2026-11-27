@@ -11,7 +11,7 @@ isolated from the Phase-D worktree and based on committed H4 checkpoint
 ## Status
 
 - Successor branch: `retire/resource-metrics-successor-20261127`.
-- Starting Scripts main: `4a6425aefc21d5175cbd7f64372b870d1f65738e`; source-retirement test commit `6bb1a30c513079c8a6d5e3b3d36464798fc0ee88`.
+- Reconciled on Scripts `origin/main` checkpoint `61722b3c04bc36d32e0eaa51b2a478ab155a6dea`; implementation commit `8abbc6aea9660017316e71a92295dea0881be8eb`.
 - Target wheel: `mxc-resource-metrics==0.3.0`, SHA-256
   `a1e0e66c5d1b8bed507af26a906d0728b1da65fa14684be4a369da4b60ccac71` (published PyPI artifact).
 - No live services, persistent data, inference, or Phase-D files are in scope.
@@ -21,8 +21,9 @@ isolated from the Phase-D worktree and based on committed H4 checkpoint
 - Focused offline regressions pass: 24 retirement/ownership tests and 38 H4 bundle/harness tests. The H4 wheel import test verifies provenance from the wheel and source absence in both snapshots.
 - No inference, Windows guest lifecycle, or live service mutation was performed.
 
-## Next
+## Integration gate
 
-Reconcile the successor with current main, finish source-ownership enforcement,
-and publish the isolated feature branch. Real disposable guest acceptance
-remains outside this change; H4 owner review is still required before live use.
+The successor branch is pushed at `dd076e98d26fb93185ab6c4c3a6d1d36a5ff5bf3`;
+source-ownership enforcement passed against the reconciled current-main ref.
+Real disposable guest acceptance remains outside this change, and H4 owner
+review is required before live use or integration.

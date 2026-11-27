@@ -23,3 +23,11 @@
 - [ ] Pause for ordered merge approval: Toolkit PR #5, Scripts PR #34, then Scripts PR #39. Keep the H4 owner gate separate.
 
 - [x] Reconcile and push PR #34, stacked PR #39, and Toolkit PR #5 at final current-main refs; combined tree passed 110 synthetic contracts, ownership CLI, dependency resolution, import provenance, launcher discovery, and pip check.
+
+## 2026-11-27 source-retirement continuation
+
+- [x] Qualify and push the Resource Metrics successor with the published wheel digest, source-ownership CLI, and offline H4 contracts.
+- [x] Qualify and push the stacked Monitor successor with Toolkit `e10544f6` wheel provenance, synthetic proxy/Runmux contracts, preserved historical evidence, and source-ownership CLI.
+- [x] Reconcile Toolkit Resource Coordinator's Metrics dependency bound in an isolated successor; build metadata verified locally.
+- [x] Classify current Coordinator source divergence and preserve the active Phase-D owner worktree.
+- [ ] Integrate the two Scripts successors in order after review; keep full Resource Coordinator source retirement gated on H4/Phase-D owner reconciliation. No PRs were created in this continuation.
