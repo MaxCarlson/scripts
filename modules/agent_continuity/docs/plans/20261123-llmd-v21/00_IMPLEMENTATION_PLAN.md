@@ -1,6 +1,6 @@
 ## Current feature batch — LLMD-25 / LLMD-48 / LLMD-49 (v2.3.0 candidate)
 
-**Status:** Implementation, release documentation, focused validation, Claude/review tests, help-registry compatibility, and disposable install qualification are complete on `feature/llmd-25-48-49-20261127`. The comprehensive module run had 8 failures; every failed case passed in a subsequent focused rerun, and the suite was not repeated per instruction. Final Ruff, diff, and version checks pass. Feature-branch delivery remains; no main merge has occurred.
+**Status:** Implementation, release documentation, focused validation, Claude/review tests, help-registry compatibility, and disposable install qualification are complete on `feature/llmd-25-48-49-20261127` at pushed commit `78d9674de7d3edd7a2a0ffc9a7acb689c103ffac`. The comprehensive module run had 8 failures; every failed case passed in a subsequent focused rerun, and the suite was not repeated per instruction. Final Ruff, diff, and version checks pass. The candidate awaits independent GUI review; no main merge has occurred.
 
 **Release boundaries for review:** LLMD-25 is independently releasable as v2.2.0. LLMD-48 and LLMD-49 form v2.3.0 because workflow metadata and stable numbering must ship together as checkpoint-ready identity metadata. Both are additive to the standalone v2.1.1 provider release; no runtime-discovery, terminal-lifecycle, or checkpoint-owned implementation files are changed here.
 

@@ -12,7 +12,7 @@
 - [x] Define checkpoint-facing identity metadata without modifying Agent #3-owned checkpoint/runtime files.
 - [x] Add focused regressions for rebuild/migration, profile lifecycle/security/precedence, concurrent allocation, legacy reconciliation, JSON metadata, and dry-run purity.
 - [x] Run the full module suite, affected-case rerun, Claude/review regressions, help-registry compatibility, Ruff, version checks, diff checks, and disposable package/CLI smoke. The full run was 397 passed/8 failed in 964.40s; all eight cases passed in a focused 24-test rerun, and the full suite was not repeated after repairs.
-- [ ] Commit/push feature candidate and request independent GUI review; do not merge.
+- [x] Commit/push feature candidate at `78d9674de7d3edd7a2a0ffc9a7acb689c103ffac`; ready for independent GUI review; do not merge.
 
 ## LLMD-56 — standalone Claude Code provider (v2.1.1 corrective candidate)
 
