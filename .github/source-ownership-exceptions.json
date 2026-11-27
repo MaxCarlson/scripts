@@ -22,5 +22,10 @@
     "before": "302426ceafddba6f3c7e6ef8e0b9e229a8387bb6",
     "after": "b9b663209bd559b418d2d00fa339dadf24130cef",
     "reason": "Add deterministic optional-package compatibility coverage"
+  },
+  {
+    "path": "modules/agent_memory",
+    "reason": "Canonical implementation is in llm-agent-toolkit/modules/agent_memory; the sole tracked SQLite artifact is retained as data, and legacy stores remain discoverable or can be copied with agent-memory migrate.",
+    "type": "retirement"
   }
 ]
