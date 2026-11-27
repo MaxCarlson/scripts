@@ -20,7 +20,7 @@ param(
     [string]$AgentUsername = 'PrivExecAgent',
     [pscredential]$AgentCredential,
     [switch]$CreateAgentAccount,
-    [string]$H4SourceDir = 'C:\Users\mcarls\src\scripts\.worktrees\rc-h4-task-discovery-20261115\modules\resource_coordinator\tools\h4_qualification',
+    [string]$H4SourceDir = ([IO.Path]::Combine($env:USERPROFILE, 'src\llm-agent-toolkit\modules\resource_coordinator\tools\h4_qualification')),
     [string]$VmId = 'd8483f98-8884-4758-abd1-cd6107c83c03',
     [string]$VmName = 'RC-H4-Windows-Acceptance',
     [string]$CheckpointId = '9f45b469-382c-4be0-a50e-7a71384c7922',
