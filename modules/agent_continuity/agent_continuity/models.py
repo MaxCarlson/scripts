@@ -12,6 +12,7 @@ class Provider(StrEnum):
 
     CODEX = "codex"
     AGY = "agy"
+    CLAUDE = "claude"
 
 
 class RuntimeKind(StrEnum):

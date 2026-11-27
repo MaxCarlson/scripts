@@ -351,7 +351,7 @@ def test_option_four_cancel_returns_to_post_exit_menu_for_inactive_choice(tmp_pa
 
     assert dispatcher.get_slot(gui="P", name="A")["state"] == "inactive"
     assert output.getvalue().count("Showing 1 of 1 agents") == 1
-    assert output.getvalue().count("[4] Switch to AGY") == 2
+    assert output.getvalue().count("[4] Switch provider (Codex / AGY / Claude; default AGY)") == 2
 
 
 def test_list_rejects_negative_history_count(tmp_path):

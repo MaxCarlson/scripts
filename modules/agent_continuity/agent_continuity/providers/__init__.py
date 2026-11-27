@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .agy import AgyAdapter
 from .base import ProviderAdapter, ProviderCapabilities, ProviderHealth, ProviderInstallation, ResumePlan
+from .claude import ClaudeAdapter
 from .codex import CodexAdapter
 
 
@@ -12,12 +13,14 @@ def default_adapters() -> dict[str, ProviderAdapter]:
     return {
         "codex": CodexAdapter(),
         "agy": AgyAdapter(),
+        "claude": ClaudeAdapter(),
     }
 
 
 __all__ = [
     "AgyAdapter",
     "CodexAdapter",
+    "ClaudeAdapter",
     "ProviderAdapter",
     "ProviderCapabilities",
     "ProviderHealth",
