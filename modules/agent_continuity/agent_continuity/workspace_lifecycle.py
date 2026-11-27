@@ -821,6 +821,10 @@ class RestorePlan:
     def ready_items(self) -> tuple[RestorePlanItem, ...]:
         return tuple(item for item in self.items if item.action == "restore")
 
+    @property
+    def conditional_items(self) -> tuple[RestorePlanItem, ...]:
+        return tuple(item for item in self.items if item.action == "conditional_restore")
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "checkpoint_id": self.checkpoint_id,
@@ -963,6 +967,23 @@ class TopologyRestorer:
                 reasons.append("ambiguous_launch_requires_resolution")
             elif rev.already_running:
                 action = "skip_already_running"
+            elif (
+                "requires_execution_guard_verification" in rev.reasons
+                and not (
+                    set(rev.reasons)
+                    & {
+                        "stale_slot_missing",
+                        "stale_session_superseded",
+                        "stale_worktree_missing",
+                        "stale_worktree_changed",
+                        "reserved_unconfirmed",
+                        "identity_conflict",
+                        "evidence_conflict",
+                        "already_running",
+                    }
+                )
+            ):
+                action = "conditional_restore"
             elif "unknown_runtime_evidence" in rev.reasons and not allow_unknown_runtime:
                 action = "blocked_unknown_runtime"
             elif "reserved_unconfirmed" in rev.reasons and not allow_reserved_claude:
@@ -1057,7 +1078,7 @@ class TopologyRestorer:
             q_entry = queue_by_slot.get(item.slot_id)
             q_id = q_entry.queue_entry_id if q_entry else item.queue_entry_id
 
-            if item.action != "restore":
+            if item.action not in {"restore", "conditional_restore"}:
                 outcomes.append(
                     RestoreItemOutcome(
                         slot_id=item.slot_id,

@@ -219,9 +219,11 @@ class RestorationQueue:
 
     def _mark_persistence_uncertain_locked(self, reason: str) -> None:
         self._persistence_uncertain = True
-        with contextlib.suppress(OSError):
-            self.uncertain_marker_path.parent.mkdir(parents=True, exist_ok=True)
-            self.uncertain_marker_path.write_text(f"{now_utc_iso()} {reason}\n", encoding="utf-8")
+        self.uncertain_marker_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.uncertain_marker_path.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(f"{now_utc_iso()} {reason}\n")
+            fh.flush()
+            os.fsync(fh.fileno())
 
     @contextlib.contextmanager
     def _open_conn(self, db_path: Path | None = None):
@@ -359,14 +361,22 @@ class RestorationQueue:
                 fh_rollback.flush()
                 os.fsync(fh_rollback.fileno())
                 rollback_ok = True
-            self._mark_persistence_uncertain_locked(
-                f"fsync_failed:{exc};rollback_ok={rollback_ok}"
-            )
+            try:
+                self._mark_persistence_uncertain_locked(
+                    f"fsync_failed:{exc};rollback_ok={rollback_ok}"
+                )
+            except OSError as marker_exc:
+                raise ContinuityError(
+                    ErrorCode.EVENT_SPOOL_UNAVAILABLE,
+                    f"Failed to append/fsync restoration queue event {self.events_path} AND failed to persist "
+                    f"uncertainty marker {self.uncertain_marker_path} (rollback_ok={rollback_ok}): {exc}; {marker_exc}",
+                    {"rollback_ok": rollback_ok, "uncertain": True, "marker_persisted": False},
+                ) from marker_exc
             raise ContinuityError(
                 ErrorCode.EVENT_SPOOL_UNAVAILABLE,
                 f"Failed to append and fsync restoration queue event {self.events_path} "
                 f"(rollback_ok={rollback_ok}; queue locked until reconcile()): {exc}",
-                {"rollback_ok": rollback_ok, "uncertain": True},
+                {"rollback_ok": rollback_ok, "uncertain": True, "marker_persisted": True},
             ) from exc
 
         with self._open_conn() as conn:

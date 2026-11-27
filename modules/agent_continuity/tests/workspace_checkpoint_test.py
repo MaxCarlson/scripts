@@ -1223,7 +1223,8 @@ def test_under_guard_stale_input_race_and_windows_partial_enumeration(tmp_path: 
             slot_guard=_Guard(),
         )
 
-    # Preview availability of slot_guard on coordinator must NOT imply an acquired lease
+    # Preview availability of slot_guard on coordinator must NOT imply an acquired lease;
+    # unmanaged sessions remain blocked_unknown_runtime
     coord_with_guard = WorkspaceCheckpointCoordinator(tmp_path, slot_guard=_Guard())
     coord_preview = coord_with_guard.preview_restore(
         chk.checkpoint_id, current_slots=[slot1, slot2], observers=obs_partial
@@ -1304,6 +1305,17 @@ def test_under_guard_stale_input_race_and_windows_partial_enumeration(tmp_path: 
         known_process_identity=process_identity_from_windows_filetime(9202, ft),
         worktree=WorkspaceWorktreeEvidence(requested_cwd=str(repo_dir), effective_cwd=str(repo_dir)),
     )
+    # Preview without acquired guard surfaces conditional_restore when correlated exited receipt exists
+    cond_plan = restorer.preview_restore(
+        chk,
+        current_slots=[slot1, slot2_known],
+        observers=obs_partial_managed,
+        has_slot_exclusion=False,
+    )
+    cond_actions = {item.slot_id: item for item in cond_plan.items}
+    assert cond_actions["s_partial_win"].action == "conditional_restore"
+    assert "requires_execution_guard_verification" in cond_actions["s_partial_win"].reasons
+
     managed_plan = restorer.preview_restore(
         chk,
         current_slots=[slot1, slot2_known],

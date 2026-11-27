@@ -655,6 +655,49 @@ def sanitize_launch_settings(settings: Mapping[str, Any] | None) -> dict[str, An
     return sanitized
 
 
+def _correlated_exited_receipt(
+    entry: CheckpointSessionEntry,
+    current_slot: WorkspaceSlotInput | None,
+    obs: SessionRuntimeObservation,
+) -> bool:
+    """Return True only when an exited historical receipt correlates to the exact execution identity."""
+    if obs.managed_pane is not None:
+        return False
+    if obs.known_process_liveness is ProcessLiveness.RUNNING:
+        return False
+
+    expected_pane = entry.observed_topology.managed_pane
+    prior_identities: list[ProcessIdentity] = []
+    if expected_pane is not None:
+        prior_identities.append(expected_pane.to_process_identity())
+    for proc in entry.observed_topology.observed_processes:
+        proc_id = proc.to_process_identity()
+        if proc_id is not None:
+            prior_identities.append(proc_id)
+    if current_slot is not None and current_slot.known_process_identity is not None:
+        prior_identities.append(current_slot.known_process_identity)
+
+    if not prior_identities and expected_pane is None:
+        return False
+
+    for ref in obs.historical_managed_panes:
+        if not (
+            ref.receipt_state in {"exited", "failed", "stale"}
+            or ref.receipt_liveness is ProcessLiveness.EXITED
+        ):
+            continue
+        if expected_pane is not None and (
+            ref.launch_id != expected_pane.launch_id or ref.pane_id != expected_pane.pane_id
+        ):
+            continue
+        if any(
+            compare_process_identities(ref.process_identity, pid_id) is IdentityComparison.SAME
+            for pid_id in prior_identities
+        ):
+            return True
+    return False
+
+
 def _resumability_state(observation: SessionRuntimeObservation) -> str:
     if observation.session_identity_state is SessionIdentityState.RESERVED:
         if observation.provider_session_found is True:
@@ -945,32 +988,27 @@ def revalidate_checkpoint(
             elif obs.process_liveness is ProcessLiveness.UNKNOWN or (
                 obs.process_availability is EvidenceAvailability.PARTIAL
             ):
-                # Absence of a managed receipt never implies verified exit; cooperating
-                # dispatcher slot exclusion does not exclude external unmanaged processes.
-                managed_exited = (
-                    obs.managed_pane is None
-                    and any(
-                        ref.receipt_state in {"exited", "failed", "stale"}
-                        or ref.receipt_liveness is ProcessLiveness.EXITED
-                        for ref in obs.historical_managed_panes
-                    )
-                    and obs.known_process_liveness is not ProcessLiveness.RUNNING
-                )
+                managed_exited = _correlated_exited_receipt(entry, current_slot, obs)
                 exact_identity = (
                     entry.resumability_state in {"confirmed_resumable", "exact_process_unverified_store"}
                     or obs.session_identity_state is SessionIdentityState.EXACT
                 )
                 if (
-                    has_slot_exclusion
-                    and not obs.identity_conflict
+                    not obs.identity_conflict
                     and not obs.evidence_conflict
                     and exact_identity
                     and managed_exited
                 ):
-                    reasons.append("partial_enum_safe_via_guard_and_receipts")
+                    if has_slot_exclusion:
+                        reasons.append("partial_enum_safe_via_guard_and_receipts")
+                    else:
+                        reasons.append("requires_execution_guard_verification")
+                        reasons.append("unknown_runtime_evidence")
                 else:
                     if obs.managed_pane is None and not obs.historical_managed_panes:
                         reasons.append("unmanaged_partial_enum_unverified")
+                    elif not managed_exited and obs.historical_managed_panes:
+                        reasons.append("uncorrelated_historical_receipt")
                     reasons.append("unknown_runtime_evidence")
             elif entry.observed_topology.observed_processes and obs.processes:
                 prior = entry.observed_topology.observed_processes[0].to_process_identity()
