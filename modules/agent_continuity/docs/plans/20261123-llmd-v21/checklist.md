@@ -105,3 +105,23 @@
 - [x] Run agent_continuity, terminal_launcher, scripts_help, Ruff, version, and diff checks with provider calls mocked.
 - [x] Verify disposable install, CLI version/help, terminal-scoped JSON history, native-argument preview, and projection rebuild compatibility.
 - [x] Commit and push the integration candidate; verify remote SHA. No main merge authorized.
+
+## Batch I — Semantic terminal presentation (LLMD-39)
+
+- [x] Centralize semantic styles and fix exact-match styling after cell-aware padding.
+- [x] Apply styles to listings, selectors, continuation picker, post-exit menu, history, last/recent, doctor, launch previews, and diagnostics.
+- [x] Keep lifecycle, runtime observation, and launch outcome visually and textually distinct.
+- [x] Implement cell-aware responsive layouts, group separation, empty-group and unresolved/pending identity labels.
+- [x] Preserve `-c/--color auto|always|never`, `NO_COLOR`, terminal capability checks, redirected output, and ANSI-free JSON.
+- [x] Propagate selected color mode through interactive entry, nested selectors, and provider-exit diagnostics; temporarily enable/restore VT for the actual Windows output console.
+- [x] Test ANSI codes/resets, narrow/wide widths, Unicode/combining cells, long IDs, empty groups, selected history, and JSON purity.
+- [x] Run captured-output tests and controlled PowerShell 7 smoke; separately report WSL/SSH availability and actual rendering limits.
+- [x] Update README, CLI reference, implementation plan and STATUS; bump package and help-registry metadata to 1.7.0.
+- [x] Run full module and relevant compatibility suites, Ruff, version consistency, and diff checks with fake-provider isolation.
+- [x] Commit and push LLMD-39; pause for independent GUI acceptance before integration.
+- [x] Correct LLMD-39 interactive color propagation and Windows console VT handling; bump package/help metadata to 1.7.1.
+
+## LLMD v1.6.0 stable baseline
+
+- [x] Merge LLMD v1.6.0 and LLMD-01–31 through PR #43; verify main baseline `93c0f29788fe57e56df124f699ebbd4116a7b6a8`.
+- [x] Keep production installation unchanged; install smoke checks used disposable locations.
