@@ -46,5 +46,6 @@
 - [x] Keep the transferred-module and CLI ownership registry entries so Scripts setup and launcher discovery continue to delegate to Toolkit.
 - [x] Update PrivExec H4 defaults/examples to use the canonical Toolkit tooling path; no live installation or VM action was run.
 - [x] Qualify focused Scripts ownership/setup tests and Toolkit H4 offline/synthetic tests (record exact branch heads and results in STATUS.md).
-- [ ] Reconcile the six dirty/new Phase-D owner documentation paths before integration; preserve the owner worktree unchanged.
+- [x] Preserve the six outstanding Phase-D owner documentation paths (including the crash-recovery plan files) as byte-identical archival copies with status/provenance notes; keep the protected owner worktree unchanged.
+- [ ] Reconcile substantive Phase-D owner implementation changes and obtain integration authorization; archival copies do not clear this gate.
 - [ ] Do not merge or synchronize primary checkouts under this task authorization.
