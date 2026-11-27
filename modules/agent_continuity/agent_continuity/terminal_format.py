@@ -63,6 +63,7 @@ _SEMANTIC_CODES = {
     "agent": "93;1",
     "provider_codex": "36",
     "provider_agy": "35",
+    "provider_claude": "38;5;208",
     "timestamp": "90",
     "session": "37",
     "path_label": "2;37",
@@ -98,7 +99,7 @@ def pad_semantic(value: str, width: int, semantic: str, *, enabled: bool) -> str
 
 def provider_semantic(provider: str, *, enabled: bool) -> str:
     value = provider.upper()
-    semantic = {"CODEX": "provider_codex", "AGY": "provider_agy"}.get(value)
+    semantic = {"CODEX": "provider_codex", "AGY": "provider_agy", "CLAUDE": "provider_claude"}.get(value)
     return semantic_color(value, semantic, enabled=enabled) if semantic else value
 
 
