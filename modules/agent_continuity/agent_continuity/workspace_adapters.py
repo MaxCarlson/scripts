@@ -127,6 +127,38 @@ def validate_provider_launch_settings(
     return sanitized
 
 
+def provider_settings_argv(provider: str, settings: Mapping[str, Any]) -> list[str]:
+    """Encode validated checkpoint settings for the exact destination provider."""
+    argv: list[str] = []
+    if provider == "codex":
+        for key, option in (("model", "--model"), ("sandbox", "--sandbox"),
+                            ("approval_policy", "--ask-for-approval"), ("profile", "--profile")):
+            if settings.get(key) is not None:
+                argv.extend([option, str(settings[key])])
+        if settings.get("reasoning_effort"):
+            argv.extend(["--config", f"model_reasoning_effort={settings['reasoning_effort']}"])
+        if settings.get("search"):
+            argv.append("--search")
+        for path in settings.get("add_dirs", settings.get("additional_directories", [])):
+            argv.extend(["--add-dir", str(path)])
+    elif provider == "claude":
+        for key, option in (("model", "--model"), ("effort", "--effort"),
+                            ("permission_mode", "--permission-mode")):
+            if settings.get(key) is not None:
+                argv.extend([option, str(settings[key])])
+        for path in settings.get("add_dirs", settings.get("additional_directories", [])):
+            argv.extend(["--add-dir", str(path)])
+    elif provider == "agy":
+        mapped = {"additional_directories" if key == "add_dirs" else key: settings[key]
+                  for key in ("model", "effort", "reasoning_effort", "sandbox", "agent", "add_dirs",
+                              "additional_directories") if key in settings}
+        if "reasoning_effort" in mapped:
+            mapped["effort"] = mapped.pop("reasoning_effort")
+        if mapped:
+            argv.extend(["--settings", json.dumps(mapped, ensure_ascii=False, separators=(",", ":"))])
+    return argv
+
+
 class DispatcherWorkspaceAdapter:
     """Read-only adapter translating DispatcherService slots and launches into WorkspaceSlotInput."""
 

@@ -562,28 +562,39 @@ class RestorationReservationStore:
         """Preserve an uncertain reservation without overwriting a newer attempt's active marker."""
         current = self.get_reservation(reservation_id)
         with acquire_canonical_slot_lock(self.home_dir, current.slot_id, blocking=True):
-            latest = self.get_reservation(reservation_id)
-            if latest.state == "consumed":
-                return latest
-            active = self.get_active_for_slot(latest.slot_id)
-            if active is not None and active.reservation_id != reservation_id:
-                raise ContinuityError(
-                    ErrorCode.ASSOCIATION_CONFLICT,
-                    f"Stale mark_ambiguous on {reservation_id!r}: slot {latest.slot_id!r} has newer active reservation {active.reservation_id!r}.",
-                    {"slot_id": latest.slot_id, "reservation_id": reservation_id},
-                )
-            updated = RestorationReservation(
-                **{
-                    **latest.to_dict(),
-                    "launch_id": launch_id or latest.launch_id,
-                    "pane_id": pane_id or latest.pane_id,
-                    "state": "ambiguous",
-                    "note": reason,
-                }
+            return self.mark_ambiguous_locked(
+                reservation_id, reason=reason, launch_id=launch_id, pane_id=pane_id,
             )
-            atomic_write_json(self._record_path(reservation_id), updated.to_dict())
-            atomic_write_json(self._active_slot_path(latest.slot_id), updated.to_dict())
-            return updated
+
+    def mark_ambiguous_locked(
+        self,
+        reservation_id: str,
+        *,
+        reason: str,
+        launch_id: str | None = None,
+        pane_id: str | None = None,
+    ) -> RestorationReservation:
+        """Record uncertainty while the caller retains the canonical slot lock."""
+        latest = self.get_reservation(reservation_id)
+        active = self.get_active_for_slot(latest.slot_id)
+        if active is not None and active.reservation_id != reservation_id:
+            raise ContinuityError(
+                ErrorCode.ASSOCIATION_CONFLICT,
+                f"Stale mark_ambiguous on {reservation_id!r}: slot {latest.slot_id!r} has newer active reservation {active.reservation_id!r}.",
+                {"slot_id": latest.slot_id, "reservation_id": reservation_id},
+            )
+        updated = RestorationReservation(
+            **{
+                **latest.to_dict(),
+                "launch_id": launch_id or latest.launch_id,
+                "pane_id": pane_id or latest.pane_id,
+                "state": "ambiguous",
+                "note": reason,
+            }
+        )
+        atomic_write_json(self._record_path(reservation_id), updated.to_dict())
+        atomic_write_json(self._active_slot_path(latest.slot_id), updated.to_dict())
+        return updated
 
     def abort_reservation(self, reservation_id: str, *, reason: str) -> RestorationReservation:
         """Release an unexecuted reservation without ever removing a newer attempt's active marker."""
@@ -806,8 +817,9 @@ class ReservationSlotExecutionGuard:
 class ReservationOwnershipVerifier:
     """Verify atomic dispatcher ownership transfer via consumed RestorationReservation."""
 
-    def __init__(self, home_dir: Path) -> None:
+    def __init__(self, home_dir: Path, dispatcher: Any | None = None) -> None:
         self.store = RestorationReservationStore(home_dir)
+        self.dispatcher = dispatcher
 
     def verify_ownership(
         self,
@@ -845,4 +857,14 @@ class ReservationOwnershipVerifier:
             return False, False
         if res.pane_id is None or res.pane_id != pane_id:
             return False, False
-        return True, bool(res.exact_association_confirmed)
+        if self.dispatcher is None:
+            return True, bool(res.exact_association_confirmed)
+        try:
+            slot = self.dispatcher.get_slot_by_id(request.slot_id)
+            current = slot.get("current") if isinstance(slot, dict) else None
+            associated = bool(current and (
+                current.get("provider"), current.get("environment_id"), current.get("native_session_id")
+            ) == (request.provider, request.environment_id, request.native_session_id))
+        except Exception:
+            associated = False
+        return True, associated

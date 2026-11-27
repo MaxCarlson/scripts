@@ -13,9 +13,9 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-
 from agent_continuity.dispatcher import DispatcherService
 from agent_continuity.dispatcher_cli import _open, build_parser, dispatch
+from agent_continuity.errors import ContinuityError
 from agent_continuity.interactive import filter_items, format_timestamp, select_item
 from agent_continuity.service import ContinuityService
 
@@ -157,6 +157,60 @@ def test_default_launch_emits_early_redacted_progress_to_stderr_only(tmp_path, m
     assert "registry synchronization" in captured.err
     assert "password" not in captured.err.casefold()
     assert elapsed < 5.0
+
+
+def test_active_restoration_reservation_blocks_before_any_provider_process(tmp_path, monkeypatch):
+    from agent_continuity.dispatcher_cli import _run_pane
+    from agent_continuity.workspace_ownership import RestorationReservationStore
+
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.register("G", "A", provider="codex", session_id="native-session")
+    slot = dispatcher.get_slot(gui="G", name="A")
+    reservation = RestorationReservationStore(home).create_reservation(
+        checkpoint_id="checkpoint-1", queue_entry_id="queue-1", attempt=1,
+        slot_id=slot["slot_id"], provider="codex", native_session_id="native-session",
+        environment_id=slot["current"]["environment_id"], operator_id="test",
+    )
+    provider_calls = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process",
+                        lambda *args, **kwargs: provider_calls.append((args, kwargs)))
+    with pytest.raises(ContinuityError, match="active restoration reservation"):
+        _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
+                  input_stream=StringIO(), output_stream=StringIO())
+    assert provider_calls == []
+    assert RestorationReservationStore(home).get_reservation(reservation.reservation_id).state == "reserved"
+
+
+def test_post_consumption_provider_spawn_failure_preserves_reservation_uncertainty(tmp_path, monkeypatch):
+    from agent_continuity.dispatcher_cli import _run_pane
+    from agent_continuity.workspace_ownership import RestorationReservationStore
+
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.register("G", "A", provider="codex", session_id="native-session")
+    slot = dispatcher.get_slot(gui="G", name="A")
+    identity = slot["current"]
+    store = RestorationReservationStore(home)
+    reservation = store.create_reservation(
+        checkpoint_id="checkpoint-2", queue_entry_id="queue-2", attempt=1,
+        slot_id=slot["slot_id"], provider="codex", native_session_id="native-session",
+        environment_id=identity["environment_id"], operator_id="test",
+    )
+    launch_id, pane_id = "launch-test", "pane-test"
+    reservation = store.bind_launch(reservation.reservation_id, launch_id=launch_id, pane_id=pane_id)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("guarded spawn failure")))
+    with pytest.raises(ContinuityError, match="Failed to launch codex"):
+        _run_pane(
+            dispatcher, slot_id=slot["slot_id"], launch_id=None,
+            input_stream=StringIO(), output_stream=StringIO(),
+            expected_session_identity=("codex", identity["environment_id"], "native-session"),
+            reservation_id=reservation.reservation_id, reservation_token=reservation.reservation_token,
+            checkpoint_id=reservation.checkpoint_id, queue_entry_id=reservation.queue_entry_id,
+            attempt=reservation.attempt, reservation_launch_id=launch_id, pane_id=pane_id,
+        )
+    assert store.get_reservation(reservation.reservation_id).state == "ambiguous"
 
 
 def test_blocking_provider_progress_is_periodic_and_does_not_echo_argv(monkeypatch, capsys):

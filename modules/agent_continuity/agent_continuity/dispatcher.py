@@ -1431,6 +1431,7 @@ class DispatcherService:
         attempt: int | None = None,
         launch_id: str | None = None,
         pane_id: str | None = None,
+        consume: bool = True,
     ) -> Any:
         """Consume Agent #3's restoration reservation when provided, or fail closed if one is active."""
         try:
@@ -1461,6 +1462,23 @@ class DispatcherService:
                     ErrorCode.INVALID_INPUT,
                     "Exact checkpoint, attempt, provider, environment, session, launch, and pane identity are required to consume a restoration reservation.",
                 )
+            reservation = store.get_active_for_slot(slot_id)
+            if reservation is None or reservation.reservation_id != reservation_id:
+                raise ContinuityError(ErrorCode.ASSOCIATION_CONFLICT, "Active restoration reservation identity changed.")
+            if (
+                reservation.reservation_token != reservation_token
+                or reservation.checkpoint_id != checkpoint_id
+                or reservation.queue_entry_id != queue_entry_id
+                or reservation.attempt != attempt
+                or reservation.provider != provider
+                or reservation.environment_id != environment_id
+                or reservation.native_session_id != session_id
+                or reservation.launch_id not in {None, launch_id}
+                or reservation.pane_id not in {None, pane_id}
+            ):
+                raise ContinuityError(ErrorCode.ASSOCIATION_CONFLICT, "Restoration reservation correlation mismatch.")
+            if not consume:
+                return reservation
             return store.consume_reservation_locked(
                 reservation_id,
                 reservation_token=reservation_token,

@@ -1,5 +1,13 @@
 # LLMD v2.1 Implementation Checklist
 
+## v2.3.0 final integration correction pass (2026-11-27)
+
+- [x] Propagate checkpoint cwd and validated provider settings through canonical managed restoration, sharing argument encoding with manual restoration.
+- [x] Verify AGY additional-directory key mapping.
+- [x] Exclude competing reservations before provider subprocess preparation; consume only under acquired dispatcher locks.
+- [x] Preserve ambiguous ownership state on post-consumption execution failure and require evidence-based exact provider association.
+- [x] Run fresh agent_continuity xdist qualification, guarded restoration execution regressions, compatibility suites, Ruff, version consistency, read-only registry validation, and diff hygiene.
+
 ## LLMD-25 / LLMD-48 / LLMD-49 — profiles and identity metadata (v2.3.0 candidate)
 
 ## Agent #1 workspace and correctness integration — 2026-11-27

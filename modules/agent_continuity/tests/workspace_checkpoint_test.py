@@ -9,15 +9,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from terminal_launcher.managed import (
-    LaunchSubmissionState,
-    ManagedPaneReservation,
-    ManagedProcessStore,
-)
-from terminal_launcher.managed import (
-    ProcessLiveness as TLProcessLiveness,
-)
-
 from agent_continuity.errors import ContinuityError
 from agent_continuity.restoration_queue import (
     ClaimRecoveryEvidence,
@@ -49,6 +40,14 @@ from agent_continuity.workspace_lifecycle import (
     RestoreLaunchRequest,
     TopologyRestorer,
     WorkspaceCheckpointCoordinator,
+)
+from terminal_launcher.managed import (
+    LaunchSubmissionState,
+    ManagedPaneReservation,
+    ManagedProcessStore,
+)
+from terminal_launcher.managed import (
+    ProcessLiveness as TLProcessLiveness,
 )
 
 
@@ -536,6 +535,7 @@ def test_topology_restorer_and_coordinator_save_restore_partial_recovery(tmp_pat
                     pane_id="pane_restored_1",
                     terminal_session_id="term_r1",
                     dispatcher_ownership_acknowledged=True,
+                        association_confirmed=True,
                 )
             return RestoreLaunchOutcome(accepted=False, failure_reason="provider_start_failed")
 
