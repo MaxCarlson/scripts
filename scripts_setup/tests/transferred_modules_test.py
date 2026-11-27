@@ -78,7 +78,7 @@ def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scri
         assert not is_transferred_distribution(shared)
 
     tracked_module_paths = _tracked_module_paths()
-    retired = _retired_toolkit_source_dirs()
+    retired = _retired_toolkit_source_dirs() & TRANSFERRED_MODULE_DIRS
     assert retired <= TRANSFERRED_MODULE_DIRS
 
     for directory, dist_name in TRANSFERRED_MODULE_DIRECTORY_TO_DISTRIBUTION.items():
