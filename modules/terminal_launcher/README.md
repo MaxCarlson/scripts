@@ -30,8 +30,31 @@ from terminal_launcher import (
     TerminalLaunchPlan,
     WindowsTerminalBackend,
     group_panes,
+    powershell_plan,
 )
 ```
+
+## Open PowerShell 7 in a named window
+
+Use `powershell_plan()` when work should stay in the same Windows Terminal window. The first launch creates the named
+window if it does not exist; later calls with the same name add tabs to that window.
+
+```python
+from terminal_launcher import WindowsTerminalBackend, powershell_plan
+
+backend = WindowsTerminalBackend()
+plan = powershell_plan(target_window="scripts-work", cwd=r"C:\src\scripts")
+result = backend.launch(plan)
+```
+
+The plan starts `pwsh.exe -NoLogo -NoExit` with the requested working directory. Call `powershell_plan()` again with
+`target_window="scripts-work"` to add another PowerShell 7 tab to the same window. `launch()` still reports request
+submission; it does not claim that PowerShell started. Use process instrumentation or an explicit startup receipt when
+the caller needs positive runtime acknowledgment.
+
+The default tab title `PowerShell 7` matches ProcWatch's existing interactive-title rule in `smart` mode. ProcWatch's
+`all-consoles` mode still suppresses every console window by design; Terminal Launcher does not set an exclusion or
+bypass for its launches.
 
 `PaneSpec.argv` is an argument vector. Windows Terminal accepts child commands as command-line text and uses semicolons to separate its own operations. The backend therefore passes a URL-safe encoded payload to a small Python relay, which starts the requested executable with the original argument vector and working directory using `shell=False`. The payload prevents shell metacharacters and semicolons in child arguments or paths from being interpreted by Windows Terminal. This uses the same Python interpreter that runs the library. The relay file ships inside this package.
 

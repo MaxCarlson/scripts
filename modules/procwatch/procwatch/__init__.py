@@ -1,6 +1,6 @@
 """ProcWatch: Windows 11 live console/terminal popup guard and process catcher."""
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 from procwatch.config import GuardMode, ProcWatchConfig
 from procwatch.models import (
