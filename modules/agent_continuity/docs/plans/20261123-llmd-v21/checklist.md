@@ -1,6 +1,6 @@
 # LLMD v2.1 Implementation Checklist
 
-## LLMD-56 — standalone Claude Code provider (v2.1.0)
+## LLMD-56 — standalone Claude Code provider (v2.1.1 corrective candidate)
 
 - [x] Add canonical Claude provider adapter and keep installation independent of local_agent_bridge, prepared resources, hooks, delegation infrastructure, and Terminal Launcher 0.2.0.
 - [x] Support registration, exact attach/resume, start, switch, review/return, open, list/history, and explicit transcript-backed recovery.
@@ -10,6 +10,11 @@
 - [x] Retain full Codex/AGY test coverage and test package installation without a bridge present.
 - [x] Run module and compatibility suites, Ruff, package/version/help smoke, and diff checks; document source evidence vs simulated vs live qualification.
 - [x] Commit/push the independently reviewable branch; await independent GUI acceptance before integration.
+- [x] Fail closed for malformed, inaccessible, contradictory, or duplicate transcript evidence; distinguish unavailable evidence from a completed scan with no transcript.
+- [x] Persist one exact UUID reservation and one-shot spawn claim per pending Claude launch; retain clean-exit/no-transcript launches for exact-ID recovery.
+- [x] Complete Codex/AGY/Claude post-exit provider selection and reject generic native identity, execution-mode, and permission-control bypass options.
+- [x] Reconcile refreshed main including LLMD-40 and validate terminal-launcher dependency compatibility from metadata rather than pinning 0.1.1.
+- [ ] Run integration validation, isolated bridge-free installation checks, task-only diff review, commit and push; wait for GUI acceptance before integration to main.
 
 ## Batch A — Session safety and lifecycle
 

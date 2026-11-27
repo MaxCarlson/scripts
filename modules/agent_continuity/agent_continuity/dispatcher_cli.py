@@ -484,7 +484,8 @@ _SECRET_KEY_PARTS = ("secret", "token", "password", "api_key", "api-key", "apike
 _PROTECTED_UNKNOWN_PARTS = (
     "session", "thread", "conversation", "identity", "resume", "worktree", "cwd", "directory",
     "bootstrap", "executable", "provider", "remote", "exec", "print", "output-format", "input-format",
-    "danger", "bypass", "skip-permission", "no-approval", "approve-all", "auto-approve",
+    "danger", "bypass", "allowed-tools", "disallowed-tools", "skip-permission",
+    "no-approval", "approve-all", "auto-approve",
 )
 
 
@@ -588,7 +589,7 @@ def _validated_native_args(
             "--no-session-persistence", "--bg", "--background", "--desktop", "--worktree",
             "-h", "-v", "--help", "--version",
             "-w", "--cloud", "--environment", "--remote-control", "--teleport", "--tmux", "--from-pr",
-            "--settings", "--setting-sources", "--permission-prompt-tool", "--allowedtools",
+            "--settings", "--setting-sources", "--permission-prompt-tool", "--allowedtools", "--bare",
             "--allowed-tools", "--disallowedtools", "--disallowed-tools", "--tools",
         }
         claude_attached_reserved_alias = (provider == "claude" and not equals and len(token) > 2
@@ -607,6 +608,10 @@ def _validated_native_args(
                                   f"Provider option {option!r} may carry sensitive data and is not accepted by LLMD.")
         kind = values.get(option)
         flag_kind = flags.get(option)
+        if (provider == "claude" and kind is None and flag_kind is None
+                and "permission" in normalized_option):
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                  f"Claude option {option!r} may alter permission controls and cannot use generic forwarding.")
         if kind is None and flag_kind is None:
             if any(part in normalized_option for part in _PROTECTED_UNKNOWN_PARTS):
                 raise ContinuityError(ErrorCode.INVALID_INPUT,
@@ -1151,6 +1156,11 @@ def _run_pane(
         pending = dispatcher.get_pending_launch(launch_id)
         if pending["slot_id"] != slot_id:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch belongs to a different agent slot.")
+        if pending.get("provider") == "claude" and pending.get("claude_launch_attempted"):
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "This Claude launch has already been attempted; inspect its exact UUID or recover it without relaunching.",
+            )
         if pending.get("failure_detail"):
             raise ContinuityError(
                 ErrorCode.INVALID_INPUT,
@@ -1165,7 +1175,7 @@ def _run_pane(
         cross_wsl = target_environment and target_environment.runtime_kind == "wsl" and detect_runtime_kind() == "windows"
         cwd = pending.get("cwd") or (None if cross_wsl else dispatcher.current_working_directory(slot))
         launch_identity = _session_identity(slot)
-        session_id = str(uuid4()) if provider == "claude" else None
+        session_id = dispatcher.reserve_claude_session_id(launch_id=launch_id, slot_id=slot_id) if provider == "claude" else None
     else:
         current = slot["current"]
         if current is None:
@@ -1215,15 +1225,6 @@ def _run_pane(
             argv = _native_argv(dispatcher, provider, None, environment_id=environment_id, cwd=cwd,
                                 native_args=native_args, allow_native_unknown=allow_native_unknown,
                                 new_session_id=session_id)
-            if terminal_record:
-                dispatcher.record_terminal_launch(terminal_record)
-                terminal_record_written = True
-            dispatcher.record_process_observation(
-                slot_id=slot_id, launch_id=launch_id, return_code=0,
-                outcome="claude_session_id_reserved",
-                detail="UUID reserved for Claude --session-id. Native creation and resumability are not yet confirmed.",
-                native_session_id=session_id,
-            )
         elif launch_id:
             bootstrap_argv = _bootstrap_native_argv(
                 dispatcher, provider, environment_id=environment_id, cwd=bootstrap_cwd
@@ -1402,6 +1403,8 @@ def _run_pane(
                 if _session_identity(latest) != launch_identity:
                     raise ContinuityError(ErrorCode.INVALID_INPUT,
                                           "Agent selection changed before provider launch; retry with the selected session.")
+            if launch_id and provider == "claude":
+                dispatcher.claim_claude_launch(launch_id=launch_id, slot_id=slot_id, session_id=session_id)
             if terminal_record and not terminal_record_written:
                 dispatcher.record_terminal_launch(terminal_record)
                 terminal_record_written = True
@@ -1439,19 +1442,21 @@ def _run_pane(
         raise ContinuityError(ErrorCode.PROVIDER_UNAVAILABLE, f"Failed to launch {provider}: {exc}") from exc
     _finish_terminal_launch(dispatcher, terminal_record, exit_code=result.returncode,
                             status="exited" if result.returncode == 0 else "abnormal_exit")
+    claude_launch_outcome_recorded = False
+    if provider == "claude" and launch_id and result.returncode == 0:
+        dispatcher.record_process_observation(
+            slot_id=slot_id, launch_id=launch_id, return_code=0, outcome="normal_exit",
+            detail="Claude exited cleanly; exact transcript evidence is checked separately.",
+            native_session_id=session_id,
+        )
+        claude_launch_outcome_recorded = True
     if provider == "claude" and launch_id and result.returncode == 0:
         adapter = dispatcher.continuity.adapters[provider]
         evidence = adapter.get_session_metadata(session_id) if session_id else None
         if not evidence:
-            dispatcher.mark_launch_failed(
-                launch_id=launch_id,
-                detail=(f"Claude exited without a nonempty transcript for reserved session {session_id}; "
-                        "creation and resumability remain unconfirmed. Inspect provider state before retrying."),
-                apply=True,
-            )
             print(
-                f"Claude UUID {session_id} was reserved, but no nonempty transcript was found; "
-                "the launch remains unresolved and was not resumed or retried.",
+                f"No exact Claude transcript was present for reserved UUID {session_id} at exit; "
+                "the launch remains pending for exact-ID recovery and will not be relaunched.",
                 file=output_stream,
             )
             return 1
@@ -1488,15 +1493,16 @@ def _run_pane(
             raise
         launch_identity = (provider, environment_id, session_id)
         launch_id = None
-    try:
-        dispatcher.record_process_observation(
-            slot_id=slot_id, launch_id=launch_id, return_code=result.returncode,
-            outcome="normal_exit" if result.returncode == 0 else "nonzero_exit",
-            session_identity=(provider, environment_id, session_id) if session_id else None,
-        )
-    except ContinuityError as exc:
-        raise ContinuityError(ErrorCode.METADATA_INACCESSIBLE,
-            f"{provider} process exited with code {result.returncode}, but LLMD could not record the result. Do not relaunch blindly; run `llmd doctor` and inspect provider state.") from exc
+    if not claude_launch_outcome_recorded:
+        try:
+            dispatcher.record_process_observation(
+                slot_id=slot_id, launch_id=launch_id, return_code=result.returncode,
+                outcome="normal_exit" if result.returncode == 0 else "nonzero_exit",
+                session_identity=(provider, environment_id, session_id) if session_id else None,
+            )
+        except ContinuityError as exc:
+            raise ContinuityError(ErrorCode.METADATA_INACCESSIBLE,
+                f"{provider} process exited with code {result.returncode}, but LLMD could not record the result. Do not relaunch blindly; run `llmd doctor` and inspect provider state.") from exc
     if result.returncode != 0:
         if launch_id and provider != "claude":
             dispatcher.mark_launch_failed(launch_id=launch_id, detail=f"provider exited with {result.returncode}", apply=True)
@@ -1515,15 +1521,18 @@ def _run_pane(
               f"[1] Keep {state_color('active', enabled=use_color)} (default)\n"
               f"[2] Mark {state_color('completed', enabled=use_color)}\n"
               f"[3] Mark {state_color('inactive', enabled=use_color)}\n"
-              f"[4] Switch to {provider_semantic(opposite_provider, enabled=use_color)}\n"
+              f"[4] Switch provider (Codex / AGY / Claude; default {opposite_provider.upper()})\n"
               f"[5] Switch to an existing agent\n[6] Create a new agent", file=output_stream)
         try:
             choice = input_stream.readline().strip()
         except (EOFError, OSError):
             choice = ""
         if choice == "4":
-            result = _switch_after_exit(dispatcher, slot, opposite_provider,
-                                        input_stream=input_stream, output_stream=output_stream,
+            target_provider, switch_input = _choose_exit_switch_provider(
+                input_stream, output_stream, default_provider=opposite_provider
+            )
+            result = _switch_after_exit(dispatcher, slot, target_provider,
+                                        input_stream=switch_input, output_stream=output_stream,
                                         native_args=native_args, cwd_override=cwd_override,
                                         launcher_terminal_context=launcher_terminal_context)
             if result is None:
@@ -2274,6 +2283,45 @@ def _open(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[str, 
     else:
         result["summary"] = "Dry-run: pass -a/--apply to launch the selected sessions."
     return result
+
+
+class _ReplayInput:
+    """Replay an unrecognized provider-picker line into the legacy switch prompt."""
+
+    def __init__(self, first_line: str, source: TextIO) -> None:
+        self._first_line = first_line
+        self._source = source
+
+    def readline(self, *args: Any, **kwargs: Any) -> str:
+        if self._first_line is not None:
+            line, self._first_line = self._first_line, None
+            return line
+        return self._source.readline(*args, **kwargs)
+
+    def isatty(self) -> bool:
+        return self._source.isatty()
+
+
+def _choose_exit_switch_provider(
+    input_stream: TextIO, output_stream: TextIO, *, default_provider: str
+) -> tuple[str, TextIO]:
+    """Offer all providers while keeping old scripted reuse/confirmation answers valid."""
+    print(f"Switch provider: [1] Codex  [2] AGY  [3] Claude  [Enter] {default_provider.upper()}",
+          file=output_stream)
+    try:
+        line = input_stream.readline()
+    except (EOFError, OSError):
+        line = ""
+    choice = line.strip().casefold()
+    providers = {"1": "codex", "codex": "codex", "2": "agy", "agy": "agy",
+                 "3": "claude", "claude": "claude"}
+    if not choice:
+        return default_provider, input_stream
+    if choice in providers:
+        return providers[choice], input_stream
+    # Existing callers entered the session reuse/new/cancel answer immediately
+    # after option 4. Replay that line so this remains a compatible interaction.
+    return default_provider, _ReplayInput(line, input_stream)
 
 
 def _resolve_name(positional: str | None, named: str | None, label: str) -> str | None:

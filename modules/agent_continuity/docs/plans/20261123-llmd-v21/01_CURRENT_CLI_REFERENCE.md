@@ -3,9 +3,9 @@
 **Evidence baseline:** LLMD v1.7.1 integrated main at `ae04cbe08acaef235c9d0b1264fa3fdc3c2a4a57`; the v2.0.0 section below describes the active feature branch.
 **Document type:** source reference and migration notes. Windows terminal and provider behavior is not claimed unless separately qualified in the active plan status.
 
-## LLMD v2.1.0 — Claude Code native provider
+## LLMD v2.1.1 — Claude Code native provider corrections
 
-`claude` is a third canonical provider available through the shared dispatcher: registration, attachment, exact continuation, start, provider switch, reviewer/return cycle, open panes, registry listing and activation history. A new Claude session receives an LLMD-reserved UUID using interactive `claude --session-id <UUID>`; LLMD does not create a separate model bootstrap turn. The association is committed only after the exact transcript is observed locally. Interrupted/failed initialization preserves the candidate and never retries with a new ID automatically. Exact resume requires a UUID and uses `claude --resume <UUID>`, not `--continue`; a transcript candidate can be recovered only when its exact nonempty JSONL transcript is found. Broad transcript-history discovery is unsupported because Claude's transcript record schema is internal. Transcript presence is not a live provider resume guarantee.
+`claude` is a third canonical provider available through the shared dispatcher: registration, attachment, exact continuation, start, three-provider switching, reviewer/return cycle, open panes, registry listing and activation history. A new Claude session receives one durable LLMD-reserved UUID using interactive `claude --session-id <UUID>`; LLMD does not create a separate model bootstrap turn. The association is committed only after one unique, nonempty exact transcript is successfully decoded and validated. Malformed, inaccessible, contradictory or duplicate transcript evidence is unavailable; confirmed absence means the store scan completed without that exact transcript. A clean exit without a transcript stays pending with its UUID for later recovery. Every pending UUID has one durable spawn claim, so repeating an interrupted launch cannot spawn a competing session. Exact resume requires a UUID and uses `claude --resume <UUID>`, not `--continue`. Broad transcript-history discovery is unsupported because Claude's transcript record schema is internal. Transcript presence is not a live provider resume guarantee.
 
 Managed Claude arguments are `--model`, `--effort`, `--permission-mode`, `--add-dir`, and `--agent`. LLMD blocks identity, fork, print/background/cloud/desktop/worktree/teleport/remote-control, alternate-config, and permission-bypass controls, including short aliases. Unknown safe-looking arguments require `--allow-native-unknown`; this does not override managed conflict checks. Previews do not allocate UUIDs. Authentication stays with Claude Code; LLMD-56 does not install hooks or require `local_agent_bridge`.
 
@@ -56,7 +56,7 @@ The durable event spool and rebuildable SQLite index contain GUI records, agent-
 | `review` / `return` | Transition between original and reviewer slots | Review resumes or initializes the reviewer by default; `-N` replaces its selected session; `-d` previews |
 | `pane-run` | Internal terminal-launcher wrapper | `-s/--slot-id`, `-L/--launch-id`; unintentionally visible as `==SUPPRESS==` in global help |
 
-Global options include `-h/--help`, `-H/--home`, `-j/--json`, and `-V/--version`. Many subcommands duplicate `-H` and `-j` for subcommand placement. Provider values are `codex` and `agy`.
+Global options include `-h/--help`, `-H/--home`, `-j/--json`, and `-V/--version`. Many subcommands duplicate `-H` and `-j` for subcommand placement. Provider values are `codex`, `agy`, and `claude`.
 
 ## 3. Start-path lifecycle and authorization
 
@@ -64,7 +64,7 @@ Equivalent positional and named `start` forms use one lifecycle contract. With a
 
 ## 4. Session lifecycle, launch and recovery
 
-Starting a new native session first creates a durable pending launch and runs one fixed initialization-only provider invocation. It captures the exact Codex or AGY native conversation ID from that invocation's structured output, associates it with the slot, and then opens the interactive provider. This can incur one initialization model turn.
+Starting a new Codex or AGY session first creates a durable pending launch and runs one fixed initialization-only provider invocation. It captures the exact native conversation ID from that invocation's structured output, associates it with the slot, and then opens the interactive provider. This can incur one initialization model turn. Claude instead reserves one UUID, records a one-shot launch claim, and starts interactively with `--session-id`; it does not use a bootstrap model turn.
 
 If the bootstrap fails, times out, returns ambiguous IDs, or cannot persist the association, LLMD retains recoverable pending state and **does not automatically retry** a potentially billable launch. Recovery is through `pending`, `doctor`, `recover`, or verified `attach`, as appropriate. Existing sessions have a same-runtime per-session lock; lock absence is not proof that another environment is idle.
 
@@ -79,7 +79,7 @@ Agent has exited.
 [6] Create a new agent
 ```
 
-Options 2 and 3 change only the departing slot's lifecycle; 4 switches provider in the same slot, 5 resumes an inactive exact session in the current GUI (prioritizing the linked original during reviewer return), and 6 creates a separately confirmed new slot/session. Destinations are validated before the departing slot is deactivated. Option 6 requires explicit confirmation; option 5 never creates a native session. A nonzero exit reports its code and does not present this normal-exit menu. Resolved exit paths show one fresh scoped listing.
+Options 2 and 3 change only the departing slot's lifecycle; 4 opens a provider picker for Codex, AGY, or Claude (defaulting to the prior opposite-provider behavior), 5 resumes an inactive exact session in the current GUI (prioritizing the linked original during reviewer return), and 6 creates a separately confirmed new slot/session. Destinations are validated before the departing slot is deactivated. Option 6 requires explicit confirmation; option 5 never creates a native session. A nonzero exit reports its code and does not present this normal-exit menu. Resolved exit paths show one fresh scoped listing.
 
 New provider bootstrap persists pending state before initialization, captures the exact ID from the provider process output, and resumes only that ID. Failure, timeout, ambiguous capture, or interruption remains recoverable and is never retried automatically. Read-only initialization is still one model turn for a newly created session.
 

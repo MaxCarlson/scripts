@@ -519,7 +519,7 @@ def test_post_exit_option_four_reuses_opposite_provider_without_creating_slot(
     assert current["current"]["provider"] == previous_provider
     assert len(current["history"]) == 4
     assert len(dispatcher.list_slots(gui="AgentImprovement", active_only=False)) == 1
-    assert f"[4] Switch to {previous_provider.upper()}" in output.getvalue()
+    assert f"[4] Switch provider (Codex / AGY / Claude; default {previous_provider.upper()})" in output.getvalue()
 
 
 def test_post_exit_option_four_requires_explicit_confirmation_before_new_provider_bootstrap(tmp_path, monkeypatch):

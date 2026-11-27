@@ -11,6 +11,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from ..errors import ContinuityError, ErrorCode
 from ..models import Provider
 from .base import ProviderAdapter, ProviderCapabilities, ProviderInstallation, ResumePlan
 
@@ -91,34 +92,80 @@ class ClaudeAdapter(ProviderAdapter):
         return []
 
     def get_session_metadata(self, native_session_id: str) -> dict[str, str] | None:
-        """Return evidence when an exact, nonempty transcript for this ID exists."""
+        """Return exact transcript evidence, None only when absence is observable.
+
+        Transcript records are an internal Claude format. LLMD therefore uses
+        only the filename as the candidate identity and treats any unreadable,
+        malformed, contradictory, or duplicate evidence as unavailable rather
+        than guessing that a session is absent or resumable.
+        """
         try:
             session_uuid = str(uuid.UUID(native_session_id))
-        except (ValueError, AttributeError):
-            return None
+        except (ValueError, AttributeError) as exc:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Claude transcript lookup requires a valid session UUID.") from exc
         projects = self._config_dir() / "projects"
-        if not projects.is_dir():
-            return None
         try:
-            for transcript in projects.rglob(f"{session_uuid}.jsonl"):
-                try:
-                    if transcript.is_file() and transcript.stat().st_size > 0:
-                        with transcript.open("r", encoding="utf-8") as stream:
-                            first_line = stream.readline()
-                        record = json.loads(first_line)
-                        if not isinstance(record, dict):
-                            continue
-                        return {
-                            "provider": self.provider_name,
-                            "native_session_id": session_uuid,
-                            "transcript_reference": str(transcript),
-                            "metadata_source": "claude_transcript_presence",
-                        }
-                except OSError:
-                    continue
-        except OSError:
+            projects.stat()
+        except FileNotFoundError:
             return None
-        return None
+        except OSError as exc:
+            raise _evidence_unavailable(f"Claude transcript store is inaccessible ({type(exc).__name__}).") from exc
+        if not projects.is_dir():
+            raise _evidence_unavailable("Claude transcript store path is not a directory.")
+
+        matches: list[Path] = []
+
+        def fail_walk(error: OSError) -> None:
+            raise error
+
+        try:
+            for root, _directories, filenames in os.walk(projects, onerror=fail_walk):
+                if f"{session_uuid}.jsonl" in filenames:
+                    matches.append(Path(root) / f"{session_uuid}.jsonl")
+        except OSError as exc:
+            raise _evidence_unavailable(f"Claude transcript evidence could not be fully scanned ({type(exc).__name__}).") from exc
+
+        if not matches:
+            return None
+        if len(matches) != 1:
+                raise _evidence_unavailable("multiple Claude transcripts match this session UUID; evidence is ambiguous.")
+
+        transcript = matches[0]
+        try:
+            if not transcript.is_file() or transcript.stat().st_size == 0:
+                raise _evidence_unavailable("The matching Claude transcript is empty; evidence is unavailable.")
+            records = []
+            with transcript.open("r", encoding="utf-8", errors="strict") as stream:
+                for line_number, line in enumerate(stream, start=1):
+                    try:
+                        record = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeError) as exc:
+                        raise _evidence_unavailable(
+                            f"Claude transcript JSONL is malformed at line {line_number}; evidence is unavailable."
+                        ) from exc
+                    if not isinstance(record, dict):
+                        raise _evidence_unavailable(
+                            f"Claude transcript record at line {line_number} is not an object; evidence is unavailable."
+                        )
+                    for key in ("sessionId", "session_id", "nativeSessionId", "native_session_id"):
+                        value = record.get(key)
+                        if value is not None and str(value) != session_uuid:
+                            raise _evidence_unavailable(
+                                f"Claude transcript contains contradictory session identity at line {line_number}."
+                            )
+                    records.append(record)
+            if not records:
+                raise _evidence_unavailable("The matching Claude transcript contains no records; evidence is unavailable.")
+        except ContinuityError:
+            raise
+        except (OSError, UnicodeError) as exc:
+            raise _evidence_unavailable(f"Claude transcript evidence is inaccessible ({type(exc).__name__}).") from exc
+        return {
+            "provider": self.provider_name,
+            "native_session_id": session_uuid,
+            "transcript_reference": str(transcript),
+            "metadata_source": "claude_transcript_presence",
+        }
 
     def resolve_new_session_command(
         self, native_session_id: str, *, cwd: str | None = None, environment_id: str = "",
@@ -169,3 +216,7 @@ def subprocess_display(argv: list[str]) -> str:
     """Quote argv for a Windows command preview without shell execution."""
     return " ".join('"' + value.replace('"', '\\"') + '"' if any(ch.isspace() for ch in value) else value
                     for value in argv)
+
+
+def _evidence_unavailable(message: str) -> ContinuityError:
+    return ContinuityError(ErrorCode.METADATA_INACCESSIBLE, message)

@@ -486,14 +486,87 @@ class DispatcherService:
         reserved = self._rows(
             """SELECT DISTINCT native_session_id FROM activity_events
                WHERE event_type = ? AND json_extract(payload_json, '$.launch_id') = ?
-                 AND json_extract(payload_json, '$.outcome') = 'claude_session_id_reserved'
-                 AND native_session_id IS NOT NULL""",
+                 AND json_extract(payload_json, '$.outcome') = 'claude_session_id_reserved'""",
             (EventType.DISPATCHER_PROCESS_OBSERVED.value, launch["launch_id"]),
         )
+        reserved_count = self._row(
+            """SELECT COUNT(*) AS event_count FROM activity_events
+               WHERE event_type = ? AND json_extract(payload_json, '$.launch_id') = ?
+                 AND json_extract(payload_json, '$.outcome') = 'claude_session_id_reserved'""",
+            (EventType.DISPATCHER_PROCESS_OBSERVED.value, launch["launch_id"]),
+        )
+        claude_claims = self._rows(
+            """SELECT native_session_id FROM activity_events
+               WHERE event_type = ? AND json_extract(payload_json, '$.launch_id') = ?
+                 AND json_extract(payload_json, '$.outcome') = 'claude_launch_claimed'""",
+            (EventType.DISPATCHER_PROCESS_OBSERVED.value, launch["launch_id"]),
+        )
+        reserved_ids = {item["native_session_id"] for item in reserved if item["native_session_id"]}
+        claim_ids = {item["native_session_id"] for item in claude_claims if item["native_session_id"]}
+        reserved_conflict = (len(reserved_ids) > 1
+                             or len(reserved_ids) != int((reserved_count or {}).get("event_count", 0)))
+        claim_conflict = len(claim_ids) > 1 or len(claim_ids) != len(claude_claims)
         return {**launch, "captured_session_id": captured[0]["native_session_id"] if len(captured) == 1 else None,
                 "captured_session_conflict": len(captured) > 1,
-                "reserved_session_id": reserved[0]["native_session_id"] if len(reserved) == 1 else None,
-                "reserved_session_conflict": len(reserved) > 1}
+                "reserved_session_id": next(iter(reserved_ids)) if len(reserved_ids) == 1 else None,
+                "reserved_session_conflict": reserved_conflict,
+                "claude_launch_attempted": bool(claude_claims),
+                "claude_launch_claim_conflict": claim_conflict}
+
+    def reserve_claude_session_id(self, *, launch_id: str, slot_id: str) -> str:
+        """Durably allocate exactly one UUID for a pending Claude launch."""
+        with _mutation_lock(self.home_dir):
+            self._sync()
+            launch = self._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?", (launch_id,))
+            if launch is None or launch["status"] != "pending" or launch["slot_id"] != slot_id:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Claude launch is no longer pending for this agent.")
+            if launch["provider"] != "claude":
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "UUID reservation is only valid for Claude launches.")
+            if launch.get("failure_detail"):
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "This launch has unresolved failure evidence and cannot be retried.")
+            evidence = self._with_captured_bootstrap_id(launch)
+            if evidence["reserved_session_conflict"] or evidence["claude_launch_claim_conflict"]:
+                raise ContinuityError(ErrorCode.ASSOCIATION_CONFLICT,
+                                      "Claude launch UUID reservation or launch claim is ambiguous; inspect `llmd doctor`.")
+            if evidence["reserved_session_id"]:
+                return evidence["reserved_session_id"]
+
+            session_id = str(uuid.uuid4())
+            event = self._event(
+                EventType.DISPATCHER_PROCESS_OBSERVED,
+                environment_id=launch["environment_id"], provider="claude", session_id=session_id,
+                payload={"slot_id": slot_id, "launch_id": launch_id, "return_code": 0,
+                         "outcome": "claude_session_id_reserved",
+                         "detail": "UUID reserved; native creation and resumability are unconfirmed.",
+                         "native_session_id": session_id},
+            )
+            self.continuity._emit_and_materialize([event])
+            return session_id
+
+    def claim_claude_launch(self, *, launch_id: str, slot_id: str, session_id: str) -> None:
+        """Atomically claim the single interactive spawn attempt for a reserved UUID."""
+        with _mutation_lock(self.home_dir):
+            self._sync()
+            launch = self._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?", (launch_id,))
+            if launch is None or launch["status"] != "pending" or launch["slot_id"] != slot_id:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Claude launch is no longer pending for this agent.")
+            evidence = self._with_captured_bootstrap_id(launch)
+            if (launch["provider"] != "claude" or evidence["reserved_session_conflict"]
+                    or evidence["reserved_session_id"] != session_id):
+                raise ContinuityError(ErrorCode.ASSOCIATION_CONFLICT,
+                                      "Claude launch UUID reservation changed; no provider process was started.")
+            if evidence["claude_launch_attempted"] or evidence["claude_launch_claim_conflict"]:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                      "This Claude launch has already been attempted; inspect its exact UUID or recover it without relaunching.")
+            event = self._event(
+                EventType.DISPATCHER_PROCESS_OBSERVED,
+                environment_id=launch["environment_id"], provider="claude", session_id=session_id,
+                payload={"slot_id": slot_id, "launch_id": launch_id, "return_code": 0,
+                         "outcome": "claude_launch_claimed",
+                         "detail": "One-shot claim persisted before the Claude interactive process spawn.",
+                         "native_session_id": session_id},
+            )
+            self.continuity._emit_and_materialize([event])
 
     def current_working_directory(self, slot: dict[str, Any]) -> str:
         current = slot.get("current")

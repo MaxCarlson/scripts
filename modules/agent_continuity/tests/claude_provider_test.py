@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -18,7 +21,7 @@ from agent_continuity.dispatcher_cli import (
     _validated_native_args,
     build_parser,
 )
-from agent_continuity.errors import ContinuityError
+from agent_continuity.errors import ContinuityError, ErrorCode
 from agent_continuity.models import EnvironmentInfo, EventEnvelope, EventType, Provider
 from agent_continuity.providers import ClaudeAdapter, default_adapters
 
@@ -118,6 +121,80 @@ def test_claude_session_metadata_requires_a_nonempty_exact_transcript(tmp_path: 
     }
 
 
+@pytest.mark.parametrize("content", ["not-json\n", "\xff".encode("latin-1"), "", "[]\n"])
+def test_claude_transcript_evidence_fails_closed_for_invalid_content(tmp_path: Path, content):
+    session_id = str(uuid.uuid4())
+    transcript = tmp_path / ".claude" / "projects" / "repo" / f"{session_id}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+    adapter = ClaudeAdapter(which_fn=lambda _name: None, home_dir=tmp_path)
+
+    with pytest.raises(ContinuityError) as caught:
+        adapter.get_session_metadata(session_id)
+
+    assert caught.value.code == ErrorCode.METADATA_INACCESSIBLE
+    assert "evidence" in caught.value.message.casefold()
+
+
+def test_claude_transcript_evidence_rejects_contradictory_identity_and_duplicate_files(tmp_path: Path):
+    session_id = str(uuid.uuid4())
+    projects = tmp_path / ".claude" / "projects"
+    transcript = projects / "repo" / f"{session_id}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(json.dumps({"sessionId": str(uuid.uuid4())}) + "\n", encoding="utf-8")
+    adapter = ClaudeAdapter(which_fn=lambda _name: None, home_dir=tmp_path)
+
+    with pytest.raises(ContinuityError, match="contradict"):
+        adapter.get_session_metadata(session_id)
+
+    transcript.write_text('{"type":"user"}\n', encoding="utf-8")
+    duplicate = projects / "another-repo" / f"{session_id}.jsonl"
+    duplicate.parent.mkdir(parents=True)
+    duplicate.write_text('{"type":"user"}\n', encoding="utf-8")
+    with pytest.raises(ContinuityError, match="multiple"):
+        adapter.get_session_metadata(session_id)
+
+
+def test_claude_transcript_scan_failure_is_not_reported_as_absence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import agent_continuity.providers.claude as claude_module
+
+    projects = tmp_path / ".claude" / "projects"
+    projects.mkdir(parents=True)
+    adapter = ClaudeAdapter(which_fn=lambda _name: None, home_dir=tmp_path)
+
+    def denied_walk(_path, *, onerror):
+        onerror(PermissionError("access denied"))
+        return iter(())
+
+    monkeypatch.setattr(claude_module.os, "walk", denied_walk)
+    with pytest.raises(ContinuityError) as caught:
+        adapter.get_session_metadata(str(uuid.uuid4()))
+    assert caught.value.code == ErrorCode.METADATA_INACCESSIBLE
+    assert "could not be fully scanned" in caught.value.message
+
+
+def test_claude_matching_transcript_open_failure_is_not_reported_as_absence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    session_id = str(uuid.uuid4())
+    transcript = tmp_path / ".claude" / "projects" / "repo" / f"{session_id}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text('{"type":"user"}\n', encoding="utf-8")
+    adapter = ClaudeAdapter(which_fn=lambda _name: None, home_dir=tmp_path)
+    original_open = Path.open
+
+    def denied_open(path: Path, *args, **kwargs):
+        if path == transcript:
+            raise PermissionError("access denied")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied_open)
+    with pytest.raises(ContinuityError) as caught:
+        adapter.get_session_metadata(session_id)
+    assert caught.value.code == ErrorCode.METADATA_INACCESSIBLE
+    assert "evidence is inaccessible" in caught.value.message
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -157,6 +234,67 @@ def test_claude_managed_native_options_and_permission_modes():
 def test_claude_execution_modes_remain_forbidden_with_generic_unknown_authorization():
     with pytest.raises(ContinuityError):
         _validated_native_args("claude", ["--cloud"], allow_unknown=True)
+
+
+@pytest.mark.parametrize("args", [
+    ["--bare"], ["--dangerously-skip-permissions"], ["--allow-dangerously-skip-permissions"],
+    ["--permission-mode=bypassPermissions"], ["--permission-control-extra"],
+    ["--session-id=" + str(uuid.uuid4())],
+    ["--resume=" + str(uuid.uuid4())], ["--tools", "Bash"], ["--setting-sources", "user"],
+    ["-pvalue"], ["-w/other"], ["--", "--permission-mode", "dontAsk"],
+])
+def test_claude_native_unknown_authorization_never_waives_identity_or_permission_guards(args):
+    with pytest.raises(ContinuityError):
+        _validated_native_args("claude", args, allow_unknown=True)
+
+
+@pytest.mark.parametrize(("departing", "selected", "expected"), [
+    ("codex", "3", "claude"), ("agy", "1", "codex"), ("claude", "2", "agy"),
+])
+def test_exit_provider_picker_selects_all_three_native_providers(departing, selected, expected):
+    from agent_continuity.dispatcher_cli import _choose_exit_switch_provider
+
+    default = "agy" if departing == "codex" else "codex"
+    provider, replay = _choose_exit_switch_provider(StringIO(selected + "\n"), StringIO(), default_provider=default)
+    assert provider == expected
+    assert replay.readline() == ""
+
+
+@pytest.mark.parametrize(("departing", "destination"), [
+    (left, right) for left in ("codex", "agy", "claude")
+    for right in ("codex", "agy", "claude") if left != right
+])
+def test_post_exit_provider_picker_resumes_exact_session_across_all_providers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, departing: str, destination: str,
+):
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.create_gui("GUI", apply=True)
+    dispatcher.create_slot(gui="GUI", name="Agent", apply=True)
+    target_id = str(uuid.uuid4()) if destination == "claude" else f"{destination}-exact"
+    departing_id = str(uuid.uuid4()) if departing == "claude" else f"{departing}-current"
+    dispatcher.attach_session(gui="GUI", name="Agent", provider=destination,
+                              session_id=target_id, apply=True)
+    dispatcher.attach_session(gui="GUI", name="Agent", provider=departing,
+                              session_id=departing_id, apply=True)
+    calls = []
+
+    def fake_argv(_dispatcher, provider, session_id, **_kwargs):
+        return [provider, session_id]
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", fake_argv)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", fake_run)
+    selected = {"codex": "1", "agy": "2", "claude": "3"}[destination]
+    assert _run_pane(dispatcher, slot_id=dispatcher.get_slot(gui="GUI", name="Agent")["slot_id"],
+                     launch_id=None, input_stream=StringIO(f"4\n{selected}\nr\n"),
+                     output_stream=StringIO()) == 0
+
+    assert calls == [[departing, departing_id], [destination, target_id]]
+    current = dispatcher.get_slot(gui="GUI", name="Agent")["current"]
+    assert (current["provider"], current["native_session_id"]) == (destination, target_id)
 
 
 def test_claude_new_launch_preview_matches_session_id_and_managed_arg_order(
@@ -229,6 +367,7 @@ def test_claude_start_keeps_pending_when_transcript_is_absent(
     monkeypatch.setattr("agent_continuity.dispatcher_cli.detect_runtime_kind", lambda: "windows")
     monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run",
                         lambda *_args, **_kwargs: SimpleNamespace(returncode=0))
+    metadata_lookup = adapter.get_session_metadata
     monkeypatch.setattr(adapter, "get_session_metadata", lambda _session_id: None)
 
     result = _run_pane(dispatcher, slot_id=launch["details"]["slot_id"],
@@ -241,10 +380,23 @@ def test_claude_start_keeps_pending_when_transcript_is_absent(
     launch_row = dispatcher._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?",
                                  (launch["details"]["launch_id"],))
     pending = dispatcher._with_captured_bootstrap_id(launch_row)
-    assert pending["status"] == "failed"
+    assert pending["status"] == "pending"
     reserved = pending["reserved_session_id"]
     assert str(uuid.UUID(reserved)) == reserved
-    assert "unconfirmed" in pending["failure_detail"]
+    assert pending["failure_detail"] is None
+    outcomes = dispatcher._rows(
+        "SELECT payload_json FROM activity_events WHERE event_type = ? AND json_extract(payload_json, '$.launch_id') = ?",
+        (EventType.DISPATCHER_PROCESS_OBSERVED.value, launch["details"]["launch_id"]),
+    )
+    assert any(json.loads(row["payload_json"]).get("outcome") == "normal_exit" for row in outcomes)
+
+    transcript = tmp_path / ".claude" / "projects" / "repo" / f"{reserved}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text('{"type":"user"}\n', encoding="utf-8")
+    monkeypatch.setattr(adapter, "get_session_metadata", metadata_lookup)
+    recovered = dispatcher.recover_captured_launch(gui="GUI", name="Agent", apply=True)
+    assert recovered["status"] == "recovered"
+    assert dispatcher.get_slot(gui="GUI", name="Agent")["current"]["native_session_id"] == reserved
 
 
 def test_claude_pending_launch_recovers_only_after_exact_transcript_evidence(tmp_path: Path):
@@ -295,6 +447,20 @@ def test_interrupted_claude_initialization_keeps_uuid_recoverable(
     assert candidate["status"] == "pending"
     assert str(uuid.UUID(session_id)) == session_id
 
+    # A pending launch is one-shot. Recovery may inspect the same ID, but must
+    # never spawn another interactive process for the same launch token.
+    dispatcher = DispatcherService(home_dir=dispatcher.home_dir)
+    dispatcher.continuity.adapters["claude"] = adapter
+    restored = dispatcher._with_captured_bootstrap_id(
+        dispatcher._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?",
+                        (launch["details"]["launch_id"],))
+    )
+    assert restored["reserved_session_id"] == session_id
+    assert restored["claude_launch_attempted"] is True
+    with pytest.raises(ContinuityError, match="already been attempted"):
+        _run_pane(dispatcher, slot_id=launch["details"]["slot_id"],
+                  launch_id=launch["details"]["launch_id"], input_stream=StringIO(), output_stream=StringIO())
+
     transcript = tmp_path / ".claude" / "projects" / "repo" / f"{session_id}.jsonl"
     transcript.parent.mkdir(parents=True)
     transcript.write_text('{"type":"user"}\n', encoding="utf-8")
@@ -302,6 +468,84 @@ def test_interrupted_claude_initialization_keeps_uuid_recoverable(
     assert recovered["status"] == "recovered"
     current = dispatcher.get_slot(gui="GUI", name="Agent")["current"]
     assert current["native_session_id"] == session_id
+
+
+def test_repeated_claude_pending_launch_cannot_spawn_a_second_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_provider_bin: Path,
+):
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    launch = dispatcher.prepare_start(gui="GUI", name="Agent", provider="claude", apply=True)
+    adapter = ClaudeAdapter(which_fn=lambda _name: str(fake_provider_bin / "claude.exe"), home_dir=tmp_path)
+    dispatcher.continuity.adapters["claude"] = adapter
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.detect_runtime_kind", lambda: "windows")
+    calls = []
+
+    def interrupted(argv, **_kwargs):
+        calls.append(argv)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", interrupted)
+    for _ in range(2):
+        try:
+            _run_pane(dispatcher, slot_id=launch["details"]["slot_id"],
+                      launch_id=launch["details"]["launch_id"], input_stream=StringIO(), output_stream=StringIO())
+        except KeyboardInterrupt:
+            pass
+        except ContinuityError:
+            pass
+
+    assert len(calls) == 1
+    pending = dispatcher._with_captured_bootstrap_id(
+        dispatcher._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?",
+                        (launch["details"]["launch_id"],))
+    )
+    assert pending["status"] == "pending"
+    assert calls[0][2] == pending["reserved_session_id"]
+
+
+def test_concurrent_claude_pending_launch_has_single_claim_and_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_provider_bin: Path,
+):
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    launch = dispatcher.prepare_start(gui="GUI", name="Agent", provider="claude", apply=True)
+    adapter = ClaudeAdapter(which_fn=lambda _name: str(fake_provider_bin / "claude.exe"), home_dir=tmp_path)
+    dispatcher.continuity.adapters["claude"] = adapter
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.detect_runtime_kind", lambda: "windows")
+    entered = Event()
+    release = Event()
+    calls = []
+
+    def wait_in_provider(argv, **_kwargs):
+        calls.append(argv)
+        entered.set()
+        release.wait(timeout=5)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", wait_in_provider)
+    errors = []
+
+    def execute():
+        try:
+            _run_pane(dispatcher, slot_id=launch["details"]["slot_id"],
+                      launch_id=launch["details"]["launch_id"], input_stream=StringIO(), output_stream=StringIO())
+        except BaseException as exc:
+            errors.append(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(execute)
+        assert entered.wait(timeout=5)
+        second = pool.submit(execute)
+        second.result(timeout=5)
+        release.set()
+        first.result(timeout=5)
+
+    assert len(calls) == 1
+    assert any(isinstance(exc, ContinuityError) for exc in errors)
+    pending = dispatcher._with_captured_bootstrap_id(
+        dispatcher._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?",
+                        (launch["details"]["launch_id"],))
+    )
+    assert calls[0][2] == pending["reserved_session_id"]
 
 
 def test_new_claude_wsl_start_is_rejected_before_slot_or_pending_launch(tmp_path: Path):
