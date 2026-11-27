@@ -192,3 +192,10 @@
 - [x] Reconcile active CLI reference text with the v2.0.0 contract while labeling prior release behavior as historical.
 - [x] Run full module and relevant compatibility suites, scoped Ruff, version/help consistency, disposable-registry CLI smoke, and diff checks.
 - [ ] Commit and push the correction candidate; await independent GUI review before integration or LLMD-56 implementation.
+- [ ] Resolve portable context from existing profile, slot, environment, session, and workspace records without copying raw provider argv.
+- [ ] Normalize semantic settings and translate only verified destination capabilities; report unsupported/conflicting settings without dropping unrelated settings or broadening permissions.
+- [ ] Preserve exact repository/worktree/branch observations, cwd overrides, authorized roots, runtime/environment, workflow/agent identity, terminal compatibility, portable instructions, and non-secret settings.
+- [ ] Integrate the shared resolver across option 4, switch, continue, start, open, review/return, native session replacement, and workspace restore.
+- [ ] Add destination previews with preserved/translated/restored/unsupported/conflicting entries and material incompatibility handling.
+- [ ] Qualify all six guarded provider directions, historical reuse and round trips, nested worktrees, explicit directory overrides, multiple repositories, incompatible args, permissions, and Windows/WSL boundaries.
+- [ ] Run focused/full module tests and Ruff, review task-only diff, commit and push LLMD-57 feature branch.

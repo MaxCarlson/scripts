@@ -31,6 +31,7 @@ from .environment import (
 )
 from .errors import ContinuityError, ErrorCode
 from .identifiers import generate_id, now_utc_iso
+from .launch_context import resolve_portable_launch_context
 from .terminal_format import (
     clip_display,
     color_enabled,
@@ -1181,6 +1182,38 @@ def _new_launch_preview(dispatcher: DispatcherService, provider: str, environmen
         resume = _native_argv(dispatcher, provider, "<captured-session-id>", environment_id=environment_id,
                               cwd=cwd, native_args=native_args, allow_native_unknown=allow_native_unknown)
         identity_description = "captured exactly from bootstrap output before resume"
+    safe_settings = _safe_launch_settings(provider, native_args, allow_unknown=allow_native_unknown)
+    semantic_settings = {
+        key: value for source_key, key in (
+            ("reasoning_effort", "reasoning_effort"), ("sandbox", "filesystem"),
+            ("approval_policy", "approval"), ("search", "search"),
+        ) if (value := safe_settings.get(source_key)) is not None
+    }
+    provider_values, provider_flags, _ = _managed_native_spec(provider)
+    verified = set()
+    if any(kind == "effort" for kind in provider_values.values()):
+        verified.add("reasoning_effort")
+    if any(kind in {"sandbox", "permission_mode"} for kind in provider_values.values()) or "sandbox" in provider_flags.values():
+        verified.add("filesystem")
+    if any(kind == "approval" for kind in provider_values.values()) or "auto_approval" in provider_flags.values():
+        verified.add("approval")
+    if "search" in provider_flags.values() or "search" in provider_values.values():
+        verified.add("search")
+    launch_context, portability = resolve_portable_launch_context({
+        "provider": provider,
+        "working_directory": cwd,
+        "explicit_directory_override": cwd,
+        "repositories": [{key.removeprefix("git_"): value for key, value in
+                          _git_launch_context(dispatcher, environment_id, cwd).items() if value is not None}],
+        "authorized_directories": safe_settings.get("additional_directories", []),
+        "runtime_identity": {"environment_id": environment_id, "runtime_kind": environment.runtime_kind,
+                             "distro": environment.distro},
+        "semantic_settings": semantic_settings,
+        "destination_preferences": {provider: {key: value for key, value in safe_settings.items()
+                                                if key in {"model", "provider_profile"}}},
+    }, provider, capabilities={provider: verified}, destination_runtime={
+        "environment_id": environment_id, "runtime_kind": environment.runtime_kind, "distro": environment.distro,
+    })
     return {
         "bootstrap_argv": bootstrap,
         "interactive_resume_argv_template": resume,
@@ -1192,7 +1225,9 @@ def _new_launch_preview(dispatcher: DispatcherService, provider: str, environmen
                              "identity": identity_description},
         "permission_settings": {"requested": requested, "verified_effective": None,
                                 "verification": "Provider enforcement is not observed by a launch preview."},
-        "requested_settings": _safe_launch_settings(provider, native_args, allow_unknown=allow_native_unknown),
+        "requested_settings": safe_settings,
+        "portable_launch_context": dataclasses.asdict(launch_context),
+        "portability_preview": [dataclasses.asdict(item) for item in portability],
         "unknown_native_authorization": {"enabled": allow_native_unknown,
                                          "options": _unknown_native_option_names(provider, native_args)},
         "process_environment": "inherited for this invocation; no environment overrides are persisted",
