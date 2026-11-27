@@ -45,7 +45,7 @@ tui = [
     "cli_tui>=0.2.1",
     "windows-curses>=2.4; sys_platform == 'win32'",
 ]
-web = ["mxc-web-ui-tools>=0.2.0,<0.3"]
+web = ["mxc-web-ui-tools>=0.3.0,<0.4"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6"

@@ -130,6 +130,27 @@ def test_import_provenance_rejects_stale_editable_and_retired_sources(tmp_path: 
     assert any("retired source" in error for error in result["errors"])
 
 
+def test_import_provenance_rejects_retired_web_ui_tools_source(tmp_path: Path) -> None:
+    repo_root = tmp_path / "scripts"
+    target_root = repo_root / "modules" / "consumer"
+    source_root = repo_root / "modules" / "web_ui_tools" / "src" / "web_ui_tools"
+    imported_module = source_root / "__init__.py"
+    imported_module.parent.mkdir(parents=True)
+    imported_module.touch()
+
+    result = assess_import_provenance(
+        repo_root,
+        target_root,
+        [{"module": "web_ui_tools", "expected_root": "site-packages"}],
+        [{"module": "web_ui_tools", "origin": str(imported_module), "search_locations": [str(source_root)]}],
+        forbidden_roots=["modules/web_ui_tools"],
+        site_packages=[str(tmp_path / "venv" / "Lib" / "site-packages")],
+    )
+
+    assert not result["ok"]
+    assert any("retired source root modules/web_ui_tools" in error for error in result["errors"])
+
+
 def test_import_provenance_reports_wrong_editable_checkout_when_runtime_path_is_local(tmp_path: Path) -> None:
     repo_root = tmp_path / "worktree"
     target_root = repo_root / "modules" / "consumer"
