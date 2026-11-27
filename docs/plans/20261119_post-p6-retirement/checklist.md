@@ -48,5 +48,11 @@
 - [x] Qualify focused Scripts ownership/setup tests and Toolkit H4 offline/synthetic tests (record exact branch heads and results in STATUS.md).
 - [x] Preserve the six outstanding Phase-D owner documentation paths (including the crash-recovery plan files) as byte-identical archival copies with status/provenance notes; keep the protected owner worktree unchanged.
 - [x] Reconcile substantive Phase-D T1 telemetry implementation into the isolated canonical Toolkit candidate; preserve owner worktree and keep crash-recovery proposal inactive.
-- [ ] Obtain explicit integration authorization for the Toolkit candidate before integrating the dependent Scripts retirement.
-- [ ] Do not merge or synchronize primary checkouts under this task authorization.
+- [x] Obtain explicit authorization and integrate the released Toolkit runtime; the dependent Scripts physical retirement remains separately gated.
+- [x] Keep the final Scripts physical retirement and synchronization behind its separate authorization gate; no physical deletion or Scripts main synchronization occurred.
+
+## 2026-11-27 runtime integration and recoverable preservation
+
+- [x] Integrate released Toolkit runtime a4e181f49c4e274393a39609570fe313cabf315b into main at 89157b10b00138fdbd317951a83330134a8ad4b8; 24 focused offline tests passed, import provenance resolved to the integration tree, and pip check found no broken requirements.
+- [x] Extend the existing Coordinator backup with all 81 ignored entries; verify 2,367 files/26,545,349 bytes by SHA-256 while leaving all source data in place.
+- [ ] Keep physical removal of modules/resource_coordinator behind its separate authorization gate.

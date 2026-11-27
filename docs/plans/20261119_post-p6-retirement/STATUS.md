@@ -302,3 +302,11 @@ Post-format candidate validation passed 158 focused tests with one lifecycle tes
 
 - After the initial prep, Scripts main advanced to 4ad834c3233f348b443fe14d377a908b2d95a90f. That Agent Continuity and scripts-help update was merged cleanly into this isolated branch; the retirement candidate's changed paths did not overlap it, and the pscripts gitlink remains at 7e8e518d2f32db2b4236a8c55849f4e678e62f4e.
 - Canonical Toolkit migration is now integrated and pushed at 708a1d7. The final Coordinator removal is still isolated and awaits the separate physical-retirement gate.
+
+## 2026-11-27 released-runtime integration and ignored-state preservation
+
+Toolkit current main 89157b10b00138fdbd317951a83330134a8ad4b8 directly integrates released Local-Delegation runtime commit a4e181f49c4e274393a39609570fe313cabf315b on prior main 76b68165be51da0b8713d9cb7d4542e2fb67868e. The branch-first merge was conflict-free and pushed to origin/main; the primary Toolkit checkout was fast-forwarded while retaining unrelated untracked files. Focused offline qualification in the isolated integration tree passed 24 runtime-readiness and config-hash tests. local_agent_bridge imported from that tree, and the existing Scripts venv reported pip check: No broken requirements found. The GitHub Actions API could not be reached; no workflow was dispatched or retried.
+
+The existing tracked-source backup at C:\Users\mcarls\src\_migration_backups\source_retirement_resource_coordinator_20261127_111622 now also contains a copy-only preservation of all 81 ignored entries at ignored_entries\modules\resource_coordinator. Its ignored-backup-manifest.json records 4,689 directories and 2,367 files (26,545,349 bytes); SHA-256 checks matched every source and copied file. The source entries remain present. No reparse points or open file handles were found. The only live-looking marker is a stale acceptance lock with no process corresponding to its recorded owner. Preserve all originals until physical retirement is separately authorized.
+
+Scripts main and its physical modules/resource_coordinator directory remain unchanged. The isolated retirement candidate remains prepared; this backup and Toolkit integration do not authorize deleting or synchronizing the last source directory.
