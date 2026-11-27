@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 import agent_continuity.runtime_discovery as runtime_discovery
+from agent_continuity.providers.claude import ClaudeAdapter
 from agent_continuity.runtime_discovery import (
     AgySessionStore,
     AttachmentState,
@@ -320,6 +321,42 @@ def test_claude_resume_matcher_is_available_for_runtime_discovery():
     assert matcher(("claude.exe", "--resume", SESSION), SESSION)
     assert not matcher(("claude.exe", "--resume", OTHER_SESSION), SESSION)
     assert not matcher(("claude.exe", "--resume", SESSION + "x"), SESSION)
+
+
+def test_claude_generated_resume_argv_with_effort_is_exactly_observed():
+    plan = ClaudeAdapter(which_fn=lambda _name: "C:/tools/claude.exe").resolve_resume_command(
+        SESSION,
+        environment_id="env-native",
+        native_args=["--permission-mode", "plan", "--model", "sonnet", "--effort", "high"],
+    )
+    argv = ("C:/tools/claude.exe", *plan.argv[1:])
+    processes = FakeProcessEnumerator(inventory(record(204, "claude.exe", argv)))
+    pane = ManagedPaneReference(
+        provider="claude",
+        native_session_id=SESSION,
+        environment_id="env-native",
+        process_identity=identity(204),
+        launch_id="claude-launch",
+        pane_id="claude-launch:0:0",
+        terminal_session_id="wt-managed-test",
+        receipt_state="started",
+        receipt_liveness=ProcessLiveness.RUNNING,
+    )
+    discovery = RuntimeDiscovery(
+        process_enumerator=processes,
+        provider_stores={},
+        managed_receipt_source=FakeManagedReceipts(receipts(pane)),
+        environment_id="env-native",
+        clock=lambda: NOW,
+    )
+
+    observed = discovery.observe(SessionKey("claude", SESSION, "env-native"))
+
+    assert observed.process_liveness is ProcessLiveness.RUNNING
+    assert observed.process_session_match is MatchStatus.EXACT
+    assert observed.session_identity_state.value == "exact"
+    assert observed.management is ManagementState.MANAGED
+    assert observed.managed_pane == pane
 
 
 def test_claude_process_is_exactly_observed_without_provider_store():

@@ -447,7 +447,7 @@ def _claude_session_selector(argv: Sequence[str] | None) -> tuple[str, str] | No
         return None
     selectors: list[tuple[str, str]] = []
     value_options = {
-        "--model", "--add-dir", "--permission-mode", "--output-format", "--permission-prompt-tool",
+        "--model", "--effort", "--add-dir", "--permission-mode", "--output-format", "--permission-prompt-tool",
         "--settings", "--mcp-config", "--betas", "--fallback-model", "--max-budget-usd", "--agent",
         "--append-system-prompt",
     }
