@@ -175,12 +175,20 @@ def _session_runtime_lock_ctx(
 class DispatcherService:
     """Durable dispatcher operations sharing the existing continuity spool and index."""
 
-    def __init__(self, continuity: ContinuityService | None = None, home_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        continuity: ContinuityService | None = None,
+        home_dir: Path | str | None = None,
+        workflow_bridge: Any = None,
+    ) -> None:
         if continuity is not None and home_dir is not None:
             raise ValueError("Pass either a ContinuityService or home_dir, not both.")
+        from .workflows import LocalAgentBridgeWorkflowAdapter
+
         self.continuity = continuity or ContinuityService(home_dir)
         self.materializer = self.continuity.materializer
         self.home_dir = self.continuity.home_dir
+        self.workflow_bridge = workflow_bridge or LocalAgentBridgeWorkflowAdapter()
 
     def _sync(self) -> None:
         if self.continuity._can_write_sqlite():
@@ -1082,16 +1090,24 @@ class DispatcherService:
         from .workflows import discover_workflow_resources, prepare_additive_workflow_init
 
         self._sync()
+        slot = self.get_slot_by_id(slot_id)
+        selection = str(slot.get("workflow_type") or "standard")
         env = next((e for e in self.materializer.list_environments() if e.environment_id == environment_id), None)
         runtime_kind = env.runtime_kind if env else "unknown"
+        active_bridge = bridge if bridge is not None else self.workflow_bridge
         resources = discover_workflow_resources(
-            bridge, provider=provider, runtime=runtime_kind, expected_digests=expected_digests
+            active_bridge,
+            provider=provider,
+            runtime=runtime_kind,
+            selection=selection,
+            expected_digests=expected_digests,
         )
         prepared = prepare_additive_workflow_init(
             provider=provider,
             runtime=runtime_kind,
             is_new_session=True,
             resources=resources,
+            selection=selection,
             custom_instruction_path=custom_instruction_path,
         )
         with _mutation_lock(self.home_dir):
@@ -1106,6 +1122,7 @@ class DispatcherService:
                     "return_code": 0,
                     "outcome": "workflow_init_prepared" if prepared.get("applied") else "workflow_init_unsupported",
                     "delivery_state": "prepared",
+                    "selection": selection,
                     "provenance": prepared.get("provenance", []),
                     "limitations": prepared.get("limitations", []),
                 },
@@ -1123,7 +1140,7 @@ class DispatcherService:
         session_id: str | None,
         provenance: Sequence[Mapping[str, Any]],
     ) -> None:
-        """Record confirmed delivery separately from preparation once provider launch starts."""
+        """Record confirmed delivery separately from preparation once provider launch succeeds with evidence."""
         with _mutation_lock(self.home_dir):
             self._sync()
             event = self._event(
@@ -1143,20 +1160,151 @@ class DispatcherService:
             )
             self.continuity._emit_and_materialize([event])
 
+    def resolve_runtime_identity(
+        self,
+        *,
+        slot_id: str | None = None,
+        gui: str | None = None,
+        name: str | None = None,
+        trusted_observation: Mapping[str, Any] | None = None,
+        runtime_snapshot: Any = None,
+    ) -> dict[str, Any]:
+        """LLMD-52: Resolve authoritative runtime identity read-only using trusted slot + runtime evidence."""
+        from .workflows import resolve_authoritative_runtime_identity
+
+        slot: dict[str, Any] | None = None
+        if slot_id:
+            row = self._row(
+                "SELECT s.*, g.alias AS gui_alias FROM agent_slots s JOIN dispatcher_gui_conversations g USING(gui_id) WHERE s.slot_id = ?",
+                (slot_id,),
+            )
+            if row:
+                history = self._history(row["slot_id"])
+                slot = {**row, "history": history, "current": history[-1] if history else None}
+        elif gui and name:
+            gui_row = self._row(
+                "SELECT * FROM dispatcher_gui_conversations WHERE gui_id = ? OR alias_key = ?",
+                (gui, gui.strip().casefold()),
+            )
+            if gui_row:
+                slot_row = self._row(
+                    "SELECT * FROM agent_slots WHERE gui_id = ? AND (slot_id = ? OR name_key = ?)",
+                    (gui_row["gui_id"], name, name.strip().casefold()),
+                )
+                if slot_row:
+                    history = self._history(slot_row["slot_id"])
+                    slot = {**slot_row, "gui_alias": gui_row["alias"], "history": history, "current": history[-1] if history else None}
+
+        observation = trusted_observation
+        if observation is None and slot and slot.get("current"):
+            current = slot["current"]
+            obs = self.observe_runtime_session(
+                current["provider"],
+                current["environment_id"],
+                current["native_session_id"],
+            )
+            if self._is_observed_runtime(obs):
+                observation = {
+                    "slot_id": slot["slot_id"],
+                    "agent_number": slot.get("agent_number"),
+                    "agent_name": slot["name"],
+                    "gui_alias": slot.get("gui_alias"),
+                    "native_session_id": current["native_session_id"],
+                    "status": "observed",
+                }
+        return resolve_authoritative_runtime_identity(trusted_slot=slot, trusted_observation=observation)
+
+    @staticmethod
+    def _is_observed_runtime(obs: Any) -> bool:
+        if obs is None:
+            return False
+        liveness = getattr(getattr(obs, "process_liveness", None), "value", getattr(obs, "process_liveness", None))
+        match = getattr(getattr(obs, "process_session_match", None), "value", getattr(obs, "process_session_match", None))
+        return liveness == "running" and match == "exact_match"
+
+    def validate_handoff(
+        self,
+        *,
+        text: str,
+        slot_id: str | None = None,
+        gui: str | None = None,
+        name: str | None = None,
+        trusted_observation: Mapping[str, Any] | None = None,
+        runtime_snapshot: Any = None,
+    ) -> dict[str, Any]:
+        """LLMD-53: Validate addressed handoff text read-only against authoritative runtime identity."""
+        from .workflows import validate_addressed_handoff
+
+        identity = self.resolve_runtime_identity(
+            slot_id=slot_id,
+            gui=gui,
+            name=name,
+            trusted_observation=trusted_observation,
+            runtime_snapshot=runtime_snapshot,
+        )
+        validation = validate_addressed_handoff(text, authoritative_identity=identity)
+        return {"identity": identity, "validation": validation}
+
     def reconcile_late_activity(
         self,
         *,
         slot_id: str,
-        observed_events: Sequence[Mapping[str, Any]],
+        observed_events: Sequence[Mapping[str, Any]] = (),
         provider_evidence: Mapping[tuple[str, str, str], Mapping[str, Any]] | None = None,
+        runtime_snapshot: Any = None,
     ) -> dict[str, Any]:
-        """LLMD-54: Reconcile activity without letting late observations overwrite a newer selection."""
+        """LLMD-54: Reconcile persisted + observed activity without letting late observations overwrite selection."""
         from .workflows import reconcile_activity_and_associations
 
         self._sync()
         slot = self.get_slot_by_id(slot_id)
         current = slot["current"]
-        result = reconcile_activity_and_associations(observed_events, provider_evidence=provider_evidence)
+        persisted_rows = self._rows(
+            """SELECT event_id, event_type, provider, environment_id, native_session_id,
+                      source_timestamp, observed_timestamp, payload_json, rowid
+               FROM activity_events
+               WHERE json_extract(payload_json, '$.slot_id') = ?
+                  OR (native_session_id IS NOT NULL AND native_session_id IN (
+                      SELECT native_session_id FROM agent_slot_activations WHERE slot_id = ?
+                  ))
+               ORDER BY rowid""",
+            (slot_id, slot_id),
+        )
+        replay_events: list[dict[str, Any]] = []
+        for row in persisted_rows:
+            replay_events.append(
+                {
+                    "event_id": row["event_id"],
+                    "slot_id": slot_id,
+                    "provider": row["provider"],
+                    "environment_id": row["environment_id"],
+                    "native_session_id": row["native_session_id"],
+                    "source_timestamp": row["source_timestamp"],
+                    "observed_timestamp": row["observed_timestamp"],
+                    "sequence": row["rowid"],
+                }
+            )
+        replay_events.extend(dict(ev) for ev in observed_events)
+
+        evidence = dict(provider_evidence) if provider_evidence is not None else None
+        if evidence is None and current is not None:
+            try:
+                obs = self.observe_runtime_session(
+                    current["provider"],
+                    current["environment_id"],
+                    current["native_session_id"],
+                )
+                if self._is_observed_runtime(obs):
+                    evidence = {
+                        (current["provider"], current["environment_id"], current["native_session_id"]): {
+                            "status": "observed",
+                            "pids": getattr(obs, "pids", ()),
+                        }
+                    }
+            except Exception:
+                evidence = None
+
+        result = reconcile_activity_and_associations(replay_events, provider_evidence=evidence)
         reconciled = result["selections"].get(slot_id)
         if current and reconciled:
             current_identity = (current["provider"], current["environment_id"], current["native_session_id"])
@@ -1165,11 +1313,21 @@ class DispatcherService:
                 return {
                     "action": "reconcile",
                     "replaced": False,
+                    "selected_session_preserved": True,
                     "reason": "newer_selection_preserved",
                     "current": current_identity,
                     "reconciled": reconciled,
+                    "duplicates_skipped": result["duplicates_skipped"],
+                    "fingerprint": result["fingerprint"],
                 }
-        return {"action": "reconcile", "replaced": False, "reconciled": reconciled}
+        return {
+            "action": "reconcile",
+            "replaced": False,
+            "selected_session_preserved": True,
+            "reconciled": reconciled,
+            "duplicates_skipped": result["duplicates_skipped"],
+            "fingerprint": result["fingerprint"],
+        }
 
     def transfer_slot(
         self,

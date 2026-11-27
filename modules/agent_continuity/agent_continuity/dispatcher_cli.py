@@ -214,6 +214,27 @@ def build_parser() -> argparse.ArgumentParser:
     workflow.add_argument("--clear", action="store_true", help="Clear the type and retain legacy untyped behavior.")
     _add_execution_options(workflow)
 
+    transfer = sub.add_parser("transfer", help="Atomically transfer an agent slot to another GUI while preserving reservations.")
+    _add_common_options(transfer)
+    transfer.add_argument("-g", "--gui", required=True, help="Source GUI conversation alias or ID.")
+    transfer.add_argument("-n", "--name", required=True, help="Agent slot name or ID to transfer.")
+    transfer.add_argument("-t", "--to-gui", required=True, help="Destination GUI conversation alias or ID.")
+    _add_execution_options(transfer)
+
+    handoff_val = sub.add_parser("handoff-validate", help="Read-only validation of an addressed handoff against authoritative runtime identity.")
+    _add_common_options(handoff_val)
+    handoff_val.add_argument("--slot-id", help="Exact slot ID to validate against.")
+    handoff_val.add_argument("-g", "--gui", help="GUI conversation alias or ID.")
+    handoff_val.add_argument("-n", "--name", help="Agent slot name.")
+    handoff_val.add_argument("--text", help="Handoff text to validate.")
+    handoff_val.add_argument("--file", help="Path to handoff text file to validate.")
+
+    reconcile = sub.add_parser("reconcile", help="Read-only activity and association reconciliation for an agent slot.")
+    _add_common_options(reconcile)
+    reconcile.add_argument("--slot-id", help="Exact slot ID to reconcile.")
+    reconcile.add_argument("-g", "--gui", help="GUI conversation alias or ID.")
+    reconcile.add_argument("-n", "--name", help="Agent slot name.")
+
     gui = sub.add_parser("gui", help="Register or list local GUI conversation aliases.")
     gui_sub = gui.add_subparsers(dest="gui_command")
     gui_add = gui_sub.add_parser("add", help="Register a local GUI conversation alias.")
@@ -1162,14 +1183,16 @@ def _bootstrap_native_argv(
     *,
     environment_id: str,
     cwd: str | None,
+    workflow_prompt: str | None = None,
 ) -> list[str]:
     """Build a controlled, machine-readable provider invocation that creates one resumable session."""
     if provider not in {"codex", "agy"}:
         raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported bootstrap provider {provider!r}.")
     argv = _native_argv(dispatcher, provider, None, environment_id=environment_id, cwd=cwd)
+    prompt = f"{_BOOTSTRAP_PROMPT}\n\n{workflow_prompt}" if workflow_prompt else _BOOTSTRAP_PROMPT
     if provider == "codex":
-        return [*argv, "exec", "--json", "--sandbox", "read-only", _BOOTSTRAP_PROMPT]
-    return [*argv, "--print", _BOOTSTRAP_PROMPT, "--output-format", "json", "--sandbox"]
+        return [*argv, "exec", "--json", "--sandbox", "read-only", prompt]
+    return [*argv, "--print", prompt, "--output-format", "json", "--sandbox"]
 
 
 def _extract_bootstrap_session_id(provider: str, stdout: str) -> str | None:
@@ -1368,8 +1391,14 @@ def _run_pane_locked(
                                 native_args=native_args, allow_native_unknown=allow_native_unknown,
                                 new_session_id=session_id)
         elif launch_id:
+            workflow_prompt = (
+                workflow_prep.get("delivery_prompt")
+                if workflow_prep and workflow_prep.get("applied") and workflow_prep.get("delivery_prompt")
+                else None
+            )
             bootstrap_argv = _bootstrap_native_argv(
-                dispatcher, provider, environment_id=environment_id, cwd=bootstrap_cwd
+                dispatcher, provider, environment_id=environment_id, cwd=bootstrap_cwd,
+                workflow_prompt=workflow_prompt,
             )
             if terminal_record:
                 dispatcher.record_terminal_launch(terminal_record)
@@ -1453,6 +1482,15 @@ def _run_pane_locked(
                 detail="Exact native session ID captured from this provider invocation; persisting slot association.",
                     native_session_id=captured_session_id,
                 )
+                if workflow_prompt:
+                    dispatcher.confirm_workflow_init_delivered(
+                        slot_id=slot_id,
+                        launch_id=launch_id,
+                        provider=provider,
+                        environment_id=environment_id,
+                        session_id=captured_session_id,
+                        provenance=workflow_prep.get("provenance", ()) if workflow_prep else (),
+                    )
             except ContinuityError as exc:
                 print(f"Bootstrap created session {captured_session_id}, but LLMD could not persist its ID. Do not retry the launch; inspect provider state and use `llmd attach` with this exact ID if verified.", file=output_stream)
                 raise ContinuityError(ErrorCode.METADATA_INACCESSIBLE,
@@ -1553,15 +1591,6 @@ def _run_pane_locked(
             _startup_progress("interactive provider handoff")
             _STARTUP_PROGRESS.set(False)
             result = _run_provider_process(argv, cwd=process_cwd, check=False)
-            if workflow_prep and workflow_prep.get("applied"):
-                dispatcher.confirm_workflow_init_delivered(
-                    slot_id=slot_id,
-                    launch_id=launch_id or "",
-                    provider=provider,
-                    environment_id=environment_id,
-                    session_id=session_id,
-                    provenance=workflow_prep.get("provenance", ()),
-                )
     except KeyboardInterrupt:
         if launch_id:
             if provider == "claude":
@@ -3261,7 +3290,7 @@ def _resolve_execution_mode(args: argparse.Namespace) -> None:
     }
     workflow_action = command == "workflow-type"
     number_action = command == "agent-number"
-    operational = (command in {"start", "continue", "switch", "open", "review", "return", "attach"}
+    operational = (command in {"start", "continue", "switch", "open", "review", "return", "attach", "transfer"}
                    or gui_action or slot_action or profile_action or workflow_action or number_action)
     if command == "last":
         args.apply = bool(getattr(args, "apply", False) or getattr(args, "resume", False))
@@ -3529,6 +3558,56 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
         result = dispatcher.set_workflow_type(gui=args.gui, agent=args.agent,
                                               workflow_type=None if args.clear else args.type,
                                               apply=args.apply)
+    elif args.command == "transfer":
+        result = dispatcher.transfer_slot(
+            gui=args.gui,
+            name=args.name,
+            destination_gui=args.to_gui,
+            apply=args.apply,
+        )
+    elif args.command == "handoff-validate":
+        if args.text is not None and args.file is not None:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Provide either --text or --file, not both.")
+        if args.file is not None:
+            handoff_text = Path(args.file).read_text(encoding="utf-8")
+        elif args.text is not None:
+            handoff_text = args.text
+        else:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Provide --text or --file for handoff validation.")
+        if not args.slot_id and not (args.gui and args.name):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Provide --slot-id or both -g/--gui and -n/--name.")
+        result = dispatcher.validate_handoff(
+            text=handoff_text,
+            slot_id=args.slot_id,
+            gui=args.gui,
+            name=args.name,
+        )
+        if args.json_output:
+            print(json.dumps(result, indent=2), file=output_stream)
+        else:
+            val = result["validation"]
+            ident = result["identity"]
+            print(
+                f"Handoff validation: valid={val['valid']} outcome={val['outcome']} authority={ident['authority']}",
+                file=output_stream,
+            )
+        return 0 if result["validation"]["valid"] else 2
+    elif args.command == "reconcile":
+        if args.slot_id:
+            target_slot_id = args.slot_id
+        elif args.gui and args.name:
+            target_slot_id = dispatcher.get_slot(gui=args.gui, name=args.name)["slot_id"]
+        else:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Provide --slot-id or both -g/--gui and -n/--name.")
+        result = dispatcher.reconcile_late_activity(slot_id=target_slot_id)
+        if args.json_output:
+            print(json.dumps(result, indent=2), file=output_stream)
+        else:
+            print(
+                f"Reconcile: selected_session_preserved={result['selected_session_preserved']} replaced={result['replaced']}",
+                file=output_stream,
+            )
+        return 0
     elif args.command == "gui":
         if args.gui_command == "add":
             result = dispatcher.create_gui(args.name, apply=args.apply)

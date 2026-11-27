@@ -89,19 +89,31 @@ def test_llmd_50_to_54_workflow_identity_handoff_and_reconciliation() -> None:
 
     init_new = prepare_additive_workflow_init(provider="codex", runtime="windows", is_new_session=True, resources=resources)
     assert init_new["applied"] is True and init_new["status"] == "degraded"
-    assert init_new["provenance"] == [{"resource_id": "wf.review", "revision": "1", "digest": "abc", "status": "available"}]
+    assert init_new["provenance"] == [
+        {"resource_id": "wf.review", "revision": "1", "digest": "abc", "status": "available", "selection": "standard"}
+    ]
     assert prepare_additive_workflow_init(provider="codex", runtime="windows", is_new_session=False, resources=resources)["applied"] is False
+    assert prepare_additive_workflow_init(provider="claude", runtime="windows", is_new_session=True, resources=resources)["status"] == "unsupported"
+
+    # Slot metadata alone is insufficient for managed-runtime classification.
+    unverified_ident = resolve_authoritative_runtime_identity(
+        trusted_slot={"gui_alias": "G", "name": "Agent One - Review", "slot_id": "slot_1", "agent_number": 3},
+        trusted_observation=None,
+    )
+    assert unverified_ident["authority"] == "unavailable"
 
     ident = resolve_authoritative_runtime_identity(
-        trusted_slot={"gui_alias": "G", "name": "Agent One - Review", "slot_id": "slot_1"},
-        trusted_observation={"conflict": False},
+        trusted_slot={"gui_alias": "G", "name": "Agent One - Review", "slot_id": "slot_1", "agent_number": 3},
+        trusted_observation={"conflict": False, "slot_id": "slot_1", "agent_number": 3},
     )
-    ident["agent_number"] = 3
     assert ident["authority"] == "managed"
     msg = "```markdown\nTo-Agent: Fake\n```\n> Agent: #9 — Quoted\nAgent: #3 — Agent One - Review\nProceed."
     assert validate_addressed_handoff(msg, authoritative_identity=ident)["valid"] is True
     assert validate_addressed_handoff("Agent: #4 — Agent One - Review", authoritative_identity=ident)["outcome"] == "mismatch"
     assert validate_addressed_handoff("To-Agent: Other", authoritative_identity=ident)["outcome"] == "mismatch"
+    # Fail closed when numbered recipient identity cannot be verified against a known agent_number.
+    no_num_ident = {**ident, "agent_number": None}
+    assert validate_addressed_handoff("Agent: #3 — Agent One - Review", authoritative_identity=no_num_ident)["outcome"] == "unverified_number"
 
     rec = reconcile_activity_and_associations([
         {"event_id": "e2", "slot_id": "slot_1", "source_timestamp": "2026-11-27T10:00:02Z", "sequence": 2, "provider": "agy", "environment_id": "env1", "native_session_id": "new"},
@@ -187,3 +199,105 @@ def test_dispatcher_workflow_init_and_pane_run_expected_identity_guard(tmp_path:
             ]),
             parser, input_stream=StringIO(), output_stream=StringIO(),
         )
+
+
+def test_end_to_end_workflow_delivery_transfer_handoff_and_reconcile_cli(tmp_path: Path, monkeypatch) -> None:
+    import subprocess
+    from pathlib import Path as _Path
+
+    toolkit_bridge = _Path(r"C:\Users\mcarls\src\llm-agent-toolkit\modules\local_agent_bridge")
+    if toolkit_bridge.is_dir():
+        monkeypatch.syspath_prepend(str(toolkit_bridge))
+
+    home = tmp_path / "registry"
+    d = DispatcherService(home_dir=home)
+    d.create_gui("SrcGUI", apply=True)
+    d.create_gui("DstGUI", apply=True)
+    d.create_slot(gui="SrcGUI", name="Worker One", apply=True)
+    d.set_workflow_type(gui="SrcGUI", agent="Worker One", workflow_type="handoff", apply=True)
+    if not toolkit_bridge.is_dir():
+        d.workflow_bridge = SimpleNamespace(
+            list_resources=lambda _p, _r, selection="standard": [
+                {
+                    "resource_id": "workflow.handoff",
+                    "revision": "rev1",
+                    "digest": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                    "content": "foo",
+                    "installed": True,
+                    "callable": True,
+                    "runtime_verified": True,
+                    "supported": True,
+                }
+            ]
+        )
+
+    # 1) End-to-end new codex launch: delivers prepared workflow instructions in bootstrap_argv.
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", lambda *_a, **_kw: ["codex"])
+    captured_argvs: list[list[str]] = []
+
+    def fake_bootstrap(argv, **_kw):
+        captured_argvs.append(list(argv))
+        return subprocess.CompletedProcess(
+            argv, 0, stdout='{"type":"thread.started","thread_id":"codex-new-1"}\n{"type":"turn.completed"}\n', stderr=""
+        )
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_with_progress", fake_bootstrap)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", lambda argv, **_kw: captured_argvs.append(list(argv)) or subprocess.CompletedProcess(argv, 0))
+    parser = build_parser()
+    assert dispatch(parser.parse_args(["-H", str(home), "start", "SrcGUI", "Worker One", "-p", "codex", "-N", "-a"]), parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+    assert len(captured_argvs) == 2
+    assert "workflow." in captured_argvs[0][-1]
+    assert "workflow." not in " ".join(captured_argvs[1])
+    states = [
+        json.loads(r["payload_json"]).get("delivery_state")
+        for r in d._rows("SELECT payload_json FROM activity_events WHERE event_type = 'dispatcher.process_observed'")
+        if json.loads(r["payload_json"]).get("delivery_state")
+    ]
+    assert states == ["prepared", "delivered"]
+
+    # 2) CLI transfer preview, apply, collision, and transfer-back without number reuse.
+    out = StringIO()
+    assert dispatch(parser.parse_args(["-H", str(home), "transfer", "-g", "SrcGUI", "-n", "Worker One", "-t", "DstGUI", "-d", "-j"]), parser, input_stream=StringIO(), output_stream=out) == 0
+    assert json.loads(out.getvalue())["applied"] is False
+    assert d.get_slot(gui="SrcGUI", name="Worker One")["agent_number"] == 1
+
+    out = StringIO()
+    assert dispatch(parser.parse_args(["-H", str(home), "transfer", "-g", "SrcGUI", "-n", "Worker One", "-t", "DstGUI", "-a", "-j"]), parser, input_stream=StringIO(), output_stream=out) == 0
+    assert json.loads(out.getvalue())["applied"] is True
+    assert d.get_slot(gui="DstGUI", name="Worker One")["agent_number"] == 1
+
+    assert dispatch(parser.parse_args(["-H", str(home), "transfer", "-g", "DstGUI", "-n", "Worker One", "-t", "SrcGUI", "-a"]), parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+    assert d.get_slot(gui="SrcGUI", name="Worker One")["agent_number"] == 2
+    d.create_slot(gui="DstGUI", name="Worker One", apply=True)
+    with pytest.raises(ContinuityError, match="already has an agent"):
+        dispatch(parser.parse_args(["-H", str(home), "transfer", "-g", "SrcGUI", "-n", "Worker One", "-t", "DstGUI", "-a"]), parser, input_stream=StringIO(), output_stream=StringIO())
+
+    # 3) Read-only handoff-validate CLI fails closed when runtime observation is absent, succeeds when observed, and creates no locks.
+    locks_dir = home / "locks"
+    before_locks = set(locks_dir.iterdir()) if locks_dir.exists() else set()
+    out = StringIO()
+    rc = dispatch(parser.parse_args(["-H", str(home), "handoff-validate", "-g", "SrcGUI", "-n", "Worker One", "--text", "Agent: #2 — Worker One", "-j"]), parser, input_stream=StringIO(), output_stream=out)
+    assert rc == 2
+    assert json.loads(out.getvalue())["identity"]["authority"] == "unavailable"
+    monkeypatch.setattr(
+        DispatcherService,
+        "observe_runtime_session",
+        lambda *_a, **_kw: SimpleNamespace(process_liveness="running", process_session_match="exact_match", pids=(4242,)),
+    )
+    out = StringIO()
+    rc = dispatch(parser.parse_args(["-H", str(home), "handoff-validate", "-g", "SrcGUI", "-n", "Worker One", "--text", "Agent: #2 — Worker One", "-j"]), parser, input_stream=StringIO(), output_stream=out)
+    assert rc == 0
+    assert json.loads(out.getvalue())["identity"]["authority"] == "managed"
+    after_locks = set(locks_dir.iterdir()) if locks_dir.exists() else set()
+    assert after_locks == before_locks
+
+    # 4) Reconcile CLI replays persisted events without overwriting current selection with late observation.
+    slot = d.get_slot(gui="SrcGUI", name="Worker One")
+    rec = d.reconcile_late_activity(
+        slot_id=slot["slot_id"],
+        observed_events=[{"event_id": "late-1", "slot_id": slot["slot_id"], "source_timestamp": "2020-01-01T00:00:00Z", "sequence": 1, "provider": "agy", "environment_id": slot["current"]["environment_id"], "native_session_id": "stale-old"}],
+    )
+    assert rec["selected_session_preserved"] is True and rec["replaced"] is False
+    out = StringIO()
+    assert dispatch(parser.parse_args(["-H", str(home), "reconcile", "--slot-id", slot["slot_id"], "-j"]), parser, input_stream=StringIO(), output_stream=out) == 0
+    assert json.loads(out.getvalue())["selected_session_preserved"] is True
