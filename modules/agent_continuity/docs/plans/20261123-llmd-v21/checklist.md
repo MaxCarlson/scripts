@@ -125,3 +125,18 @@
 
 - [x] Merge LLMD v1.6.0 and LLMD-01–31 through PR #43; verify main baseline `93c0f29788fe57e56df124f699ebbd4116a7b6a8`.
 - [x] Keep production installation unchanged; install smoke checks used disposable locations.
+
+## LLMD v2.0.0 feature batch — LLMD-46/47 and LLMD-39 layout
+
+- [x] Record action-default contract, `-d`/`-a` conflict rules, explicit `-N -a` invariant, latency stages, and responsive layout acceptance before code changes.
+- [x] Make operational LLMD commands execute by default for existing-session/ordinary operations; retain `-a` alias and add explicit `-d` preview.
+- [x] Keep read-only commands read-only; implement `last -r` with `last -a` compatibility.
+- [x] Audit and migrate repository tests, examples, docs, and scripts that depended on implicit previews; inventory external callers.
+- [x] Preserve inactive reactivation, historical selection, unknown-native authorization, ambiguity confirmations, and recovery safeguards.
+- [x] Add monotonic startup stage timings, immediate flushed stderr progress, periodic blocking-stage updates, and redaction coverage without JSON stdout contamination.
+- [x] Inspect installed Codex/AGY help and available source for exact-ID bootstrap alternatives; keep fixed read-only bootstrap absent verified evidence.
+- [x] Optimize measured dispatcher overhead; report measured baseline/after values separately from targets.
+- [x] Allocate listing columns from actual values; preserve complete UUIDs at 120 columns and stack before avoidable ID/timestamp clipping.
+- [x] Update README, CLI reference, plan, status, checklist, help registry, and package metadata to v2.0.0.
+- [x] Validate focused tests, full agent_continuity and compatibility suites, Ruff, disposable installation/smoke, version consistency, and diff checks with fake-provider isolation.
+- [ ] Commit and push the feature branch for independent GUI review; do not merge before review acceptance.

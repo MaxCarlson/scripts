@@ -296,9 +296,9 @@ REGISTRY: dict = {
             {
                 "name": "llmd / llm-dispatcher (module)",
                 "path": "modules/agent_continuity",
-                "desc": "Manage named Codex/AGY agents, terminal-scoped history, launch options, and semantic terminal output",
+                "desc": "Manage Codex/AGY sessions with action-default commands, explicit previews, startup progress, terminal history, and responsive output",
                 "help_cmd": ["llmd", "--help"],
-                "version": "1.7.1",
+                "version": "2.0.0",
             },
             {
                 "name": "run_tests.py",

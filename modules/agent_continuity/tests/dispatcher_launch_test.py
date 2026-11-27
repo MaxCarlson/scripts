@@ -199,7 +199,7 @@ def test_continue_preview_is_pure_reports_requested_settings_and_worktree_change
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: process_calls.append((a, k)))
     parser = build_parser()
     args = parser.parse_args([
-        "-H", str(dispatcher.home_dir), "continue", "GUI", "Agent", "-C", str(requested_cwd), "-j", "--",
+        "-H", str(dispatcher.home_dir), "continue", "GUI", "Agent", "-C", str(requested_cwd), "-j", "-d", "--",
         "--sandbox", "workspace-write", "--ask-for-approval", "on-request",
     ])
     output = StringIO()

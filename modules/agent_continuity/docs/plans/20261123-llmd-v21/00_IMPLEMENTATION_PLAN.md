@@ -1,6 +1,30 @@
 # LLMD v2.1 — Implementation Plan and Feature Register
 
-**Status:** IN PROGRESS — sequential implementation authorized on `feature/llmd-v21-implementation-20261123`.
+## LLMD-46/47 and deferred LLMD-39 layout refinement (v2.0.0)
+
+### LLMD-47 — action-default CLI contract
+
+Operational commands (`start`, `continue`, `switch`, `open`, `review`, `return`, `attach`, GUI/slot creation, and ordinary slot lifecycle changes) execute by default when reusing or resuming an existing session. Each accepts `-d/--dry-run` for a side-effect-free preview; legacy `-a/--apply` remains accepted as an alias for execution, and supplying both flags is an error. `register` retains its already-established apply-by-default behavior and gains the same contradiction check. Read-only `list`, `history`, `last`, `recent`, `doctor`, and `pending` stay read-only. `last -r/--resume` explicitly resumes the exact terminal-scoped session; `last -a` remains a compatibility alias for resume. Recovery and destructive operations retain their existing explicit safeguards.
+
+The apply alias is not implicitly supplied for new native conversations. `start` and `review` creation still require the explicit `-N -a` pair. A non-reuse provider `switch` still requires explicit `-a`, preserving its former new-session gate; `switch -r` reuses the exact previous session by default. `-N` without explicit `-a` previews only, including under the new execute-by-default model. Inactive-slot reactivation, historical identity selection, generic native-option authorization, ambiguous-target confirmation, and destructive-operation confirmations remain unchanged. Provider argv following `--` stays opaque to argparse and is never shell-string executed. The separate legacy `agents` CLI is outside this change.
+
+Implementation audit includes all in-repository invocation sites, tests, examples, docs, help text, JSON behavior, and interactive flows that previously depended on implicit previews. Preview-dependent callers must opt into `-d`; external repositories are reported for coordinated migration.
+
+### LLMD-46 — startup stage timings
+
+Instrument dispatcher startup and launch with monotonic durations for registry synchronization, environment/executable discovery, Git context, launch reservation, fixed bootstrap, exact session capture/persistence, and interactive provider handoff. Emit a flushed first progress line promptly and periodic elapsed-time progress during blocking bootstrap, only to human-readable stderr (never JSON stdout); redact provider arguments and secrets. Measure dispatcher-only overhead separately from provider/bootstrap runtime. Optimize measured redundant synchronization and process discovery; subsecond dispatcher-only work and first progress near 250 ms are targets, not assertions absent controlled evidence.
+
+Inspect installed Codex/AGY help, available local documentation and source, and fake-provider behavior for a reliable exact-session creation/capture interface that avoids a separate bootstrap turn. Do not infer from newest-session files or replace the current fixed read-only bootstrap unless the exact-ID protocol is documented and demonstrated safely.
+
+### Deferred LLMD-39 responsive refinement
+
+Allocate column widths from each rendered group's actual values, terminal-cell widths, and available width. Preserve complete native UUIDs whenever they fit; use a stacked row before needlessly clipping timestamps or IDs. Cover long and short agent names, 36-character UUIDs, Unicode/combining characters, empty groups, narrow widths, and wide layouts. JSON and semantic ANSI behavior remain unchanged.
+
+### Acceptance and delivery
+
+Cover default execution, explicit `-d` purity, `-a` compatibility, contradictory flags, `last -r`/`last -a`, explicit `-N -a`, concurrent starts, pending/interrupted bootstrap recovery, exact session reuse, human/JSON progress routing, redaction, timing stage coverage, and responsive column allocation. Use fake providers and disposable registries exclusively. Bump package, module, and help-registry metadata consistently to 2.0.0. Validate module and relevant compatibility suites, Ruff, installation/CLI smoke, version consistency, and diff checks. This batch requires independent GUI review before integration.
+
+**Status:** Historical LLMD v2.1 register; active v2.0.0 corrections are tracked in the section above and `STATUS.md` on `feature/llmd-46-47-action-defaults-latency-20261127`.
 **Owner module:** `modules/agent_continuity` in `MaxCarlson/scripts`.
 **Baseline:** `scripts/main` at `7b9f596ac1abebd5be8395962bfb8124379b082e`, verified 2026-11-23.
 **Companion files:** [Current CLI](01_CURRENT_CLI_REFERENCE.md) and [Proposed Changes / Evaluation Brief](02_PROPOSED_CHANGES_EVALUATION.md).
@@ -11,7 +35,7 @@ Improve LLMD daily operation while keeping its durable GUI/slot/session model, r
 
 A GUI alias refers to an existing ChatGPT GUI conversation; LLMD does not create a ChatGPT chat. An agent *slot* may retain several native Codex/AGY sessions over time. The selected session is the latest activation; lifecycle `active`/`inactive`/`completed` is separate from observed runtime state.
 
-## 2. Complete feature backlog — LLMD-01 through LLMD-24 plus LLMD-39
+## 2. Complete feature backlog — LLMD-01 through LLMD-24, LLMD-39, LLMD-46 and LLMD-47
 
 | ID | Priority | Feature | Deliverable / acceptance |
 |---|---|---|---|
@@ -40,6 +64,8 @@ A GUI alias refers to an existing ChatGPT GUI conversation; LLMD does not create
 | **LLMD-23** | P0 | Invocation-scoped working directory | `-C/--cwd` applies to supported resume paths, validates local or recorded-WSL runtime directories, flags detected repository/worktree context changes, and never rewrites existing native-session cwd provenance |
 | **LLMD-24** | P0 | Launch preview and permission diagnostics | Before provider execution, show resolved executable/argv, cwd, recorded runtime/environment, exact session (or captured-ID placeholder), and requested permission flags. Effective permissions are always marked unverified |
 | **LLMD-39** | P0 | Semantic terminal presentation | Central semantic palette, ANSI-safe aligned/stacked output across LLMD human views, clear lifecycle/runtime/outcome distinctions, no-color and JSON compatibility, Windows/Unicode terminal coverage |
+| **LLMD-46** | P0 | Startup latency instrumentation and optimization | Monotonic stage timings, immediate/periodic flushed progress, redacted stderr diagnostics, measured dispatcher-only overhead, and a safe exact-session bootstrap alternative assessment |
+| **LLMD-47** | P0 | Action-default CLI | Operational LLMD commands execute by default with explicit `-d` preview and compatible `-a`; read-only commands stay read-only; preserve explicit new-session, reactivation, and destructive safeguards |
 
 ## v1.5.2 correctness follow-up
 

@@ -78,7 +78,7 @@ def test_registration_dry_run_and_invalid_arguments(tmp_path):
 def test_named_registration_and_legacy_positional_preview(tmp_path):
     home = tmp_path / 'registry'
     run(home, 'register', '-g', 'P', '-n', 'A', '-p', 'codex', '-i', 'full-session')
-    _, result = run(home, 'continue', 'P', 'A')
+    _, result = run(home, 'continue', 'P', 'A', '-d')
     assert 'Dry-run' in result
     _, result = run(home, 'gui', 'list')
     assert 'P' in result
@@ -530,7 +530,7 @@ def test_review_and_return_round_trip_preserves_exact_cross_provider_sessions(tm
     assert len(original["history"]) == 2 and len(reviewer["history"]) == 2
     listed = json.loads(run(tmp_path / "registry", "list", "-g", "P", "-j")[1])
     assert next(row for row in listed["slots"] if row["name"] == "Implementer")["current_session_id"] == "original-native"
-    _, continue_json = run(tmp_path / "registry", "continue", "-g", "P", "-n", "Implementer", "-j")
+    _, continue_json = run(tmp_path / "registry", "continue", "-g", "P", "-n", "Implementer", "-j", "-d")
     assert json.loads(continue_json)["slot"]["current"]["native_session_id"] == "original-native"
     assert dispatcher.materializer.get_session("codex", original["current"]["environment_id"],
                                                "original-native").cwd_native == str(original_cwd)

@@ -96,7 +96,7 @@ def test_new_launch_dry_run_json_reports_resolved_environment(tmp_path, command,
     if command == "start":
         argv.extend(["GUI", "Agent", "-p", "agy", "-N", "-j"])
     else:
-        argv.extend(["-g", "GUI", "-n", "Agent", "-p", "agy", "-j"])
+        argv.extend(["-g", "GUI", "-n", "Agent", "-p", "agy", "-j", "-d"])
     if explicit_environment:
         argv.extend(["-e", environment.environment_id])
     parser = build_parser()
@@ -113,7 +113,7 @@ def test_start_existing_session_json_is_one_document(tmp_path):
     service = DispatcherService(home_dir=home)
     service.register("GUI", "Agent", provider="codex", session_id="exact")
     parser = build_parser()
-    args = parser.parse_args(["-H", str(home), "start", "GUI", "Agent", "-p", "codex", "-j"])
+    args = parser.parse_args(["-H", str(home), "start", "GUI", "Agent", "-p", "codex", "-j", "-d"])
     output = StringIO()
     assert dispatch(args, parser, input_stream=StringIO(), output_stream=output) == 0
     result = json.loads(output.getvalue())
@@ -127,7 +127,7 @@ def test_start_existing_session_text_preview_keeps_human_output(tmp_path):
     service = DispatcherService(home_dir=home)
     service.register("GUI", "Agent", provider="codex", session_id="exact")
     parser = build_parser()
-    args = parser.parse_args(["-H", str(home), "start", "GUI", "Agent", "-p", "codex"])
+    args = parser.parse_args(["-H", str(home), "start", "GUI", "Agent", "-p", "codex", "-d"])
     output = StringIO()
     assert dispatch(args, parser, input_stream=StringIO(), output_stream=output) == 0
     assert output.getvalue().startswith("Launch preview")
