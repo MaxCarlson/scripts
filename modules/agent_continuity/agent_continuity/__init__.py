@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.6.0"
+__version__ = "1.7.1"
 
 from .dispatcher import DispatcherService
 from .errors import ContinuityError, ErrorCode
