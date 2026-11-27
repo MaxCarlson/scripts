@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -121,6 +122,40 @@ def test_bundle_metadata_distinguishes_rc_and_h4_python_contracts_and_dependenci
     verified = source_integrity.verify_extracted_bundle(bundle_root)
     assert verified["verified"] is True
     assert expected_sha == (out_dir / f"{bundle_builder.ARCHIVE_FILENAME}.sha256").read_text(encoding="utf-8").split()[0]
+
+
+def test_bundle_uses_published_resource_metrics_wheel_without_legacy_source(tmp_path):
+    out_dir, _, _ = _build_bundle(tmp_path, "published_metrics_bundle")
+    bundle_root = out_dir / "h4-windows-acceptance"
+    wheel_name = "mxc_resource_metrics-0.3.0-py3-none-any.whl"
+    wheel = bundle_root / "dependencies" / "wheelhouse" / wheel_name
+    lock = json.loads((bundle_root / "dependencies" / "dependency-lock.json").read_text(encoding="utf-8"))
+    requirements = (bundle_root / "dependencies" / "requirements.txt").read_text(encoding="utf-8")
+
+    assert wheel.is_file()
+    assert hashlib.sha256(wheel.read_bytes()).hexdigest() == (
+        "a1e0e66c5d1b8bed507af26a906d0728b1da65fa14684be4a369da4b60ccac71"
+    )
+    assert lock["canonical_packages"]["mxc-resource-metrics"] == {
+        "version": "0.3.0",
+        "filename": wheel_name,
+        "sha256": "a1e0e66c5d1b8bed507af26a906d0728b1da65fa14684be4a369da4b60ccac71",
+        "path": f"dependencies/wheelhouse/{wheel_name}",
+    }
+    assert "mxc-resource-metrics==0.3.0" in requirements
+    assert "resource-metrics==0.2.0" not in requirements
+    assert not (bundle_root / "sources" / "rc-1.0.0" / "modules" / "resource_metrics").exists()
+    assert not (bundle_root / "sources" / "rc-0.14.0" / "modules" / "resource_metrics").exists()
+
+    probe = subprocess.run(
+        [sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); "
+         "from resource_metrics import cpu_percent, nvidia_gpus; import resource_metrics; "
+         "print(resource_metrics.__file__, callable(cpu_percent), callable(nvidia_gpus))", str(wheel)],
+        capture_output=True, text=True, check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert str(wheel) in probe.stdout
+    assert "True True" in probe.stdout
 
 
 @pytest.mark.skipif(not PWSH, reason="pwsh required for PowerShell bootstrap tests")
