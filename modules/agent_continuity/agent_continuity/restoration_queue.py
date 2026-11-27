@@ -1,0 +1,823 @@
+"""Shared atomic manual restoration queue (LLMD-43)."""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import sqlite3
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
+
+from .errors import ContinuityError, ErrorCode
+from .identifiers import generate_id, now_utc_iso
+from .workspace_checkpoint import (
+    CheckpointSessionEntry,
+    WorkspaceCheckpoint,
+    WorkspaceSlotMetadata,
+    WorkspaceTopologyRequest,
+    WorkspaceWorktreeEvidence,
+    _checkpoint_lock,
+    sanitize_launch_settings,
+)
+
+QUEUE_SCHEMA_VERSION = 1
+
+
+class QueueEntryStatus(StrEnum):
+    """Durable lifecycle state of one restoration queue entry."""
+
+    PENDING = "pending"
+    CLAIMED = "claimed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+UNRESOLVED_QUEUE_STATUSES = frozenset(
+    {
+        QueueEntryStatus.PENDING.value,
+        QueueEntryStatus.CLAIMED.value,
+        QueueEntryStatus.FAILED.value,
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class QueueEntry:
+    """One deduplicated restoration queue item keyed by (checkpoint_id, slot_id)."""
+
+    queue_entry_id: str
+    checkpoint_id: str
+    slot_id: str
+    gui_id: str
+    provider: str
+    native_session_id: str
+    environment_id: str
+    runtime_kind: str
+    status: QueueEntryStatus
+    created_at: str
+    updated_at: str
+    attempts: int = 0
+    claimed_by: str | None = None
+    claim_token: str | None = None
+    claimed_at: str | None = None
+    completed_at: str | None = None
+    launch_id: str | None = None
+    partial: bool = False
+    recovery_note: str | None = None
+    gui_alias: str | None = None
+    slot_name: str | None = None
+    worktree: WorkspaceWorktreeEvidence | None = None
+    launch_settings: dict[str, Any] | None = None
+    requested_topology: WorkspaceTopologyRequest | None = None
+    metadata: WorkspaceSlotMetadata | None = None
+
+    @property
+    def is_unresolved(self) -> bool:
+        return self.status.value in UNRESOLVED_QUEUE_STATUSES
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "queue_entry_id": self.queue_entry_id,
+            "checkpoint_id": self.checkpoint_id,
+            "slot_id": self.slot_id,
+            "gui_id": self.gui_id,
+            "provider": self.provider,
+            "native_session_id": self.native_session_id,
+            "environment_id": self.environment_id,
+            "runtime_kind": self.runtime_kind,
+            "status": self.status.value,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "attempts": self.attempts,
+            "claimed_by": self.claimed_by,
+            "claim_token": self.claim_token,
+            "claimed_at": self.claimed_at,
+            "completed_at": self.completed_at,
+            "launch_id": self.launch_id,
+            "partial": self.partial,
+            "recovery_note": self.recovery_note,
+            "gui_alias": self.gui_alias,
+            "slot_name": self.slot_name,
+            "worktree": self.worktree.to_dict() if self.worktree else None,
+            "launch_settings": dict(self.launch_settings) if self.launch_settings else {},
+            "requested_topology": self.requested_topology.to_dict() if self.requested_topology else None,
+            "metadata": self.metadata.to_dict() if self.metadata else None,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class EnqueueResult:
+    """Result of enqueuing one checkpoint into the shared restoration queue."""
+
+    checkpoint_id: str
+    enqueued: tuple[QueueEntry, ...]
+    deduplicated: tuple[QueueEntry, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimResult:
+    """Atomic claim outcome for a queue entry."""
+
+    acquired: bool
+    reason: str
+    entry: QueueEntry | None = None
+    claim_token: str | None = None
+
+
+_QUEUE_DDL = """
+CREATE TABLE IF NOT EXISTS queue_entries (
+    queue_entry_id TEXT PRIMARY KEY,
+    checkpoint_id TEXT NOT NULL,
+    slot_id TEXT NOT NULL,
+    gui_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    native_session_id TEXT NOT NULL,
+    environment_id TEXT NOT NULL,
+    runtime_kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    claimed_by TEXT,
+    claim_token TEXT,
+    claimed_at TEXT,
+    completed_at TEXT,
+    launch_id TEXT,
+    partial INTEGER NOT NULL DEFAULT 0,
+    recovery_note TEXT,
+    gui_alias TEXT,
+    slot_name TEXT,
+    worktree_json TEXT,
+    launch_settings_json TEXT,
+    requested_topology_json TEXT,
+    metadata_json TEXT,
+    UNIQUE(checkpoint_id, slot_id)
+);
+CREATE INDEX IF NOT EXISTS idx_queue_status ON queue_entries(status, created_at, queue_entry_id);
+CREATE INDEX IF NOT EXISTS idx_queue_checkpoint ON queue_entries(checkpoint_id, slot_id);
+"""
+
+
+class RestorationQueue:
+    """Atomic durable restoration queue shared across operators and terminals."""
+
+    def __init__(self, root_dir: Path) -> None:
+        self.root_dir = Path(root_dir)
+        self.db_path = self.root_dir / "restoration_queue.sqlite3"
+        self.events_path = self.root_dir / "restoration_queue.events.jsonl"
+        self.lock_path = self.root_dir / ".restoration_queue.lock"
+        self._initialize()
+
+    @contextlib.contextmanager
+    def _open_conn(self, db_path: Path | None = None):
+        target = db_path or self.db_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(target), timeout=10.0, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def _connect(self, db_path: Path | None = None):
+        return self._open_conn(db_path)
+
+    def _initialize(self) -> None:
+        with self._connect() as conn:
+            conn.executescript(_QUEUE_DDL)
+
+    def _append_event(self, event_type: str, payload: Mapping[str, Any]) -> None:
+        record = {
+            "schema_version": QUEUE_SCHEMA_VERSION,
+            "event_type": event_type,
+            "recorded_at": now_utc_iso(),
+            "payload": dict(payload),
+        }
+        line = json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n"
+        self.events_path.parent.mkdir(parents=True, exist_ok=True)
+        with _checkpoint_lock(self.lock_path), self.events_path.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(line)
+            fh.flush()
+            with contextlib.suppress(OSError):
+                os.fsync(fh.fileno())
+
+    def enqueue_checkpoint(
+        self,
+        checkpoint: WorkspaceCheckpoint,
+        *,
+        slot_ids: Sequence[str] | None = None,
+    ) -> EnqueueResult:
+        """Enqueue checkpoint entries deduplicated by immutable (checkpoint_id, slot_id)."""
+        selected = set(slot_ids) if slot_ids is not None else None
+        enqueued: list[QueueEntry] = []
+        deduplicated: list[QueueEntry] = []
+
+        for item in checkpoint.sessions:
+            if selected is not None and item.slot_id not in selected:
+                continue
+            entry, created = self._enqueue_one(checkpoint.checkpoint_id, item)
+            if created:
+                enqueued.append(entry)
+            else:
+                deduplicated.append(entry)
+
+        return EnqueueResult(
+            checkpoint_id=checkpoint.checkpoint_id,
+            enqueued=tuple(enqueued),
+            deduplicated=tuple(deduplicated),
+        )
+
+    def _enqueue_one(self, checkpoint_id: str, item: CheckpointSessionEntry) -> tuple[QueueEntry, bool]:
+        now = now_utc_iso()
+        queue_entry_id = generate_id("rq")
+        worktree_json = json.dumps(item.worktree.to_dict(), sort_keys=True)
+        settings_json = json.dumps(sanitize_launch_settings(item.launch_settings), sort_keys=True)
+        topology_json = (
+            json.dumps(item.requested_topology.to_dict(), sort_keys=True) if item.requested_topology else None
+        )
+        metadata_json = json.dumps(item.metadata.to_dict(), sort_keys=True)
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = conn.execute(
+                    "SELECT * FROM queue_entries WHERE checkpoint_id = ? AND slot_id = ?",
+                    (checkpoint_id, item.slot_id),
+                ).fetchone()
+                if existing is not None:
+                    conn.execute("COMMIT")
+                    return self._row_to_entry(existing), False
+
+                conn.execute(
+                    """INSERT INTO queue_entries (
+                        queue_entry_id, checkpoint_id, slot_id, gui_id, provider,
+                        native_session_id, environment_id, runtime_kind, status,
+                        created_at, updated_at, attempts, partial, gui_alias, slot_name,
+                        worktree_json, launch_settings_json, requested_topology_json, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        queue_entry_id,
+                        checkpoint_id,
+                        item.slot_id,
+                        item.gui_id,
+                        item.provider,
+                        item.native_session_id,
+                        item.environment_id,
+                        item.runtime_kind,
+                        QueueEntryStatus.PENDING.value,
+                        now,
+                        now,
+                        item.gui_alias,
+                        item.slot_name,
+                        worktree_json,
+                        settings_json,
+                        topology_json,
+                        metadata_json,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM queue_entries WHERE queue_entry_id = ?",
+                    (queue_entry_id,),
+                ).fetchone()
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+        entry = self._row_to_entry(row)
+        self._append_event("queue.enqueued", entry.to_dict())
+        return entry, True
+
+    def claim(self, queue_entry_id: str, *, operator_id: str) -> ClaimResult:
+        """Atomically claim a pending or failed queue entry for one operator."""
+        if not operator_id or not operator_id.strip():
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "operator_id cannot be empty.")
+        claim_token = generate_id("clm")
+        now = now_utc_iso()
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = conn.execute(
+                    """UPDATE queue_entries
+                       SET status = ?, claimed_by = ?, claim_token = ?, claimed_at = ?,
+                           updated_at = ?, attempts = attempts + 1
+                       WHERE queue_entry_id = ? AND status IN (?, ?)""",
+                    (
+                        QueueEntryStatus.CLAIMED.value,
+                        operator_id,
+                        claim_token,
+                        now,
+                        now,
+                        queue_entry_id,
+                        QueueEntryStatus.PENDING.value,
+                        QueueEntryStatus.FAILED.value,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM queue_entries WHERE queue_entry_id = ?",
+                    (queue_entry_id,),
+                ).fetchone()
+                if cursor.rowcount != 1:
+                    conn.execute("COMMIT")
+                    if row is None:
+                        return ClaimResult(acquired=False, reason="not_found")
+                    return ClaimResult(
+                        acquired=False,
+                        reason=f"already_{row['status']}",
+                        entry=self._row_to_entry(row),
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+        entry = self._row_to_entry(row)
+        self._append_event(
+            "queue.claimed",
+            {
+                "queue_entry_id": entry.queue_entry_id,
+                "claimed_by": operator_id,
+                "claim_token": claim_token,
+                "claimed_at": now,
+                "attempts": entry.attempts,
+            },
+        )
+        return ClaimResult(acquired=True, reason="claimed", entry=entry, claim_token=claim_token)
+
+    def claim_next(self, *, operator_id: str, checkpoint_id: str | None = None) -> ClaimResult | None:
+        """Atomically claim the oldest pending/failed entry (optionally filtered by checkpoint)."""
+        entries = self.list_entries(checkpoint_id=checkpoint_id, unresolved_only=True)
+        for entry in entries:
+            if entry.status in {QueueEntryStatus.PENDING, QueueEntryStatus.FAILED}:
+                result = self.claim(entry.queue_entry_id, operator_id=operator_id)
+                if result.acquired:
+                    return result
+        return None
+
+    def complete(
+        self,
+        queue_entry_id: str,
+        *,
+        claim_token: str,
+        launch_id: str | None = None,
+        note: str | None = None,
+    ) -> QueueEntry:
+        """Mark a claimed queue entry completed using its matching claim token."""
+        now = now_utc_iso()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT * FROM queue_entries WHERE queue_entry_id = ?",
+                    (queue_entry_id,),
+                ).fetchone()
+                if row is None:
+                    conn.execute("COMMIT")
+                    raise ContinuityError(
+                        ErrorCode.SESSION_NOT_FOUND,
+                        f"Queue entry {queue_entry_id!r} was not found.",
+                    )
+                if row["status"] != QueueEntryStatus.CLAIMED.value or row["claim_token"] != claim_token:
+                    conn.execute("COMMIT")
+                    raise ContinuityError(
+                        ErrorCode.ASSOCIATION_CONFLICT,
+                        f"Queue entry {queue_entry_id!r} cannot be completed with the supplied claim token.",
+                        {"status": row["status"]},
+                    )
+                conn.execute(
+                    """UPDATE queue_entries
+                       SET status = ?, completed_at = ?, updated_at = ?, launch_id = COALESCE(?, launch_id),
+                           partial = 0, recovery_note = COALESCE(?, recovery_note)
+                       WHERE queue_entry_id = ? AND status = ? AND claim_token = ?""",
+                    (
+                        QueueEntryStatus.COMPLETED.value,
+                        now,
+                        now,
+                        launch_id,
+                        note,
+                        queue_entry_id,
+                        QueueEntryStatus.CLAIMED.value,
+                        claim_token,
+                    ),
+                )
+                updated = conn.execute(
+                    "SELECT * FROM queue_entries WHERE queue_entry_id = ?",
+                    (queue_entry_id,),
+                ).fetchone()
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+        entry = self._row_to_entry(updated)
+        self._append_event(
+            "queue.completed",
+            {
+                "queue_entry_id": entry.queue_entry_id,
+                "claim_token": claim_token,
+                "completed_at": now,
+                "launch_id": entry.launch_id,
+                "recovery_note": entry.recovery_note,
+            },
+        )
+        return entry
+
+    def record_failure(
+        self,
+        queue_entry_id: str,
+        *,
+        claim_token: str,
+        reason: str,
+        partial: bool = False,
+    ) -> QueueEntry:
+        """Transition a claimed entry to failed (unresolved) while preserving recovery context."""
+        now = now_utc_iso()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT * FROM queue_entries WHERE queue_entry_id = ?",
+                    (queue_entry_id,),
+                ).fetchone()
+                if row is None:
+                    conn.execute("COMMIT")
+                    raise ContinuityError(ErrorCode.SESSION_NOT_FOUND, f"Queue entry {queue_entry_id!r} was not found.")
+                if row["status"] != QueueEntryStatus.CLAIMED.value or row["claim_token"] != claim_token:
+                    conn.execute("COMMIT")
+                    raise ContinuityError(
+                        ErrorCode.ASSOCIATION_CONFLICT,
+                        f"Queue entry {queue_entry_id!r} claim token mismatch.",
+                        {"status": row["status"]},
+                    )
+                conn.execute(
+                    """UPDATE queue_entries
+                       SET status = ?, updated_at = ?, partial = ?, recovery_note = ?,
+                           claimed_by = NULL, claim_token = NULL, claimed_at = NULL
+                       WHERE queue_entry_id = ? AND status = ? AND claim_token = ?""",
+                    (
+                        QueueEntryStatus.FAILED.value,
+                        now,
+                        1 if partial else 0,
+                        reason,
+                        queue_entry_id,
+                        QueueEntryStatus.CLAIMED.value,
+                        claim_token,
+                    ),
+                )
+                updated = conn.execute(
+                    "SELECT * FROM queue_entries WHERE queue_entry_id = ?",
+                    (queue_entry_id,),
+                ).fetchone()
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+        entry = self._row_to_entry(updated)
+        self._append_event(
+            "queue.failed",
+            {
+                "queue_entry_id": entry.queue_entry_id,
+                "claim_token": claim_token,
+                "updated_at": now,
+                "partial": partial,
+                "recovery_note": reason,
+            },
+        )
+        return entry
+
+    def release(
+        self,
+        queue_entry_id: str,
+        *,
+        claim_token: str,
+        reason: str | None = None,
+    ) -> QueueEntry:
+        """Release a claimed entry back to pending."""
+        now = now_utc_iso()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT * FROM queue_entries WHERE queue_entry_id = ?",
+                    (queue_entry_id,),
+                ).fetchone()
+                if row is None:
+                    conn.execute("COMMIT")
+                    raise ContinuityError(ErrorCode.SESSION_NOT_FOUND, f"Queue entry {queue_entry_id!r} was not found.")
+                if row["status"] != QueueEntryStatus.CLAIMED.value or row["claim_token"] != claim_token:
+                    conn.execute("COMMIT")
+                    raise ContinuityError(
+                        ErrorCode.ASSOCIATION_CONFLICT,
+                        f"Queue entry {queue_entry_id!r} claim token mismatch.",
+                        {"status": row["status"]},
+                    )
+                conn.execute(
+                    """UPDATE queue_entries
+                       SET status = ?, updated_at = ?, recovery_note = COALESCE(?, recovery_note),
+                           claimed_by = NULL, claim_token = NULL, claimed_at = NULL
+                       WHERE queue_entry_id = ? AND status = ? AND claim_token = ?""",
+                    (
+                        QueueEntryStatus.PENDING.value,
+                        now,
+                        reason,
+                        queue_entry_id,
+                        QueueEntryStatus.CLAIMED.value,
+                        claim_token,
+                    ),
+                )
+                updated = conn.execute(
+                    "SELECT * FROM queue_entries WHERE queue_entry_id = ?",
+                    (queue_entry_id,),
+                ).fetchone()
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+        entry = self._row_to_entry(updated)
+        self._append_event(
+            "queue.released",
+            {
+                "queue_entry_id": entry.queue_entry_id,
+                "claim_token": claim_token,
+                "updated_at": now,
+                "recovery_note": reason,
+            },
+        )
+        return entry
+
+    def cancel(
+        self,
+        queue_entry_id: str,
+        *,
+        operator_id: str,
+        reason: str,
+        claim_token: str | None = None,
+    ) -> QueueEntry:
+        """Cancel a pending, failed, or matching-token claimed entry."""
+        now = now_utc_iso()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT * FROM queue_entries WHERE queue_entry_id = ?",
+                    (queue_entry_id,),
+                ).fetchone()
+                if row is None:
+                    conn.execute("COMMIT")
+                    raise ContinuityError(ErrorCode.SESSION_NOT_FOUND, f"Queue entry {queue_entry_id!r} was not found.")
+                status = row["status"]
+                if status in {QueueEntryStatus.COMPLETED.value, QueueEntryStatus.CANCELLED.value}:
+                    conn.execute("COMMIT")
+                    raise ContinuityError(
+                        ErrorCode.ASSOCIATION_CONFLICT,
+                        f"Queue entry {queue_entry_id!r} is already {status}.",
+                    )
+                if status == QueueEntryStatus.CLAIMED.value and row["claim_token"] != claim_token:
+                    conn.execute("COMMIT")
+                    raise ContinuityError(
+                        ErrorCode.ASSOCIATION_CONFLICT,
+                        f"Queue entry {queue_entry_id!r} is claimed by another operator.",
+                    )
+                conn.execute(
+                    """UPDATE queue_entries
+                       SET status = ?, updated_at = ?, recovery_note = ?,
+                           claimed_by = NULL, claim_token = NULL, claimed_at = NULL
+                       WHERE queue_entry_id = ?""",
+                    (QueueEntryStatus.CANCELLED.value, now, f"{operator_id}: {reason}", queue_entry_id),
+                )
+                updated = conn.execute(
+                    "SELECT * FROM queue_entries WHERE queue_entry_id = ?",
+                    (queue_entry_id,),
+                ).fetchone()
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+        entry = self._row_to_entry(updated)
+        self._append_event(
+            "queue.cancelled",
+            {
+                "queue_entry_id": entry.queue_entry_id,
+                "operator_id": operator_id,
+                "updated_at": now,
+                "recovery_note": entry.recovery_note,
+            },
+        )
+        return entry
+
+    def get_entry(self, queue_entry_id: str) -> QueueEntry:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM queue_entries WHERE queue_entry_id = ?",
+                (queue_entry_id,),
+            ).fetchone()
+        if row is None:
+            raise ContinuityError(ErrorCode.SESSION_NOT_FOUND, f"Queue entry {queue_entry_id!r} was not found.")
+        return self._row_to_entry(row)
+
+    def list_entries(
+        self,
+        *,
+        status: QueueEntryStatus | str | None = None,
+        checkpoint_id: str | None = None,
+        unresolved_only: bool = False,
+    ) -> tuple[QueueEntry, ...]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status.value if isinstance(status, QueueEntryStatus) else str(status))
+        if checkpoint_id is not None:
+            clauses.append("checkpoint_id = ?")
+            params.append(checkpoint_id)
+        if unresolved_only:
+            placeholders = ", ".join("?" for _ in UNRESOLVED_QUEUE_STATUSES)
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(sorted(UNRESOLVED_QUEUE_STATUSES))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        query = f"SELECT * FROM queue_entries {where} ORDER BY created_at, queue_entry_id"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return tuple(self._row_to_entry(row) for row in rows)
+
+    def rebuild_index(self) -> int:
+        """Rebuild the SQLite projection from the durable event log, preserving unresolved entries."""
+        if not self.events_path.exists():
+            self._initialize()
+            return 0
+        staging = self.root_dir / f".restoration_queue.{os.getpid()}.staging.sqlite3"
+        with contextlib.suppress(OSError):
+            staging.unlink(missing_ok=True)
+        replayed = 0
+        with _checkpoint_lock(self.lock_path):
+            with self._connect(staging) as conn:
+                conn.executescript(_QUEUE_DDL)
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for raw_line in self.events_path.read_text(encoding="utf-8").splitlines():
+                        if not raw_line.strip():
+                            continue
+                        event = json.loads(raw_line)
+                        self._apply_event(conn, event["event_type"], event["payload"])
+                        replayed += 1
+                    conn.execute("COMMIT")
+                except Exception:
+                    conn.execute("ROLLBACK")
+                    raise
+            os.replace(staging, self.db_path)
+            for suffix in ("-wal", "-shm"):
+                with contextlib.suppress(OSError):
+                    Path(f"{self.db_path}{suffix}").unlink(missing_ok=True)
+        return replayed
+
+    def _apply_event(self, conn: sqlite3.Connection, event_type: str, payload: Mapping[str, Any]) -> None:
+        if event_type == "queue.enqueued":
+            conn.execute(
+                """INSERT OR IGNORE INTO queue_entries (
+                    queue_entry_id, checkpoint_id, slot_id, gui_id, provider,
+                    native_session_id, environment_id, runtime_kind, status,
+                    created_at, updated_at, attempts, partial, gui_alias, slot_name,
+                    worktree_json, launch_settings_json, requested_topology_json, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    payload["queue_entry_id"],
+                    payload["checkpoint_id"],
+                    payload["slot_id"],
+                    payload["gui_id"],
+                    payload["provider"],
+                    payload["native_session_id"],
+                    payload["environment_id"],
+                    payload["runtime_kind"],
+                    payload["status"],
+                    payload["created_at"],
+                    payload["updated_at"],
+                    int(payload.get("attempts", 0)),
+                    1 if payload.get("partial") else 0,
+                    payload.get("gui_alias"),
+                    payload.get("slot_name"),
+                    json.dumps(payload.get("worktree") or {}, sort_keys=True),
+                    json.dumps(payload.get("launch_settings") or {}, sort_keys=True),
+                    (
+                        json.dumps(payload["requested_topology"], sort_keys=True)
+                        if payload.get("requested_topology")
+                        else None
+                    ),
+                    json.dumps(payload.get("metadata") or {}, sort_keys=True),
+                ),
+            )
+        elif event_type == "queue.claimed":
+            conn.execute(
+                """UPDATE queue_entries
+                   SET status = ?, claimed_by = ?, claim_token = ?, claimed_at = ?,
+                       updated_at = ?, attempts = ?
+                   WHERE queue_entry_id = ?""",
+                (
+                    QueueEntryStatus.CLAIMED.value,
+                    payload["claimed_by"],
+                    payload["claim_token"],
+                    payload["claimed_at"],
+                    payload["claimed_at"],
+                    int(payload["attempts"]),
+                    payload["queue_entry_id"],
+                ),
+            )
+        elif event_type == "queue.completed":
+            conn.execute(
+                """UPDATE queue_entries
+                   SET status = ?, completed_at = ?, updated_at = ?,
+                       launch_id = COALESCE(?, launch_id), partial = 0,
+                       recovery_note = COALESCE(?, recovery_note)
+                   WHERE queue_entry_id = ?""",
+                (
+                    QueueEntryStatus.COMPLETED.value,
+                    payload["completed_at"],
+                    payload["completed_at"],
+                    payload.get("launch_id"),
+                    payload.get("recovery_note"),
+                    payload["queue_entry_id"],
+                ),
+            )
+        elif event_type == "queue.failed":
+            conn.execute(
+                """UPDATE queue_entries
+                   SET status = ?, updated_at = ?, partial = ?, recovery_note = ?,
+                       claimed_by = NULL, claim_token = NULL, claimed_at = NULL
+                   WHERE queue_entry_id = ?""",
+                (
+                    QueueEntryStatus.FAILED.value,
+                    payload["updated_at"],
+                    1 if payload.get("partial") else 0,
+                    payload.get("recovery_note"),
+                    payload["queue_entry_id"],
+                ),
+            )
+        elif event_type == "queue.released":
+            conn.execute(
+                """UPDATE queue_entries
+                   SET status = ?, updated_at = ?, recovery_note = COALESCE(?, recovery_note),
+                       claimed_by = NULL, claim_token = NULL, claimed_at = NULL
+                   WHERE queue_entry_id = ?""",
+                (
+                    QueueEntryStatus.PENDING.value,
+                    payload["updated_at"],
+                    payload.get("recovery_note"),
+                    payload["queue_entry_id"],
+                ),
+            )
+        elif event_type == "queue.cancelled":
+            conn.execute(
+                """UPDATE queue_entries
+                   SET status = ?, updated_at = ?, recovery_note = ?,
+                       claimed_by = NULL, claim_token = NULL, claimed_at = NULL
+                   WHERE queue_entry_id = ?""",
+                (
+                    QueueEntryStatus.CANCELLED.value,
+                    payload["updated_at"],
+                    payload.get("recovery_note"),
+                    payload["queue_entry_id"],
+                ),
+            )
+
+    def _row_to_entry(self, row: sqlite3.Row) -> QueueEntry:
+        worktree_raw = json.loads(row["worktree_json"]) if row["worktree_json"] else None
+        settings_raw = json.loads(row["launch_settings_json"]) if row["launch_settings_json"] else {}
+        topology_raw = json.loads(row["requested_topology_json"]) if row["requested_topology_json"] else None
+        metadata_raw = json.loads(row["metadata_json"]) if row["metadata_json"] else None
+        return QueueEntry(
+            queue_entry_id=str(row["queue_entry_id"]),
+            checkpoint_id=str(row["checkpoint_id"]),
+            slot_id=str(row["slot_id"]),
+            gui_id=str(row["gui_id"]),
+            provider=str(row["provider"]),
+            native_session_id=str(row["native_session_id"]),
+            environment_id=str(row["environment_id"]),
+            runtime_kind=str(row["runtime_kind"]),
+            status=QueueEntryStatus(row["status"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+            attempts=int(row["attempts"]),
+            claimed_by=str(row["claimed_by"]) if row["claimed_by"] is not None else None,
+            claim_token=str(row["claim_token"]) if row["claim_token"] is not None else None,
+            claimed_at=str(row["claimed_at"]) if row["claimed_at"] is not None else None,
+            completed_at=str(row["completed_at"]) if row["completed_at"] is not None else None,
+            launch_id=str(row["launch_id"]) if row["launch_id"] is not None else None,
+            partial=bool(row["partial"]),
+            recovery_note=str(row["recovery_note"]) if row["recovery_note"] is not None else None,
+            gui_alias=str(row["gui_alias"]) if row["gui_alias"] is not None else None,
+            slot_name=str(row["slot_name"]) if row["slot_name"] is not None else None,
+            worktree=WorkspaceWorktreeEvidence.from_dict(worktree_raw) if worktree_raw else None,
+            launch_settings=dict(settings_raw),
+            requested_topology=WorkspaceTopologyRequest.from_dict(topology_raw),
+            metadata=WorkspaceSlotMetadata.from_dict(metadata_raw) if metadata_raw else None,
+        )
