@@ -1,6 +1,6 @@
 # Status
 
-The first implementation is in progress on isolated branch `feature/managed-selective-validation-20261128`, based on Scripts `e299c256c397d16dba1d6aea0f1750cac1cfdd5e`. Selective Python execution, manifest contracts for six pytest targets, the early PowerShell dispatch, and the consumer-facing guide are implemented. No named/full validation flow or primary checkout was changed.
+Implementation is complete on isolated branch `feature/managed-selective-validation-20261128`, pushed at `9ce2847a`. Selective Python execution, manifest contracts for six pytest targets, the early PowerShell dispatch, and the consumer-facing guide are implemented. No named/full validation flow or primary checkout was changed.
 
 ## Current findings
 
@@ -22,4 +22,4 @@ The first implementation is in progress on isolated branch `feature/managed-sele
 
 ## Next
 
-Review the complete task-only diff, then commit and push the feature branch. Do not stage generated reports or temp roots.
+The feature branch is ready for review and for Agent-Environment to adopt the documented `test-verify` interface. Keep generated run receipts and temp directories outside source commits.
