@@ -84,6 +84,7 @@ class QueueEntry:
     reservation_id: str | None = None
     relay_spawn_acknowledged: bool = False
     dispatcher_ownership_acknowledged: bool = False
+    provider_startup_confirmed: bool = False
     association_confirmed: bool = False
     current_liveness: str = "unknown"
     resumability_confirmed: bool = False
@@ -124,6 +125,7 @@ class QueueEntry:
             "reservation_id": self.reservation_id,
             "relay_spawn_acknowledged": self.relay_spawn_acknowledged,
             "dispatcher_ownership_acknowledged": self.dispatcher_ownership_acknowledged,
+            "provider_startup_confirmed": self.provider_startup_confirmed,
             "association_confirmed": self.association_confirmed,
             "current_liveness": self.current_liveness,
             "resumability_confirmed": self.resumability_confirmed,
@@ -196,6 +198,7 @@ CREATE TABLE IF NOT EXISTS queue_entries (
     reservation_id TEXT,
     relay_spawn_acknowledged INTEGER NOT NULL DEFAULT 0,
     dispatcher_ownership_acknowledged INTEGER NOT NULL DEFAULT 0,
+    provider_startup_confirmed INTEGER NOT NULL DEFAULT 0,
     association_confirmed INTEGER NOT NULL DEFAULT 0,
     current_liveness TEXT NOT NULL DEFAULT 'unknown',
     resumability_confirmed INTEGER NOT NULL DEFAULT 0,
@@ -265,6 +268,10 @@ class RestorationQueue:
             (
                 "dispatcher_ownership_acknowledged",
                 "ALTER TABLE queue_entries ADD COLUMN dispatcher_ownership_acknowledged INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "provider_startup_confirmed",
+                "ALTER TABLE queue_entries ADD COLUMN provider_startup_confirmed INTEGER NOT NULL DEFAULT 0",
             ),
             ("association_confirmed", "ALTER TABLE queue_entries ADD COLUMN association_confirmed INTEGER NOT NULL DEFAULT 0"),
             ("current_liveness", "ALTER TABLE queue_entries ADD COLUMN current_liveness TEXT NOT NULL DEFAULT 'unknown'"),
@@ -771,6 +778,7 @@ class RestorationQueue:
         relay_spawn_acknowledged: bool | None = None,
         dispatcher_ownership_acknowledged: bool = False,
         require_dispatcher_ownership: bool = True,
+        provider_startup_confirmed: bool = False,
         association_confirmed: bool = False,
         current_liveness: str = "unknown",
         resumability_confirmed: bool = False,
@@ -806,6 +814,7 @@ class RestorationQueue:
                     "spawn_confirmed": True,
                     "relay_spawn_acknowledged": relay_ack,
                     "dispatcher_ownership_acknowledged": bool(dispatcher_ownership_acknowledged),
+                    "provider_startup_confirmed": bool(provider_startup_confirmed),
                     "association_confirmed": bool(association_confirmed),
                     "current_liveness": str(current_liveness),
                     "resumability_confirmed": bool(resumability_confirmed),
@@ -1075,10 +1084,10 @@ class RestorationQueue:
                     native_session_id, environment_id, runtime_kind, status,
                     created_at, updated_at, attempts, launch_submission_state, spawn_confirmed,
                     reservation_id, relay_spawn_acknowledged, dispatcher_ownership_acknowledged,
-                    association_confirmed, current_liveness, resumability_confirmed,
+                    provider_startup_confirmed, association_confirmed, current_liveness, resumability_confirmed,
                     partial, gui_alias, slot_name,
                     worktree_json, launch_settings_json, requested_topology_json, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     payload["queue_entry_id"],
                     payload["checkpoint_id"],
@@ -1097,6 +1106,7 @@ class RestorationQueue:
                     payload.get("reservation_id"),
                     1 if payload.get("relay_spawn_acknowledged") else 0,
                     1 if payload.get("dispatcher_ownership_acknowledged") else 0,
+                    1 if payload.get("provider_startup_confirmed") else 0,
                     1 if payload.get("association_confirmed") else 0,
                     str(payload.get("current_liveness", "unknown")),
                     1 if payload.get("resumability_confirmed") else 0,
@@ -1211,6 +1221,7 @@ class RestorationQueue:
                        spawn_confirmed = ?,
                        relay_spawn_acknowledged = ?,
                        dispatcher_ownership_acknowledged = ?,
+                       provider_startup_confirmed = ?,
                        association_confirmed = ?,
                        current_liveness = ?,
                        resumability_confirmed = ?,
@@ -1225,6 +1236,7 @@ class RestorationQueue:
                     1 if payload.get("spawn_confirmed", True) else 0,
                     1 if payload.get("relay_spawn_acknowledged", payload.get("spawn_confirmed", True)) else 0,
                     1 if payload.get("dispatcher_ownership_acknowledged", False) else 0,
+                    1 if payload.get("provider_startup_confirmed", False) else 0,
                     1 if payload.get("association_confirmed", False) else 0,
                     str(payload.get("current_liveness", "unknown")),
                     1 if payload.get("resumability_confirmed", False) else 0,
@@ -1307,6 +1319,9 @@ class RestorationQueue:
             ),
             dispatcher_ownership_acknowledged=(
                 bool(row["dispatcher_ownership_acknowledged"]) if "dispatcher_ownership_acknowledged" in row_keys else False
+            ),
+            provider_startup_confirmed=(
+                bool(row["provider_startup_confirmed"]) if "provider_startup_confirmed" in row_keys else False
             ),
             association_confirmed=bool(row["association_confirmed"]) if "association_confirmed" in row_keys else False,
             current_liveness=str(row["current_liveness"]) if "current_liveness" in row_keys and row["current_liveness"] is not None else "unknown",

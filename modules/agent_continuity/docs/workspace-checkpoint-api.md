@@ -72,3 +72,17 @@ Note: Add `save`, `restore`, `checkpoints`, `queue` to `modules/scripts_help/scr
 1. `pane-run` asserts exact provider/environment/session identity and consumes the reservation under the already-held `slot-<slot_id>.lock`, validating checkpoint, queue entry, attempt, token, slot, provider, environment, native session, terminal launch, and pane correlation.
 2. Ordinary slot operations check active reservations and preparation leases under the canonical slot lock. Provider association remains unconfirmed until exact evidence is explicitly recorded; reservation consumption and relay spawn alone do not confirm it.
 3. `save`, `restore`, `checkpoints`, and `queue` are registered on `llmd`; managed restore runs through Terminal Launcher and the canonical dispatcher CLI. Exact-session manual continuation is available, and direct native fallback requires `--direct-native`.
+
+### Release-Critical Callable Interfaces for Agent #1 Integration
+
+1. **Consume reservation under held canonical `slot-<slot_id>.lock`**:
+   - `RestorationReservationStore(home_dir).consume_reservation_locked(reservation_id, *, reservation_token, checkpoint_id, queue_entry_id=None, attempt, slot_id, provider, native_session_id, environment_id, launch_id, pane_id, consumer_pid=None, exact_association_confirmed=False, require_bound_launch=True)`
+   - Consumes the reservation with `dispatcher_ownership_acknowledged=True`, `provider_startup_confirmed=False`, and `exact_association_confirmed=False` by default.
+2. **Record attempt-correlated provider startup and exact association separately (after provider process starts)**:
+   - `RestorationReservationStore(home_dir).acknowledge_provider_association_locked(reservation_id, *, reservation_token, provider_pid, provider_startup_confirmed=True, exact_association_confirmed=True)`
+   - Requires positive `provider_pid` when `provider_startup_confirmed=True`, and requires `provider_startup_confirmed=True` before `exact_association_confirmed=True` is accepted.
+3. **Preserve post-consumption uncertainty under held `slot-<slot_id>.lock`**:
+   - `RestorationReservationStore(home_dir).mark_ambiguous_locked(reservation_id, *, reason, launch_id=None, pane_id=None)`
+   - Coordinator-side `mark_ambiguous(..., timeout_seconds=0.1)` and `abort_reservation(..., timeout_seconds=0.1)` use bounded lock acquisition plus `rsv-meta-<slot_id>` so they never block on a long-lived child `slot-<slot_id>.lock` and never overwrite a newer attempt's active marker.
+4. **Verify ownership, startup, and association independently**:
+   - `ReservationOwnershipVerifier(home_dir).verify_ownership_details(request, *, launch_id, pane_id)` returns `{dispatcher_ownership_acknowledged, provider_startup_confirmed, exact_association_confirmed, provider_pid, reservation_state, reason}` strictly from attempt-correlated reservation evidence (never inferred from `dispatcher.get_slot_by_id(...)["current"]`).

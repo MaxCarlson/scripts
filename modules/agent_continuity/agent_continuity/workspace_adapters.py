@@ -617,17 +617,34 @@ class TerminalLauncherRestoreAdapter:
         startup_timed_out: bool,
     ) -> RestoreLaunchOutcome:
         relay_spawn_ok = bool(rec is not None and getattr(rec, "spawn_acknowledged", False))
-        raw_state = getattr(rec, "state", None)
+        latest_rec = rec
+        raw_state = getattr(latest_rec, "state", None)
         current_liveness = str(getattr(raw_state, "value", raw_state) or "unknown")
+        exit_code = getattr(latest_rec, "exit_code", None)
         ownership_ok = False
+        startup_ok = False
         association_ok = False
+        reservation_state: str | None = None
+        verifier_reason: str | None = None
+
         if relay_spawn_ok and self.ownership_verifier is not None:
             deadline = time.monotonic() + min(max(self.startup_timeout, 0.1), 2.0)
             while True:
                 try:
-                    ownership_ok, association_ok = self.ownership_verifier.verify_ownership(
-                        req, launch_id=launch_id, pane_id=pane_id
-                    )
+                    if hasattr(self.ownership_verifier, "verify_ownership_details"):
+                        details = self.ownership_verifier.verify_ownership_details(
+                            req, launch_id=launch_id, pane_id=pane_id
+                        )
+                        ownership_ok = bool(details.get("dispatcher_ownership_acknowledged", False))
+                        startup_ok = bool(details.get("provider_startup_confirmed", False))
+                        association_ok = bool(details.get("exact_association_confirmed", False))
+                        reservation_state = details.get("reservation_state")
+                        verifier_reason = details.get("reason")
+                    else:
+                        ownership_ok, association_ok = self.ownership_verifier.verify_ownership(
+                            req, launch_id=launch_id, pane_id=pane_id
+                        )
+                        startup_ok = bool(ownership_ok and association_ok)
                 except Exception as exc:
                     if self.reservation_store is not None and req.reservation_id:
                         with contextlib.suppress(Exception):
@@ -645,13 +662,31 @@ class TerminalLauncherRestoreAdapter:
                         spawn_confirmed=relay_spawn_ok,
                         relay_spawn_acknowledged=relay_spawn_ok,
                         dispatcher_ownership_acknowledged=False,
+                        provider_startup_confirmed=False,
                         association_confirmed=False,
                         current_liveness=current_liveness,
                         resumability_confirmed=False,
                         submission_ambiguous=True,
                         geometry_fallback_used=used_fallback,
                     )
-                if ownership_ok or not self.require_dispatcher_ownership or not getattr(req, "reservation_id", None):
+                if self.managed_store is not None:
+                    with contextlib.suppress(Exception):
+                        for cand in self.managed_store.enumerate_processes(launch_id=launch_id):
+                            if getattr(cand, "pane_id", None) == pane_id:
+                                latest_rec = cand
+                                raw_state = getattr(latest_rec, "state", None)
+                                current_liveness = str(getattr(raw_state, "value", raw_state) or "unknown")
+                                exit_code = getattr(latest_rec, "exit_code", None)
+                                break
+                if reservation_state in {"ambiguous", "aborted"}:
+                    break
+                if current_liveness in {"exited", "failed"} and exit_code not in {None, 0}:
+                    break
+                if ownership_ok and startup_ok and association_ok:
+                    break
+                if (
+                    not self.require_dispatcher_ownership or not getattr(req, "reservation_id", None)
+                ) and (ownership_ok or time.monotonic() >= deadline):
                     break
                 if time.monotonic() >= deadline:
                     break
@@ -674,7 +709,55 @@ class TerminalLauncherRestoreAdapter:
                 spawn_confirmed=False,
                 relay_spawn_acknowledged=False,
                 dispatcher_ownership_acknowledged=False,
+                provider_startup_confirmed=False,
                 association_confirmed=False,
+                current_liveness=current_liveness,
+                resumability_confirmed=False,
+                submission_ambiguous=False,
+                geometry_fallback_used=used_fallback,
+            )
+
+        if reservation_state == "ambiguous":
+            return RestoreLaunchOutcome(
+                accepted=True,
+                launch_id=launch_id,
+                pane_id=pane_id,
+                failure_reason=verifier_reason or "post_consumption_uncertainty",
+                spawn_confirmed=True,
+                relay_spawn_acknowledged=True,
+                dispatcher_ownership_acknowledged=ownership_ok,
+                provider_startup_confirmed=False,
+                association_confirmed=False,
+                current_liveness=current_liveness,
+                resumability_confirmed=False,
+                submission_ambiguous=True,
+                geometry_fallback_used=used_fallback,
+            )
+
+        if exit_code not in {None, 0} or (current_liveness in {"exited", "failed"} and not (startup_ok and association_ok)):
+            fail_reason = (
+                f"provider_nonzero_exit:{exit_code}"
+                if exit_code not in {None, 0}
+                else (verifier_reason or "provider_exited_before_association")
+            )
+            if self.reservation_store is not None and req.reservation_id:
+                with contextlib.suppress(Exception):
+                    self.reservation_store.mark_ambiguous(
+                        req.reservation_id,
+                        reason=fail_reason,
+                        launch_id=launch_id,
+                        pane_id=pane_id,
+                    )
+            return RestoreLaunchOutcome(
+                accepted=True,
+                launch_id=launch_id,
+                pane_id=pane_id,
+                failure_reason=fail_reason,
+                spawn_confirmed=True,
+                relay_spawn_acknowledged=True,
+                dispatcher_ownership_acknowledged=ownership_ok,
+                provider_startup_confirmed=startup_ok,
+                association_confirmed=association_ok,
                 current_liveness=current_liveness,
                 resumability_confirmed=False,
                 submission_ambiguous=False,
@@ -686,7 +769,7 @@ class TerminalLauncherRestoreAdapter:
                 with contextlib.suppress(Exception):
                     self.reservation_store.mark_ambiguous(
                         req.reservation_id,
-                        reason="dispatcher_ownership_unconfirmed",
+                        reason=verifier_reason or "dispatcher_ownership_unconfirmed",
                         launch_id=launch_id,
                         pane_id=pane_id,
                     )
@@ -694,10 +777,11 @@ class TerminalLauncherRestoreAdapter:
                 accepted=True,
                 launch_id=launch_id,
                 pane_id=pane_id,
-                failure_reason="dispatcher_ownership_unconfirmed",
+                failure_reason=verifier_reason or "dispatcher_ownership_unconfirmed",
                 spawn_confirmed=True,
                 relay_spawn_acknowledged=True,
                 dispatcher_ownership_acknowledged=False,
+                provider_startup_confirmed=startup_ok,
                 association_confirmed=association_ok,
                 current_liveness=current_liveness,
                 resumability_confirmed=False,
@@ -709,9 +793,11 @@ class TerminalLauncherRestoreAdapter:
             accepted=True,
             launch_id=launch_id,
             pane_id=pane_id,
+            failure_reason=verifier_reason,
             spawn_confirmed=True,
             relay_spawn_acknowledged=True,
             dispatcher_ownership_acknowledged=ownership_ok,
+            provider_startup_confirmed=startup_ok,
             association_confirmed=association_ok,
             current_liveness=current_liveness,
             resumability_confirmed=False,

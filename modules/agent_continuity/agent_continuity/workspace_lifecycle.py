@@ -770,6 +770,7 @@ class RestoreLaunchOutcome:
     spawn_confirmed: bool | None = None
     relay_spawn_acknowledged: bool = False
     dispatcher_ownership_acknowledged: bool = False
+    provider_startup_confirmed: bool = False
     association_confirmed: bool = False
     current_liveness: str = "unknown"
     resumability_confirmed: bool = False
@@ -896,6 +897,7 @@ class RestoreItemOutcome:
     spawn_confirmed: bool = False
     relay_spawn_acknowledged: bool = False
     dispatcher_ownership_acknowledged: bool = False
+    provider_startup_confirmed: bool = False
     association_confirmed: bool = False
     current_liveness: str = "unknown"
     resumability_confirmed: bool = False
@@ -1203,13 +1205,22 @@ class TopologyRestorer:
             )
             relay_ack = bool(launch_res.relay_spawn_acknowledged or spawn_confirmed)
             dispatcher_ack = bool(launch_res.dispatcher_ownership_acknowledged)
+            startup_confirmed = bool(launch_res.provider_startup_confirmed)
+            startup_unconfirmed = bool(reservation_id is not None and not startup_confirmed)
             association_unconfirmed = bool(reservation_id is not None and launch_res.association_confirmed is not True)
-            if not spawn_confirmed or (require_dispatcher_ownership and not dispatcher_ack) or association_unconfirmed:
+            if (
+                not spawn_confirmed
+                or (require_dispatcher_ownership and not dispatcher_ack)
+                or startup_unconfirmed
+                or association_unconfirmed
+            ):
                 uncertain_reason = launch_res.failure_reason or (
                     "launch_accepted_spawn_unconfirmed"
                     if not spawn_confirmed
                     else "relay_spawned_dispatcher_ownership_unconfirmed"
                     if require_dispatcher_ownership and not dispatcher_ack
+                    else "provider_startup_unconfirmed"
+                    if startup_unconfirmed
                     else "exact_provider_association_unconfirmed"
                 )
                 if reservation_store is not None and reservation_id is not None:
@@ -1238,6 +1249,7 @@ class TopologyRestorer:
                     spawn_confirmed=spawn_confirmed,
                     relay_spawn_acknowledged=relay_ack,
                     dispatcher_ownership_acknowledged=dispatcher_ack,
+                    provider_startup_confirmed=startup_confirmed,
                     association_confirmed=launch_res.association_confirmed,
                     current_liveness=launch_res.current_liveness,
                     resumability_confirmed=launch_res.resumability_confirmed,
@@ -1254,6 +1266,7 @@ class TopologyRestorer:
                     relay_spawn_acknowledged=relay_ack,
                     dispatcher_ownership_acknowledged=dispatcher_ack,
                     require_dispatcher_ownership=require_dispatcher_ownership,
+                    provider_startup_confirmed=startup_confirmed,
                     association_confirmed=launch_res.association_confirmed,
                     current_liveness=launch_res.current_liveness,
                     resumability_confirmed=launch_res.resumability_confirmed,
@@ -1267,6 +1280,7 @@ class TopologyRestorer:
                 spawn_confirmed=True,
                 relay_spawn_acknowledged=relay_ack,
                 dispatcher_ownership_acknowledged=dispatcher_ack,
+                provider_startup_confirmed=startup_confirmed,
                 association_confirmed=launch_res.association_confirmed,
                 current_liveness=launch_res.current_liveness,
                 resumability_confirmed=launch_res.resumability_confirmed,
