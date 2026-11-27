@@ -19,8 +19,9 @@ This document defines the Agent #3-owned workspace checkpoint, shared restoratio
    - Cross-GUI transfer (`LLMD-55`) compatibility: `slot_id` is the immutable primary identity across checkpoints and queue deduplication `(checkpoint_id, slot_id)`; `gui_id` is membership context and drift is surfaced as `cross_gui_transferred=True` during `revalidate_checkpoint(...)`.
 
 2. **Slot-wide exclusion & authorization contracts (`SlotExecutionGuard`)**:
-   - `SlotExecutionGuard.acquire_slot(slot_id, *, operator_id, checkpoint_id, queue_entry_id) -> SlotGuardLease` and `release_slot(lease)` coordinate slot-wide exclusion across checkpoints and ordinary LLMD `start`/`resume`/`switch` operations.
-   - `TopologyRestorer.execute_restore(...)` obtains fresh slot state (`slot_provider`) and fresh runtime observations under the execution guard, rather than reusing caller-supplied preview snapshots.
+   - `SlotExecutionGuard.acquire_slot(slot_id, *, operator_id, checkpoint_id, queue_entry_id) -> SlotGuardLease` and `release_slot(lease)` provide **cooperating dispatcher exclusion** across checkpoints and ordinary LLMD `start`/`resume`/`switch` operations. It does **not** provide external provider-process exclusion.
+   - `TopologyRestorer.execute_restore(...)` fails closed when `checkpoint` or `slot_guard` is missing (`require_slot_guard=True` by default), obtains fresh slot state (`slot_provider`) and fresh runtime observations under the execution guard, and never treats preview availability of a guard as an acquired lease.
+   - Under Windows `PARTIAL` process enumeration, absence of a managed receipt never implies verified exit: `partial_enum_safe_via_guard_and_receipts` requires both an acquired `SlotExecutionGuard` and a positive exited `ManagedPaneReference` receipt. Unmanaged sessions under `PARTIAL` enumeration remain blocked (`unmanaged_partial_enum_unverified`) until the operator explicitly authorizes recovery (`allow_unknown_runtime=True`).
 
 3. **Session launcher callback (`SessionLauncher`)**:
    - `launch_session(request: RestoreLaunchRequest) -> RestoreLaunchOutcome`
@@ -28,9 +29,9 @@ This document defines the Agent #3-owned workspace checkpoint, shared restoratio
    - Agent #1's dispatcher CLI implements `SessionLauncher` to resume exact sessions (and optionally invoke Terminal Launcher) without `workspace_lifecycle.py` importing `dispatcher.py` or `schema.py`.
 
 4. **Crash-consistent restoration queue (`RestorationQueue`)**:
-   - `restoration_queue.events.jsonl` is the single authoritative durability log (fsynced under lock before SQLite projection updates; fsync failures are never suppressed). Sequence continuity is enforced and corrupt complete records are rejected.
+   - `restoration_queue.events.jsonl` is the single authoritative durability log (fsynced under lock before SQLite projection updates). Failed `fsync` or failed rollback marks the queue as uncertain (`.restoration_queue.uncertain`) and blocks all further mutations until `reconcile()` / `rebuild_index()` reconciles authoritative state. Sequence continuity is enforced and corrupt complete records are rejected.
    - `list_entries` and `get_entry` are strictly read-only even with populated queues, unapplied log events, and interrupted tails.
-   - `recover_abandoned_claim` requires explicit `ClaimRecoveryEvidence(verified_abandoned=True, ...)` and refuses to release live operator claims; `complete` requires positive `spawn_confirmed=True`.
+   - `recover_abandoned_claim` requires explicit `ClaimRecoveryEvidence(verified_abandoned=True, ...)` and refuses to release live operator claims; `complete` fails closed unless positive `spawn_confirmed=True` is explicitly supplied.
 
 5. **Bounded owned-session shutdown (`OwnedShutdownCoordinator`) & operator workflow (`WorkspaceCheckpointCoordinator`)**:
    - `preview_shutdown_for_checkpoint(checkpoint, ...)` restricts shutdown targets strictly to the successfully persisted checkpoint's exact identities, revalidates ownership immediately before signaling and during observation, and distinguishes `interrupt_delivered` from `provider_exit_verified` and `provider_metadata_finalized`.

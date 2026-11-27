@@ -1011,6 +1011,7 @@ class TopologyRestorer:
         queue: RestorationQueue | None = None,
         receipt_store: ManagedShutdownStoreProtocol | None = None,
         slot_guard: SlotExecutionGuard | None = None,
+        require_slot_guard: bool = True,
         slot_provider: Callable[[str], WorkspaceSlotInput | None] | None = None,
         authorization_check: Callable[[RestorePlanItem], tuple[bool, str | None]] | None = None,
         recovery_dir: Path | None = None,
@@ -1029,6 +1030,16 @@ class TopologyRestorer:
             )
         if not operator_id or not operator_id.strip():
             raise ContinuityError(ErrorCode.INVALID_INPUT, "operator_id cannot be empty.")
+        if checkpoint is None:
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "Topology restoration execution requires the source WorkspaceCheckpoint.",
+            )
+        if require_slot_guard and slot_guard is None:
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "Topology restoration execution requires a SlotExecutionGuard.",
+            )
 
         if queue is not None and checkpoint is not None:
             queue.enqueue_checkpoint(checkpoint)
@@ -1117,46 +1128,50 @@ class TopologyRestorer:
                         )
                         continue
 
-                if checkpoint is not None:
-                    # Obtain fresh slot and runtime evidence under the execution guard (never reuse preview snapshots)
-                    if slot_provider is not None:
-                        fresh_slot = slot_provider(item.slot_id)
-                        guard_slots: Sequence[WorkspaceSlotInput] | None = (
-                            [fresh_slot] if fresh_slot is not None else []
-                        )
-                    else:
-                        guard_slots = current_slots
-                    fresh_reval = revalidate_checkpoint(
-                        checkpoint,
-                        current_slots=guard_slots,
-                        observers=observers,
-                        snapshots=None,
-                        path_exists=path_exists,
-                        allow_unknown_runtime=allow_unknown_runtime,
-                        has_slot_exclusion=bool(lease is not None and lease.acquired),
+                # Obtain fresh slot and runtime evidence under the execution guard (never reuse preview snapshots)
+                if slot_provider is not None:
+                    fresh_slot = slot_provider(item.slot_id)
+                    guard_slots: Sequence[WorkspaceSlotInput] | None = (
+                        [fresh_slot] if fresh_slot is not None else []
                     )
-                    fresh_entry = next((e for e in fresh_reval.entries if e.slot_id == item.slot_id), None)
-                    if fresh_entry is not None:
-                        allowed_reserved_only = (
-                            allow_reserved_claude and set(fresh_entry.reasons) == {"reserved_unconfirmed"}
-                        )
-                        if not fresh_entry.can_restore and not allowed_reserved_only:
-                            fail_reason = f"execution_revalidation_failed:{','.join(fresh_entry.reasons)}"
-                            if queue is not None and q_id is not None and claim_token is not None:
-                                queue.record_failure(
-                                    q_id, claim_token=claim_token, reason=fail_reason, partial=False
-                                )
-                            any_uncertain_or_failed = True
-                            outcomes.append(
-                                RestoreItemOutcome(
-                                    slot_id=item.slot_id,
-                                    queue_entry_id=q_id,
-                                    status="failed",
-                                    reason=fail_reason,
-                                    requested_topology=item.requested_topology,
-                                )
+                else:
+                    guard_slots = current_slots
+                effective_observers: Mapping[tuple[str, str], RuntimeDiscovery] | RuntimeDiscovery = (
+                    observers
+                    if observers is not None
+                    else RuntimeDiscovery(environment_id=item.environment_id, runtime_kind=item.runtime_kind)
+                )
+                fresh_reval = revalidate_checkpoint(
+                    checkpoint,
+                    current_slots=guard_slots,
+                    observers=effective_observers,
+                    snapshots=None,
+                    path_exists=path_exists,
+                    allow_unknown_runtime=allow_unknown_runtime,
+                    has_slot_exclusion=bool(lease is not None and lease.acquired),
+                )
+                fresh_entry = next((e for e in fresh_reval.entries if e.slot_id == item.slot_id), None)
+                if fresh_entry is not None:
+                    allowed_reserved_only = (
+                        allow_reserved_claude and set(fresh_entry.reasons) == {"reserved_unconfirmed"}
+                    )
+                    if not fresh_entry.can_restore and not allowed_reserved_only:
+                        fail_reason = f"execution_revalidation_failed:{','.join(fresh_entry.reasons)}"
+                        if queue is not None and q_id is not None and claim_token is not None:
+                            queue.record_failure(
+                                q_id, claim_token=claim_token, reason=fail_reason, partial=False
                             )
-                            continue
+                        any_uncertain_or_failed = True
+                        outcomes.append(
+                            RestoreItemOutcome(
+                                slot_id=item.slot_id,
+                                queue_entry_id=q_id,
+                                status="failed",
+                                reason=fail_reason,
+                                requested_topology=item.requested_topology,
+                            )
+                        )
+                        continue
 
                 if queue is not None and q_id is not None and claim_token is not None:
                     queue.mark_launching(q_id, claim_token=claim_token)
@@ -1477,6 +1492,7 @@ class WorkspaceCheckpointCoordinator:
         launcher: SessionLauncher,
         current_slots: Sequence[WorkspaceSlotInput] | None = None,
         slot_provider: Callable[[str], WorkspaceSlotInput | None] | None = None,
+        require_slot_guard: bool = True,
         observers: Mapping[tuple[str, str], RuntimeDiscovery] | RuntimeDiscovery | None = None,
         snapshots: Mapping[tuple[str, str], ProcessSnapshot] | ProcessSnapshot | None = None,
         path_exists: Callable[[str], bool] | None = None,
@@ -1494,7 +1510,7 @@ class WorkspaceCheckpointCoordinator:
             path_exists=path_exists,
             allow_reserved_claude=allow_reserved_claude,
             allow_unknown_runtime=allow_unknown_runtime,
-            has_slot_exclusion=self.slot_guard is not None,
+            has_slot_exclusion=False,
         )
         return self.restorer.execute_restore(
             plan,
@@ -1505,6 +1521,7 @@ class WorkspaceCheckpointCoordinator:
             queue=self.queue,
             receipt_store=self.managed_store,
             slot_guard=self.slot_guard,
+            require_slot_guard=require_slot_guard,
             slot_provider=slot_provider,
             authorization_check=authorization_check,
             recovery_dir=self.root_dir / "restores",

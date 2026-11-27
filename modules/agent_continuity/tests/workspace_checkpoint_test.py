@@ -542,6 +542,7 @@ def test_topology_restorer_and_coordinator_save_restore_partial_recovery(tmp_pat
         launcher=_PartialLauncher(),
         current_slots=slots,
         observers=obs_after_reboot,
+        require_slot_guard=False,
     )
     assert report.partial_failure is True
     assert report.recovery_record_path is not None
@@ -1100,6 +1101,11 @@ def test_populated_queue_preview_purity_fsync_failure_sequence_and_live_claim_re
     with pytest.raises(ContinuityError, match="fsync"):
         queue.release(entry.queue_entry_id, claim_token="clm_live", reason="should_fail")
     monkeypatch.undo()
+
+    # After fsync failure, queue is quarantined as uncertain and blocks further transitions until reconcile()
+    with pytest.raises(ContinuityError, match="uncertain"):
+        queue.release(entry.queue_entry_id, claim_token="clm_live", reason="blocked_until_reconcile")
+    queue.reconcile()
     assert queue.get_entry(entry.queue_entry_id).status is QueueEntryStatus.CLAIMED
 
     # Corrupt complete record in log must raise rather than silently skip
@@ -1178,15 +1184,53 @@ def test_under_guard_stale_input_race_and_windows_partial_enumeration(tmp_path: 
             self.launched.append(request.slot_id)
             return RestoreLaunchOutcome(accepted=True, launch_id="tl_1", pane_id="p_1", spawn_confirmed=True)
 
-    plan_with_guard = restorer.preview_restore(
+    # Unmanaged session (no managed receipt) under PARTIAL enum is STILL blocked even with slot_guard
+    plan_unmanaged_partial = restorer.preview_restore(
         chk,
         current_slots=[slot1, slot2],
         observers=obs_partial,
         has_slot_exclusion=True,
     )
-    assert len(plan_with_guard.ready_items) == 2
+    assert all(item.action == "blocked_unknown_runtime" for item in plan_unmanaged_partial.items)
+    assert all("unmanaged_partial_enum_unverified" in item.reasons for item in plan_unmanaged_partial.items)
 
-    # Under the guard, slot_provider returns a superseded session for s_race_stale!
+    # Explicit operator recovery path for unmanaged sessions under partial enum
+    plan_operator_override = restorer.preview_restore(
+        chk,
+        current_slots=[slot1, slot2],
+        observers=obs_partial,
+        allow_unknown_runtime=True,
+    )
+    assert len(plan_operator_override.ready_items) == 2
+
+    # Missing required safeguards (slot_guard=None or checkpoint=None) must fail closed
+    with pytest.raises(ContinuityError, match="SlotExecutionGuard"):
+        restorer.execute_restore(
+            plan_operator_override,
+            authorized=True,
+            operator_id="op_win",
+            launcher=_Launcher(),
+            checkpoint=chk,
+            slot_guard=None,
+        )
+    with pytest.raises(ContinuityError, match="WorkspaceCheckpoint"):
+        restorer.execute_restore(
+            plan_operator_override,
+            authorized=True,
+            operator_id="op_win",
+            launcher=_Launcher(),
+            checkpoint=None,
+            slot_guard=_Guard(),
+        )
+
+    # Preview availability of slot_guard on coordinator must NOT imply an acquired lease
+    coord_with_guard = WorkspaceCheckpointCoordinator(tmp_path, slot_guard=_Guard())
+    coord_preview = coord_with_guard.preview_restore(
+        chk.checkpoint_id, current_slots=[slot1, slot2], observers=obs_partial
+    )
+    assert all(item.action == "blocked_unknown_runtime" for item in coord_preview.items)
+
+    # Under the guard with allow_unknown_runtime=True, slot_provider catches superseded s_race_stale!
     superseded_slot1 = _make_slot(
         slot_id="s_race_stale",
         session_id="01a21ca1-528f-7e33-8024-bc784553ffff",
@@ -1194,7 +1238,7 @@ def test_under_guard_stale_input_race_and_windows_partial_enumeration(tmp_path: 
     )
     launcher = _Launcher()
     report = restorer.execute_restore(
-        plan_with_guard,
+        plan_operator_override,
         authorized=True,
         operator_id="op_win",
         launcher=launcher,
@@ -1203,6 +1247,7 @@ def test_under_guard_stale_input_race_and_windows_partial_enumeration(tmp_path: 
         slot_guard=_Guard(),
         slot_provider=lambda sid: superseded_slot1 if sid == "s_race_stale" else slot2,
         observers=obs_partial,
+        allow_unknown_runtime=True,
         recovery_dir=tmp_path / "restores",
     )
     assert launcher.launched == ["s_partial_win"]
@@ -1210,3 +1255,62 @@ def test_under_guard_stale_input_race_and_windows_partial_enumeration(tmp_path: 
     assert by_slot["s_race_stale"].status == "failed"
     assert "stale_session_superseded" in (by_slot["s_race_stale"].reason or "")
     assert by_slot["s_partial_win"].status == "restored"
+
+    # Managed session with positive exited receipt IS safe under PARTIAL enum + slot_guard
+    tl_store = ManagedProcessStore(
+        tmp_path / "managed_partial.sqlite3",
+        process_identity_lookup=lambda _pid: None,
+        process_liveness_lookup=lambda _pid: TLProcessLiveness.EXITED,
+    )
+    tl_store.reserve_launch("tl_p", "winhash", [ManagedPaneReservation("pane_p", 0, 0, "single")])
+    tl_store.mark_submission_started("tl_p")
+    tl_store.mark_submission_outcome("tl_p", LaunchSubmissionState.ACCEPTED)
+    relay_pid = os.getpid()
+    tl_store._identity = lambda pid: (pid, ft) if pid == relay_pid else None  # type: ignore[method-assign]
+    tl_store._liveness = lambda pid: TLProcessLiveness.ALIVE if pid == relay_pid else TLProcessLiveness.EXITED  # type: ignore[method-assign]
+    tok = tl_store.claim_pane("tl_p", "pane_p", relay_pid=relay_pid, relay_process_created=ft)
+    assert tok is not None
+    tl_store.record_started("tl_p", "pane_p", claim_token=tok, pid=9202, process_created=ft, relay_pid=relay_pid, relay_process_created=ft)
+    tl_store.record_exit("tl_p", "pane_p", claim_token=tok, exit_code=0)
+
+    receipt_src = TerminalLauncherManagedReceiptSource(
+        tl_store,
+        lambda key: (
+            (
+                ManagedLaunchAssociation(
+                    launch_id="tl_p",
+                    terminal_session_id="term_p",
+                    pane_id="pane_p",
+                    session_key=key,
+                    association_state=ManagedAssociationState.CURRENT,
+                ),
+            )
+            if key.native_session_id == sid2
+            else ()
+        ),
+    )
+    obs_partial_managed = RuntimeDiscovery(
+        environment_id="env_win_test",
+        process_enumerator=_PartialWinEnum(),
+        managed_receipt_source=receipt_src,
+    )
+    slot2_known = WorkspaceSlotInput(
+        slot_id="s_partial_win",
+        gui_id="gui_1",
+        provider="codex",
+        native_session_id=sid2,
+        environment_id="env_win_test",
+        runtime_kind="local",
+        known_process_identity=process_identity_from_windows_filetime(9202, ft),
+        worktree=WorkspaceWorktreeEvidence(requested_cwd=str(repo_dir), effective_cwd=str(repo_dir)),
+    )
+    managed_plan = restorer.preview_restore(
+        chk,
+        current_slots=[slot1, slot2_known],
+        observers=obs_partial_managed,
+        has_slot_exclusion=True,
+    )
+    actions = {item.slot_id: item for item in managed_plan.items}
+    assert actions["s_partial_win"].action == "restore"
+    assert "partial_enum_safe_via_guard_and_receipts" in actions["s_partial_win"].reasons
+    assert actions["s_race_stale"].action == "blocked_unknown_runtime"

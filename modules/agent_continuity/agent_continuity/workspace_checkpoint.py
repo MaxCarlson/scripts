@@ -945,9 +945,16 @@ def revalidate_checkpoint(
             elif obs.process_liveness is ProcessLiveness.UNKNOWN or (
                 obs.process_availability is EvidenceAvailability.PARTIAL
             ):
-                managed_exited = obs.managed_pane is None or (
-                    obs.managed_pane.receipt_liveness in {"exited", "failed", "stale"}
-                    and obs.known_process_liveness is ProcessLiveness.EXITED
+                # Absence of a managed receipt never implies verified exit; cooperating
+                # dispatcher slot exclusion does not exclude external unmanaged processes.
+                managed_exited = (
+                    obs.managed_pane is None
+                    and any(
+                        ref.receipt_state in {"exited", "failed", "stale"}
+                        or ref.receipt_liveness is ProcessLiveness.EXITED
+                        for ref in obs.historical_managed_panes
+                    )
+                    and obs.known_process_liveness is not ProcessLiveness.RUNNING
                 )
                 exact_identity = (
                     entry.resumability_state in {"confirmed_resumable", "exact_process_unverified_store"}
@@ -962,6 +969,8 @@ def revalidate_checkpoint(
                 ):
                     reasons.append("partial_enum_safe_via_guard_and_receipts")
                 else:
+                    if obs.managed_pane is None and not obs.historical_managed_panes:
+                        reasons.append("unmanaged_partial_enum_unverified")
                     reasons.append("unknown_runtime_evidence")
             elif entry.observed_topology.observed_processes and obs.processes:
                 prior = entry.observed_topology.observed_processes[0].to_process_identity()

@@ -205,6 +205,23 @@ class RestorationQueue:
         self.db_path = self.root_dir / "restoration_queue.sqlite3"
         self.events_path = self.root_dir / "restoration_queue.events.jsonl"
         self.lock_path = self.root_dir / ".restoration_queue.lock"
+        self.uncertain_marker_path = self.root_dir / ".restoration_queue.uncertain"
+        self._persistence_uncertain = False
+
+    def _require_reconciled_locked(self) -> None:
+        if self._persistence_uncertain or self.uncertain_marker_path.exists():
+            raise ContinuityError(
+                ErrorCode.EVENT_SPOOL_UNAVAILABLE,
+                "Restoration queue persistence state is uncertain after an fsync or rollback failure; "
+                "reconcile() or rebuild_index() is required before further transitions.",
+                {"uncertain_marker": str(self.uncertain_marker_path)},
+            )
+
+    def _mark_persistence_uncertain_locked(self, reason: str) -> None:
+        self._persistence_uncertain = True
+        with contextlib.suppress(OSError):
+            self.uncertain_marker_path.parent.mkdir(parents=True, exist_ok=True)
+            self.uncertain_marker_path.write_text(f"{now_utc_iso()} {reason}\n", encoding="utf-8")
 
     @contextlib.contextmanager
     def _open_conn(self, db_path: Path | None = None):
@@ -220,6 +237,7 @@ class RestorationQueue:
             conn.close()
 
     def _ensure_initialized_locked(self) -> None:
+        self._require_reconciled_locked()
         with self._open_conn() as conn:
             conn.executescript(_QUEUE_DDL)
         self._sync_from_log_locked()
@@ -335,11 +353,20 @@ class RestorationQueue:
                 fh.flush()
                 os.fsync(fh.fileno())
         except OSError as exc:
+            rollback_ok = False
             with contextlib.suppress(OSError), self.events_path.open("r+b") as fh_rollback:
                 fh_rollback.truncate(prev_size)
+                fh_rollback.flush()
+                os.fsync(fh_rollback.fileno())
+                rollback_ok = True
+            self._mark_persistence_uncertain_locked(
+                f"fsync_failed:{exc};rollback_ok={rollback_ok}"
+            )
             raise ContinuityError(
                 ErrorCode.EVENT_SPOOL_UNAVAILABLE,
-                f"Failed to append and fsync restoration queue event {self.events_path}: {exc}",
+                f"Failed to append and fsync restoration queue event {self.events_path} "
+                f"(rollback_ok={rollback_ok}; queue locked until reconcile()): {exc}",
+                {"rollback_ok": rollback_ok, "uncertain": True},
             ) from exc
 
         with self._open_conn() as conn:
@@ -901,6 +928,10 @@ class RestorationQueue:
             unresolved_only=unresolved_only,
         )
 
+    def reconcile(self) -> int:
+        """Reconcile authoritative log state and clear any uncertain persistence quarantine."""
+        return self.rebuild_index()
+
     def rebuild_index(self) -> int:
         """Rebuild the SQLite projection deterministically from the authoritative log under lock."""
         with _checkpoint_lock(self.lock_path):
@@ -930,6 +961,9 @@ class RestorationQueue:
             for suffix in ("-wal", "-shm"):
                 with contextlib.suppress(OSError):
                     Path(f"{self.db_path}{suffix}").unlink(missing_ok=True)
+            self._persistence_uncertain = False
+            with contextlib.suppress(OSError):
+                self.uncertain_marker_path.unlink(missing_ok=True)
             return replayed
 
     def _require_claimed_row_locked(
