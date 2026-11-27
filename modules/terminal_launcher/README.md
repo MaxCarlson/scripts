@@ -52,6 +52,31 @@ The plan starts `pwsh.exe -NoLogo -NoExit` with the requested working directory.
 submission; it does not claim that PowerShell started. Use process instrumentation or an explicit startup receipt when
 the caller needs positive runtime acknowledgment.
 
+For positive child receipts and managed shutdown, use `launch_managed()` with an explicit target window. It waits a
+bounded time for each pane relay to acknowledge child creation, and reports unacknowledged panes separately. The
+relay writes process identity and lifecycle receipts to `ManagedProcessStore`; no argv, cwd, tab title, prompts, or
+credentials are stored. Process identity combines PID and Windows process creation FILETIME to reject PID reuse.
+`ManagedProcessStore.request_graceful_shutdown(pane_id)` queues a request only while both the child and its owning
+relay identities still match. The relay shares the pane console and sends Ctrl+Break to that child's process group.
+The request does not terminate Windows Terminal; applications that ignore Ctrl+Break may keep running. Readiness stays
+`unknown` unless an application-specific probe is added.
+
+```python
+from terminal_launcher import ManagedProcessStore, WindowsTerminalBackend, powershell_plan
+
+store = ManagedProcessStore()  # %LOCALAPPDATA%\terminal-launcher\managed-processes.sqlite3
+backend = WindowsTerminalBackend()
+launch = backend.launch_managed(
+    powershell_plan(target_window="scripts-work", cwd=r"C:\src\scripts"),
+    store=store,
+)
+for pane in launch.panes:
+    print(pane.pane_id, pane.state, pane.pid, pane.readiness)
+```
+
+See [managed lifecycle and checkpoint integration](docs/managed-lifecycle.md) for runtime records, recovery states,
+layout limits, and the proposed ProcWatch correlation contract.
+
 The default tab title `PowerShell 7` matches ProcWatch's existing interactive-title rule in `smart` mode. ProcWatch's
 `all-consoles` mode still suppresses every console window by design; Terminal Launcher does not set an exclusion or
 bypass for its launches.
@@ -91,9 +116,9 @@ Windows Terminal's command separator also constrains metadata. The backend rejec
 - The relay sets each child process's working directory. The composite tab title is applied to every pane, and `--suppressApplicationTitle` keeps applications from replacing it.
 - `target_window` maps to Windows Terminal's `--window` option. When it is `None`, Windows Terminal applies the user's `windowingBehavior` preference; preview warns about this choice.
 - The backend uses documented `new-tab`, `split-pane`, and `move-focus` commands, plus `--window`, `--title`, and `--suppressApplicationTitle` options. It does not change Windows Terminal's global settings. See [Microsoft's Windows Terminal command-line reference](https://learn.microsoft.com/en-us/windows/terminal/command-line-arguments).
-- Side-effect-free preview does not invoke `wt.exe` to discover its version. Compatibility is assumed from the documented command interface and reported as a warning. Exact geometry and child process startup require a separate live Windows Terminal check.
+- Side-effect-free preview does not invoke `wt.exe` to discover its version. Compatibility is assumed from the documented command interface and reported as a warning. Managed relays positively confirm child process creation and exit, but generic application readiness remains unknown.
 
-The backend reports terminal request submission only. It does not attach to panes later, monitor child processes, manage sessions, or implement dispatcher/provider behavior. Future backends can expose different capability sets without changing `PaneSpec`, `TabSpec`, or `TerminalLaunchPlan`.
+The unmanaged backend reports terminal request submission only. Managed launch records do not attach to Windows Terminal's UI tree and do not claim that requested tab order, pane grouping, or geometry matches the observed UI. Future backends can expose different capability sets without changing `PaneSpec`, `TabSpec`, or `TerminalLaunchPlan`.
 
 ## Development checks
 

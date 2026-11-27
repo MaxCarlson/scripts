@@ -26,13 +26,47 @@ No launch plan was submitted and no pane geometry was observed. No `agent_contin
   `all-consoles` still suppresses it. No live ProcWatch guard was running at observation time; no production guard
   settings or bypasses were changed.
 - Focused scope follows the user's clarification to prioritize opening PowerShell 7 tabs in the same Windows Terminal
-  window. Broad geometry restoration, pane closure, managed process receipts, and provider-neutral restoration APIs
-  remain outside this follow-up.
+  window. The 2026-11-27 continuation below adds managed receipts without changing the ordinary unmanaged API.
 - Verification on this branch: Terminal Launcher full suite `43 passed` and Ruff clean; ProcWatch
   `tests/window_guard_test.py` `10 passed` and Ruff clean. The full ProcWatch suite had two unrelated failures: its
   legacy Windows PowerShell interactive-window integration timed out after 5 seconds (the test's `finally` terminated
   its child), and a Unicode subprocess assertion passed when rerun with `PYTHONUTF8=1`. Both failure implementations
   are unchanged from `origin/main`.
-- Cleanup verification found no live test-child PIDs or uniquely named test windows. The final read-only Win32
-  enumeration also found no visible Windows Terminal top-level windows; this task sent no close message or
-  termination request to Windows Terminal, so the timing/cause of that final desktop state is unknown.
+- Cleanup verification at the end of the earlier PowerShell helper follow-up found no live test-child PIDs or
+  uniquely named test windows. That stage sent no close message or termination request to Windows Terminal; its final
+  empty enumeration predates the managed lifecycle desktop tests documented below.
+
+## LLMD-40 managed lifecycle continuation (2026-11-27)
+
+- Added optional `launch_managed()` with caller-supplied or generated launch identity, deterministic per-tab/pane IDs,
+  bounded positive spawn acknowledgment, and separate request/spawn/readiness/exit/failure/unknown status.
+- The pane relay persists PID plus Windows creation FILETIME and its own exact process identity. SQLite stores only
+  opaque launch/pane IDs, a hash of the target window name, requested layout/indexes, process identities, timestamps,
+  numeric exit codes, failure codes, and shutdown receipt flags. It does not persist argv, cwd, titles, environment,
+  prompts, or credentials. Store schema adds missing relay identity columns for compatibility.
+- `request_graceful_shutdown()` validates both exact child and owning relay identities before queueing. The owning relay
+  revalidates the child and sends Ctrl+Break only to its process group; it never targets WindowsTerminal.exe. A live
+  interactive PowerShell test showed Ctrl+Break delivery does not always close the shell. The API therefore reports
+  request delivery separately from exit and makes no guaranteed-exit claim. The two test windows were closed with
+  bounded WM_CLOSE sent only to their exact uniquely titled HWNDs after recording child identities; all test child
+  processes exited. The Windows Terminal host process was left running.
+- Native qualification used the installed package path `WindowsTerminal_1.25.3131.0` and PowerShell 7.6.1. Two
+  separate launches to `codex-managed-pwsh-cc77590a1b` both received spawn receipts and used the same observed
+  `CASCADIA_HOSTING_WINDOW_CLASS` HWND `595302` (owner PID `53736`); the tab title changed from
+  `...-tab-1` to `...-tab-2`. This directly verifies the user's primary workflow: open pwsh tabs in the same named
+  Windows Terminal window.
+- Layout run `codex-layouts-de81d8eb` submitted single, two-column, three-left, and grid tabs in one dedicated window;
+  all 10 child spawn receipts arrived and all 10 exit receipts were recorded. Win32 observed one dedicated HWND
+  `18420420` with the requested final tab title. Read-only UI Automation run `codex-uia2-d34b98e9` exposed four
+  `TabItem` names in the requested order. The UIA tree exposed generic pane containers but no stable per-terminal-pane
+  controls; their reported rectangles were far outside desktop bounds, so pane grouping/orientation/geometry remain
+  unsupported/unobserved. UIA inspection was read-only and did not inspect terminal text or send input.
+- The first live managed attempt found the relay's relative import failed when Python executed `_pane_runner.py` as a
+  script. A direct-script regression reproduced the `ImportError`; the relay now bootstraps the package root and the
+  repeated live run produced all expected child start receipts. This is covered by the full package suite.
+- Validation: Terminal Launcher full suite `57 passed`, Ruff clean. A wheel build passed and included both
+  `terminal_launcher/managed.py` and `terminal_launcher/backends/_pane_runner.py`. ProcWatch default full suite had exactly one
+  failure, `test_exec_success_nonzero_unicode_env_and_context`, on both the feature source and the exact
+  `origin/main` (`93c0f29788fe57e56df124f699ebbd4116a7b6a8`) snapshot under the same environment; both full suites
+  passed when rerun with temporary `PYTHONUTF8=1`. The focused window guard tests passed. ProcWatch package version
+  remains `0.4.0` to match the shared help registry because this task adds no ProcWatch production behavior.

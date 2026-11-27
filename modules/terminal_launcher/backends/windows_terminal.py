@@ -8,11 +8,14 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from ..backend import LaunchPreview, LaunchResult, LaunchStatus, PlannedOperation, ProcessState
+from ..backend import LaunchPreview, LaunchResult, LaunchStatus, ManagedLaunchResult, PlannedOperation, ProcessState
 from ..errors import InvalidPlanError, TerminalNotFoundError, UnsupportedLayoutError, UnsupportedPlatformError
+from ..managed import ManagedProcessStore
 from ..models import PaneSpec, TabSpec, TerminalLaunchPlan
 
 _LAYOUTS = frozenset(("single", "two-column", "three-left", "grid"))
@@ -80,8 +83,9 @@ class WindowsTerminalBackend:
         return tuple(resolved)
 
     @staticmethod
-    def _relay_argv(pane: PaneSpec) -> tuple[str, ...]:
-        payload = json.dumps((pane.argv, pane.cwd), ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    def _relay_argv(pane: PaneSpec, managed: dict[str, str] | None = None) -> tuple[str, ...]:
+        payload_value = (pane.argv, pane.cwd) if managed is None else {"argv": pane.argv, "cwd": pane.cwd, "managed": managed}
+        payload = json.dumps(payload_value, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
         encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
         relay = (sys.executable, os.fspath(Path(__file__).with_name("_pane_runner.py")), encoded)
         if any(";" in item for item in relay[:2]):
@@ -96,29 +100,53 @@ class WindowsTerminalBackend:
         return value
 
     @classmethod
-    def _pane_arguments(cls, pane: PaneSpec, tab_title: str) -> list[str]:
+    def _pane_arguments(
+        cls, pane: PaneSpec, tab_title: str, managed: dict[str, str] | None = None
+    ) -> list[str]:
         arguments = ["--title", cls._validate_wt_value(tab_title, "tab title"), "--suppressApplicationTitle"]
-        arguments.extend(cls._relay_argv(pane))
+        arguments.extend(cls._relay_argv(pane, managed))
         return arguments
 
-    def build_command(self, plan: TerminalLaunchPlan) -> tuple[str, ...]:
+    def build_command(
+        self,
+        plan: TerminalLaunchPlan,
+        *,
+        managed_store_path: str | None = None,
+        launch_id: str | None = None,
+    ) -> tuple[str, ...]:
         """Return the exact argv vector submitted to the Windows Terminal CLI."""
         self._require_windows()
         tabs = self._validated_tabs(plan)
+        if (managed_store_path is None) != (launch_id is None):
+            raise ValueError("managed_store_path and launch_id must be provided together")
         executable = self._resolve_executable()
         command: list[str] = [executable]
         if plan.target_window is not None:
             command.extend(("--window", self._validate_wt_value(plan.target_window, "target_window")))
 
         for tab_index, (tab, layout) in enumerate(tabs):
-            command.extend(("new-tab", *self._pane_arguments(tab.panes[0], tab.title)))
+            first_context = (
+                {"store_path": managed_store_path, "launch_id": launch_id, "pane_id": f"{launch_id}:{tab_index}:0"}
+                if launch_id is not None
+                else None
+            )
+            command.extend(("new-tab", *self._pane_arguments(tab.panes[0], tab.title, first_context)))
             pane_index = 1
             for action, value in _LAYOUT_COMMANDS[layout]:
                 if action == "focus":
                     command.extend((";", "move-focus", value))
                     continue
                 command.extend((";", "split-pane", value))
-                command.extend(self._pane_arguments(tab.panes[pane_index], tab.title))
+                pane_context = (
+                    {
+                        "store_path": managed_store_path,
+                        "launch_id": launch_id,
+                        "pane_id": f"{launch_id}:{tab_index}:{pane_index}",
+                    }
+                    if launch_id is not None
+                    else None
+                )
+                command.extend(self._pane_arguments(tab.panes[pane_index], tab.title, pane_context))
                 pane_index += 1
             if tab_index + 1 < len(tabs):
                 command.append(";")
@@ -197,3 +225,91 @@ class WindowsTerminalBackend:
             returncode=0,
             warnings=preview.warnings,
         )
+
+    def launch_managed(
+        self,
+        plan: TerminalLaunchPlan,
+        *,
+        launch_id: str | None = None,
+        store: ManagedProcessStore | None = None,
+        startup_timeout: float = 2.0,
+    ) -> ManagedLaunchResult:
+        """Submit a named-window plan and wait briefly for relay spawn receipts."""
+        self._require_windows()
+        identity = launch_id or str(uuid.uuid4())
+        if not isinstance(identity, str) or not identity or "\0" in identity:
+            raise ValueError("launch_id must be a non-empty string without NUL")
+        if startup_timeout < 0:
+            raise ValueError("startup_timeout must be non-negative")
+        if plan.target_window is None:
+            failed = LaunchResult(
+                LaunchStatus.FAILED,
+                self.name,
+                diagnostic="Managed launches require an explicit target_window for bounded ownership.",
+            )
+            return ManagedLaunchResult(identity, failed)
+        tabs = self._validated_tabs(plan)
+        if not tabs:
+            noop = LaunchResult(LaunchStatus.NOOP, self.name, diagnostic="The plan contains no terminal operations.")
+            return ManagedLaunchResult(identity, noop)
+
+        process_store = store or ManagedProcessStore()
+        for tab_index, (tab, layout) in enumerate(tabs):
+            for pane_index, _pane in enumerate(tab.panes):
+                process_store.register_submission(
+                    launch_id=identity,
+                    pane_id=f"{identity}:{tab_index}:{pane_index}",
+                    window_id=plan.target_window,
+                    tab_index=tab_index,
+                    pane_index=pane_index,
+                    requested_layout=layout,
+                )
+        try:
+            preview = self.preview(plan)
+            command = self.build_command(
+                plan,
+                managed_store_path=os.fspath(process_store.path),
+                launch_id=identity,
+            )
+            completed = self._runner(
+                list(command), check=False, capture_output=True, text=True, shell=False
+            )
+        except (OSError, subprocess.SubprocessError, TerminalNotFoundError) as exc:
+            for pane in process_store.enumerate_processes(launch_id=identity):
+                if not pane.spawn_acknowledged:
+                    process_store.record_failure(pane.pane_id, failure_code="request_submission_failed")
+            failed = LaunchResult(
+                LaunchStatus.FAILED,
+                self.name,
+                diagnostic=f"Could not submit the managed request ({type(exc).__name__}).",
+            )
+            return ManagedLaunchResult(identity, failed, process_store.enumerate_processes(launch_id=identity))
+
+        if completed.returncode:
+            for pane in process_store.enumerate_processes(launch_id=identity):
+                if not pane.spawn_acknowledged:
+                    process_store.record_failure(pane.pane_id, failure_code="terminal_rejected_request")
+            failed = LaunchResult(
+                LaunchStatus.FAILED,
+                self.name,
+                returncode=completed.returncode,
+                diagnostic="Windows Terminal rejected the managed launch request.",
+                warnings=preview.warnings,
+            )
+            return ManagedLaunchResult(identity, failed, process_store.enumerate_processes(launch_id=identity))
+
+        deadline = time.monotonic() + startup_timeout
+        records = process_store.enumerate_processes(launch_id=identity)
+        while time.monotonic() < deadline and any(not pane.spawn_acknowledged and pane.state.value != "failed" for pane in records):
+            time.sleep(min(0.025, max(0.0, deadline - time.monotonic())))
+            records = process_store.enumerate_processes(launch_id=identity)
+        timed_out = any(not pane.spawn_acknowledged and pane.state.value != "failed" for pane in records)
+        submitted = LaunchResult(
+            LaunchStatus.SUBMITTED,
+            self.name,
+            process_state=ProcessState.UNKNOWN,
+            returncode=0,
+            diagnostic="Managed request submitted; pane spawn receipts are reported separately.",
+            warnings=preview.warnings,
+        )
+        return ManagedLaunchResult(identity, submitted, records, timed_out)

@@ -1,6 +1,7 @@
 import base64
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,22 @@ def test_build_command_transports_exact_argv_and_cwd_outside_wt_command_grammar(
     assert seen["argv"] == list(pane.argv)
     assert seen["cwd"] == pane.cwd
     assert seen["shell"] is False
+
+
+def test_pane_runner_works_when_executed_as_the_windows_terminal_script():
+    pane = PaneSpec("relay", (sys.executable, "-c", "pass"))
+    encoded = WindowsTerminalBackend._relay_argv(pane)[-1]
+    relay = Path(__file__).parents[1] / "backends" / "_pane_runner.py"
+
+    completed = subprocess.run(
+        [sys.executable, str(relay), encoded],
+        check=False,
+        capture_output=True,
+        text=True,
+        shell=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_target_window_is_explicit_and_default_policy_is_explained():
