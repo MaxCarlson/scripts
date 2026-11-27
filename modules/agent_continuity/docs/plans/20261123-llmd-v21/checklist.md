@@ -104,4 +104,4 @@
 - [x] Merge LLMD-27–31 without conflicts; preserve main's retired-tool removals and ownership/setup changes; retain the LLMD 1.6.0 registry entry.
 - [x] Run agent_continuity, terminal_launcher, scripts_help, Ruff, version, and diff checks with provider calls mocked.
 - [x] Verify disposable install, CLI version/help, terminal-scoped JSON history, native-argument preview, and projection rebuild compatibility.
-- [ ] Commit and push the integration candidate; verify remote SHA. No main merge authorized.
+- [x] Commit and push the integration candidate; verify remote SHA. No main merge authorized.
