@@ -398,6 +398,8 @@ def match_agy_invocation(argv: Sequence[str] | None, native_session_id: str) -> 
     args = _provider_arguments(argv, "agy")
     if args is None:
         return False
+    if any(token.casefold() in {"--help", "-h", "--version"} for token in args):
+        return False
     selectors: list[str] = []
     index = 0
     value_options = {"--profile", "--model", "--effort", "--cwd", "-c"}
@@ -440,11 +442,14 @@ def _claude_session_selector(argv: Sequence[str] | None) -> tuple[str, str] | No
     args = _provider_arguments(argv, "claude")
     if args is None:
         return None
+    disallowed_modes = {"--continue", "-c", "--help", "-h", "--version", "--print", "-p"}
+    if any(token.casefold() in disallowed_modes for token in args):
+        return None
     selectors: list[tuple[str, str]] = []
     value_options = {
         "--model", "--add-dir", "--permission-mode", "--output-format", "--permission-prompt-tool",
         "--settings", "--mcp-config", "--betas", "--fallback-model", "--max-budget-usd", "--agent",
-        "--append-system-prompt", "-p",
+        "--append-system-prompt",
     }
     flags = {
         "--verbose", "--debug", "--dangerously-skip-permissions", "--continue", "-c", "--print",
@@ -537,10 +542,22 @@ def process_identity_from_windows_filetime(pid: int, creation_filetime: int) -> 
 
 
 def process_identity_from_psutil(pid: int, creation_time_seconds: float) -> ProcessIdentity:
-    """Normalize psutil's float seconds with a conservative timestamp uncertainty radius."""
+    """Normalize psutil's float seconds, preserving input quantization uncertainty.
+
+    The seconds float already includes the platform's FILETIME-to-float rounding.
+    Convert that binary float to nanoseconds with integer arithmetic so multiplying
+    by 1e9 cannot introduce a second, untracked floating-point rounding.
+    """
     seconds = float(creation_time_seconds)
-    created_ns = int(round(seconds * 1_000_000_000))
-    precision_ns = math.ceil(math.ulp(seconds) * 500_000_000 + 50)
+    if not math.isfinite(seconds):
+        raise ValueError("process creation time must be finite")
+    numerator, denominator = seconds.as_integer_ratio()
+    scaled_numerator = numerator * 1_000_000_000
+    created_ns, remainder = divmod(scaled_numerator, denominator)
+    doubled_remainder = remainder * 2
+    if doubled_remainder > denominator or (doubled_remainder == denominator and created_ns % 2):
+        created_ns += 1
+    precision_ns = math.ceil(math.ulp(seconds) * 500_000_000 + 0.5)
     return ProcessIdentity(pid=int(pid), creation_time_ns=created_ns, precision_ns=precision_ns)
 
 
@@ -1100,13 +1117,6 @@ class RuntimeDiscovery:
         elif matching_refs:
             process_match = MatchStatus.EXACT
             process_state = _known_process_state(inventory, matching_refs[0].process_identity)
-        elif matching_historical_refs:
-            process_state = _known_process_state(inventory, matching_historical_refs[0].process_identity)
-            process_match = (
-                MatchStatus.EXACT if process_state is ProcessLiveness.RUNNING
-                else MatchStatus.NOT_OBSERVED if process_state is ProcessLiveness.EXITED
-                else MatchStatus.UNKNOWN
-            )
         elif known_process is not None:
             process_state = _known_process_state(inventory, known_process)
             process_match = (

@@ -4,6 +4,8 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 import agent_continuity.runtime_discovery as runtime_discovery
 from agent_continuity.runtime_discovery import (
     AgySessionStore,
@@ -120,6 +122,24 @@ def test_provider_matchers_reject_executable_names_in_option_values_and_conflict
     assert not match_claude_invocation(("claude.exe", "--unknown-option", "--resume", SESSION), SESSION)
 
 
+def test_claude_matcher_rejects_conflicting_and_noninteractive_modes():
+    invocations = (
+        ("claude.exe", "--resume", SESSION, "--continue"),
+        ("claude.exe", "--continue", "--resume", SESSION),
+        ("claude.exe", "--resume", SESSION, "--help"),
+        ("claude.exe", "--resume", SESSION, "--version"),
+        ("claude.exe", "--resume", SESSION, "--print", "prompt"),
+        ("claude.exe", "-p", "prompt", "--resume", SESSION),
+    )
+
+    assert all(not match_claude_invocation(argv, SESSION) for argv in invocations)
+
+
+def test_agy_matcher_rejects_help_and_version_modes():
+    assert not match_agy_invocation(("agy.exe", "--help", "--conversation", SESSION), SESSION)
+    assert not match_agy_invocation(("agy.exe", "--version", "--conversation", SESSION), SESSION)
+
+
 def test_claude_session_id_selector_matches_exact_reserved_identity():
     assert match_claude_invocation(("claude.exe", "--session-id", SESSION), SESSION)
     assert not match_claude_invocation(("claude.exe", "--session-id", OTHER_SESSION), SESSION)
@@ -165,6 +185,41 @@ def test_managed_identity_comparison_keeps_rounded_psutil_time_ambiguous():
 
     assert observed.process_liveness is ProcessLiveness.UNKNOWN
     assert not observed.identity_conflict
+
+
+def test_historical_receipts_never_establish_current_process_liveness_or_identity():
+    key = SessionKey("codex", SESSION, "env-native")
+    first = ManagedPaneReference(
+        provider="codex", native_session_id=SESSION, environment_id="env-native",
+        process_identity=identity(220, 220000), launch_id="launch-old-1", pane_id="pane-1",
+        terminal_session_id="terminal-1", association_state=ManagedAssociationState.HISTORICAL,
+    )
+    second = ManagedPaneReference(
+        provider="codex", native_session_id=SESSION, environment_id="env-native",
+        process_identity=identity(221, 221000), launch_id="launch-old-2", pane_id="pane-2",
+        terminal_session_id="terminal-2", association_state=ManagedAssociationState.HISTORICAL,
+    )
+    receipt_snapshot = ManagedReceiptSnapshot(
+        references=(), availability=EvidenceAvailability.COMPLETE, captured_at=NOW,
+        historical_references=(first, second),
+    )
+    discovery = RuntimeDiscovery(
+        process_enumerator=FakeProcessEnumerator(
+            inventory(ProcessRecord(first.process_identity, None, "pwsh.exe"))
+        ),
+        provider_stores={},
+        managed_receipt_source=FakeManagedReceipts(receipt_snapshot),
+        environment_id="env-native",
+        clock=lambda: NOW,
+    )
+
+    observed = discovery.observe(key)
+
+    assert observed.process_liveness is ProcessLiveness.NOT_OBSERVED
+    assert observed.process_session_match is MatchStatus.NOT_OBSERVED
+    assert observed.management is ManagementState.HISTORICAL
+    assert observed.managed_pane is None
+    assert observed.historical_managed_panes == (first, second)
 
 
 def test_observation_serializes_process_identity_precision_for_recovery():
@@ -653,13 +708,22 @@ def test_terminal_launcher_source_links_exact_pane_and_separates_history_within_
     assert [reference.pane_id for reference in historical.historical_references] == ["pane-claude"]
 
 
-def test_psutil_time_precision_does_not_turn_filetime_rounding_into_pid_reuse():
+@pytest.mark.parametrize(
+    "filetime",
+    (
+        134344736000000011,
+        134344736000000016,
+        134344736000000020,
+        134344736000000049,
+        134344736000000080,
+    ),
+)
+def test_psutil_time_precision_does_not_turn_filetime_rounding_into_pid_reuse(filetime):
     converter = getattr(runtime_discovery, "process_identity_from_psutil", None)
     comparer = getattr(runtime_discovery, "compare_process_identities", None)
 
     assert callable(converter)
     assert callable(comparer)
-    filetime = 133_000_000_000_000_000
     exact = runtime_discovery.process_identity_from_windows_filetime(900, filetime)
     approximate = converter(900, exact.creation_time_ns / 1_000_000_000)
 
