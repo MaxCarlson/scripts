@@ -708,6 +708,7 @@ class SQLiteMaterializer:
                 ON CONFLICT(launch_id) DO UPDATE SET
                     terminal_session_owner_pid = excluded.terminal_session_owner_pid,
                     native_session_id = COALESCE(excluded.native_session_id, dispatcher_terminal_launches.native_session_id),
+                    native_cwd = COALESCE(dispatcher_terminal_launches.native_cwd, excluded.native_cwd),
                     launch_exited_at = COALESCE(excluded.launch_exited_at, dispatcher_terminal_launches.launch_exited_at),
                     status = excluded.status,
                     exit_code = COALESCE(excluded.exit_code, dispatcher_terminal_launches.exit_code),

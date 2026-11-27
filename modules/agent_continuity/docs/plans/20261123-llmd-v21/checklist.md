@@ -83,6 +83,15 @@
 - [x] Cover managed validation, permissions preview, paths/quoting, provider ordering, WSL, failures, and no secret/raw config persistence.
 - [x] Run focused/full tests, Ruff, installation smoke, version consistency, and diff checks; checkpoint Batch H without merging.
 
+### Corrective review follow-up (LLMD-27–31)
+
+- [x] Render requested GUI/agent/provider, exact native session, runtime, cwd provenance and Git repository/worktree/branch/commit; show unavailable values explicitly.
+- [x] Give each terminal-launcher pane an isolated UUID context while keeping profile-owned terminal environment variables read-only.
+- [x] Record launches only after command preflight and exact-session validation; distinguish unknown, interrupted, failed-spawn and abnormal-exit outcomes.
+- [x] Require absolute additional-directory paths validated in the selected provider runtime.
+- [x] Block recognized short/attached identity, help/version, cwd and execution aliases; document that authorized unknown flags cannot be semantically certified.
+- [x] Run corrective focused and full module validation, Ruff, version consistency, and diff checks; commit/push and verify feature remote.
+
 ## Deferred
 
 - [ ] LLMD-25 persistent launch profiles (next planned batch).

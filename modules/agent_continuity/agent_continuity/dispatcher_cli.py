@@ -7,13 +7,15 @@ import contextlib
 import dataclasses
 import hashlib
 import json
+import ntpath
 import os
 import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, TextIO
+from uuid import uuid4
 
 from . import __version__
 from .dispatcher import DispatcherService
@@ -269,6 +271,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_options(pane)
     pane.add_argument("-s", "--slot-id", required=True)
     pane.add_argument("-L", "--launch-id")
+    pane.add_argument("-T", "--launcher-terminal-context", help=argparse.SUPPRESS)
     # argparse renders help=SUPPRESS literally for subparser choices. Keep the
     # parser routable for terminal_launcher while hiding its internal command.
     sub._choices_actions[:] = [action for action in sub._choices_actions if action.dest != "pane-run"]
@@ -356,7 +359,14 @@ def _validate_additional_directories(
             settings = _validate_agy_settings(value, allow_unknown=allow_native_unknown)
             directories.extend(settings.get("additional_directories", []))
         index += 1
+    environment = _resolve_environment(dispatcher, environment_id)
     for directory in directories:
+        absolute = PurePosixPath(directory).is_absolute() if environment.runtime_kind == "wsl" else ntpath.isabs(directory)
+        if not absolute:
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "Provider additional directories must be absolute paths in the selected provider runtime.",
+            )
         _validate_cwd_override(dispatcher, environment_id, directory)
 
 
@@ -390,12 +400,13 @@ _ALWAYS_FORBIDDEN_NATIVE_OPTIONS = {
     "--local-provider", "--oss", "--dangerously-bypass-approvals-and-sandbox",
     "--dangerously-bypass-hook-trust", "--dangerously-skip-permissions", "--mode", "--output-format",
     "--input-format", "--json-schema", "--print-timeout", "--log-file",
+    "-h", "--help", "-V", "--version",
 }
 _SECRET_KEY_PARTS = ("secret", "token", "password", "api_key", "api-key", "apikey", "credential", "prompt", "content")
 _PROTECTED_UNKNOWN_PARTS = (
     "session", "thread", "conversation", "identity", "resume", "worktree", "cwd", "directory",
     "bootstrap", "executable", "provider", "remote", "exec", "print", "output-format", "input-format",
-    "danger", "bypass", "skip-permission", "no-approval",
+    "danger", "bypass", "skip-permission", "no-approval", "approve-all", "auto-approve",
 )
 
 
@@ -480,8 +491,20 @@ def _validated_native_args(
         if not isinstance(token, str) or not token or "\0" in token:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Provider options must be nonempty argv strings.")
         option, equals, inline_value = token.partition("=")
+        attached_short_value = False
+        if provider == "codex" and len(token) > 2 and token[:2] in {"-s", "-a", "-m", "-p", "-c"} and token[2] != "=":
+            option, inline_value, attached_short_value = token[:2], token[2:], True
+        if token == "--":
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Do not include a second `--` inside provider arguments.")
+        if not equals and len(token) > 2 and token[:2] in {"-C", "-i", "-h", "-V"}:
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                  f"Attached provider option {token!r} conflicts with LLMD-owned cwd/bootstrap identity or help/version mode.")
         normalized_option = option.casefold()
-        if (option in _ALWAYS_FORBIDDEN_NATIVE_OPTIONS or (provider == "agy" and option == "-p")
+        agy_resume_alias = provider == "agy" and (
+            option in {"-c", "-r", "-p", "-i"}
+            or (not equals and len(token) > 2 and token[:2] in {"-c", "-r", "-p", "-i"})
+        )
+        if (option in _ALWAYS_FORBIDDEN_NATIVE_OPTIONS or agy_resume_alias
                 or not option.startswith("-")):
             raise ContinuityError(ErrorCode.INVALID_INPUT,
                                   f"LLMD-conflicting provider option {option!r} is reserved for session identity, executable, execution mode, bootstrap, prompt, or cwd ownership.")
@@ -501,6 +524,8 @@ def _validated_native_args(
             if not allow_unknown:
                 raise ContinuityError(ErrorCode.INVALID_INPUT,
                                       f"Unknown {provider} option {option!r}; add --allow-native-unknown before `--` to authorize generic forwarding.")
+            if equals and not inline_value:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unknown provider option {option!r} cannot have an empty value.")
             result.append(token)
             if equals:
                 index += 1
@@ -531,11 +556,14 @@ def _validated_native_args(
             raise ContinuityError(ErrorCode.INVALID_INPUT, f"Provider option {canonical} may only be specified once.")
         if kind not in {"repeat", "config"}:
             seen.add(canonical)
-        if equals:
+        if equals or attached_short_value:
             value = inline_value
             if not value:
                 raise ContinuityError(ErrorCode.INVALID_INPUT, f"Provider option {option} requires a value.")
-            result.extend((option, value))
+            if attached_short_value:
+                result.append(token)
+            else:
+                result.extend((option, value))
         else:
             index += 1
             if (index >= len(native_args) or not isinstance(native_args[index], str)
@@ -577,6 +605,8 @@ def _requested_permission_settings(
     while index < len(validated):
         token = validated[index]
         option, equals, inline_value = token.partition("=")
+        if provider == "codex" and len(token) > 2 and token[:2] in {"-s", "-a", "-m", "-p", "-c"} and token[2] != "=":
+            option, equals, inline_value = token[:2], "=", token[2:]
         value = inline_value if equals else (validated[index + 1] if index + 1 < len(validated) else None)
         canonical = {"-s": "--sandbox", "-a": "--ask-for-approval"}.get(option, option)
         if canonical == "--sandbox":
@@ -630,6 +660,9 @@ def _unknown_native_option_names(provider: str, native_args: Sequence[str]) -> l
     while index < len(native_args):
         token = native_args[index]
         option = token.partition("=")[0]
+        if provider == "codex" and len(token) > 2 and token[:2] in {"-s", "-a", "-m", "-p", "-c"} and token[2] != "=":
+            index += 1
+            continue
         if option not in values and option not in flags and option.startswith("-"):
             unknown.append(option)
             if "=" not in token:
@@ -697,6 +730,8 @@ def _safe_launch_settings(
     while index < len(native_args):
         token = native_args[index]
         option, equals, inline_value = token.partition("=")
+        if provider == "codex" and len(token) > 2 and token[:2] in {"-s", "-a", "-m", "-p", "-c"} and token[2] != "=":
+            option, equals, inline_value = token[:2], "=", token[2:]
         value = inline_value if equals else (native_args[index + 1] if index + 1 < len(native_args) else None)
         kind = values.get(option)
         flag_kind = flags.get(option)
@@ -762,8 +797,9 @@ def _terminal_launch_record(
     native_cwd: str | None,
     native_args: Sequence[str],
     allow_native_unknown: bool = False,
+    launcher_terminal_context: str | None = None,
 ) -> dict[str, Any] | None:
-    raw_terminal_id = os.environ.get("TERMINAL_SESSION_ID")
+    raw_terminal_id = launcher_terminal_context or os.environ.get("TERMINAL_SESSION_ID")
     if not raw_terminal_id:
         return None
     try:
@@ -780,7 +816,7 @@ def _terminal_launch_record(
         "gui_alias": gui["alias"] if gui else slot.get("gui_alias"), "slot_id": slot["slot_id"],
         "slot_name": slot["name"], "provider": provider, "native_session_id": session_id,
         "environment_id": environment_id, "launch_started_at": now_utc_iso(), "launch_exited_at": None,
-        "status": "running", "exit_code": None, "requested_cwd": requested_cwd,
+        "status": "launching", "exit_code": None, "requested_cwd": requested_cwd,
         "effective_cwd": effective_cwd, "native_cwd": native_cwd, **git,
         "settings": _safe_launch_settings(provider, native_args, allow_unknown=allow_native_unknown),
     }
@@ -982,6 +1018,7 @@ def _run_pane(
     cwd_override: str | None = None,
     expected_session_identity: tuple[str, str, str] | None = None,
     allow_native_unknown: bool = False,
+    launcher_terminal_context: str | None = None,
 ) -> int:
     slot = dispatcher.get_slot_by_id(slot_id)
     if launch_id:
@@ -1036,24 +1073,27 @@ def _run_pane(
     native_record = dispatcher.materializer.get_session(provider, environment_id, session_id) if session_id else None
     terminal_record = _terminal_launch_record(
         dispatcher, slot, provider=provider, environment_id=environment_id, session_id=session_id,
-        requested_cwd=cwd_override, effective_cwd=effective_cwd,
+        requested_cwd=cwd_override or (pending.get("cwd") if launch_id else None), effective_cwd=effective_cwd,
         native_cwd=native_record.cwd_native if native_record else None, native_args=native_args,
         allow_native_unknown=allow_native_unknown,
+        launcher_terminal_context=launcher_terminal_context,
     )
-    if terminal_record:
-        dispatcher.record_terminal_launch(terminal_record)
+    terminal_record_written = False
     bootstrap_completed = False
     try:
         if launch_id:
+            bootstrap_argv = _bootstrap_native_argv(
+                dispatcher, provider, environment_id=environment_id, cwd=bootstrap_cwd
+            )
+            if terminal_record:
+                dispatcher.record_terminal_launch(terminal_record)
+                terminal_record_written = True
             dispatcher.record_process_observation(
                 slot_id=slot_id,
                 launch_id=launch_id,
                 return_code=0,
                 outcome="bootstrap_attempt_started",
                 detail="Provider bootstrap started; automatic retry is disabled until this launch is resolved.",
-            )
-            bootstrap_argv = _bootstrap_native_argv(
-                dispatcher, provider, environment_id=environment_id, cwd=bootstrap_cwd
             )
             try:
                 bootstrap = subprocess.run(
@@ -1179,6 +1219,7 @@ def _run_pane(
                 )
             if terminal_record:
                 terminal_record["native_session_id"] = captured_session_id
+                terminal_record["native_cwd"] = bootstrap_cwd
                 dispatcher.record_terminal_launch(terminal_record)
             session_id = captured_session_id
             launch_id = None
@@ -1192,14 +1233,15 @@ def _run_pane(
             argv = _native_argv(dispatcher, provider, session_id, environment_id=environment_id, cwd=cwd,
                                 native_args=native_args, allow_native_unknown=allow_native_unknown)
     except ContinuityError as exc:
-        if launch_id and not bootstrap_completed:
+        if launch_id and bootstrap_completed:
             pending_now = dispatcher._row(
                 "SELECT failure_detail FROM dispatcher_pending_launches WHERE launch_id = ? AND status = 'pending'",
                 (launch_id,),
             )
             if pending_now is not None and not pending_now["failure_detail"]:
                 dispatcher.mark_launch_failed(launch_id=launch_id, detail=str(exc), apply=True)
-        _finish_terminal_launch(dispatcher, terminal_record, exit_code=1)
+        if terminal_record_written:
+            _finish_terminal_launch(dispatcher, terminal_record, exit_code=1)
         raise
     print(f"Launching {slot['name']}: {provider} {session_id or '(new session)'}", file=output_stream)
     try:
@@ -1213,7 +1255,19 @@ def _run_pane(
                 if _session_identity(latest) != launch_identity:
                     raise ContinuityError(ErrorCode.INVALID_INPUT,
                                           "Agent selection changed before provider launch; retry with the selected session.")
+            if terminal_record and not terminal_record_written:
+                dispatcher.record_terminal_launch(terminal_record)
+                terminal_record_written = True
             result = subprocess.run(argv, cwd=process_cwd, check=False)
+    except KeyboardInterrupt:
+        if launch_id:
+            dispatcher.mark_launch_failed(launch_id=launch_id, detail="Provider launch was interrupted; inspect provider state before retrying.", apply=True)
+        _finish_terminal_launch(dispatcher, terminal_record, exit_code=130, status="interrupted")
+        raise
+    except ContinuityError:
+        if terminal_record_written:
+            _finish_terminal_launch(dispatcher, terminal_record, exit_code=1, status="failed")
+        raise
     except OSError as exc:
         if launch_id:
             dispatcher.mark_launch_failed(launch_id=launch_id, detail=str(exc), apply=True)
@@ -1222,9 +1276,10 @@ def _run_pane(
                 slot_id=slot_id, launch_id=None, return_code=-1, outcome="spawn_failed",
                 session_identity=(provider, environment_id, session_id),
             )
-        _finish_terminal_launch(dispatcher, terminal_record, exit_code=1)
+        _finish_terminal_launch(dispatcher, terminal_record, exit_code=1, status="spawn_failed")
         raise ContinuityError(ErrorCode.PROVIDER_UNAVAILABLE, f"Failed to launch {provider}: {exc}") from exc
-    _finish_terminal_launch(dispatcher, terminal_record, exit_code=result.returncode)
+    _finish_terminal_launch(dispatcher, terminal_record, exit_code=result.returncode,
+                            status="exited" if result.returncode == 0 else "abnormal_exit")
     try:
         dispatcher.record_process_observation(
             slot_id=slot_id, launch_id=launch_id, return_code=result.returncode,
@@ -1947,10 +2002,11 @@ def _open(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[str, 
             "panes_per_tab": args.panes_per_tab,
             "target_window": args.window,
         }
-    panes = [
-        PaneSpec(title=item["title"], argv=tuple(item["argv"]), cwd=item.get("cwd"))
-        for item in request["panes"]
-    ]
+    panes = []
+    for item in request["panes"]:
+        launcher_context = str(uuid4())
+        item["argv"] = [*item["argv"], "-T", launcher_context]
+        panes.append(PaneSpec(title=item["title"], argv=tuple(item["argv"]), cwd=item.get("cwd")))
     plan = group_panes(panes, panes_per_tab=args.panes_per_tab, target_window=args.window)
     backend = WindowsTerminalBackend()
     preview = backend.preview(plan)
@@ -2271,17 +2327,29 @@ def _render_terminal_launches(launches: list[dict[str, Any]], stream: TextIO, *,
     for index, launch in enumerate(launches):
         if index:
             print(file=stream)
-        provider = str(launch.get("provider") or "unknown").upper()
-        session = launch.get("native_session_id") or "session ID not captured"
+        def display_value(key: str, current_launch: dict[str, Any] = launch) -> str:
+            item = current_launch.get(key)
+            return str(item) if item not in (None, "") else "(unavailable)"
+
         terminal_id = str(launch.get("terminal_session_id") or "")
         scope = f"  terminal {terminal_id[:8]}" if show_terminal_id and terminal_id else ""
-        print(
-            f"{launch.get('launch_started_at')}  {provider}  {launch.get('status')}  "
-            f"{launch.get('gui_alias') or 'unknown GUI'} / {launch.get('slot_name') or 'unknown agent'}{scope}",
-            file=stream,
-        )
-        print(f"  Session: {session}; environment: {launch.get('environment_id')}", file=stream)
-        print(f"  Launch cwd: {launch.get('effective_cwd') or '(provider default)'}", file=stream)
+        status = launch.get("status") or "unknown status"
+        if status in {"launching", "running"}:
+            status = f"{status} (outcome unverified; process may have been terminated)"
+        print(f"{launch.get('launch_started_at')}  {status}{scope}", file=stream)
+        print(f"  Requested GUI: {display_value('gui_alias')}", file=stream)
+        print(f"  Agent: {display_value('slot_name')}", file=stream)
+        print(f"  Provider: {display_value('provider').upper()}", file=stream)
+        session = launch.get("native_session_id")
+        print(f"  Native session ID: {session if session else '(unavailable; not captured)'}", file=stream)
+        print(f"  Environment: {display_value('environment_id')}", file=stream)
+        print(f"  Requested cwd: {display_value('requested_cwd')}", file=stream)
+        print(f"  Effective launch cwd: {display_value('effective_cwd')}", file=stream)
+        print(f"  Recorded native cwd: {display_value('native_cwd')}", file=stream)
+        print(f"  Git repository: {display_value('git_repository')}", file=stream)
+        print(f"  Git worktree: {display_value('git_worktree')}", file=stream)
+        print(f"  Git branch: {display_value('git_branch')}", file=stream)
+        print(f"  Git commit: {display_value('git_commit')}", file=stream)
         if launch.get("launch_exited_at"):
             print(f"  Exit: {launch['launch_exited_at']} (code {launch.get('exit_code')})", file=stream)
 
@@ -2587,7 +2655,8 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
             return 2
     elif args.command == "pane-run":
         return _run_pane(dispatcher, slot_id=args.slot_id, launch_id=args.launch_id,
-                         input_stream=input_stream, output_stream=output_stream)
+                         input_stream=input_stream, output_stream=output_stream,
+                         launcher_terminal_context=args.launcher_terminal_context)
     else:
         parser.error("command required")
         return 2

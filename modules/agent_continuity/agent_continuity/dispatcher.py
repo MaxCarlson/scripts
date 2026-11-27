@@ -137,7 +137,7 @@ class DispatcherService:
         started_at = str(record.get("launch_started_at") or "").strip()
         if not launch_id or not environment_id or not started_at:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Terminal launch records require launch, environment, and start identities.")
-        if status not in {"running", "exited", "failed", "interrupted"}:
+        if status not in {"launching", "running", "exited", "failed", "spawn_failed", "abnormal_exit", "interrupted"}:
             raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported terminal launch status {status!r}.")
         settings = record.get("settings") or {}
         if not isinstance(settings, dict):

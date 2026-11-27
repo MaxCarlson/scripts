@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -131,8 +132,57 @@ def test_open_creates_pane_specs_and_delegates_layout_and_launch(tmp_path, monke
     assert result["preview"]["tab_count"] == 1
     assert result["preview"]["titles"] == ["AgentPerf"]
     assert result["launch"] == {"launched": True}
-    assert result["request"]["panes"][0]["argv"] == ["llmd", "pane-run", "--slot-id", dispatcher.list_slots(gui="AgentImprovement")[0]["slot_id"]]
+    pane_argv = result["request"]["panes"][0]["argv"]
+    assert pane_argv[:4] == ["llmd", "pane-run", "--slot-id", dispatcher.list_slots(gui="AgentImprovement")[0]["slot_id"]]
+    assert pane_argv[4] == "-T"
+    assert UUID(pane_argv[5])
     assert result["request"]["panes"][0]["provider_argv"] == ["agy", "--conversation", "a-1"]
+
+
+def test_open_assigns_distinct_launcher_contexts_without_reusing_profile_terminal_id(tmp_path, monkeypatch):
+    dispatcher = DispatcherService(ContinuityService(tmp_path / "registry"))
+    dispatcher.create_gui("GUI", apply=True)
+    for name, session in (("One", "session-one"), ("Two", "session-two")):
+        dispatcher.create_slot(gui="GUI", name=name, apply=True)
+        dispatcher.attach_session(gui="GUI", name=name, provider="codex", session_id=session, apply=True)
+    parent_terminal_id = str(uuid4())
+    monkeypatch.setenv("TERMINAL_SESSION_ID", parent_terminal_id)
+
+    @dataclass(frozen=True)
+    class PaneSpec:
+        title: str
+        argv: tuple[str, ...]
+        cwd: str | None = None
+
+    class Backend:
+        def preview(self, plan):
+            return {"tab_count": len(plan["tabs"])}
+
+        def launch(self, plan):
+            return {"launched": True}
+
+    def group_panes(panes, *, panes_per_tab, target_window):
+        return {"tabs": [{"title": pane.title, "panes": [pane]} for pane in panes]}
+
+    monkeypatch.setitem(sys.modules, "terminal_launcher", types.SimpleNamespace(
+        PaneSpec=PaneSpec, WindowsTerminalBackend=Backend, group_panes=group_panes
+    ))
+    result = _open(dispatcher, Namespace(gui="GUI", terminal="windows-terminal", panes_per_tab=2,
+                                         window=None, apply=True))
+
+    pane_argv = [pane["argv"] for pane in result["request"]["panes"]]
+    context_ids = [argv[argv.index("-T") + 1] for argv in pane_argv]
+    assert len(context_ids) == 2
+    assert len(set(context_ids)) == 2
+    assert parent_terminal_id not in context_ids
+    assert all(UUID(context_id) for context_id in context_ids)
+
+
+def test_pane_run_accepts_launcher_owned_terminal_context():
+    context_id = str(uuid4())
+    args = build_parser().parse_args(["pane-run", "-s", "slot-example", "-T", context_id])
+
+    assert args.launcher_terminal_context == context_id
 
 
 def test_open_without_terminal_library_returns_pending_integration_preview(tmp_path, monkeypatch):

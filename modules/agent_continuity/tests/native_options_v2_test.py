@@ -23,6 +23,18 @@ def test_common_managed_options_preserve_provider_argv() -> None:
     assert _validated_native_args("codex", args) == args
 
 
+def test_attached_codex_short_values_are_validated_previewed_and_preserved() -> None:
+    args = ["-sworkspace-write", "-aon-request", "-cmodel_reasoning_effort=high"]
+    assert _validated_native_args("codex", args) == args
+    assert _requested_permission_settings("codex", args) == {
+        "--sandbox": ["workspace-write"], "--ask-for-approval": ["on-request"],
+    }
+    summary = _safe_launch_settings("codex", args)
+    assert summary["sandbox"] == "workspace-write"
+    assert summary["approval_policy"] == "on-request"
+    assert summary["reasoning_effort"] == "high"
+
+
 def test_agy_managed_options_include_final_sandbox_and_json_settings() -> None:
     settings = json.dumps({"model": "gemini", "effort": "high"})
     args = ["--add-dir", "/work area", "--settings", settings, "--sandbox"]
@@ -35,6 +47,35 @@ def test_generic_options_need_explicit_opt_in_and_remain_argv_tokens() -> None:
         _validated_native_args("codex", ["--future-option", "value"])
     args = ["--future-option", "two words", "--future-bool"]
     assert _validated_native_args("codex", args, allow_unknown=True) == args
+
+
+@pytest.mark.parametrize(
+    "provider,args",
+    [
+        ("codex", ["-Cworktree"]), ("codex", ["-iimage.png"]), ("codex", ["-h"]),
+        ("codex", ["-V"]), ("agy", ["-c"]), ("agy", ["-rother-session"]),
+        ("agy", ["-p"]), ("agy", ["--version"]), ("agy", ["--conversation=other"]),
+        ("codex", ["--last=other"]), ("codex", ["--", "--model", "other"]),
+    ],
+)
+def test_generic_authorization_rejects_attached_identity_and_mode_aliases(provider, args) -> None:
+    with pytest.raises(ContinuityError):
+        _validated_native_args(provider, args, allow_unknown=True)
+
+
+@pytest.mark.parametrize(
+    "provider,args",
+    [
+        ("codex", ["-s", "workspace-write", "-sworkspace-write"]),
+        ("codex", ["-aon-request", "--ask-for-approval=never"]),
+        ("codex", ["--sandbox=unsafe"]), ("codex", ["-sunsafe"]),
+        ("codex", ["--ask-for-approval=always"]), ("agy", ["--effort=extreme"]),
+        ("codex", ["--mode=plan"]),
+    ],
+)
+def test_managed_and_attached_permission_values_are_validated(provider, args) -> None:
+    with pytest.raises(ContinuityError):
+        _validated_native_args(provider, args)
 
 
 def test_generic_permission_option_is_visible_as_unclassified() -> None:
@@ -109,8 +150,28 @@ def test_managed_additional_directories_are_validated_before_launch(tmp_path) ->
     existing = tmp_path / "shared dir"
     existing.mkdir()
     _validate_additional_directories(dispatcher, "codex", environment_id, ["--add-dir", str(existing)])
+    with pytest.raises(ContinuityError, match="must be absolute"):
+        _validate_additional_directories(dispatcher, "codex", environment_id, ["--add-dir", "relative/path"])
     with pytest.raises(ContinuityError, match="does not exist"):
         _validate_additional_directories(dispatcher, "agy", environment_id, ["--add-dir", str(existing / "missing")])
+
+
+def test_additional_directory_absolute_path_uses_selected_runtime(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from agent_continuity import dispatcher_cli
+
+    validated = []
+    monkeypatch.setattr(dispatcher_cli, "_resolve_environment", lambda *_args, **_kwargs: SimpleNamespace(runtime_kind="wsl"))
+    monkeypatch.setattr(dispatcher_cli, "_validate_cwd_override", lambda _dispatcher, env, path: validated.append((env, path)))
+    dispatcher_cli._validate_additional_directories(DispatcherService(home_dir=tmp_path / "registry"), "agy", "wsl:Ubuntu", [
+        "--add-dir", "/work/review",
+    ])
+    assert validated == [("wsl:Ubuntu", "/work/review")]
+    with pytest.raises(ContinuityError, match="must be absolute"):
+        dispatcher_cli._validate_additional_directories(
+            DispatcherService(home_dir=tmp_path / "registry"), "agy", "wsl:Ubuntu", ["--add-dir", "review"],
+        )
 
 
 def test_cli_parser_places_unknown_authorization_before_provider_separator() -> None:
