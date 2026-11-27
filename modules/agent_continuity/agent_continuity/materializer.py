@@ -519,6 +519,95 @@ class SQLiteMaterializer:
                 (str(p["state"]), ts, str(p["slot_id"])),
             )
 
+        elif etype == EventType.DISPATCHER_SLOTS_TRANSITIONED.value:
+            for change in p["slot_changes"]:
+                conn.execute(
+                    "UPDATE agent_slots SET state = ?, updated_at = ? WHERE slot_id = ?",
+                    (str(change["state"]), ts, str(change["slot_id"])),
+                )
+            cycle = p.get("review_cycle")
+            if cycle:
+                conn.execute(
+                    """INSERT INTO dispatcher_review_cycles(
+                           cycle_id, original_slot_id, reviewer_slot_id, original_provider,
+                           original_environment_id, original_session_id, original_state,
+                           reviewer_provider, reviewer_environment_id, reviewer_session_id,
+                           status, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(cycle_id) DO UPDATE SET
+                           reviewer_provider=excluded.reviewer_provider,
+                           reviewer_environment_id=excluded.reviewer_environment_id,
+                           reviewer_session_id=excluded.reviewer_session_id,
+                           status=excluded.status, updated_at=excluded.updated_at""",
+                    (str(cycle["cycle_id"]), str(cycle["original_slot_id"]), str(cycle["reviewer_slot_id"]),
+                     str(cycle["original_provider"]), str(cycle["original_environment_id"]),
+                     str(cycle["original_session_id"]), str(cycle["original_state"]),
+                     cycle.get("reviewer_provider"), cycle.get("reviewer_environment_id"),
+                     cycle.get("reviewer_session_id"), str(cycle["status"]),
+                     str(cycle.get("created_at") or ts), ts),
+                )
+
+        elif etype == EventType.DISPATCHER_AGENT_TRANSITION_COMPLETED.value:
+            provider = str(event.provider)
+            session_id = str(event.native_session_id)
+            session = p.get("session", {})
+            conn.execute(
+                """INSERT OR IGNORE INTO sessions(
+                       provider, environment_id, native_session_id, cwd_native, cwd_canonical,
+                       repository_identity, first_observed_at, last_seen_at, metadata_source, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (provider, event.environment_id, session_id, session.get("cwd_native"),
+                 session.get("cwd_canonical"), session.get("repository_identity"), ts, ts,
+                 str(session.get("metadata_source") or "dispatcher_transition"), ts),
+            )
+            activation = p["activation"]
+            conn.execute(
+                """INSERT OR IGNORE INTO agent_slot_activations(
+                       activation_id, slot_id, sequence, provider, environment_id,
+                       native_session_id, provenance, activated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (str(activation["activation_id"]), str(activation["slot_id"]), int(activation["sequence"]),
+                 provider, event.environment_id, session_id, str(activation["provenance"]), ts),
+            )
+            conn.execute("UPDATE agent_slots SET updated_at=?, last_activity_at=? WHERE slot_id=?",
+                         (ts, ts, str(activation["slot_id"])))
+            conn.execute(
+                """UPDATE dispatcher_gui_conversations SET updated_at=?, last_activity_at=
+                       CASE WHEN last_activity_at IS NULL OR last_activity_at < ? THEN ? ELSE last_activity_at END
+                   WHERE gui_id=(SELECT gui_id FROM agent_slots WHERE slot_id=?)""",
+                (ts, ts, ts, str(activation["slot_id"])),
+            )
+            for change in p["slot_changes"]:
+                conn.execute("UPDATE agent_slots SET state=?, updated_at=? WHERE slot_id=?",
+                             (str(change["state"]), ts, str(change["slot_id"])))
+            if p.get("launch_id"):
+                conn.execute(
+                    """UPDATE dispatcher_pending_launches SET status='resolved', resolved_at=?,
+                           resolved_session_id=?, failure_detail=NULL
+                       WHERE launch_id=? AND status='pending'""",
+                    (ts, session_id, str(p["launch_id"])),
+                )
+            cycle = p.get("review_cycle")
+            if cycle:
+                conn.execute(
+                    """INSERT INTO dispatcher_review_cycles(
+                           cycle_id, original_slot_id, reviewer_slot_id, original_provider,
+                           original_environment_id, original_session_id, original_state,
+                           reviewer_provider, reviewer_environment_id, reviewer_session_id,
+                           status, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(cycle_id) DO UPDATE SET
+                           reviewer_provider=excluded.reviewer_provider,
+                           reviewer_environment_id=excluded.reviewer_environment_id,
+                           reviewer_session_id=excluded.reviewer_session_id,
+                           status=excluded.status, updated_at=excluded.updated_at""",
+                    (str(cycle["cycle_id"]), str(cycle["original_slot_id"]), str(cycle["reviewer_slot_id"]),
+                     str(cycle["original_provider"]), str(cycle["original_environment_id"]),
+                     str(cycle["original_session_id"]), str(cycle["original_state"]),
+                     cycle.get("reviewer_provider"), cycle.get("reviewer_environment_id"),
+                     cycle.get("reviewer_session_id"), str(cycle["status"]),
+                     str(cycle.get("created_at") or ts), ts),
+                )
         elif etype == EventType.DISPATCHER_SESSION_ACTIVATED.value:
             slot_id = str(p["slot_id"])
             sequence = int(p["sequence"])

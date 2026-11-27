@@ -13,6 +13,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+from contextlib import nullcontext
 from pathlib import Path
 
 try:
@@ -23,6 +25,59 @@ except ImportError:  # pragma: no cover - supported by the shell bootstraps
 
 ROOT = Path(__file__).resolve().parent
 CORE = ("standard_ui", "python_setup")
+_LOCAL_REPO_BOOTSTRAP = ROOT.parent / "shared-python-modules" / "packages" / "repo-bootstrap" / "src"
+if _LOCAL_REPO_BOOTSTRAP.is_dir() and str(_LOCAL_REPO_BOOTSTRAP) not in sys.path:
+    sys.path.insert(0, str(_LOCAL_REPO_BOOTSTRAP))
+
+
+def _make_ui(verbose: bool):
+    try:
+        from repo_bootstrap.console_ui import ConsoleUI, format_duration
+        return ConsoleUI(verbose=verbose), format_duration
+    except ImportError:
+        class _FallbackUI:
+            class _Glyphs:
+                ok = "+"
+                info = "i"
+                warn = "!"
+                fail = "x"
+                bullet = "*"
+                rule = "-"
+
+            glyphs = _Glyphs()
+
+            def style(self, text: str, _role: str | None = None) -> str:
+                return text
+
+            def write(self, text: str = "") -> None:
+                print(text)
+
+            def rule(self, _role: str = "muted") -> None:
+                print("-" * 76)
+
+            def header(self, title: str, subtitle: str) -> None:
+                print(f"{title}  {subtitle}")
+                self.rule()
+
+            def kv(self, key: str, value: str, **_kw) -> None:
+                print(f"{key:<19}{value}")
+
+            def status_row(self, state: str, label: str, detail: str, *, elapsed: float | None = None) -> None:
+                icon = {"ok": "+", "info": "i", "warn": "!", "fail": "x"}.get(state, "*")
+                suffix = f" ({elapsed:.1f}s)" if elapsed is not None and elapsed >= 0.25 else ""
+                print(f"{icon} {label:<17}{detail}{suffix}")
+
+            def verbose_note(self, message: str, **_kw) -> None:
+                if verbose:
+                    print(f"  {message}")
+
+            def spinner_step(self, _label: str):
+                return nullcontext(type("Step", (), {"elapsed": 0.0})())
+
+        def _fmt(seconds: float) -> str:
+            return f"{seconds:.1f}s"
+
+        return _FallbackUI(), _fmt
 
 
 def normalized(name: str) -> str:
@@ -323,8 +378,21 @@ def write_console_proxy(
 
 
 def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
+    total_start = time.monotonic()
+    ui, fmt_duration = _make_ui(verbose)
+    g = ui.glyphs
+
+    ui.header("Scripts", "Bootstrap")
+    ui.kv("Mode", "dry-run" if dry_run else f"editable {g.bullet} missing-only")
+    ver_info = getattr(sys, "version_info", None)
+    py_ver = f"{ver_info.major}.{ver_info.minor}.{ver_info.micro}" if ver_info else str(sys.executable)
+    ui.kv("Python", py_ver)
+    ui.kv("Environment", str(root / ".venv") if verbose else ".venv")
+    ui.write("")
+
     if not ensure_pscripts(root, dry_run):
         print("[ERROR] pscripts submodule is missing and could not be initialized", file=sys.stderr)
+        ui.status_row("fail", "Submodules", "pscripts submodule is missing and could not be initialized")
         return 1
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
@@ -334,10 +402,20 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
             ensure_shared_distributions,
         )
     except ImportError as exc:
-        print(f"[ERROR] Shared-package installer is unavailable: {exc}", file=sys.stderr)
+        ui.status_row("fail", "Shared packages", f"installer unavailable: {exc}")
         return 1
-    if not ensure_shared_distributions(dry_run=dry_run, verbose=verbose):
+    with ui.spinner_step("Checking shared distributions") as shared_step:
+        shared_ok = ensure_shared_distributions(dry_run=dry_run, verbose=verbose)
+    if not shared_ok:
+        ui.status_row("fail", "Shared packages", "installation or validation failed", elapsed=shared_step.elapsed)
         return 1
+    ui.status_row(
+        "ok",
+        "Shared packages",
+        f"{len(SHARED_DISTRIBUTION_REQUIREMENTS)}/{len(SHARED_DISTRIBUTION_REQUIREMENTS)} verified",
+        elapsed=shared_step.elapsed,
+    )
+
     sources, unknown = package_sources(root)
     present = installed_versions()
     missing = [
@@ -346,43 +424,59 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
         if normalized(name) not in present
         or (source_version(path) is not None and present[normalized(name)] != source_version(path))
     ]
-    print(f"Mode: {'dry run' if dry_run else 'install missing only'}")
-    print(f"Python: {sys.executable}")
-    print(f"Packages: {len(sources)} found, {len(missing)} missing, {len(unknown)} with unreadable/unknown names")
-    print("Package inventory:")
-    for name, path in sources:
-        installed = present.get(normalized(name))
-        source = source_version(path)
-        state = "missing; will install" if installed is None else (
-            f"version {installed} installed; source {source}; will upgrade" if source and installed != source else "already installed"
-        )
-        print(f"  [{state}] {package_kind(path, root)}: {name} ({path.relative_to(root)})")
+    if verbose:
+        for name, path in sources:
+            installed = present.get(normalized(name))
+            source = source_version(path)
+            state = "missing; will install" if installed is None else (
+                f"version {installed} installed; source {source}; will upgrade" if source and installed != source else "already installed"
+            )
+            ui.verbose_note(f"[{state}] {package_kind(path, root)}: {name} ({path.relative_to(root)})")
     for path in unknown:
-        print(f"[WARN] Skipped unknown package name: {path}")
+        ui.status_row("warn", "Unknown package", str(path))
 
     failures = 0
+    installed_count = 0
+    pkg_start = time.monotonic()
     for name, path in missing:
-        verb = "Would install" if dry_run else "Installing"
-        print(f"{verb} {package_kind(path, root)}: {name} ({path.relative_to(root)})")
         if dry_run:
+            ui.verbose_note(f"Would install {package_kind(path, root)}: {name} ({path.relative_to(root)})")
             continue
-        requirements = path / "requirements.txt"
-        if requirements.is_file() and (path.parent == root / "pscripts" / "modules" or not (path / "pyproject.toml").is_file()):
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "-r", str(requirements)],
-                check=False,
-            )
+        with ui.spinner_step(f"Installing {name}"):
+            requirements = path / "requirements.txt"
+            if requirements.is_file() and (path.parent == root / "pscripts" / "modules" or not (path / "pyproject.toml").is_file()):
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "-r", str(requirements)],
+                    check=False,
+                    capture_output=not verbose,
+                    text=True,
+                )
+                if result.returncode:
+                    failures += 1
+                    ui.status_row("fail", name, f"requirements install exited {result.returncode}")
+                    continue
+            command = [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "-e", str(path)]
+            if verbose:
+                ui.verbose_note(subprocess.list2cmdline(command))
+            result = subprocess.run(command, check=False, capture_output=not verbose, text=True)
             if result.returncode:
                 failures += 1
-                print(f"[ERROR] {name}: requirements install exited {result.returncode}", file=sys.stderr)
-                continue
-        command = [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "-e", str(path)]
-        if verbose:
-            print("  " + subprocess.list2cmdline(command))
-        result = subprocess.run(command, check=False)
-        if result.returncode:
-            failures += 1
-            print(f"[ERROR] {name}: pip exited {result.returncode}", file=sys.stderr)
+                ui.status_row("fail", name, f"pip exited {result.returncode}")
+            else:
+                installed_count += 1
+    pkg_elapsed = time.monotonic() - pkg_start
+    unchanged_count = len(sources) - len(missing)
+    if dry_run:
+        ui.status_row(
+            "ok" if not missing else "info",
+            "Local packages",
+            f"{unchanged_count}/{len(sources)} ready {g.bullet} {len(missing)} to install",
+        )
+    elif failures == 0:
+        detail = f"{len(sources)}/{len(sources)} ready {g.bullet} {installed_count} installed, {unchanged_count} unchanged"
+        ui.status_row("ok", "Local packages", detail, elapsed=pkg_elapsed)
+    else:
+        ui.status_row("fail", "Local packages", f"{installed_count} installed, {failures} failed", elapsed=pkg_elapsed)
 
     windows = os.name == "nt"
     bin_dir = root / "bin"
@@ -398,9 +492,9 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
         destination = launcher_path(bin_dir, source.stem, windows)
         if not destination.exists() and not destination.is_symlink():
             missing_script_count += 1
-    print(f"Script launchers: {len(script_sources)} found, {missing_script_count} missing")
+    ui.verbose_note(f"Script launchers: {len(script_sources)} found, {missing_script_count} missing")
     for label, count in sorted(source_counts.items()):
-        print(f"  {label}: {count}")
+        ui.verbose_note(f"  {label}: {count}")
     for source, kind in script_sources:
         destination = launcher_path(bin_dir, source.stem, windows)
         label = source_kind(source, root)
@@ -408,7 +502,7 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
             existing += 1
             continue
         verb = "Would create" if dry_run else "Creating"
-        print(f"{verb} {label} launcher: {source.stem} ({source.relative_to(root)}) -> {destination}")
+        ui.verbose_note(f"{verb} {label} launcher: {source.stem} ({source.relative_to(root)}) -> {destination}")
         if not dry_run:
             try:
                 write_launcher(destination, source, kind, windows, Path(sys.executable))
@@ -480,9 +574,9 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
             missing_console.append((name, owner, owner_path, destination, migrate_legacy))
         elif not missing_proxy or unmanaged_existing:
             existing += 1
-    print(f"Console commands: {console_count} found, {len(missing_console)} missing proxies")
+    ui.verbose_note(f"Console commands: {console_count} found, {len(missing_console)} missing proxies")
     for owner_description, commands in sorted(console_inventory.values(), key=lambda item: item[0].lower()):
-        print(f"  {owner_description}: {', '.join(sorted(commands))}")
+        ui.verbose_note(f"  {owner_description}: {', '.join(sorted(commands))}")
 
     for name, owner, owner_path, destination, migrate_legacy in missing_console:
         owner_description = (
@@ -494,7 +588,7 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
             verb = "Would migrate legacy launcher" if dry_run else "Migrating legacy launcher"
         else:
             verb = "Would create" if dry_run else "Creating"
-        print(f"{verb} console command '{name}' from {owner_description}: {destination}")
+        ui.verbose_note(f"{verb} console command '{name}' from {owner_description}: {destination}")
         if not dry_run:
             try:
                 write_console_proxy(destination, name, windows, venv_dir, overwrite_legacy=migrate_legacy)
@@ -514,7 +608,30 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
             if verbose:
                 print(f"[WARN] Failed to regenerate manifest: {exc}", file=sys.stderr)
 
-    print(f"Summary: {len(missing)} missing package(s), {created} missing launcher(s), {existing} existing launcher(s), {failures} failure(s)")
+    total_elapsed = time.monotonic() - total_start
+    total_launchers = len(script_sources) + console_count
+    ui.status_row(
+        "ok" if failures == 0 else "fail",
+        "CLI launchers",
+        f"{total_launchers}/{total_launchers} ready {g.bullet} {created} created, {existing} unchanged",
+    )
+    ui.write("")
+    ui.rule("muted")
+    if failures or unknown:
+        ui.write(ui.style(f"{g.fail} Bootstrap finished with {failures} failure(s)", "bold_red"))
+    elif dry_run:
+        ui.write(ui.style("Dry run: no changes made.", "muted"))
+    else:
+        ui.write(ui.style(f"{g.ok} Bootstrap completed successfully", "bold_green"))
+    ui.write("")
+    ui.write(
+        ui.style(
+            f"{unchanged_count} packages unchanged {g.bullet} "
+            f"{total_launchers} launchers ready {g.bullet} "
+            f"{len(missing)} package update(s) {g.bullet} {fmt_duration(total_elapsed)}",
+            "muted",
+        )
+    )
     return 1 if failures or unknown else 0
 
 

@@ -355,18 +355,20 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
                     entry_point=ep,
                 ))
 
-    # 3. Standalone Python scripts under pyscripts/*.py
-    pyscripts_dir = root / "pyscripts"
-    if pyscripts_dir.is_dir():
+    # 3. Standalone Python scripts in public and private script collections.
+    for pyscripts_dir in (root / "pyscripts", root / "pscripts" / "pyscripts"):
+        if not pyscripts_dir.is_dir():
+            continue
         for script in sorted(pyscripts_dir.glob("*.py")):
             if script.name in ("__init__.py", "setup.py"):
                 continue
             name = script.stem
             version = _read_embedded_version(script)
             rel_path = str(script.relative_to(root)).replace("\\", "/")
+            owner = "pscript" if pyscripts_dir.parent.name == "pscripts" else "pyscript"
             add_command(CommandEntry(
                 name=name,
-                program_id=f"pyscript:{rel_path}",
+                program_id=f"{owner}:{rel_path}",
                 kind="python_file",
                 source_path=rel_path,
                 target=rel_path,

@@ -1,0 +1,57 @@
+# LLMD v2.1 Implementation Status
+
+- **Branch:** `feature/llmd-v21-implementation-20261123`
+- **Base:** `origin/docs/llmd-v21-feature-spec-20261123` at `17dfb0b8d82d4754da87f8c0825c107d4b8a1d40`
+- **Status:** LLMD-01–LLMD-24 remain complete. The v1.5.2 correctness follow-up is implemented, validated, committed, and pushed on the existing authorized feature branch. LLMD-25/26 remain deferred. No merge performed.
+- **Authorization:** Repair the specified environment, post-exit override, lifecycle/CAS, and JSON findings; add regression tests/docs; validate; commit and push. No live Codex/AGY execution, local inference, destructive registry action, breaking change, or merge.
+- **Review evidence:** The task handoff supplies the LLMD-19 constraints; the committed evaluation brief has no returned Gemini verdict/findings. The plan records this provenance limit.
+- **Integration assessment:** The cached `origin/main` snapshot is 61 commits ahead and 10 commits behind this branch (`git rev-list --left-right --count HEAD...origin/main` returned `10 61`). A live fetch/`ls-remote` could not refresh it because the Windows SSH helper was denied creation of its MSYS named object (`NtCreateDirectoryObject ... 0xC0000022`). Of the scoped paths reviewed, only `scripts_help` has overlapping changes; its main-side changes are unrelated registry entries. No `agent_continuity` runtime changes were found in the 61 cached commits. No merge/rebase was performed; the comparison may miss newer remote changes.
+
+## LLMD-22–24 implementation checkpoint
+
+- Worktree resumed at `b64d91aee9346579499bc878fec6f95365432f35` on `feature/llmd-v21-implementation-20261123`; the tree was clean. Workspace read/write access was confirmed by creating and removing a temporary probe.
+- Installed CLI help was queried only (no inference): `codex resume --help` and `agy.exe --help`. Codex resume allowlist is `--sandbox/-s`, `--ask-for-approval/-a`, `--model/-m`, repeatable `--enable`/`--disable`, `--search`, `--no-alt-screen`, and `--no-daemon`. AGY allowlist is boolean `--sandbox`, `--model`, and `--effort`; `--mode` and permission bypass are rejected.
+- Implemented structured post-`--` argv, cwd validation/preview, per-invocation permission reporting, and a global fake-provider PATH/process guard. `open` native overrides are explicitly rejected. Fixed bootstrap remains isolated from user options.
+- LLMD-25 persistent launch profiles and LLMD-26 native lock diagnostics are deferred.
+- Installed help was queried without inference. Focused provider-customization tests passed, the complete module suite passed (181 tests), module-scoped Ruff passed, and `git diff --check` passed. Test commands are recorded below; the delivery report records the final SHA.
+
+## Preparation
+
+- Confirmed current dispatcher source baseline and exact specification branch.
+- Updated `00_IMPLEMENTATION_PLAN.md` with LLMD-19, Batch D CLI syntax, state transitions, concurrency rules, acceptance cases, and review-evidence reconciliation.
+
+## Completed
+
+- Batch A — unified positional/named `start`, explicit `-N -a`, missing GUI/slot creation under the registry lock, duplicate/resume handling, inactive-slot reactivation, pending/in-use/stale-head guards, and post-exit Codex↔AGY reuse/new/cancel flow.
+- Focused Batch A validation: `python -m pytest -q --basetemp=.pytest_tmp_root/llmd-v21-batch-a-recheck tests/dispatcher_v2_test.py tests/dispatcher_launch_test.py -k "named_start or positional_start or start_with or prepare_start_rejects or pending_launch or in_use_selected or inactive_slot or post_exit_option_four"` — **15 passed**. Provider argv/bootstrap/process execution was mocked.
+- Batch B — shared ANSI/Unicode-safe formatting, resizable aligned selector columns, local timestamps, compact listing/runtime display, provider/status styling, scoped/global lifecycle filtering, `list -N`, and one post-exit scoped refresh.
+- Focused Batch B validation: `python -m pytest -q --basetemp=.pytest_tmp_root/llmd-v21-b-format tests/dispatcher_v2_test.py tests/terminal_format_test.py -k "list_history_count or list_completed_filter or list_rejects_negative or terminal_format or color_modes or selectors_clip or listing_ or human_renderer"` — **8 passed**. `python -m ruff check agent_continuity/terminal_format.py agent_continuity/interactive.py agent_continuity/dispatcher_cli.py tests/terminal_format_test.py tests/dispatcher_v2_test.py` — **passed**.
+- Batch C — top-level help now highlights primary/admin/recovery command groups, hides internal `pane-run` from usage/help while preserving parsing, retains all legacy commands after caller audit, and updates package CLI docs. Version advanced from 1.3.2 to 1.4.0.
+- Batch D/E implementation — durable pending/active/returned reviewer-cycle projection; atomic exact-session transition event; `review`/`return`; exit option 5 exact inactive-session picker with linked-original priority; option 6 explicit new-slot/provider/cwd confirmation and exact-ID bootstrap handoff. Focused tests exercise fake provider processes, stale and concurrent transitions, cancellation/failure, list/continue visibility, distinct worktrees, and projection rebuild.
+- Corrective review fixes — inactive originals may enter review without changing lifecycle or exact session; explicit `return -a` atomically reactivates and resumes that exact session. Inactive-source transitions are opt-in only for review, preserving stale/concurrent transition rejection elsewhere. Option 4 captures the current exact activation before prompting, validates it under the mutation lock for both reuse and new-launch paths, inherits the departing environment/cwd for new sessions, honors a reused session's recorded environment/cwd, rejects unsupported runtime targets before state mutation, and returns to the exit menu after cancellation. Scoped `list` now returns the GUI's registry `last_activity_at`.
+- Added regression coverage for inactive-original reuse/new-review round trips, exact-session return reactivation, GUI-level scoped timestamps, option-4 new/reuse stale-state races, Windows/WSL environment and cwd handling, unsupported environment refusal, cancellation followed by lifecycle choice, and one scoped summary.
+- Latest full module validation: `python -m pytest --basetemp=.pytest_tmp_root/llmd-corrections-authoritative -q -o addopts=` — **170 passed in 481.34s**. The four dispatcher/launch/CLI/lifecycle test files passed; focused option-4/review cases passed. `python -m ruff check .`, PowerShell module/export/help-registry version consistency, and `git diff --check` passed.
+- **Test-harness incident:** One early stale-state test attempt omitted a fake `_run_pane` and spawned `agy.EXE` (PID 60464) in a real session resume. That exact process was stopped promptly. Whether it began a model turn is unknown. The corrected regression and authoritative module runs use fake provider/process paths. This is recorded for audit.
+
+## Delivered
+
+- Previously committed implementation remains pushed on `feature/llmd-v21-implementation-20261123`; corrective changes were committed as `7e467fe0` (`fix(agent-continuity): guard reviewer and provider transitions`) and pushed to `origin`.
+
+## Verification and final state
+
+- Focused tests: `python -m pytest --basetemp=.pytest_tmp_root/llmd-22-focused -q tests/dispatcher_launch_test.py tests/dispatcher_v2_test.py tests/dispatcher_cli_test.py tests/cli_acceptance_test.py` — passed.
+- Authoritative module suite: `python -m pytest --basetemp=.pytest_tmp_root/llmd-22-24-authoritative-rerun -q -o addopts=` — **181 passed in 63.97s**.
+- Ruff: `python -m ruff check agent_continuity tests --config pyproject.toml` from `modules/agent_continuity` — passed. `git diff --check` — passed.
+- A repository-root Ruff run also encountered 2,531 pre-existing issues outside this module; module-scoped Ruff is the applicable clean result.
+- Version advanced from 1.4.1 to 1.5.0 and was synchronized in the help registry.
+- The feature branch remains unmerged; see the delivery report for the final commit SHA and push result.
+
+## v1.5.2 correctness follow-up checkpoint
+
+- Resumed clean at `cbb9383a284e04ba7e54849434820902ead7302a` on `feature/llmd-v21-implementation-20261123`.
+- Regression coverage now exercises Windows/WSL environment parity for preview/apply and omitted/explicit `-e`; option 4 cross-provider defaults/cancel/invalid cwd; option 5 same-provider worktree defaults; option 6 compatible explicit authorization and incompatible defaults; picker cwd/stale-session rejection; historical continue and switch reuse CAS; inactive/completed rules; failed resume history; and JSON/text start previews.
+- Resolved local-environment IDs are reused throughout invocation preview, bootstrap, pending launch and activation. Apply operations persist the local identity only after native-option and cwd validation; dry runs preserve preview purity and use one invocation-scoped local identity.
+- Focused selection: `python -m pytest --basetemp=.pytest_tmp_root/llmd-v152-env-repair2 -q -o addopts= tests/dispatcher_correctness_followup_test.py tests/dispatcher_launch_test.py tests/dispatcher_v2_test.py tests/cli_acceptance_test.py -k "new_launch_preview_and_pending_launch_share_resolved_environment or new_launch_dry_run_json_reports_resolved_environment or positional_start or named_start or invalid_native_values_prevent_new_launch_and_registry_mutation or start_existing_session_json"` — 21 passed, 118 deselected.
+- Full module suite: `python -m pytest --basetemp=.pytest_tmp_root/llmd-v152-full-final -q -o addopts=` — 229 passed. The module autouse provider guard remained active; no real Codex/AGY launch was made.
+- `python -m ruff check agent_continuity tests --config pyproject.toml` passed; version is synchronized at 1.5.2 across `pyproject.toml`, `agent_continuity.__init__`, and the help registry; `git diff --check` passed.
+- Final task-only review passed. Implementation commit `c969b10524e03184391f6a2e8084cf455bc8388c` was pushed to `feature/llmd-v21-implementation-20261123`; this checkpoint records delivery. No merge/rebase was performed.
