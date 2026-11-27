@@ -1,6 +1,6 @@
 # Status
 
-Selective-validation evidence-integrity corrections are complete on `feature/managed-selective-validation-20261128`, pushed at `c381241d`. The follow-up corrects evidence reuse, pytest-process provenance, redaction, temporary-root placement, and cross-platform PYTHONPATH handling. No Toolkit or retirement-candidate files are changed.
+Selective validation is integrated directly into Scripts `main` at `278978a3e439731a6b2aeace45751e56826a30b0` and pushed. The follow-up corrects evidence reuse, pytest-process provenance, redaction, temporary-root placement, and cross-platform PYTHONPATH handling. Toolkit adoption remains independent; no retirement-candidate files were changed.
 
 ## Current findings
 
@@ -16,7 +16,9 @@ Selective-validation evidence-integrity corrections are complete on `feature/man
 - `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m ruff check --no-cache scripts_setup\selective_validation.py scripts_setup\tests\managed_validation_test.py` — passed.
 - `validation-targets.json` parsed as JSON; PowerShell AST parsing of `Invoke-Tests.ps1` passed.
 - `git diff --check` passed.
+- Candidate was a fast-forward from current main `e299c256`; the last feature-branch changes after the qualified test commit `c381241d` were plan-status documentation only. The validated implementation and tests are unchanged in the integrated tree.
+- Native PowerShell CLI availability was checked with `Invoke-Tests.ps1 -ListTargets` and `Get-Command .\Invoke-Tests.ps1`; the `Selective`, `Target`, and `PytestNodeId` parameters are available.
 
 ## Next
 
-The branch is ready for review and Agent-Environment adoption. Toolkit-native adoption remains separable. Keep generated run receipts and temp directories outside source commits.
+Agent-Environment adoption can use `Invoke-Tests.ps1 -Selective` independently of Toolkit-native validation. Keep generated run receipts and temp directories outside source commits.

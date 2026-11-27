@@ -15,3 +15,4 @@
 - [x] Document Agent-Environment `test-verify` usage without changing skill/policy files.
 - [x] Run focused tests, Python lint, manifest parsing, PowerShell parser validation, and real subprocess provenance regression.
 - [x] Review task-only diff, commit, and push feature branch.
+- [x] Fast-forward current Scripts main, push direct integration, and verify native CLI availability.
