@@ -105,6 +105,38 @@ def _descriptions_by_path() -> dict[str, str]:
     return by_path
 
 
+def _module_command_descriptions(
+    repo_root: Path,
+    source_paths: Iterable[str],
+) -> dict[str, dict[str, str]]:
+    """Load explicit scripts-help summaries for commands owned by modules."""
+    descriptions: dict[str, dict[str, str]] = {}
+    for source_path in sorted(set(source_paths)):
+        relative_path = Path(source_path)
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            continue
+        module_dir = repo_root / relative_path
+        pyproject = module_dir / "pyproject.toml"
+        if not module_dir.is_dir() or not pyproject.is_file():
+            continue
+        try:
+            project_data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+
+        raw = project_data.get("tool", {}).get("scripts_help", {}).get("descriptions", {})
+        if not isinstance(raw, dict):
+            continue
+        command_descriptions = {
+            str(name): str(description).strip()
+            for name, description in raw.items()
+            if str(description).strip()
+        }
+        if command_descriptions:
+            descriptions[f"modules/{module_dir.name}"] = command_descriptions
+    return descriptions
+
+
 def _load_manifest_commands(repo_root: Path, descriptions: dict[str, str]) -> list[CommandEntry]:
     manifest_path = repo_root / "scripts_manifest.json"
     if not manifest_path.is_file():
@@ -118,6 +150,14 @@ def _load_manifest_commands(repo_root: Path, descriptions: dict[str, str]) -> li
     if not isinstance(raw_commands, dict):
         return []
 
+    module_descriptions = _module_command_descriptions(
+        repo_root,
+        (
+            str(info.get("source_path", "")).replace("\\", "/")
+            for info in raw_commands.values()
+            if isinstance(info, dict)
+        ),
+    )
     entries: list[CommandEntry] = []
     for name, info in sorted(raw_commands.items()):
         if not isinstance(info, dict):
@@ -125,7 +165,7 @@ def _load_manifest_commands(repo_root: Path, descriptions: dict[str, str]) -> li
         source_path = str(info.get("source_path", "")).replace("\\", "/")
         kind = str(info.get("kind", "command"))
         target = str(info.get("entry_point") or info.get("target") or "")
-        desc = descriptions.get(source_path, "")
+        desc = module_descriptions.get(source_path, {}).get(name) or descriptions.get(source_path, "")
         entries.append(
             CommandEntry(
                 name=name,
