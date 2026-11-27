@@ -1,5 +1,0 @@
-1512d9e9ab1a1d603c2dc244d1459baff1abcc738d82c4ee2a5fac835a04189a  mxc_resource_metrics-0.3.0-py3-none-any.whl
-7554f367067123e2369b12996af2593adb4437a79667b53528d2e7bdd90b7f45  mxc_script_logging-0.1.1-py3-none-any.whl
-0171dfa984eb9d521bb340a0d0241056fdea8be685fe0c3a26bc7cc2c7f54341  mxc_web_ui_tools-0.2.0-py3-none-any.whl
-34c69cd508753001cda19882c99aea17fcac558679c4274e6d68874065081c9b  mxc_termdash-0.10.0-py3-none-any.whl
-8d64a0553776065a12d1fd3342199e9f68d13bb6a18e834a4c39b6d6c41df7dc  mxc_platform_utils-0.9.0-py3-none-any.whl
