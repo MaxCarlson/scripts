@@ -23,7 +23,10 @@ param(
     [string]$PythonExecutable,
 
     [Parameter()]
-    [switch]$NoReuseEvidence,
+    [switch]$ReuseEvidence,
+
+    [Parameter()]
+    [string]$TemporaryRoot,
 
     [Parameter()]
     [switch]$SkipBootstrap,
@@ -643,7 +646,8 @@ if ($Selective) {
     foreach ($NodeId in $PytestNodeId) { $SelectiveArguments += @('--node-id', $NodeId) }
     foreach ($File in $PytestFile) { $SelectiveArguments += @('--file', $File) }
     foreach ($ModuleName in $PytestModule) { $SelectiveArguments += @('--module', $ModuleName) }
-    if ($NoReuseEvidence) { $SelectiveArguments += '--no-reuse-evidence' }
+    if ($ReuseEvidence) { $SelectiveArguments += '--reuse-evidence' }
+    if ($TemporaryRoot) { $SelectiveArguments += @('--temporary-root', $TemporaryRoot) }
 
     Push-Location -LiteralPath $RepoRoot
     try {

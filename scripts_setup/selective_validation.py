@@ -234,12 +234,35 @@ result = {
     "site_packages": sorted({str(Path(p).resolve()) for p in site.getsitepackages()} |
                              {str(Path(sysconfig.get_path(k)).resolve()) for k in ("purelib", "platlib")
                               if sysconfig.get_path(k)}),
-    "distributions": sorted(
-        ({"name": d.metadata.get("Name", ""), "version": d.version} for d in metadata.distributions()),
-        key=lambda d: (d["name"].casefold(), d["version"]),
-    ),
+    "distributions": [],
     "imports": [],
 }
+for distribution in metadata.distributions():
+    identity = {
+        "name": str(distribution.metadata.get("Name") or ""),
+        "version": str(distribution.version or ""),
+    }
+    try:
+        direct_url = distribution.read_text("direct_url.json")
+    except OSError:
+        direct_url = None
+        identity["editable_source_error"] = "direct_url metadata could not be read"
+    if direct_url:
+        try:
+            parsed = json.loads(direct_url)
+            if parsed.get("dir_info", {}).get("editable"):
+                url = urlparse(parsed.get("url", ""))
+                if url.scheme == "file":
+                    source = unquote(url.path)
+                    if sys.platform == "win32" and re.match(r"^/[A-Za-z]:/", source):
+                        source = source[1:]
+                    identity["editable_source"] = str(Path(source).resolve())
+                else:
+                    identity["editable_source_error"] = "editable source is not a local file URL"
+        except (json.JSONDecodeError, OSError, ValueError):
+            identity["editable_source_error"] = "unreadable editable direct_url metadata"
+    result["distributions"].append(identity)
+result["distributions"].sort(key=lambda item: (str(item["name"]).casefold(), str(item["version"])))
 for spec in request:
     module = spec["module"]
     item = {"module": module, "origin": None, "search_locations": []}
@@ -337,6 +360,9 @@ def _resolve_environment(
         value = str(raw_value)
         for token, resolved in replacements.items():
             value = value.replace(token, resolved)
+        if str(key).upper() == "PYTHONPATH":
+            components = value.split(";") if ";" in value else value.split(os.pathsep)
+            value = os.pathsep.join(component for component in components if component)
         environment[str(key)] = value
     return environment
 
@@ -350,7 +376,10 @@ def _safe_relative(root: Path, value: str) -> Path:
 
 def _source_files(root: Path, relative_roots: Iterable[str]) -> dict[str, str]:
     hashes: dict[str, str] = {}
-    ignored_parts = {".git", ".pytest_cache", "__pycache__", ".pytest_tmp_root", "build", "dist"}
+    ignored_parts = {
+        ".git", ".pytest_cache", "__pycache__", ".pytest_tmp_root", ".venv", "venv", ".tox",
+        ".ruff_cache", "build", "dist",
+    }
     for relative in relative_roots:
         path = _safe_relative(root, relative)
         if path.is_file():
@@ -368,8 +397,49 @@ def _source_files(root: Path, relative_roots: Iterable[str]) -> dict[str, str]:
                 hashes[str(candidate)] = "<external-symlink-omitted>"
                 continue
             relative_path = resolved.relative_to(root.resolve()).as_posix()
-            hashes[relative_path] = hashlib.sha256(resolved.read_bytes()).hexdigest()
+            before = resolved.stat()
+            content = resolved.read_bytes()
+            after = resolved.stat()
+            if (before.st_size, before.st_mtime_ns, before.st_ino) != (
+                after.st_size, after.st_mtime_ns, after.st_ino,
+            ):
+                raise SelectiveValidationError(f"input changed while being fingerprinted: {resolved}")
+            identity = f"{hashlib.sha256(content).hexdigest()}:{after.st_size}:{after.st_mtime_ns}:{after.st_ino}"
+            hashes[relative_path] = hashlib.sha256(identity.encode("ascii")).hexdigest()
     return dict(sorted(hashes.items()))
+
+
+def _editable_dependency_identities(
+    distributions: Sequence[dict[str, Any]], repo_root: Path
+) -> tuple[list[dict[str, Any]], list[str]]:
+    identities: list[dict[str, Any]] = []
+    unverified: list[str] = []
+    repository = repo_root.resolve()
+    if not distributions:
+        unverified.append("installed distribution inventory is unavailable")
+    for distribution in distributions:
+        identity = {key: distribution.get(key) for key in ("name", "version")}
+        if not identity["name"] or not identity["version"]:
+            unverified.append("an installed distribution has incomplete name/version identity")
+        source_text = distribution.get("editable_source")
+        if distribution.get("editable_source_error"):
+            unverified.append(f"{identity['name']}: editable source metadata is unreadable")
+        elif source_text:
+            source = Path(str(source_text)).resolve()
+            identity["editable_source"] = str(source)
+            if source == repository or not _contained(source, repository) or not source.exists():
+                unverified.append(f"{identity['name']}: editable source cannot be content-identified: {source}")
+            else:
+                relative = source.relative_to(repository).as_posix()
+                hashes = _source_files(repository, [relative])
+                if not hashes or any(value.startswith("<") for value in hashes.values()):
+                    unverified.append(f"{identity['name']}: editable source could not be fully hashed: {source}")
+                else:
+                    serialized = json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    identity["editable_source_sha256"] = hashlib.sha256(serialized).hexdigest()
+        identities.append(identity)
+    identities.sort(key=lambda item: (str(item.get("name", "")).casefold(), str(item.get("version", ""))))
+    return identities, unverified
 
 
 def _revision(repo_root: Path) -> dict[str, str | None]:
@@ -397,6 +467,7 @@ def compute_input_fingerprint(
     import_identities: Sequence[dict[str, Any]],
     environment_fingerprint: str,
     revision: dict[str, str | None],
+    temporary_root_base: Path | None = None,
 ) -> tuple[str, dict[str, Any]]:
     relevant_roots = [*selective_spec.get("source_roots", []), *selective_spec.get("test_roots", [])]
     relevant_roots.extend(selective_spec.get("dependency_inputs", []))
@@ -412,6 +483,7 @@ def compute_input_fingerprint(
         "import_identities": list(import_identities),
         "selective_contract": selective_spec,
         "file_sha256": file_hashes,
+        "temporary_root_base": str(temporary_root_base.resolve()) if temporary_root_base else None,
     }
     canonical = json.dumps(inputs, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest(), inputs
@@ -425,7 +497,11 @@ def find_matching_evidence(runs_root: Path, fingerprint: str) -> dict[str, Any] 
             record = json.loads(report_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if record.get("status") == "passed" and record.get("input_fingerprint") == fingerprint:
+        if (
+            record.get("status") == "passed"
+            and record.get("evidence_reusable") is True
+            and record.get("input_fingerprint") == fingerprint
+        ):
             record["report_path"] = str(report_path)
             return record
     return None
@@ -455,18 +531,117 @@ def write_run_report(runs_root: Path, report: dict[str, Any]) -> Path:
     return destination
 
 
-def create_temporary_root(target_root: Path, execution_id: str | None = None) -> Path:
+def create_temporary_root(
+    target_root: Path,
+    execution_id: str | None = None,
+    base_root: Path | None = None,
+) -> Path:
     identifier = execution_id or uuid.uuid4().hex
-    base = target_root.resolve() / ".pytest_tmp_root"
+    base = (base_root or target_root.resolve() / ".pytest_tmp_root").resolve()
     base.mkdir(parents=True, exist_ok=True)
     destination = base / f"selective-{identifier}"
     destination.mkdir(parents=False, exist_ok=False)
     return destination
 
 
+def _provenance_plugin_source(
+    repo_root: Path,
+    target_root: Path,
+    import_specs: Sequence[dict[str, Any]],
+    forbidden_roots: Sequence[str],
+    site_packages: Sequence[str],
+    evidence_path: Path,
+) -> str:
+    runtime_specs = []
+    for spec in import_specs:
+        expected_root = str(spec.get("expected_root", "."))
+        roots = site_packages if expected_root == "site-packages" else [str((target_root / expected_root).resolve())]
+        runtime_specs.append({**spec, "runtime_expected_roots": list(roots)})
+    config = {
+        "imports": runtime_specs,
+        "forbidden_roots": [str((repo_root / item).resolve()) for item in forbidden_roots],
+        "evidence_path": str(evidence_path.resolve()),
+    }
+    encoded_config = json.dumps(json.dumps(config))
+    return f'''\
+import importlib
+import importlib.metadata as metadata
+import json
+import os
+from pathlib import Path
+import pytest
+
+_CONFIG = json.loads({encoded_config})
+
+def _inside(path, roots):
+    resolved = Path(path).resolve()
+    for root in roots:
+        try:
+            resolved.relative_to(Path(root).resolve())
+            return True
+        except (OSError, ValueError):
+            pass
+    return False
+
+def _observe(spec):
+    name = spec["module"]
+    result = {{"module": name, "origin": None, "search_locations": []}}
+    errors = []
+    try:
+        module = importlib.import_module(name)
+        origin = getattr(module, "__file__", None)
+        locations = list(getattr(module, "__path__", ()) or ())
+        result["origin"] = str(Path(origin).resolve()) if origin else None
+        result["search_locations"] = [str(Path(path).resolve()) for path in locations]
+        paths = ([result["origin"]] if result["origin"] else []) + result["search_locations"]
+        if not paths:
+            errors.append(f"import {{name}} has no runtime filesystem origin")
+        elif any(not _inside(path, spec["runtime_expected_roots"]) for path in paths):
+            errors.append(f"import {{name}} resolves outside expected roots {{spec['runtime_expected_roots']}}")
+    except Exception as exc:
+        errors.append(f"import {{name}} failed in pytest process: {{type(exc).__name__}}: {{exc}}")
+
+    distribution_name = spec.get("distribution")
+    if distribution_name:
+        try:
+            distribution = metadata.distribution(distribution_name)
+            result["distribution"] = distribution.metadata.get("Name", distribution_name)
+            result["version"] = distribution.version
+            if result["distribution"] != distribution_name:
+                errors.append(f"distribution mismatch for {{name}}: {{result['distribution']}}")
+            if spec.get("version") and result["version"] != spec["version"]:
+                errors.append(f"version mismatch for {{name}}: {{result['version']}}")
+        except metadata.PackageNotFoundError:
+            result["distribution"] = None
+            result["version"] = None
+            errors.append(f"distribution {{distribution_name}} is missing in pytest process")
+    return result, errors
+
+def _write_evidence(payload):
+    path = Path(_CONFIG["evidence_path"])
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, path)
+
+def pytest_runtest_setup(item):
+    identities = []
+    errors = []
+    for spec in _CONFIG["imports"]:
+        identity, item_errors = _observe(spec)
+        identities.append(identity)
+        errors.extend(item_errors)
+    for root in _CONFIG["forbidden_roots"]:
+        if Path(root).exists():
+            errors.append(f"retired source root is present: {{root}}")
+    _write_evidence({{"imports": identities, "errors": errors}})
+    if errors:
+        pytest.fail("runtime import provenance failed: " + "; ".join(errors), pytrace=False)
+'''
+
+
 def _redact_text(text: str) -> str:
     patterns = (
-        re.compile(r"(?i)(authorization\s*[:=]\s*)([^\s,;]+)"),
+        re.compile(r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?([^\s,;]+)"),
         re.compile(r"(?i)((?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*)([^\s,;]+)"),
         re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+"),
     )
@@ -515,7 +690,8 @@ def run_selective_target(
     python_executable: str,
     import_probe: Callable[..., dict[str, Any]] = probe_imports,
     command_runner: Callable[..., Any] = subprocess.run,
-    reuse_evidence: bool = True,
+    reuse_evidence: bool = False,
+    temporary_root: Path | None = None,
 ) -> dict[str, Any]:
     """Run only selected pytest items for one manifest target, without bootstrap."""
     started = time.monotonic()
@@ -529,6 +705,7 @@ def run_selective_target(
     report["working_directory"] = str(target_root)
     report["revision"] = _revision(repo_root)
     report["interpreter"] = {"path": str(Path(python_executable).resolve())}
+    report["qualification_scope"] = "source-level"
 
     try:
         if not isinstance(selective, dict):
@@ -545,72 +722,137 @@ def run_selective_target(
         )
         report["selected"] = selected
         environment = _resolve_environment(target_spec, repo_root, target_root, python_executable)
-        report["environment"] = _safe_environment(environment)
         environment_fingerprint = _environment_fingerprint(environment)
-        report["environment_sha256"] = environment_fingerprint
-
         import_specs = list(selective.get("imports", []))
-        probe = import_probe(import_specs, target_root, python_executable, environment)
-        report["interpreter"].update(
-            {
-                "version": probe.get("python_version"),
-                "prefix": probe.get("prefix"),
-                "site_packages": probe.get("site_packages", []),
-            }
+        report["qualification_scope"] = (
+            "installed-distribution"
+            if import_specs and all(item.get("expected_root") == "site-packages" for item in import_specs)
+            else "source-level"
         )
-        report["dependency_identities"] = probe.get("distributions", [])
-        report["interpreter"]["distributions"] = report["dependency_identities"]
-        provenance = assess_import_provenance(
-            repo_root,
-            target_root,
-            import_specs,
-            probe.get("imports", []),
-            forbidden_roots=selective.get("forbidden_source_roots", []),
-            site_packages=probe.get("site_packages", []),
-        )
-        report["import_identities"] = provenance["imports"]
-        report["provenance_warnings"] = provenance["warnings"]
-        if not provenance["ok"]:
-            raise SelectiveValidationError("import provenance failed: " + "; ".join(provenance["errors"]))
-
         pytest_arguments = [str(value) for value in selective.get("pytest_arguments", [])]
         command_template = [
-            str(Path(python_executable).resolve()), "-m", "pytest", *selected, *pytest_arguments,
-            "--rootdir", str(target_root), "--basetemp", "<unique-temp-root>",
+            str(Path(python_executable).resolve()), "-m", "pytest", "-p", "<provenance-plugin>",
+            *selected, *pytest_arguments, "--rootdir", str(target_root), "--basetemp", "<temp-root>/pytest",
         ]
         report["command_template"] = command_template
         revision = report["revision"]
-        fingerprint, fingerprint_inputs = compute_input_fingerprint(
-            repo_root,
-            target_root,
-            selective,
-            selected,
-            command_template,
-            report["interpreter"],
-            provenance["imports"],
-            environment_fingerprint,
-            revision,
-        )
-        report["input_fingerprint"] = fingerprint
-        report["input_identities"] = fingerprint_inputs
+        def snapshot_inputs() -> dict[str, Any]:
+            probe_result = import_probe(import_specs, target_root, python_executable, environment)
+            provenance_result = assess_import_provenance(
+                repo_root,
+                target_root,
+                import_specs,
+                probe_result.get("imports", []),
+                forbidden_roots=selective.get("forbidden_source_roots", []),
+                site_packages=probe_result.get("site_packages", []),
+            )
+            if not provenance_result["ok"]:
+                raise SelectiveValidationError(
+                    "import provenance failed: " + "; ".join(provenance_result["errors"])
+                )
+            dependency_identities, unverified_dependencies = _editable_dependency_identities(
+                probe_result.get("distributions", []), repo_root
+            )
+            interpreter = {
+                "path": str(Path(python_executable).resolve()),
+                "version": probe_result.get("python_version"),
+                "prefix": probe_result.get("prefix"),
+                "site_packages": probe_result.get("site_packages", []),
+                "distributions": dependency_identities,
+            }
+            fingerprint, inputs = compute_input_fingerprint(
+                repo_root,
+                target_root,
+                selective,
+                selected,
+                command_template,
+                interpreter,
+                provenance_result["imports"],
+                environment_fingerprint,
+                revision,
+                temporary_root.resolve() if temporary_root else target_root / ".pytest_tmp_root",
+            )
+            unverified_dependencies.extend(
+                f"input file identity unavailable: {path}"
+                for path, identity in inputs["file_sha256"].items()
+                if identity.startswith("<")
+            )
+            return {
+                "probe": probe_result,
+                "provenance": provenance_result,
+                "dependencies": dependency_identities,
+                "unverified_dependencies": unverified_dependencies,
+                "interpreter": interpreter,
+                "fingerprint": fingerprint,
+                "inputs": inputs,
+            }
 
-        if reuse_evidence:
-            prior = find_matching_evidence(runs_root, fingerprint)
-            if prior is not None:
-                report["status"] = "reused"
-                report["exit_code"] = 0
-                report["duration_seconds"] = round(time.monotonic() - started, 6)
-                report["reused_from"] = prior["execution_id"]
-                report["pytest_summary"] = prior.get("pytest_summary", "")
-                report["failure_evidence"] = ""
-                report["report_path"] = str(write_run_report(runs_root, report))
-                return report
+        snapshot = snapshot_inputs()
+        report["environment_sha256"] = environment_fingerprint
+        report["dependency_identities"] = snapshot["dependencies"]
+        report["interpreter"] = snapshot["interpreter"]
+        report["import_identities"] = snapshot["provenance"]["imports"]
+        report["provenance_warnings"] = snapshot["provenance"]["warnings"]
+        report["input_fingerprint"] = snapshot["fingerprint"]
+        report["input_identities"] = snapshot["inputs"]
+        reuse_eligible = not snapshot["unverified_dependencies"]
+        report["evidence_reuse"] = {
+            "requested": reuse_evidence,
+            "eligible": reuse_eligible,
+            "reason": "; ".join(snapshot["unverified_dependencies"]) if not reuse_eligible else None,
+        }
 
-        temp_root = create_temporary_root(target_root, execution_id)
+        if reuse_evidence and reuse_eligible:
+            prior = find_matching_evidence(runs_root, snapshot["fingerprint"])
+            if prior is not None and prior.get("evidence_reusable") is True:
+                confirm = snapshot_inputs()
+                if confirm["fingerprint"] == snapshot["fingerprint"] and not confirm["unverified_dependencies"]:
+                    report["status"] = "reused"
+                    report["exit_code"] = 0
+                    report["evidence_reusable"] = True
+                    report["reused_from"] = prior["execution_id"]
+                    report["pytest_summary"] = prior.get("pytest_summary", "")
+                    report["runtime_import_identities"] = prior.get("runtime_import_identities", [])
+                    report["failure_evidence"] = ""
+                    report["report_path"] = str(write_run_report(runs_root, report))
+                    return report
+                snapshot = confirm
+                reuse_eligible = not snapshot["unverified_dependencies"]
+                report["evidence_reuse"]["eligible"] = reuse_eligible
+                report["evidence_reuse"]["reason"] = (
+                    "; ".join(snapshot["unverified_dependencies"]) if not reuse_eligible else None
+                )
+                report["input_fingerprint"] = snapshot["fingerprint"]
+                report["input_identities"] = snapshot["inputs"]
+
+        temp_root = create_temporary_root(target_root, execution_id, temporary_root)
         report["temp_root"] = str(temp_root)
+        pytest_root = temp_root / "pytest"
+        pytest_root.mkdir()
+        plugin_module = f"selective_validation_provenance_{execution_id}"
+        evidence_path = temp_root / "runtime-imports.json"
+        plugin_path = temp_root / f"{plugin_module}.py"
+        plugin_path.write_text(
+            _provenance_plugin_source(
+                repo_root,
+                target_root,
+                import_specs,
+                selective.get("forbidden_source_roots", []),
+                snapshot["probe"].get("site_packages", []),
+                evidence_path,
+            ),
+            encoding="utf-8",
+        )
+        runtime_environment = dict(environment)
+        configured_pythonpath = runtime_environment.get("PYTHONPATH", "")
+        runtime_environment["PYTHONPATH"] = os.pathsep.join(
+            [str(temp_root), *([configured_pythonpath] if configured_pythonpath else [])]
+        )
+        runtime_environment["SCRIPTS_SELECTIVE_PROVENANCE_EVIDENCE"] = str(evidence_path)
+        report["environment"] = _safe_environment(runtime_environment)
         command = [
-            str(Path(python_executable).resolve()), "-m", "pytest", *selected, *pytest_arguments,
-            "--rootdir", str(target_root), "--basetemp", str(temp_root),
+            str(Path(python_executable).resolve()), "-m", "pytest", "-p", plugin_module,
+            *selected, *pytest_arguments, "--rootdir", str(target_root), "--basetemp", str(pytest_root),
         ]
         report["command"] = command
         report["display_command"] = shlex.join(command)
@@ -619,7 +861,7 @@ def run_selective_target(
             completed = command_runner(
                 command,
                 cwd=target_root,
-                env=environment,
+                env=runtime_environment,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -633,9 +875,45 @@ def run_selective_target(
             output = (completed.stdout or "") + (completed.stderr or "")
             report["exit_code"] = int(completed.returncode)
             if completed.returncode == 0:
-                report["status"] = "passed"
-                summary_lines = [line.strip() for line in output.splitlines() if re.search(r"\b(passed|failed|error|skipped)\b", line)]
-                report["pytest_summary"] = summary_lines[-1] if summary_lines else "pytest exited successfully"
+                try:
+                    runtime_result = json.loads(evidence_path.read_text(encoding="utf-8"))
+                    runtime_imports = runtime_result.get("imports", [])
+                    runtime_errors = list(runtime_result.get("errors", []))
+                except (OSError, json.JSONDecodeError) as error:
+                    runtime_imports = []
+                    runtime_errors = [f"pytest process did not produce runtime provenance evidence: {error}"]
+                runtime_provenance = assess_import_provenance(
+                    repo_root,
+                    target_root,
+                    import_specs,
+                    runtime_imports,
+                    forbidden_roots=selective.get("forbidden_source_roots", []),
+                    site_packages=snapshot["probe"].get("site_packages", []),
+                )
+                runtime_errors.extend(runtime_provenance["errors"])
+                report["runtime_import_identities"] = runtime_provenance["imports"]
+                report["runtime_provenance_errors"] = [_redact_text(item) for item in runtime_errors]
+                if runtime_errors:
+                    report["status"] = "failed"
+                    report["exit_code"] = 4
+                    report["failure_evidence"] = _failure_evidence("; ".join(runtime_errors))
+                else:
+                    after = snapshot_inputs()
+                    if after["fingerprint"] != snapshot["fingerprint"]:
+                        report["status"] = "invalidated"
+                        report["exit_code"] = 3
+                        report["evidence_reuse"]["eligible"] = False
+                        report["evidence_reuse"]["reason"] = "relevant inputs changed during pytest execution"
+                        report["evidence_reusable"] = False
+                        report["failure_evidence"] = "Inputs changed while pytest was running; the result was not recorded as reusable."
+                    else:
+                        report["status"] = "passed"
+                        summary_lines = [line.strip() for line in output.splitlines() if re.search(r"\b(passed|failed|error|skipped)\b", line)]
+                        report["pytest_summary"] = summary_lines[-1] if summary_lines else "pytest exited successfully"
+                        report["evidence_reusable"] = reuse_eligible
+                        if not reuse_eligible:
+                            report["evidence_reuse"]["eligible"] = False
+                            report["evidence_reuse"]["reason"] = "; ".join(snapshot["unverified_dependencies"])
             else:
                 report["status"] = "failed"
                 report["failure_evidence"] = _failure_evidence(output)
@@ -645,7 +923,7 @@ def run_selective_target(
     except (SelectiveValidationError, ValueError, OSError, KeyError, TypeError) as error:
         report["status"] = "blocked"
         report["exit_code"] = 2
-        report["error"] = f"{type(error).__name__}: {error}"
+        report["error"] = _redact_text(f"{type(error).__name__}: {error}")
         report["failure_evidence"] = _failure_evidence(str(error))
     finally:
         report["duration_seconds"] = round(time.monotonic() - started, 6)
@@ -662,7 +940,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("-n", "--node-id", action="append", default=[])
     parser.add_argument("-f", "--file", action="append", default=[])
     parser.add_argument("-u", "--module", action="append", default=[])
-    parser.add_argument("--no-reuse-evidence", action="store_true")
+    parser.add_argument("--reuse-evidence", action="store_true")
+    parser.add_argument("--temporary-root", type=Path)
     return parser.parse_args(argv)
 
 
@@ -696,13 +975,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.file,
             args.module,
             python_executable=args.python_executable,
-            reuse_evidence=not args.no_reuse_evidence,
+            reuse_evidence=args.reuse_evidence,
+            temporary_root=args.temporary_root,
         )
         print(
             f"{target_name}: {result['status'].upper()} "
             f"execution={result['execution_id']} report={result['report_path']}"
         )
-        if result["status"] in {"failed", "blocked"}:
+        if result["status"] in {"failed", "blocked", "invalidated"}:
             failures += 1
             evidence = result.get("failure_evidence") or result.get("error")
             if evidence:

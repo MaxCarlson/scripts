@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +14,9 @@ from scripts_setup.selective_validation import (
     assess_import_provenance,
     create_temporary_root,
     _failure_evidence,
+    _resolve_environment,
+    _editable_dependency_identities,
+    _parse_args,
     find_matching_evidence,
     resolve_pytest_selectors,
     run_selective_target,
@@ -60,6 +64,33 @@ def test_resolves_node_ids_files_and_dotted_test_modules(tmp_path: Path) -> None
         "tests/test_other.py",
         "tests/test_api.py",
     ]
+
+
+def test_pythonpath_manifest_uses_the_current_platform_separator(tmp_path: Path) -> None:
+    repo_root, target_spec = make_target(tmp_path)
+    target_root = repo_root / target_spec["working_directory"]
+    target_spec["environment"] = {"PYTHONPATH": "{target_root};{repo_root}/modules"}
+
+    environment = _resolve_environment(target_spec, repo_root, target_root, sys.executable)
+
+    assert [Path(item) for item in environment["PYTHONPATH"].split(os.pathsep)] == [
+        target_root,
+        repo_root / "modules",
+    ]
+
+
+def test_cli_defaults_to_no_evidence_reuse_and_accepts_external_temp_root(tmp_path: Path) -> None:
+    default_args = _parse_args([
+        "--repo-root", str(tmp_path), "--target", "consumer", "--file", "tests/test_api.py",
+    ])
+    opted_in = _parse_args([
+        "--repo-root", str(tmp_path), "--target", "consumer", "--file", "tests/test_api.py",
+        "--reuse-evidence", "--temporary-root", str(tmp_path / "external-temp"),
+    ])
+
+    assert default_args.reuse_evidence is False
+    assert opted_in.reuse_evidence is True
+    assert opted_in.temporary_root == tmp_path / "external-temp"
 
 
 def test_rejects_selectors_outside_the_consumer_and_unknown_modules(tmp_path: Path) -> None:
@@ -146,6 +177,7 @@ def test_selective_run_ignores_bootstrap_and_records_exact_execution(tmp_path: P
 
     def command_runner(command, **kwargs):
         calls.append(list(command))
+        write_mock_runtime_evidence(command, kwargs, target_root)
         return CompletedProcess(command, 0, stdout="1 passed in 0.01s\n", stderr="")
 
     result = run_selective_target(
@@ -200,17 +232,18 @@ def test_evidence_reuse_requires_identical_inputs_and_invalidates_on_source_chan
 
     def command_runner(command, **kwargs):
         calls.append(len(calls) + 1)
+        write_mock_runtime_evidence(command, kwargs, target_root)
         return CompletedProcess(command, 0, stdout="1 passed\n", stderr="")
 
-    def run(node_id: str):
+    def run(node_id: str, *, reuse_evidence: bool = False):
         return run_selective_target(
             repo_root, "consumer", target_spec, [node_id], [], [],
             python_executable=sys.executable, import_probe=probe,
-            command_runner=command_runner,
+            command_runner=command_runner, reuse_evidence=reuse_evidence,
         )
 
-    first = run("tests/test_api.py::test_api")
-    same = run("tests/test_api.py::test_api")
+    first = run("tests/test_api.py::test_api", reuse_evidence=True)
+    same = run("tests/test_api.py::test_api", reuse_evidence=True)
     other_selection = run("tests/test_other.py::test_other")
     (target_root / "consumer_pkg" / "__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
     changed_source = run("tests/test_api.py::test_api")
@@ -225,6 +258,41 @@ def test_evidence_reuse_requires_identical_inputs_and_invalidates_on_source_chan
     assert changed_dependency["status"] == "passed"
     assert len(calls) == 4
     assert find_matching_evidence(Path(repo_root) / "docs/test-results/selective/runs", first["input_fingerprint"])
+
+
+def test_evidence_reuse_requires_explicit_opt_in(tmp_path: Path) -> None:
+    repo_root, target_spec = make_target(tmp_path)
+    target_root = repo_root / target_spec["working_directory"]
+    calls = []
+
+    def probe(_imports, _target_root, _python, _environment):
+        return {
+            "python": sys.executable,
+            "python_version": "3.test",
+            "prefix": str(tmp_path / "venv"),
+            "site_packages": [],
+            "distributions": [],
+            "imports": [{
+                "module": "consumer_pkg",
+                "origin": str(target_root / "consumer_pkg" / "__init__.py"),
+                "search_locations": [str(target_root / "consumer_pkg")],
+                "distribution": "consumer-pkg",
+                "version": "1.0",
+            }],
+        }
+
+    def command_runner(command, **kwargs):
+        calls.append(command)
+        write_mock_runtime_evidence(command, kwargs, target_root)
+        return CompletedProcess(command, 0, stdout="1 passed\n", stderr="")
+
+    results = [run_selective_target(
+        repo_root, "consumer", target_spec, ["tests/test_api.py::test_api"], [], [],
+        python_executable=sys.executable, import_probe=probe, command_runner=command_runner,
+    ) for _ in range(2)]
+
+    assert [result["status"] for result in results] == ["passed", "passed"]
+    assert len(calls) == 2
 
 
 def test_concurrent_reports_and_temp_roots_are_isolated(tmp_path: Path) -> None:
@@ -250,8 +318,155 @@ def test_concurrent_reports_and_temp_roots_are_isolated(tmp_path: Path) -> None:
 
 
 def test_failure_evidence_is_bounded_and_redacts_credentials() -> None:
-    evidence = _failure_evidence("authorization: Bearer TOPSECRET\n" + "failure detail\n" * 500)
+    evidence = _failure_evidence("noise\n" * 49 + "Authorization: Bearer TOPSECRET")
 
     assert len(evidence) <= 8100
     assert "TOPSECRET" not in evidence
-    assert "failure detail" in evidence
+    assert "Authorization: <redacted>" in evidence
+
+
+def test_external_editable_dependency_disables_evidence_reuse(tmp_path: Path) -> None:
+    repo_root, target_spec = make_target(tmp_path)
+    target_root = repo_root / target_spec["working_directory"]
+    editable_root = tmp_path / "external-editable"
+    editable_root.mkdir()
+    calls: list[int] = []
+
+    def probe(_imports, _target_root, _python, _environment):
+        return {
+            "python": sys.executable,
+            "python_version": "3.test",
+            "prefix": str(tmp_path / "venv"),
+            "site_packages": [],
+            "distributions": [{"name": "pytest", "version": "9.test"}, {
+                "name": "shared-editable", "version": "1.0", "editable_source": str(editable_root),
+            }],
+            "imports": [{
+                "module": "consumer_pkg",
+                "origin": str(target_root / "consumer_pkg" / "__init__.py"),
+                "search_locations": [str(target_root / "consumer_pkg")],
+                "distribution": "consumer-pkg",
+                "version": "1.0",
+            }],
+        }
+
+    def command_runner(command, **kwargs):
+        calls.append(1)
+        write_mock_runtime_evidence(command, kwargs, target_root)
+        return CompletedProcess(command, 0, stdout="1 passed\n", stderr="")
+
+    def run():
+        return run_selective_target(
+            repo_root, "consumer", target_spec, ["tests/test_api.py::test_api"], [], [],
+            python_executable=sys.executable, import_probe=probe,
+            command_runner=command_runner, reuse_evidence=True,
+        )
+
+    first = run()
+    (editable_root / "dependency.py").write_text("CHANGED = True\n", encoding="utf-8")
+    second = run()
+
+    assert first["status"] == second["status"] == "passed"
+    assert first["evidence_reusable"] is False
+    assert second["status"] != "reused"
+    assert len(calls) == 2
+
+
+def test_in_repository_editable_dependency_content_changes_identity(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    editable_root = repo_root / "modules" / "shared"
+    editable_root.mkdir(parents=True)
+    dependency_file = editable_root / "shared.py"
+    dependency_file.write_text("VALUE = 1\n", encoding="utf-8")
+    distributions = [{
+        "name": "shared-editable", "version": "1.0", "editable_source": str(editable_root),
+    }]
+
+    first, first_unverified = _editable_dependency_identities(distributions, repo_root)
+    dependency_file.write_text("VALUE = 2\n", encoding="utf-8")
+    second, second_unverified = _editable_dependency_identities(distributions, repo_root)
+
+    assert first_unverified == second_unverified == []
+    assert first[0]["editable_source_sha256"] != second[0]["editable_source_sha256"]
+
+
+def write_mock_runtime_evidence(command, kwargs, target_root: Path) -> None:
+    environment = kwargs["env"]
+    evidence_path = Path(environment["SCRIPTS_SELECTIVE_PROVENANCE_EVIDENCE"])
+    evidence_path.write_text(json.dumps({"imports": [{
+        "module": "consumer_pkg",
+        "origin": str(target_root / "consumer_pkg" / "__init__.py"),
+        "search_locations": [str(target_root / "consumer_pkg")],
+        "distribution": "consumer-pkg",
+        "version": "1.0",
+    }]}), encoding="utf-8")
+
+
+def test_concurrent_source_change_invalidates_successful_run(tmp_path: Path) -> None:
+    repo_root, target_spec = make_target(tmp_path)
+    target_root = repo_root / target_spec["working_directory"]
+    source = target_root / "consumer_pkg" / "__init__.py"
+
+    def probe(_imports, _target_root, _python, _environment):
+        return {
+            "python": sys.executable,
+            "python_version": "3.test",
+            "prefix": str(tmp_path / "venv"),
+            "site_packages": [],
+            "distributions": [],
+            "imports": [{
+                "module": "consumer_pkg",
+                "origin": str(source),
+                "search_locations": [str(source.parent)],
+                "distribution": "consumer-pkg",
+                "version": "1.0",
+            }],
+        }
+
+    def command_runner(command, **kwargs):
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+        stat = source.stat()
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
+        write_mock_runtime_evidence(command, kwargs, target_root)
+        return CompletedProcess(command, 0, stdout="1 passed\n", stderr="")
+
+    result = run_selective_target(
+        repo_root, "consumer", target_spec, ["tests/test_api.py::test_api"], [], [],
+        python_executable=sys.executable, import_probe=probe,
+        command_runner=command_runner, reuse_evidence=True,
+    )
+
+    assert result["status"] == "invalidated"
+    assert result["evidence_reusable"] is False
+    assert "changed while pytest was running" in result["failure_evidence"]
+
+
+def test_real_pytest_subprocess_checks_import_provenance_and_external_temp_root(tmp_path: Path) -> None:
+    repo_root, target_spec = make_target(tmp_path)
+    target_root = repo_root / target_spec["working_directory"]
+    (target_root / "tests" / "test_api.py").write_text(
+        "from pathlib import Path\nimport consumer_pkg\n"
+        "def test_selected_import_is_from_target():\n"
+        "    assert Path(consumer_pkg.__file__).resolve() == Path(__file__).parents[1] / 'consumer_pkg' / '__init__.py'\n",
+        encoding="utf-8",
+    )
+    target_spec["selective_validation"]["imports"] = [{
+        "module": "consumer_pkg", "expected_root": "consumer_pkg",
+    }]
+    external_temp = tmp_path / "external-temp-root"
+
+    result = run_selective_target(
+        repo_root, "consumer", target_spec, ["tests/test_api.py::test_selected_import_is_from_target"], [], [],
+        python_executable=sys.executable, temporary_root=external_temp, reuse_evidence=False,
+    )
+
+    assert result["status"] == "passed", result.get("failure_evidence") or result.get("error")
+    assert result["qualification_scope"] == "source-level"
+    assert Path(result["temp_root"]).is_relative_to(external_temp)
+    assert result["runtime_import_identities"][0]["origin"] == str(
+        target_root / "consumer_pkg" / "__init__.py"
+    )
+    record = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
+    assert record["status"] == "passed"
+    assert record["runtime_import_identities"]
