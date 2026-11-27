@@ -38,15 +38,15 @@
                     ]
                 },
                 {
-                    "name": "Install qualified TermDash distribution",
+                    "name": "Install published TermDash distribution",
                     "executable": "{python}",
                     "arguments": [
                         "-m",
                         "pip",
                         "install",
                         "--disable-pip-version-check",
-                        "--find-links",
-                        "{repo_root}/.github/qualified-wheelhouse",
+                        "--index-url",
+                        "https://pypi.org/simple",
                         "mxc-termdash>=0.10.0,<0.11"
                     ]
                 },
@@ -310,15 +310,15 @@
             },
             "bootstrap": [
                 {
-                    "name": "Install qualified platform utility distribution",
+                    "name": "Install published platform utility distribution",
                     "executable": "{python}",
                     "arguments": [
                         "-m",
                         "pip",
                         "install",
                         "--disable-pip-version-check",
-                        "--find-links",
-                        "{repo_root}/.github/qualified-wheelhouse",
+                        "--index-url",
+                        "https://pypi.org/simple",
                         "mxc-platform-utils>=0.9.0,<0.10"
                     ]
                 }
@@ -353,15 +353,15 @@
             },
             "bootstrap": [
                 {
-                    "name": "Install qualified TermDash distribution",
+                    "name": "Install published TermDash distribution",
                     "executable": "{python}",
                     "arguments": [
                         "-m",
                         "pip",
                         "install",
                         "--disable-pip-version-check",
-                        "--find-links",
-                        "{repo_root}/.github/qualified-wheelhouse",
+                        "--index-url",
+                        "https://pypi.org/simple",
                         "mxc-termdash>=0.10.0,<0.11"
                     ]
                 },
@@ -591,15 +591,15 @@
             },
             "bootstrap": [
                 {
-                    "name": "Install qualified script logging distribution",
+                    "name": "Install published script logging distribution",
                     "executable": "{python}",
                     "arguments": [
                         "-m",
                         "pip",
                         "install",
                         "--disable-pip-version-check",
-                        "--find-links",
-                        "{repo_root}/.github/qualified-wheelhouse",
+                        "--index-url",
+                        "https://pypi.org/simple",
                         "mxc-script-logging>=0.1.1,<0.2"
                     ]
                 }

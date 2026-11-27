@@ -307,6 +307,35 @@ def test_installer_falls_back_to_local_shared_package_when_index_lacks_distribut
     assert "installing directly from" in capsys.readouterr().out
 
 
+def test_validation_targets_install_shared_distributions_from_the_package_index() -> None:
+    manifest = (REPO_ROOT / "validation-targets.json").read_text(encoding="utf-8")
+    assert ".github/qualified-wheelhouse" not in manifest
+    assert "--find-links" not in manifest
+    for requirement in (
+        "mxc-termdash>=0.10.0,<0.11",
+        "mxc-platform-utils>=0.9.0,<0.10",
+        "mxc-script-logging>=0.1.1,<0.2",
+    ):
+        assert requirement in manifest
+
+
+def test_shared_package_qualification_workflow_uses_published_distributions() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "shared-packages-linux-qualification.yml").read_text(
+        encoding="utf-8"
+    )
+    assert ".github/qualified-wheelhouse" not in workflow
+    assert "--find-links" not in workflow
+    assert "PIP_FIND_LINKS" not in workflow
+    for distribution in (
+        "mxc-resource-metrics",
+        "mxc-script-logging",
+        "mxc-web-ui-tools",
+        "mxc-termdash",
+        "mxc-platform-utils",
+    ):
+        assert distribution in workflow
+
+
 def test_orphaned_worktree_legacy_consumer_detection(tmp_path) -> None:
     import json
     from scripts_setup.shared_packages import _orphaned_worktree_legacy_consumers
