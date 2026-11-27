@@ -22,7 +22,7 @@ def fake_provider_bin() -> Path:
     """Expose controlled provider names for discovery without a real CLI on PATH."""
     fake_bin = TMP_ROOT / "fake-providers"
     fake_bin.mkdir(parents=True, exist_ok=True)
-    for provider in ("codex", "agy"):
+    for provider in ("codex", "agy", "claude"):
         fake_executable = fake_bin / f"{provider}.exe"
         fake_executable.write_text("controlled fake provider; never executable", encoding="utf-8")
     return fake_bin
@@ -31,8 +31,8 @@ def fake_provider_bin() -> Path:
 @pytest.fixture(autouse=True)
 def provider_process_guard(monkeypatch: pytest.MonkeyPatch, fake_provider_bin: Path) -> None:
     """Fail closed before any test can spawn a real or fake native provider."""
-    provider_names = {"codex.exe", "agy.exe", "codex.cmd", "agy.cmd", "codex.bat", "agy.bat",
-                      "codex.ps1", "agy.ps1"}
+    provider_names = {f"{provider}{suffix}" for provider in ("codex", "agy", "claude")
+                      for suffix in (".exe", ".cmd", ".bat", ".ps1")}
     path_entries = [str(fake_provider_bin)]
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         try:
@@ -66,7 +66,7 @@ def provider_process_guard(monkeypatch: pytest.MonkeyPatch, fake_provider_bin: P
     def provider_name(value: object) -> str | None:
         text = str(value).strip().strip('"')
         name = Path(text.replace("\\", "/")).name.casefold()
-        for provider in ("codex", "agy"):
+        for provider in ("codex", "agy", "claude"):
             if name in {provider, f"{provider}.exe", f"{provider}.cmd", f"{provider}.bat", f"{provider}.ps1"}:
                 return provider
         return None
@@ -74,7 +74,7 @@ def provider_process_guard(monkeypatch: pytest.MonkeyPatch, fake_provider_bin: P
     def guarded_popen(args, *popen_args, **kwargs):
         values = list(args) if isinstance(args, (list, tuple)) else [args]
         if (kwargs.get("shell") and isinstance(args, str)
-                and re.search(r"(?i)(?<![\w.-])(codex|agy)(?:\.(?:exe|cmd|bat|ps1))?(?![\w.-])", args)):
+                and re.search(r"(?i)(?<![\w.-])(codex|agy|claude)(?:\.(?:exe|cmd|bat|ps1))?(?![\w.-])", args)):
             raise AssertionError("Test attempted to spawn a provider through a shell command.")
         target = kwargs.get("executable") or (values[0] if values else "")
         blocked = provider_name(target)
@@ -91,7 +91,7 @@ def provider_process_guard(monkeypatch: pytest.MonkeyPatch, fake_provider_bin: P
                     if blocked:
                         break
                 if option in {"/c", "-command", "-c"} and re.search(
-                    r"(?i)(?<![\w.-])(codex|agy)(?:\.(?:exe|cmd|bat|ps1))?(?![\w.-])",
+                    r"(?i)(?<![\w.-])(codex|agy|claude)(?:\.(?:exe|cmd|bat|ps1))?(?![\w.-])",
                     str(values[index + 1]),
                 ):
                     raise AssertionError("Test attempted to spawn a provider through a shell wrapper.")
@@ -108,7 +108,7 @@ def provider_process_guard(monkeypatch: pytest.MonkeyPatch, fake_provider_bin: P
     original_system = os.system
 
     def guarded_system(command: str) -> int:
-        if re.search(r"(?i)(?<![\w.-])(codex|agy)(?:\.(?:exe|cmd|bat|ps1))?(?![\w.-])", command):
+        if re.search(r"(?i)(?<![\w.-])(codex|agy|claude)(?:\.(?:exe|cmd|bat|ps1))?(?![\w.-])", command):
             raise AssertionError("Test attempted to spawn a provider through os.system.")
         return original_system(command)
 

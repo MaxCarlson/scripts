@@ -1,5 +1,16 @@
 # LLMD v2.1 Implementation Checklist
 
+## LLMD-56 — standalone Claude Code provider (v2.1.0)
+
+- [x] Add canonical Claude provider adapter and keep installation independent of local_agent_bridge, prepared resources, hooks, delegation infrastructure, and Terminal Launcher 0.2.0.
+- [x] Support registration, exact attach/resume, start, switch, review/return, open, list/history, and explicit transcript-backed recovery.
+- [x] Use an LLMD UUID with interactive `claude --session-id`; keep it reserved/pending until exact local transcript evidence is found; never auto-retry ambiguous starts.
+- [x] Preserve identity and permission safeguards in managed native argv; reject alternate session IDs/resume/fork, background/print, alternate settings, cloud/desktop/worktree/teleport modes, and bypass controls.
+- [x] Verify exact UUID resume, managed options, previews, Windows paths, missing executable, duplicate IDs, failed/interrupted initialization, pending recovery, provider switches, reviewer round-trip, and rebuild using deterministic fake providers and disposable registries.
+- [x] Retain full Codex/AGY test coverage and test package installation without a bridge present.
+- [x] Run module and compatibility suites, Ruff, package/version/help smoke, and diff checks; document source evidence vs simulated vs live qualification.
+- [x] Commit/push the independently reviewable branch; await independent GUI acceptance before integration.
+
 ## Batch A — Session safety and lifecycle
 
 - [x] Unify positional and named `start` validation/preview/apply behavior.

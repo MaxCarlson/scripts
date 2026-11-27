@@ -36,7 +36,8 @@ def _gui_selector_line(row: dict[str, Any], width: int, *, header: bool = False,
 
 def _agent_selector_line(row: dict[str, Any], width: int, *, header: bool = False, enabled: bool = False) -> str:
     provider = "Provider" if header else str(row.get("current_provider") or row.get("pending_provider") or "—").upper()
-    provider_semantic_name = {"CODEX": "provider_codex", "AGY": "provider_agy"}.get(provider, "label" if header else "")
+    provider_semantic_name = {"CODEX": "provider_codex", "AGY": "provider_agy",
+                              "CLAUDE": "provider_claude"}.get(provider, "label" if header else "")
     lifecycle = "Lifecycle" if header else str(row.get("state") or "unknown")
     lifecycle_style = "label" if header else lifecycle.casefold() if lifecycle.casefold() in {"active", "inactive", "completed"} else "unknown"
     runtime = "Runtime" if header else row.get("runtime_status")
@@ -196,7 +197,8 @@ def _confirm(output_stream: TextIO, input_stream: TextIO, summary: str) -> bool:
 
 def _provider_choice(input_stream: TextIO, output_stream: TextIO, *, color_mode: str = "auto") -> str | None:
     action, item = select_item(
-        [{"name": "AGY", "provider": "agy"}, {"name": "Codex", "provider": "codex"}],
+        [{"name": "Claude Code", "provider": "claude"}, {"name": "AGY", "provider": "agy"},
+         {"name": "Codex", "provider": "codex"}],
         title="Choose Provider", render_line=lambda row: row["name"],
         input_stream=input_stream, output_stream=output_stream, color_mode=color_mode,
     )

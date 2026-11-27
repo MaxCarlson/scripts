@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agents",
         parents=[common],
-        description="Local-first GUI-agent session continuity registry for ChatGPT workflows, Codex, and AGY.",
+        description="Local-first GUI-agent session continuity registry for ChatGPT workflows, Codex, AGY, and Claude Code.",
         epilog=(
             "Safety:\n"
             "  Mutating commands default to dry-run. Pass -a / --apply to persist changes.\n\n"
@@ -108,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------
     find_p = sub.add_parser("find", parents=[common], help="Find native sessions associated with a workflow.")
     find_p.add_argument("-w", "--workflow", required=True, help="Workflow ID or slug.")
-    find_p.add_argument("-p", "--provider", choices=["codex", "agy"], help="Filter by provider.")
+    find_p.add_argument("-p", "--provider", choices=["codex", "agy", "claude"], help="Filter by provider.")
     find_p.add_argument("-e", "--environment", help="Filter by environment ID, 'windows', or 'wsl'.")
     find_p.add_argument(
         "-C",
@@ -122,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------
     link_p = sub.add_parser("link", parents=[common], help="Manually associate a native session with a workflow.")
     link_p.add_argument("-w", "--workflow", required=True, help="Workflow ID or slug.")
-    link_p.add_argument("-p", "--provider", required=True, choices=["codex", "agy"], help="Coding-agent provider.")
+    link_p.add_argument("-p", "--provider", required=True, choices=["codex", "agy", "claude"], help="Coding-agent provider.")
     link_p.add_argument("-s", "--session-id", required=True, help="Native provider session ID.")
     link_p.add_argument(
         "-e",
@@ -153,7 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------
     unlink_p = sub.add_parser("unlink", parents=[common], help="Unlink an association between a workflow and session.")
     unlink_p.add_argument("-w", "--workflow", required=True, help="Workflow ID or slug.")
-    unlink_p.add_argument("-p", "--provider", required=True, choices=["codex", "agy"], help="Coding-agent provider.")
+    unlink_p.add_argument("-p", "--provider", required=True, choices=["codex", "agy", "claude"], help="Coding-agent provider.")
     unlink_p.add_argument("-s", "--session-id", required=True, help="Native provider session ID.")
     unlink_p.add_argument("-e", "--environment", help="Environment ID or alias.")
     unlink_p.add_argument("-n", "--note", help="Reason for unlinking.")
@@ -164,7 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------
     reject_p = sub.add_parser("reject", parents=[common], help="Reject a candidate or conflicting association.")
     reject_p.add_argument("-w", "--workflow", required=True, help="Workflow ID or slug.")
-    reject_p.add_argument("-p", "--provider", required=True, choices=["codex", "agy"], help="Coding-agent provider.")
+    reject_p.add_argument("-p", "--provider", required=True, choices=["codex", "agy", "claude"], help="Coding-agent provider.")
     reject_p.add_argument("-s", "--session-id", required=True, help="Native provider session ID.")
     reject_p.add_argument("-e", "--environment", help="Environment ID or alias.")
     reject_p.add_argument("-n", "--note", help="Reason for rejection.")
@@ -174,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     # `agents status`
     # ------------------------------------------------------------------
     status_p = sub.add_parser("status", parents=[common], help="Update lifecycle status for a tracked session.")
-    status_p.add_argument("-p", "--provider", required=True, choices=["codex", "agy"], help="Coding-agent provider.")
+    status_p.add_argument("-p", "--provider", required=True, choices=["codex", "agy", "claude"], help="Coding-agent provider.")
     status_p.add_argument("-s", "--session-id", required=True, help="Native provider session ID.")
     status_p.add_argument(
         "-S",
@@ -191,7 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------
     inbox_p = sub.add_parser("inbox", parents=[common], help="Review unlinked, candidate, and conflicting sessions.")
     inbox_p.add_argument("-w", "--workflow", help="Filter candidates/conflicts by workflow ID or slug.")
-    inbox_p.add_argument("-p", "--provider", choices=["codex", "agy"], help="Filter by provider.")
+    inbox_p.add_argument("-p", "--provider", choices=["codex", "agy", "claude"], help="Filter by provider.")
     inbox_p.add_argument("-e", "--environment", help="Filter by environment ID or alias.")
 
     # ------------------------------------------------------------------
@@ -200,9 +200,9 @@ def build_parser() -> argparse.ArgumentParser:
     disc_p = sub.add_parser(
         "discover",
         parents=[common],
-        help="Read-only discovery of native Codex and AGY sessions from local metadata stores.",
+        help="Read-only discovery of native sessions from supported local metadata stores.",
     )
-    disc_p.add_argument("-p", "--provider", choices=["codex", "agy"], help="Filter by provider.")
+    disc_p.add_argument("-p", "--provider", choices=["codex", "agy", "claude"], help="Filter by provider.")
     disc_p.add_argument("-n", "--limit", type=int, default=50, help="Max sessions per provider (default: 50).")
     disc_p.add_argument("-a", "--apply", action="store_true", help="Register newly discovered sessions (default: dry-run).")
 

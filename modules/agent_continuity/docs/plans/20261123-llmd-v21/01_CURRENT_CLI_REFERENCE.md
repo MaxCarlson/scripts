@@ -3,6 +3,14 @@
 **Evidence baseline:** LLMD v1.7.1 integrated main at `ae04cbe08acaef235c9d0b1264fa3fdc3c2a4a57`; the v2.0.0 section below describes the active feature branch.
 **Document type:** source reference and migration notes. Windows terminal and provider behavior is not claimed unless separately qualified in the active plan status.
 
+## LLMD v2.1.0 — Claude Code native provider
+
+`claude` is a third canonical provider available through the shared dispatcher: registration, attachment, exact continuation, start, provider switch, reviewer/return cycle, open panes, registry listing and activation history. A new Claude session receives an LLMD-reserved UUID using interactive `claude --session-id <UUID>`; LLMD does not create a separate model bootstrap turn. The association is committed only after the exact transcript is observed locally. Interrupted/failed initialization preserves the candidate and never retries with a new ID automatically. Exact resume requires a UUID and uses `claude --resume <UUID>`, not `--continue`; a transcript candidate can be recovered only when its exact nonempty JSONL transcript is found. Broad transcript-history discovery is unsupported because Claude's transcript record schema is internal. Transcript presence is not a live provider resume guarantee.
+
+Managed Claude arguments are `--model`, `--effort`, `--permission-mode`, `--add-dir`, and `--agent`. LLMD blocks identity, fork, print/background/cloud/desktop/worktree/teleport/remote-control, alternate-config, and permission-bypass controls, including short aliases. Unknown safe-looking arguments require `--allow-native-unknown`; this does not override managed conflict checks. Previews do not allocate UUIDs. Authentication stays with Claude Code; LLMD-56 does not install hooks or require `local_agent_bridge`.
+
+## LLMD v2.0.0 action-default contract
+
 ## LLMD v2.0.0 action-default contract (active implementation)
 
 `start`, `continue`, `switch`, `open`, `review`, `return`, `attach`, GUI/slot creation, and ordinary slot lifecycle commands execute by default. `start GUI AGENT -p PROVIDER` resumes the selected exact session or creates missing local records and initializes a first session when no session is selected. `continue` only resumes an exact existing identity. `review` resumes a selected reviewer or initializes its first session; `switch -p PROVIDER` performs the requested provider change, while `switch -r` explicitly reuses a prior session. Add `-d/--dry-run` to request a preview. `-a/--apply` remains an accepted compatibility alias; `-a` and `-d` together are rejected before registry access. Read-only `list`, `history`, `last`, `recent`, `doctor`, and `pending` remain read-only. `last -r/--resume` explicitly resumes the exact terminal-scoped launch; `last -a` remains compatible.

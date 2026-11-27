@@ -483,8 +483,17 @@ class DispatcherService:
                  AND native_session_id IS NOT NULL""",
             (EventType.DISPATCHER_PROCESS_OBSERVED.value, launch["launch_id"]),
         )
+        reserved = self._rows(
+            """SELECT DISTINCT native_session_id FROM activity_events
+               WHERE event_type = ? AND json_extract(payload_json, '$.launch_id') = ?
+                 AND json_extract(payload_json, '$.outcome') = 'claude_session_id_reserved'
+                 AND native_session_id IS NOT NULL""",
+            (EventType.DISPATCHER_PROCESS_OBSERVED.value, launch["launch_id"]),
+        )
         return {**launch, "captured_session_id": captured[0]["native_session_id"] if len(captured) == 1 else None,
-                "captured_session_conflict": len(captured) > 1}
+                "captured_session_conflict": len(captured) > 1,
+                "reserved_session_id": reserved[0]["native_session_id"] if len(reserved) == 1 else None,
+                "reserved_session_conflict": len(reserved) > 1}
 
     def current_working_directory(self, slot: dict[str, Any]) -> str:
         current = slot.get("current")
@@ -527,6 +536,12 @@ class DispatcherService:
                                   "This agent is inactive; pass --reactivate to confirm its lifecycle change.")
         local_env = load_or_create_environment(self.home_dir, persist=apply)
         env = resolve_environment_selector(environment_selector, self.materializer.list_environments(), local_env)
+        if provider_name == "claude" and env.runtime_kind == "wsl":
+            raise ContinuityError(
+                ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE,
+                "New Claude sessions in WSL are not qualified: LLMD cannot verify the exact transcript in that runtime. "
+                "Use a Windows environment or explicitly attach a WSL Claude session after verifying its ID.",
+            )
         launch_id = generate_id("launch")
         event = self._event(
             EventType.DISPATCHER_LAUNCH_REQUESTED,
@@ -607,6 +622,12 @@ class DispatcherService:
         self._sync()
         local_env = load_or_create_environment(self.home_dir, persist=apply)
         env = resolve_environment_selector(environment_selector, self.materializer.list_environments(), local_env)
+        if provider_name == "claude" and env.runtime_kind == "wsl":
+            raise ContinuityError(
+                ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE,
+                "New Claude sessions in WSL are not qualified: LLMD cannot verify the exact transcript in that runtime. "
+                "Use a Windows environment or explicitly attach a WSL Claude session after verifying its ID.",
+            )
         conversation = self._row(
             "SELECT * FROM dispatcher_gui_conversations WHERE alias_key = ?", (gui_name.casefold(),)
         )
@@ -765,9 +786,18 @@ class DispatcherService:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "The latest launch is not pending; no recovery was applied.")
         pending = self._with_captured_bootstrap_id(pending)
         session_id = pending.get("captured_session_id")
-        if not session_id or pending.get("captured_session_conflict"):
+        provenance = "dispatcher_recovery"
+        if (not session_id and not pending.get("captured_session_conflict")
+                and pending.get("provider") == "claude"):
+            reserved_id = pending.get("reserved_session_id")
+            adapter = self.continuity.adapters.get("claude")
+            evidence = adapter.get_session_metadata(reserved_id) if reserved_id and adapter else None
+            if evidence:
+                session_id = reserved_id
+                provenance = "claude_transcript_recovery"
+        if not session_id or pending.get("captured_session_conflict") or pending.get("reserved_session_conflict"):
             raise ContinuityError(ErrorCode.INVALID_INPUT,
-                "Recovery is unresolved: no single exact bootstrap session ID was captured. Inspect provider state and use llmd attach with a verified ID.")
+                "Recovery is unresolved: no exact session identity with provider evidence was found. Inspect provider state and use llmd attach with a verified ID.")
         environments = self.materializer.list_environments()
         env = next((item for item in environments if item.environment_id == pending["environment_id"]), None)
         if env is None or not environment_is_locally_owned(self.home_dir, env):
@@ -786,7 +816,14 @@ class DispatcherService:
             if latest is None:
                 raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch changed concurrently; inspect `llmd doctor` and retry recovery.")
             captured_now = self._with_captured_bootstrap_id(latest)
-            if captured_now.get("captured_session_id") != session_id or captured_now.get("captured_session_conflict"):
+            if provenance == "claude_transcript_recovery":
+                adapter = self.continuity.adapters.get("claude")
+                evidence = adapter.get_session_metadata(session_id) if adapter else None
+                if (captured_now.get("reserved_session_id") != session_id
+                        or captured_now.get("reserved_session_conflict") or not evidence):
+                    raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                          "Claude transcript evidence changed; recovery was not applied.")
+            elif captured_now.get("captured_session_id") != session_id or captured_now.get("captured_session_conflict"):
                 raise ContinuityError(ErrorCode.INVALID_INPUT, "Captured session metadata changed; recovery was not applied.")
             slot = self._slot(conversation["gui_id"], slot["slot_id"])
             history = self._history(slot["slot_id"])
@@ -815,7 +852,7 @@ class DispatcherService:
                         payload={"environment": env.to_dict(), "cwd_native": pending.get("cwd"),
                                  "cwd_canonical": normalize_path_canonical(pending.get("cwd")),
                                  "repository_identity": normalize_repo_identity(pending.get("cwd")),
-                                 "first_observed_at": now, "last_seen_at": now, "metadata_source": "dispatcher_recovery"}))
+                                 "first_observed_at": now, "last_seen_at": now, "metadata_source": provenance}))
                 same = current and (current["provider"], current["environment_id"], current["native_session_id"]) == (
                     pending["provider"], env.environment_id, session_id)
                 if not same:
@@ -823,7 +860,7 @@ class DispatcherService:
                     events.append(self._event(EventType.DISPATCHER_SESSION_ACTIVATED,
                         environment_id=env.environment_id, provider=pending["provider"], session_id=session_id,
                         timestamp=now, payload={"slot_id": slot["slot_id"], "activation_id": activation_id,
-                            "sequence": (current["sequence"] if current else 0) + 1, "provenance": "dispatcher_recovery"}))
+                            "sequence": (current["sequence"] if current else 0) + 1, "provenance": provenance}))
                 events.append(self._event(EventType.DISPATCHER_LAUNCH_RESOLVED,
                     environment_id=env.environment_id, provider=pending["provider"], session_id=session_id,
                     payload={"launch_id": pending["launch_id"], "native_session_id": session_id}))
@@ -835,7 +872,7 @@ class DispatcherService:
                 for event in events:
                     self.continuity._emit_and_materialize([event])
         return {"action": "recover", "applied": True, "status": "recovered",
-                "summary": f"Associated captured session {session_id} and resolved pending launch. No provider was launched.",
+                "summary": f"Associated verified {pending['provider']} session {session_id} and resolved pending launch. No provider was launched.",
                 "details": {"launch_id": pending["launch_id"], "session_id": session_id,
                             "activation_added": not bool(current and same)}}
 

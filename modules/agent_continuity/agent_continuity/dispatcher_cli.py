@@ -133,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="llmd",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
-            "Resume named Codex and AGY sessions associated with local GUI conversation aliases.\n\n"
+            "Resume named Codex, AGY, and Claude Code sessions associated with local GUI conversation aliases.\n\n"
             "Primary: start, continue, switch, review, return, list, open, history.\n"
             "Administration: gui, slot, register.\n"
             "Recovery and diagnostics: attach, pending, recover, doctor."
@@ -207,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     register.add_argument("agent_pos", nargs="?")
     register.add_argument("-g", "--gui")
     register.add_argument("-n", "--agent-name")
-    register.add_argument("-p", "--provider", choices=("agy", "codex"))
+    register.add_argument("-p", "--provider", choices=("agy", "codex", "claude"))
     register.add_argument("-i", "--session-id")
     register.add_argument("-d", "--dry-run", action="store_true")
     register.add_argument("-a", "--apply", action="store_true", help="Compatibility option; registration applies by default.")
@@ -237,7 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_options(attach)
     attach.add_argument("-g", "--gui", required=True)
     attach.add_argument("-n", "--agent-name", required=True)
-    attach.add_argument("-p", "--provider", required=True, choices=("agy", "codex"))
+    attach.add_argument("-p", "--provider", required=True, choices=("agy", "codex", "claude"))
     attach.add_argument("-i", "--session-id", required=True)
     attach.add_argument("-e", "--environment")
     attach.add_argument("-C", "--cwd")
@@ -256,7 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("agent_pos", nargs="?")
         command.add_argument("-g", "--gui", required=command_name != "start")
         command.add_argument("-n", "--agent-name", required=command_name != "start")
-        command.add_argument("-p", "--provider", required=True, choices=("agy", "codex"))
+        command.add_argument("-p", "--provider", required=True, choices=("agy", "codex", "claude"))
         command.add_argument("-e", "--environment", help="Target environment ID or alias (default: local).")
         if command_name == "switch":
             command.add_argument("-r", "--reuse-previous", action="store_true")
@@ -282,7 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     cont.add_argument("-n", "--agent-name", "--name")
     _add_execution_options(cont)
     cont.add_argument("-A", "--all", action="store_true", help="Include completed agents in the interactive picker.")
-    cont.add_argument("-p", "--provider", choices=("agy", "codex"), help="Select the most recently activated matching historical provider session.")
+    cont.add_argument("-p", "--provider", choices=("agy", "codex", "claude"), help="Select the most recently activated matching historical provider session.")
     cont.add_argument("-i", "--session-id", help="Select this exact session from the agent's existing history.")
     cont.add_argument("-R", "--reactivate", action="store_true", help="Explicitly reactivate an inactive agent before resuming.")
     cont.add_argument("-C", "--cwd", help="Use this working directory for this invocation only.")
@@ -297,7 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("-g", "--gui", required=True)
     review.add_argument("-n", "--agent-name", required=True, help="Original implementation agent.")
     review.add_argument("-R", "--reviewer-agent", required=True, help="Distinct reviewer slot under the same GUI.")
-    review.add_argument("-p", "--provider", required=True, choices=("agy", "codex"))
+    review.add_argument("-p", "--provider", required=True, choices=("agy", "codex", "claude"))
     review.add_argument("-e", "--environment")
     review.add_argument("-C", "--cwd", help="Reviewer working directory.")
     review.add_argument("-U", "--allow-native-unknown", action="store_true",
@@ -346,6 +346,7 @@ def _native_argv(
     cwd: str | None,
     native_args: Sequence[str] = (),
     allow_native_unknown: bool = False,
+    new_session_id: str | None = None,
 ) -> list[str]:
     validated_native_args = _validated_native_args(provider, native_args, allow_unknown=allow_native_unknown)
     target = _resolve_environment(dispatcher, environment_id)
@@ -360,6 +361,18 @@ def _native_argv(
             environment_id=environment_id, runtime_kind=target.runtime_kind,
             native_args=validated_native_args,
         ).argv
+    elif new_session_id is not None:
+        adapter = dispatcher.continuity.adapters[provider]
+        build_new = getattr(adapter, "resolve_new_session_command", None)
+        if not callable(build_new):
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                  f"Provider {provider!r} has no qualified direct new-session command.")
+        try:
+            provider_args = build_new(new_session_id, cwd=None if target.runtime_kind == "wsl" else cwd,
+                                      environment_id=environment_id, runtime_kind=target.runtime_kind,
+                                      native_args=validated_native_args).argv
+        except ValueError as exc:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, str(exc)) from exc
     if target.runtime_kind == "wsl":
         if not target.distro:
             raise ContinuityError(ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE, "The selected WSL2 session has no recorded distribution identity.")
@@ -445,6 +458,12 @@ def _managed_native_spec(provider: str) -> tuple[dict[str, str], dict[str, str],
                   "--agent": "profile", "--settings": "settings"}
         flags = {"--sandbox": "sandbox"}
         enums = {"effort": {"low", "medium", "high", "xhigh", "max"}}
+    elif provider == "claude":
+        values = {"--model": "model", "--effort": "effort", "--permission-mode": "permission_mode",
+                  "--add-dir": "repeat", "--agent": "profile"}
+        flags = {}
+        enums = {"effort": {"low", "medium", "high", "xhigh", "max"},
+                 "permission_mode": {"default", "manual", "acceptEdits", "plan", "auto", "dontAsk"}}
     else:
         raise ContinuityError(ErrorCode.INVALID_INPUT, f"Native options are unsupported for provider {provider!r}.")
     return values, flags, enums
@@ -459,6 +478,7 @@ _ALWAYS_FORBIDDEN_NATIVE_OPTIONS = {
     "--dangerously-bypass-hook-trust", "--dangerously-skip-permissions", "--mode", "--output-format",
     "--input-format", "--json-schema", "--print-timeout", "--log-file",
     "-h", "--help", "-V", "--version",
+    "--fork-session", "--init-only", "--no-session-persistence",
 }
 _SECRET_KEY_PARTS = ("secret", "token", "password", "api_key", "api-key", "apikey", "credential", "prompt", "content")
 _PROTECTED_UNKNOWN_PARTS = (
@@ -562,7 +582,19 @@ def _validated_native_args(
             option in {"-c", "-r", "-p", "-i"}
             or (not equals and len(token) > 2 and token[:2] in {"-c", "-r", "-p", "-i"})
         )
-        if (option in _ALWAYS_FORBIDDEN_NATIVE_OPTIONS or agy_resume_alias
+        claude_reserved_alias = provider == "claude" and option.casefold() in {
+            "-r", "-c", "-p", "--resume", "--continue", "--print", "--session-id", "--fork-session",
+            "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--init-only",
+            "--no-session-persistence", "--bg", "--background", "--desktop", "--worktree",
+            "-h", "-v", "--help", "--version",
+            "-w", "--cloud", "--environment", "--remote-control", "--teleport", "--tmux", "--from-pr",
+            "--settings", "--setting-sources", "--permission-prompt-tool", "--allowedtools",
+            "--allowed-tools", "--disallowedtools", "--disallowed-tools", "--tools",
+        }
+        claude_attached_reserved_alias = (provider == "claude" and not equals and len(token) > 2
+                                          and token[:2] in {"-r", "-c", "-p", "-w"})
+        if (option in _ALWAYS_FORBIDDEN_NATIVE_OPTIONS or agy_resume_alias or claude_reserved_alias
+                or claude_attached_reserved_alias
                 or not option.startswith("-")):
             raise ContinuityError(ErrorCode.INVALID_INPUT,
                                   f"LLMD-conflicting provider option {option!r} is reserved for session identity, executable, execution mode, bootstrap, prompt, or cwd ownership.")
@@ -629,7 +661,7 @@ def _validated_native_args(
                 raise ContinuityError(ErrorCode.INVALID_INPUT, f"Provider option {option} requires a value.")
             value = native_args[index]
             result.extend((token, value))
-        if kind in {"sandbox", "approval", "effort"} and value not in enums.get(kind, set()):
+        if kind in {"sandbox", "approval", "effort", "permission_mode"} and value not in enums.get(kind, set()):
             raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported {provider} {kind} setting {value!r}.")
         if kind == "config":
             config_key, _, managed_kind = _config_pair(provider, value, allow_unknown=allow_unknown)
@@ -673,6 +705,8 @@ def _requested_permission_settings(
             requested[canonical] = [value]
         elif option == "--approve-for-me":
             requested[option] = True
+        elif provider == "claude" and option == "--permission-mode":
+            requested[option] = value
         elif option in {"-c", "--config"} and value:
             key, config_value, managed = _config_pair(provider, value, allow_unknown=allow_unknown)
             if managed in {"sandbox", "approval"}:
@@ -695,7 +729,7 @@ def _requested_permission_settings(
                     {"key": key, "value": "omitted", "verification": "unclassified and not verified effective"}
                     for key in permission_keys
                 ]
-        if option in {"--add-dir", "--enable", "--disable", "--model", "-m", "--profile", "-p", "--effort", "--agent", "--settings", "-c", "--config"} and not equals:
+        if option in {"--add-dir", "--enable", "--disable", "--model", "-m", "--profile", "-p", "--effort", "--agent", "--settings", "-c", "--config", "--permission-mode"} and not equals:
             index += 2
         else:
             index += 1
@@ -807,6 +841,8 @@ def _safe_launch_settings(
             safe["model"] = value
         elif kind == "effort":
             safe["reasoning_effort"] = value
+        elif kind == "permission_mode":
+            safe["permission_mode"] = value
         elif kind == "profile":
             safe["provider_profile"] = value
         elif kind == "repeat" and value:
@@ -984,7 +1020,7 @@ def _render_launch_preview(preview: dict[str, Any], stream: TextIO, color: str |
             indent, key_text, key, value = match.groups()
             semantic = "warning" if any(term in key.casefold() for term in ("permission", "sandbox", "approval")) else "label"
             value_semantic = {
-                "provider": {"codex": "provider_codex", "agy": "provider_agy"}.get(
+                "provider": {"codex": "provider_codex", "agy": "provider_agy", "claude": "provider_claude"}.get(
                     value.split('"', 2)[1].casefold() if value.startswith('"') and '"' in value[1:] else "", ""),
                 "native_session_id": "session",
                 "session_id": "session",
@@ -997,11 +1033,26 @@ def _render_launch_preview(preview: dict[str, Any], stream: TextIO, color: str |
 def _new_launch_preview(dispatcher: DispatcherService, provider: str, environment_id: str, cwd: str | None,
                         native_args: Sequence[str], *, allow_native_unknown: bool = False) -> dict[str, Any]:
     requested = _requested_permission_settings(provider, native_args, allow_unknown=allow_native_unknown)
-    bootstrap = _bootstrap_native_argv(dispatcher, provider, environment_id=environment_id, cwd=cwd)
-    resume = _native_argv(dispatcher, provider, "<captured-session-id>", environment_id=environment_id,
-                          cwd=cwd, native_args=native_args, allow_native_unknown=allow_native_unknown)
     environment = _resolve_environment(dispatcher, environment_id)
     environment_id = environment.environment_id
+    if provider == "claude":
+        executable = _native_argv(dispatcher, provider, None, environment_id=environment_id, cwd=cwd,
+                                  native_args=native_args, allow_native_unknown=allow_native_unknown)
+        validated_native_args = _validated_native_args(
+            provider, native_args, allow_unknown=allow_native_unknown,
+        )
+        if environment.runtime_kind != "wsl":
+            resolved_executable = dispatcher.continuity.adapters[provider].find_executable()
+            if resolved_executable:
+                executable[-1] = resolved_executable
+        bootstrap = None
+        resume = [*executable, "--session-id", "<UUID reserved when applied>", *validated_native_args]
+        identity_description = "UUID reserved when applied and passed to Claude's interactive --session-id option; transcript presence checked after exit"
+    else:
+        bootstrap = _bootstrap_native_argv(dispatcher, provider, environment_id=environment_id, cwd=cwd)
+        resume = _native_argv(dispatcher, provider, "<captured-session-id>", environment_id=environment_id,
+                              cwd=cwd, native_args=native_args, allow_native_unknown=allow_native_unknown)
+        identity_description = "captured exactly from bootstrap output before resume"
     return {
         "bootstrap_argv": bootstrap,
         "interactive_resume_argv_template": resume,
@@ -1010,7 +1061,7 @@ def _new_launch_preview(dispatcher: DispatcherService, provider: str, environmen
                         "distro": environment.distro,
                         "ownership": environment_is_locally_owned(dispatcher.home_dir, environment)},
         "selected_session": {"provider": provider, "native_session_id": None,
-                             "identity": "captured exactly from bootstrap output before resume"},
+                             "identity": identity_description},
         "permission_settings": {"requested": requested, "verified_effective": None,
                                 "verification": "Provider enforcement is not observed by a launch preview."},
         "requested_settings": _safe_launch_settings(provider, native_args, allow_unknown=allow_native_unknown),
@@ -1113,7 +1164,8 @@ def _run_pane(
         )
         cross_wsl = target_environment and target_environment.runtime_kind == "wsl" and detect_runtime_kind() == "windows"
         cwd = pending.get("cwd") or (None if cross_wsl else dispatcher.current_working_directory(slot))
-        session_id = None
+        launch_identity = _session_identity(slot)
+        session_id = str(uuid4()) if provider == "claude" else None
     else:
         current = slot["current"]
         if current is None:
@@ -1157,7 +1209,22 @@ def _run_pane(
     bootstrap_completed = False
     _startup_progress("environment, executable and Git worktree context resolved")
     try:
-        if launch_id:
+        if launch_id and provider == "claude":
+            if not session_id:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Claude launch did not reserve a session UUID.")
+            argv = _native_argv(dispatcher, provider, None, environment_id=environment_id, cwd=cwd,
+                                native_args=native_args, allow_native_unknown=allow_native_unknown,
+                                new_session_id=session_id)
+            if terminal_record:
+                dispatcher.record_terminal_launch(terminal_record)
+                terminal_record_written = True
+            dispatcher.record_process_observation(
+                slot_id=slot_id, launch_id=launch_id, return_code=0,
+                outcome="claude_session_id_reserved",
+                detail="UUID reserved for Claude --session-id. Native creation and resumability are not yet confirmed.",
+                native_session_id=session_id,
+            )
+        elif launch_id:
             bootstrap_argv = _bootstrap_native_argv(
                 dispatcher, provider, environment_id=environment_id, cwd=bootstrap_cwd
             )
@@ -1343,7 +1410,17 @@ def _run_pane(
             result = subprocess.run(argv, cwd=process_cwd, check=False)
     except KeyboardInterrupt:
         if launch_id:
-            dispatcher.mark_launch_failed(launch_id=launch_id, detail="Provider launch was interrupted; inspect provider state before retrying.", apply=True)
+            if provider == "claude":
+                dispatcher.record_process_observation(
+                    slot_id=slot_id, launch_id=launch_id, return_code=130,
+                    outcome="claude_initialization_interrupted",
+                    detail="Claude launch was interrupted after UUID reservation; exact transcript recovery may be attempted.",
+                    native_session_id=session_id,
+                )
+            else:
+                dispatcher.mark_launch_failed(launch_id=launch_id,
+                                               detail="Provider launch was interrupted; inspect provider state before retrying.",
+                                               apply=True)
         _finish_terminal_launch(dispatcher, terminal_record, exit_code=130, status="interrupted")
         raise
     except ContinuityError:
@@ -1362,6 +1439,55 @@ def _run_pane(
         raise ContinuityError(ErrorCode.PROVIDER_UNAVAILABLE, f"Failed to launch {provider}: {exc}") from exc
     _finish_terminal_launch(dispatcher, terminal_record, exit_code=result.returncode,
                             status="exited" if result.returncode == 0 else "abnormal_exit")
+    if provider == "claude" and launch_id and result.returncode == 0:
+        adapter = dispatcher.continuity.adapters[provider]
+        evidence = adapter.get_session_metadata(session_id) if session_id else None
+        if not evidence:
+            dispatcher.mark_launch_failed(
+                launch_id=launch_id,
+                detail=(f"Claude exited without a nonempty transcript for reserved session {session_id}; "
+                        "creation and resumability remain unconfirmed. Inspect provider state before retrying."),
+                apply=True,
+            )
+            print(
+                f"Claude UUID {session_id} was reserved, but no nonempty transcript was found; "
+                "the launch remains unresolved and was not resumed or retried.",
+                file=output_stream,
+            )
+            return 1
+        try:
+            if transition_source:
+                if transition_source.get("review_cycle"):
+                    transition_source["review_cycle"].update({
+                        "reviewer_provider": provider,
+                        "reviewer_environment_id": environment_id,
+                        "reviewer_session_id": session_id,
+                    })
+                dispatcher.complete_agent_transition(
+                    gui=slot["gui_alias"], source_slot_id=transition_source["slot_id"],
+                    destination_slot_id=slot_id, provider=provider, environment_id=environment_id,
+                    session_id=session_id,
+                    source_state=transition_source.get("source_state", "inactive"),
+                    destination_state=transition_source.get("destination_state", "active"),
+                    expected_source=transition_source["expected_source"], expected_destination=None,
+                    cwd=cwd, launch_id=launch_id,
+                    provenance=transition_source.get("provenance", "agent_transition"),
+                    allow_inactive_source=transition_source.get("allow_inactive_source", False),
+                    review_cycle=transition_source.get("review_cycle"), apply=True,
+                )
+            else:
+                dispatcher.attach_session(
+                    gui=slot["gui_alias"], name=slot["name"], provider=provider, session_id=session_id,
+                    environment_selector=environment_id, cwd=cwd, launch_id=launch_id, apply=True,
+                    provenance="claude_transcript_verified",
+                )
+        except ContinuityError as exc:
+            dispatcher.mark_launch_failed(launch_id=launch_id,
+                                          detail=f"Claude transcript exists for {session_id}, but association failed: {exc}",
+                                          apply=True)
+            raise
+        launch_identity = (provider, environment_id, session_id)
+        launch_id = None
     try:
         dispatcher.record_process_observation(
             slot_id=slot_id, launch_id=launch_id, return_code=result.returncode,
@@ -1372,9 +1498,12 @@ def _run_pane(
         raise ContinuityError(ErrorCode.METADATA_INACCESSIBLE,
             f"{provider} process exited with code {result.returncode}, but LLMD could not record the result. Do not relaunch blindly; run `llmd doctor` and inspect provider state.") from exc
     if result.returncode != 0:
-        if launch_id:
+        if launch_id and provider != "claude":
             dispatcher.mark_launch_failed(launch_id=launch_id, detail=f"provider exited with {result.returncode}", apply=True)
-        print(semantic_color(f"{slot['name']} exited with code {result.returncode}; slot and current session remain unchanged.",
+        detail = (f"{slot['name']} exited with code {result.returncode}; slot and current session remain unchanged."
+                  if provider != "claude" or not launch_id else
+                  f"{slot['name']} exited with code {result.returncode}; Claude's reserved UUID remains pending for exact transcript recovery.")
+        print(semantic_color(detail,
                              "error", enabled=color_enabled(_current_color_mode(), is_tty=output_stream.isatty(),
                                                             stream=output_stream)), file=output_stream)
         return result.returncode
@@ -1741,9 +1870,10 @@ def _create_agent_after_exit(
            for row in dispatcher.list_slots(gui=source["gui_alias"], active_only=False)):
         print("That agent name already exists under this GUI; no slot was created.", file=output_stream)
         return 2
-    print("Provider [1] Codex  [2] AGY: ", end="", file=output_stream, flush=True)
+    print("Provider [1] Codex  [2] AGY  [3] Claude Code: ", end="", file=output_stream, flush=True)
     provider_choice = input_stream.readline().strip().casefold()
-    provider = {"1": "codex", "codex": "codex", "2": "agy", "agy": "agy"}.get(provider_choice)
+    provider = {"1": "codex", "codex": "codex", "2": "agy", "agy": "agy",
+                "3": "claude", "claude": "claude", "claude code": "claude"}.get(provider_choice)
     if provider is None:
         print("Provider selection canceled; no slot was created.", file=output_stream)
         return 0
@@ -2402,7 +2532,7 @@ def _render_listing(
         for row in items:
             provider = row.get('current_provider') or row.get('pending_provider') or '—'
             provider_text = pad_semantic(str(provider).upper(), 7,
-                                         {"CODEX": "provider_codex", "AGY": "provider_agy"}.get(str(provider).upper(), ""),
+                                         {"CODEX": "provider_codex", "AGY": "provider_agy", "CLAUDE": "provider_claude"}.get(str(provider).upper(), ""),
                                          enabled=use_color)
             lifecycle = str(row.get('state') or 'unknown')
             state_text = pad_semantic(lifecycle, 9,
@@ -2428,7 +2558,7 @@ def _render_listing(
                                              {"IN USE": "runtime_in_use", "NOT OBSERVED": "runtime_not_observed",
                                               "PENDING": "pending", "UNKNOWN": "unknown"}.get(runtime.upper(), ""),
                                              enabled=use_color)
-                line = (f"  {agent_text}  {pad_semantic(str(provider).upper(), 8, {'CODEX': 'provider_codex', 'AGY': 'provider_agy'}.get(str(provider).upper(), ''), enabled=use_color)}  {activity_field}  {state_text}  "
+                line = (f"  {agent_text}  {pad_semantic(str(provider).upper(), 8, {'CODEX': 'provider_codex', 'AGY': 'provider_agy', 'CLAUDE': 'provider_claude'}.get(str(provider).upper(), ''), enabled=use_color)}  {activity_field}  {state_text}  "
                         f"{runtime_field}  {semantic_color(clip_display(session_display, session_width), session_semantic, enabled=use_color)}")
                 print(line, file=stream)
             elif width >= 58:
