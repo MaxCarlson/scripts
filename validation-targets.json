@@ -6,6 +6,14 @@
         "rrbackup": {
             "description": "RRBackup consolidation, single-CLI UX, viewer, scheduler, and repository validation.",
             "working_directory": "modules/rrbackup",
+            "selective_validation": {
+                "test_roots": ["tests"],
+                "source_roots": ["rrbackup"],
+                "dependency_inputs": ["pyproject.toml", "pytest.ini"],
+                "pytest_arguments": ["-q", "--strict-config", "--strict-markers"],
+                "imports": [{"module": "rrbackup", "expected_root": "rrbackup", "distribution": "rrbackup"}],
+                "forbidden_source_roots": ["modules/resource_metrics", "modules/llm_monitor"]
+            },
             "context_files": [
                 "docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/STATUS.md",
                 "docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/checklist.md"
@@ -165,6 +173,14 @@
         "development-ledger": {
             "description": "Development-ledger package, active plan, scripts-repository integration, and self-hosted evidence validation.",
             "working_directory": "modules/development_ledger",
+            "selective_validation": {
+                "test_roots": ["tests"],
+                "source_roots": ["development_ledger"],
+                "dependency_inputs": ["pyproject.toml"],
+                "pytest_arguments": ["-q", "--strict-config", "--strict-markers"],
+                "imports": [{"module": "development_ledger", "expected_root": "development_ledger", "distribution": "development-ledger"}],
+                "forbidden_source_roots": ["modules/resource_metrics", "modules/llm_monitor"]
+            },
             "context_files": [
                 "docs/plans/20260729-1100_development-ledger-self-hosting/STATUS.md",
                 "docs/plans/20260729-1100_development-ledger-self-hosting/checklist.md",
@@ -343,6 +359,14 @@
         "compresser": {
             "description": "Standalone image compression engine, analysis, and perceptual optimization.",
             "working_directory": "modules/compresser",
+            "selective_validation": {
+                "test_roots": ["tests"],
+                "source_roots": ["compresser"],
+                "dependency_inputs": ["pyproject.toml"],
+                "pytest_arguments": ["-q", "--strict-config", "--strict-markers"],
+                "imports": [{"module": "compresser", "expected_root": "compresser", "distribution": "compresser"}],
+                "forbidden_source_roots": ["modules/resource_metrics", "modules/llm_monitor"]
+            },
             "context_files": [
             ],
             "environment": {
@@ -414,6 +438,14 @@
         "kavita": {
             "description": "Reusable Kavita API client, exact path matching, and pending assignment validation.",
             "working_directory": "modules/kavita",
+            "selective_validation": {
+                "test_roots": ["tests"],
+                "source_roots": ["kavita"],
+                "dependency_inputs": ["pyproject.toml"],
+                "pytest_arguments": ["-q", "--strict-config", "--strict-markers"],
+                "imports": [{"module": "kavita", "expected_root": "kavita", "distribution": "kavita"}],
+                "forbidden_source_roots": ["modules/resource_metrics", "modules/llm_monitor"]
+            },
             "context_files": [
             ],
             "environment": {
@@ -458,6 +490,14 @@
         "url-file-tools": {
             "description": "URL file normalization, merge, domain split, and read-only downloader archive matching.",
             "working_directory": "modules/url_file_tools",
+            "selective_validation": {
+                "test_roots": ["tests"],
+                "source_roots": ["url_file_tools"],
+                "dependency_inputs": ["pyproject.toml"],
+                "pytest_arguments": ["-q", "--strict-config", "--strict-markers"],
+                "imports": [{"module": "url_file_tools", "expected_root": "url_file_tools", "distribution": "url-file-tools"}],
+                "forbidden_source_roots": ["modules/resource_metrics", "modules/llm_monitor"]
+            },
             "context_files": [
                 "docs/plans/20260926-0041_url-file-tools/STATUS.md",
                 "docs/plans/20260926-0041_url-file-tools/checklist.md",
@@ -524,6 +564,14 @@
         "scheduler": {
             "description": "Scheduler setup, Windows runner, history, analytics, CLI, and TUI validation.",
             "working_directory": "modules/scheduler",
+            "selective_validation": {
+                "test_roots": ["tests"],
+                "source_roots": ["scheduler"],
+                "dependency_inputs": ["pyproject.toml"],
+                "pytest_arguments": ["-q", "--strict-config", "--strict-markers"],
+                "imports": [{"module": "scheduler", "expected_root": "scheduler", "distribution": "scheduler"}],
+                "forbidden_source_roots": ["modules/resource_metrics", "modules/llm_monitor"]
+            },
             "context_files": [
                 "modules/scheduler/docs/plans/20261008-2132_windows-runner-and-elevation/STATUS.md",
                 "modules/scheduler/docs/plans/20261008-2132_windows-runner-and-elevation/checklist.md",

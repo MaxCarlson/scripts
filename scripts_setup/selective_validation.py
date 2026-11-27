@@ -1,0 +1,714 @@
+"""Focused pytest execution using existing environments and immutable run evidence."""
+
+from __future__ import annotations
+
+import argparse
+from collections import deque
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+from typing import Any, Callable, Iterable, Sequence
+
+
+class SelectiveValidationError(RuntimeError):
+    """A selection or environment failed closed before pytest execution."""
+
+
+def _contained(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _relative_posix(path: Path, root: Path) -> str:
+    return path.resolve().relative_to(root.resolve()).as_posix()
+
+
+def _selection_path(raw_path: str, target_root: Path) -> Path:
+    supplied = Path(raw_path)
+    path = supplied if supplied.is_absolute() else target_root / supplied
+    resolved = path.resolve()
+    if not _contained(resolved, target_root):
+        raise ValueError(f"pytest selector must remain inside the target: {raw_path}")
+    return resolved
+
+
+def resolve_pytest_selectors(
+    target_root: Path,
+    test_roots: Sequence[str],
+    node_ids: Sequence[str] = (),
+    files: Sequence[str] = (),
+    modules: Sequence[str] = (),
+) -> list[str]:
+    """Resolve repeatable node IDs, files/directories, and dotted test modules."""
+    root = target_root.resolve()
+    if not root.is_dir():
+        raise ValueError(f"pytest target root does not exist: {root}")
+    resolved_test_roots = []
+    for item in test_roots:
+        test_root = _selection_path(item, root)
+        if not test_root.is_dir():
+            raise ValueError(f"configured pytest test root is missing: {item}")
+        resolved_test_roots.append(test_root)
+    if not resolved_test_roots:
+        raise ValueError("selective target has no configured test_roots")
+
+    selected: list[str] = []
+
+    def add_file(path: Path, *, allow_directory: bool, suffix: str = "") -> None:
+        if not path.exists():
+            raise ValueError(f"pytest selector does not exist: {path}")
+        if not any(_contained(path, test_root) for test_root in resolved_test_roots):
+            raise ValueError(f"pytest selector must be inside a configured test root: {path}")
+        if path.is_dir():
+            if not allow_directory:
+                raise ValueError(f"pytest node ID must name a test file: {path}")
+        elif path.suffix != ".py":
+            raise ValueError(f"pytest selector must be a Python test file: {path}")
+        selected.append(_relative_posix(path, root) + suffix)
+
+    for node_id in node_ids:
+        if not node_id or "\x00" in node_id:
+            raise ValueError("pytest node IDs must be non-empty")
+        path_text, separator, test_parts = node_id.partition("::")
+        if not path_text or (separator and any(not part for part in test_parts.split("::"))):
+            raise ValueError(f"invalid pytest node ID: {node_id}")
+        node_path = _selection_path(path_text, root)
+        add_file(node_path, allow_directory=False, suffix=("::" + test_parts if separator else ""))
+
+    for file_name in files:
+        if not file_name:
+            raise ValueError("pytest files must be non-empty")
+        add_file(_selection_path(file_name, root), allow_directory=True)
+
+    for module_name in modules:
+        parts = module_name.split(".")
+        if not module_name or any(not part.isidentifier() for part in parts):
+            raise ValueError(f"invalid dotted pytest module name: {module_name}")
+        candidates: list[Path] = []
+        dotted_path = Path(*parts)
+        for test_root in resolved_test_roots:
+            if parts[0] == test_root.name:
+                relative_parts = parts[1:]
+                if relative_parts:
+                    candidates.append(test_root.joinpath(*relative_parts).with_suffix(".py"))
+                    candidates.append(test_root.joinpath(*relative_parts, "__init__.py"))
+            else:
+                candidates.append(test_root.joinpath(*parts).with_suffix(".py"))
+                candidates.append(test_root.joinpath(*parts, "__init__.py"))
+        candidates.extend((root / dotted_path.with_suffix(".py"), root / dotted_path / "__init__.py"))
+        resolved = next((candidate.resolve() for candidate in candidates if candidate.is_file()), None)
+        if resolved is None:
+            raise ValueError(f"pytest module was not found under configured test roots: {module_name}")
+        add_file(resolved, allow_directory=False)
+
+    if not selected:
+        raise ValueError("select at least one pytest node ID, file, or module")
+    return list(dict.fromkeys(selected))
+
+
+def assess_import_provenance(
+    repo_root: Path,
+    target_root: Path,
+    import_specs: Sequence[dict[str, Any]],
+    observed_imports: Sequence[dict[str, Any]],
+    forbidden_roots: Sequence[str] = (),
+    site_packages: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Ensure selected imports resolve to this target or its declared distribution."""
+    repository = repo_root.resolve()
+    target = target_root.resolve()
+    observed_by_name = {str(item.get("module")): item for item in observed_imports}
+    forbidden = [(item, (repository / item).resolve()) for item in forbidden_roots]
+    errors: list[str] = []
+    warnings: list[str] = []
+    identities: list[dict[str, Any]] = []
+
+    for name, path in forbidden:
+        if path.exists():
+            errors.append(f"retired source copy is present: {name} ({path})")
+
+    for spec in import_specs:
+        module_name = str(spec.get("module", ""))
+        observed = observed_by_name.get(module_name)
+        if not observed or observed.get("error"):
+            detail = observed.get("error") if observed else "module was not probed"
+            errors.append(f"import {module_name}: {detail}")
+            continue
+
+        raw_paths = []
+        if observed.get("origin") and observed["origin"] not in {"built-in", "frozen"}:
+            raw_paths.append(observed["origin"])
+        raw_paths.extend(observed.get("search_locations", []))
+        paths = [Path(item).resolve() for item in raw_paths]
+        if not paths:
+            errors.append(f"import {module_name}: no filesystem origin was reported")
+            continue
+
+        expected_root = str(spec.get("expected_root", "."))
+        if expected_root == "site-packages":
+            allowed_roots = [Path(path).resolve() for path in site_packages]
+        else:
+            allowed_roots = [(target / expected_root).resolve()]
+        outside = [
+            path for path in paths
+            if not any(_contained(path, allowed_root) for allowed_root in allowed_roots)
+        ]
+        if outside:
+            errors.append(
+                f"import {module_name} resolves outside expected root {expected_root}: "
+                + ", ".join(str(path) for path in outside)
+            )
+
+        for forbidden_name, forbidden_path in forbidden:
+            if any(_contained(path, forbidden_path) for path in paths):
+                errors.append(
+                    f"import {module_name} resolves to retired source root "
+                    f"{forbidden_name}: {forbidden_path}"
+                )
+
+        editable_source = observed.get("editable_source")
+        if editable_source and expected_root != "site-packages":
+            source_path = Path(editable_source).resolve()
+            if source_path != target:
+                warnings.append(
+                    f"editable distribution metadata for {module_name} points to {source_path}; "
+                    f"runtime import origin is checked against this checkout at {target}"
+                )
+
+        expected_distribution = spec.get("distribution")
+        expected_version = spec.get("version")
+        if expected_distribution and observed.get("distribution") != expected_distribution:
+            errors.append(
+                f"import {module_name} distribution mismatch: expected "
+                f"{expected_distribution}, got {observed.get('distribution')}"
+            )
+        if expected_version and observed.get("version") != expected_version:
+            errors.append(
+                f"import {module_name} version mismatch: expected {expected_version}, "
+                f"got {observed.get('version')}"
+            )
+
+        identities.append(
+            {
+                "module": module_name,
+                "origin": observed.get("origin"),
+                "search_locations": observed.get("search_locations", []),
+                "distribution": observed.get("distribution"),
+                "version": observed.get("version"),
+                "editable_source": editable_source,
+            }
+        )
+
+    return {"ok": not errors, "imports": identities, "errors": errors, "warnings": warnings}
+
+
+def _probe_script() -> str:
+    return r"""
+import importlib.metadata as metadata
+import importlib.util
+import json
+import re
+import site
+import sys
+import sysconfig
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+request = json.loads(sys.argv[1])
+result = {
+    "python": str(Path(sys.executable).resolve()),
+    "python_version": sys.version.split()[0],
+    "prefix": str(Path(sys.prefix).resolve()),
+    "site_packages": sorted({str(Path(p).resolve()) for p in site.getsitepackages()} |
+                             {str(Path(sysconfig.get_path(k)).resolve()) for k in ("purelib", "platlib")
+                              if sysconfig.get_path(k)}),
+    "distributions": sorted(
+        ({"name": d.metadata.get("Name", ""), "version": d.version} for d in metadata.distributions()),
+        key=lambda d: (d["name"].casefold(), d["version"]),
+    ),
+    "imports": [],
+}
+for spec in request:
+    module = spec["module"]
+    item = {"module": module, "origin": None, "search_locations": []}
+    try:
+        found = importlib.util.find_spec(module)
+        if found is None:
+            item["error"] = "module was not found"
+        else:
+            item["origin"] = found.origin
+            item["search_locations"] = list(found.submodule_search_locations or ())
+    except (ImportError, ValueError, AttributeError) as exc:
+        item["error"] = f"cannot locate module ({type(exc).__name__}: {exc})"
+    distribution_name = spec.get("distribution")
+    if distribution_name:
+        try:
+            distribution = metadata.distribution(distribution_name)
+            item["distribution"] = distribution.metadata.get("Name", distribution_name)
+            item["version"] = distribution.version
+            direct_url = distribution.read_text("direct_url.json")
+            if direct_url:
+                parsed = json.loads(direct_url)
+                if parsed.get("dir_info", {}).get("editable"):
+                    url = urlparse(parsed.get("url", ""))
+                    if url.scheme == "file":
+                        source = unquote(url.path)
+                        if sys.platform == "win32" and re.match(r"^/[A-Za-z]:/", source):
+                            source = source[1:]
+                        item["editable_source"] = str(Path(source).resolve())
+        except metadata.PackageNotFoundError:
+            item["distribution"] = None
+            item["version"] = None
+    result["imports"].append(item)
+print(json.dumps(result, sort_keys=True))
+"""
+
+
+def probe_imports(
+    import_specs: Sequence[dict[str, Any]],
+    target_root: Path,
+    python_executable: str,
+    environment: dict[str, str],
+) -> dict[str, Any]:
+    completed = subprocess.run(
+        [python_executable, "-c", _probe_script(), json.dumps(list(import_specs))],
+        cwd=target_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise SelectiveValidationError(
+            f"import provenance probe exited {completed.returncode}: "
+            f"{_failure_evidence(completed.stdout + completed.stderr)}"
+        )
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise SelectiveValidationError("import provenance probe returned invalid JSON") from error
+
+
+def _safe_environment(environment: dict[str, str]) -> dict[str, str]:
+    safe: dict[str, str] = {}
+    for key, value in environment.items():
+        lowered = key.lower()
+        if any(term in lowered for term in ("token", "secret", "password", "auth", "credential", "api_key")):
+            continue
+        if key in {"PYTHONPATH", "PYTHONUTF8", "PYTHONUNBUFFERED", "PY_COLORS", "NO_COLOR"}:
+            safe[key] = value
+    return safe
+
+
+def _environment_fingerprint(environment: dict[str, str]) -> str:
+    digest = hashlib.sha256()
+    for key, value in sorted(environment.items()):
+        digest.update(key.encode("utf-8", errors="replace"))
+        digest.update(b"\0")
+        digest.update(value.encode("utf-8", errors="replace"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _resolve_environment(
+    target_spec: dict[str, Any], repo_root: Path, target_root: Path, python_executable: str
+) -> dict[str, str]:
+    environment = os.environ.copy()
+    replacements = {
+        "{repo_root}": str(repo_root),
+        "{target_root}": str(target_root),
+        "{python}": python_executable,
+        "{include_production_read_only}": "0",
+        "{include_production_read_only_bool}": "False",
+    }
+    for key, raw_value in target_spec.get("environment", {}).items():
+        value = str(raw_value)
+        for token, resolved in replacements.items():
+            value = value.replace(token, resolved)
+        environment[str(key)] = value
+    return environment
+
+
+def _safe_relative(root: Path, value: str) -> Path:
+    path = (root / value).resolve()
+    if not _contained(path, root):
+        raise ValueError(f"configured validation path escapes its root: {value}")
+    return path
+
+
+def _source_files(root: Path, relative_roots: Iterable[str]) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    ignored_parts = {".git", ".pytest_cache", "__pycache__", ".pytest_tmp_root", "build", "dist"}
+    for relative in relative_roots:
+        path = _safe_relative(root, relative)
+        if path.is_file():
+            candidates = [path]
+        elif path.is_dir():
+            candidates = sorted(path.rglob("*"))
+        else:
+            hashes[relative] = "<missing>"
+            continue
+        for candidate in candidates:
+            if not candidate.is_file() or ignored_parts.intersection(candidate.parts):
+                continue
+            resolved = candidate.resolve()
+            if not _contained(resolved, root):
+                hashes[str(candidate)] = "<external-symlink-omitted>"
+                continue
+            relative_path = resolved.relative_to(root.resolve()).as_posix()
+            hashes[relative_path] = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    return dict(sorted(hashes.items()))
+
+
+def _revision(repo_root: Path) -> dict[str, str | None]:
+    def git_value(*args: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repo_root), *args], capture_output=True, text=True, check=False
+            )
+        except OSError:
+            return None
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() or None
+
+    return {"branch": git_value("branch", "--show-current"), "commit": git_value("rev-parse", "HEAD")}
+
+
+def compute_input_fingerprint(
+    repo_root: Path,
+    target_root: Path,
+    selective_spec: dict[str, Any],
+    selected: Sequence[str],
+    command_template: Sequence[str],
+    interpreter: dict[str, Any],
+    import_identities: Sequence[dict[str, Any]],
+    environment_fingerprint: str,
+    revision: dict[str, str | None],
+) -> tuple[str, dict[str, Any]]:
+    relevant_roots = [*selective_spec.get("source_roots", []), *selective_spec.get("test_roots", [])]
+    relevant_roots.extend(selective_spec.get("dependency_inputs", []))
+    file_hashes = _source_files(target_root, relevant_roots)
+    inputs = {
+        "repo_root": str(repo_root.resolve()),
+        "target_root": str(target_root.resolve()),
+        "revision": revision,
+        "selection": list(selected),
+        "command_template": list(command_template),
+        "interpreter": interpreter,
+        "environment_sha256": environment_fingerprint,
+        "import_identities": list(import_identities),
+        "selective_contract": selective_spec,
+        "file_sha256": file_hashes,
+    }
+    canonical = json.dumps(inputs, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest(), inputs
+
+
+def find_matching_evidence(runs_root: Path, fingerprint: str) -> dict[str, Any] | None:
+    if not runs_root.is_dir():
+        return None
+    for report_path in sorted(runs_root.glob("*.json"), reverse=True):
+        try:
+            record = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if record.get("status") == "passed" and record.get("input_fingerprint") == fingerprint:
+            record["report_path"] = str(report_path)
+            return record
+    return None
+
+
+def write_run_report(runs_root: Path, report: dict[str, Any]) -> Path:
+    execution_id = str(report.get("execution_id", ""))
+    if not re.fullmatch(r"[0-9a-f]{32}", execution_id):
+        raise ValueError("execution_id must be a 32-character lowercase UUID hex string")
+    runs_root.mkdir(parents=True, exist_ok=True)
+    destination = runs_root / f"{execution_id}.json"
+    if destination.exists():
+        raise FileExistsError(f"selective validation report already exists: {destination}")
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="\n", prefix=f".{execution_id}.", suffix=".tmp",
+        dir=runs_root, delete=False,
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+        json.dump(report, temporary, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+        temporary.write("\n")
+        temporary.flush()
+        os.fsync(temporary.fileno())
+    try:
+        os.replace(temporary_path, destination)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return destination
+
+
+def create_temporary_root(target_root: Path, execution_id: str | None = None) -> Path:
+    identifier = execution_id or uuid.uuid4().hex
+    base = target_root.resolve() / ".pytest_tmp_root"
+    base.mkdir(parents=True, exist_ok=True)
+    destination = base / f"selective-{identifier}"
+    destination.mkdir(parents=False, exist_ok=False)
+    return destination
+
+
+def _redact_text(text: str) -> str:
+    patterns = (
+        re.compile(r"(?i)(authorization\s*[:=]\s*)([^\s,;]+)"),
+        re.compile(r"(?i)((?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*)([^\s,;]+)"),
+        re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+"),
+    )
+    result = text
+    for pattern in patterns:
+        result = pattern.sub(r"\1<redacted>", result)
+    return result
+
+
+def _failure_evidence(output: str, *, max_chars: int = 8000) -> str:
+    lines = deque(output.splitlines(), maxlen=50)
+    result = _redact_text("\n".join(lines))
+    if len(result) > max_chars:
+        result = "[earlier failure output omitted]\n" + result[-max_chars:]
+    return result
+
+
+def _base_report(repo_root: Path, target_name: str, execution_id: str) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "execution_id": execution_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "repository": str(repo_root.resolve()),
+        "worktree": str(repo_root.resolve()),
+        "target": target_name,
+        "status": "blocked",
+        "duration_seconds": 0.0,
+        "pytest_duration_seconds": 0.0,
+        "exit_code": 2,
+        "selected": [],
+        "command": [],
+        "report_path": None,
+        "temp_root": None,
+        "failure_evidence": "",
+    }
+
+
+def run_selective_target(
+    repo_root: Path,
+    target_name: str,
+    target_spec: dict[str, Any],
+    node_ids: Sequence[str],
+    files: Sequence[str],
+    modules: Sequence[str],
+    *,
+    python_executable: str,
+    import_probe: Callable[..., dict[str, Any]] = probe_imports,
+    command_runner: Callable[..., Any] = subprocess.run,
+    reuse_evidence: bool = True,
+) -> dict[str, Any]:
+    """Run only selected pytest items for one manifest target, without bootstrap."""
+    started = time.monotonic()
+    execution_id = uuid.uuid4().hex
+    repo_root = repo_root.resolve()
+    report = _base_report(repo_root, target_name, execution_id)
+    runs_root = repo_root / "docs" / "test-results" / "selective" / "runs"
+    selective = target_spec.get("selective_validation")
+    target_relative = str(target_spec.get("working_directory", ""))
+    target_root = (repo_root / target_relative).resolve()
+    report["working_directory"] = str(target_root)
+    report["revision"] = _revision(repo_root)
+    report["interpreter"] = {"path": str(Path(python_executable).resolve())}
+
+    try:
+        if not isinstance(selective, dict):
+            raise SelectiveValidationError(f"target {target_name} has no selective_validation contract")
+        if not target_relative or not _contained(target_root, repo_root) or not target_root.is_dir():
+            raise SelectiveValidationError(f"target working_directory is missing or escapes repository: {target_relative}")
+
+        selected = resolve_pytest_selectors(
+            target_root,
+            selective.get("test_roots", []),
+            node_ids=node_ids,
+            files=files,
+            modules=modules,
+        )
+        report["selected"] = selected
+        environment = _resolve_environment(target_spec, repo_root, target_root, python_executable)
+        report["environment"] = _safe_environment(environment)
+        environment_fingerprint = _environment_fingerprint(environment)
+        report["environment_sha256"] = environment_fingerprint
+
+        import_specs = list(selective.get("imports", []))
+        probe = import_probe(import_specs, target_root, python_executable, environment)
+        report["interpreter"].update(
+            {
+                "version": probe.get("python_version"),
+                "prefix": probe.get("prefix"),
+                "site_packages": probe.get("site_packages", []),
+            }
+        )
+        report["dependency_identities"] = probe.get("distributions", [])
+        report["interpreter"]["distributions"] = report["dependency_identities"]
+        provenance = assess_import_provenance(
+            repo_root,
+            target_root,
+            import_specs,
+            probe.get("imports", []),
+            forbidden_roots=selective.get("forbidden_source_roots", []),
+            site_packages=probe.get("site_packages", []),
+        )
+        report["import_identities"] = provenance["imports"]
+        report["provenance_warnings"] = provenance["warnings"]
+        if not provenance["ok"]:
+            raise SelectiveValidationError("import provenance failed: " + "; ".join(provenance["errors"]))
+
+        pytest_arguments = [str(value) for value in selective.get("pytest_arguments", [])]
+        command_template = [
+            str(Path(python_executable).resolve()), "-m", "pytest", *selected, *pytest_arguments,
+            "--rootdir", str(target_root), "--basetemp", "<unique-temp-root>",
+        ]
+        report["command_template"] = command_template
+        revision = report["revision"]
+        fingerprint, fingerprint_inputs = compute_input_fingerprint(
+            repo_root,
+            target_root,
+            selective,
+            selected,
+            command_template,
+            report["interpreter"],
+            provenance["imports"],
+            environment_fingerprint,
+            revision,
+        )
+        report["input_fingerprint"] = fingerprint
+        report["input_identities"] = fingerprint_inputs
+
+        if reuse_evidence:
+            prior = find_matching_evidence(runs_root, fingerprint)
+            if prior is not None:
+                report["status"] = "reused"
+                report["exit_code"] = 0
+                report["duration_seconds"] = round(time.monotonic() - started, 6)
+                report["reused_from"] = prior["execution_id"]
+                report["pytest_summary"] = prior.get("pytest_summary", "")
+                report["failure_evidence"] = ""
+                report["report_path"] = str(write_run_report(runs_root, report))
+                return report
+
+        temp_root = create_temporary_root(target_root, execution_id)
+        report["temp_root"] = str(temp_root)
+        command = [
+            str(Path(python_executable).resolve()), "-m", "pytest", *selected, *pytest_arguments,
+            "--rootdir", str(target_root), "--basetemp", str(temp_root),
+        ]
+        report["command"] = command
+        report["display_command"] = shlex.join(command)
+        pytest_started = time.monotonic()
+        try:
+            completed = command_runner(
+                command,
+                cwd=target_root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as error:
+            completed = None
+            report["failure_evidence"] = f"pytest could not start: {type(error).__name__}: {error}"
+            report["exit_code"] = 127
+        report["pytest_duration_seconds"] = round(time.monotonic() - pytest_started, 6)
+        if completed is not None:
+            output = (completed.stdout or "") + (completed.stderr or "")
+            report["exit_code"] = int(completed.returncode)
+            if completed.returncode == 0:
+                report["status"] = "passed"
+                summary_lines = [line.strip() for line in output.splitlines() if re.search(r"\b(passed|failed|error|skipped)\b", line)]
+                report["pytest_summary"] = summary_lines[-1] if summary_lines else "pytest exited successfully"
+            else:
+                report["status"] = "failed"
+                report["failure_evidence"] = _failure_evidence(output)
+        else:
+            report["status"] = "failed"
+
+    except (SelectiveValidationError, ValueError, OSError, KeyError, TypeError) as error:
+        report["status"] = "blocked"
+        report["exit_code"] = 2
+        report["error"] = f"{type(error).__name__}: {error}"
+        report["failure_evidence"] = _failure_evidence(str(error))
+    finally:
+        report["duration_seconds"] = round(time.monotonic() - started, 6)
+
+    report["report_path"] = str(write_run_report(runs_root, report))
+    return report
+
+
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run explicit pytest selections against existing environments.")
+    parser.add_argument("-r", "--repo-root", required=True)
+    parser.add_argument("-t", "--target", action="append", required=True)
+    parser.add_argument("-e", "--python-executable", default=sys.executable)
+    parser.add_argument("-n", "--node-id", action="append", default=[])
+    parser.add_argument("-f", "--file", action="append", default=[])
+    parser.add_argument("-u", "--module", action="append", default=[])
+    parser.add_argument("--no-reuse-evidence", action="store_true")
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_args(argv)
+    repo_root = Path(args.repo_root).resolve()
+    manifest_path = repo_root / "validation-targets.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"Cannot read validation manifest: {error}", file=sys.stderr)
+        return 2
+
+    failures = 0
+    for target_name in dict.fromkeys(args.target):
+        target_spec = manifest.get("targets", {}).get(target_name)
+        if not isinstance(target_spec, dict):
+            print(f"Unknown validation target: {target_name}", file=sys.stderr)
+            failures += 1
+            continue
+        selective = target_spec.get("selective_validation")
+        if not isinstance(selective, dict):
+            print(f"Target does not support selective pytest: {target_name}", file=sys.stderr)
+            failures += 1
+            continue
+        result = run_selective_target(
+            repo_root,
+            target_name,
+            target_spec,
+            args.node_id,
+            args.file,
+            args.module,
+            python_executable=args.python_executable,
+            reuse_evidence=not args.no_reuse_evidence,
+        )
+        print(
+            f"{target_name}: {result['status'].upper()} "
+            f"execution={result['execution_id']} report={result['report_path']}"
+        )
+        if result["status"] in {"failed", "blocked"}:
+            failures += 1
+            evidence = result.get("failure_evidence") or result.get("error")
+            if evidence:
+                print(evidence, file=sys.stderr)
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
