@@ -1083,6 +1083,7 @@ class DispatcherService:
         provider: str,
         environment_id: str,
         bridge: Any = None,
+        workflow_selection: str | None = None,
         expected_digests: Mapping[str, str] | None = None,
         custom_instruction_path: str | None = None,
     ) -> dict[str, Any]:
@@ -1091,15 +1092,24 @@ class DispatcherService:
 
         self._sync()
         slot = self.get_slot_by_id(slot_id)
-        selection = str(slot.get("workflow_type") or "standard")
+        selection = workflow_selection if workflow_selection is not None else slot.get("workflow_type")
         env = next((e for e in self.materializer.list_environments() if e.environment_id == environment_id), None)
         runtime_kind = env.runtime_kind if env else "unknown"
+        if selection is None and not custom_instruction_path:
+            return prepare_additive_workflow_init(
+                provider=provider,
+                runtime=runtime_kind,
+                is_new_session=True,
+                resources=(),
+                selection=None,
+                custom_instruction_path=None,
+            )
         active_bridge = bridge if bridge is not None else self.workflow_bridge
         resources = discover_workflow_resources(
             active_bridge,
             provider=provider,
             runtime=runtime_kind,
-            selection=selection,
+            selection=selection or "standard",
             expected_digests=expected_digests,
         )
         prepared = prepare_additive_workflow_init(
@@ -1122,7 +1132,10 @@ class DispatcherService:
                     "return_code": 0,
                     "outcome": "workflow_init_prepared" if prepared.get("applied") else "workflow_init_unsupported",
                     "delivery_state": "prepared",
-                    "selection": selection,
+                    "selection": prepared.get("selection"),
+                    "provider_qualified": prepared.get("provider_qualified", False),
+                    "prompt_submitted": False,
+                    "delivery_confirmed": False,
                     "provenance": prepared.get("provenance", []),
                     "limitations": prepared.get("limitations", []),
                 },
@@ -1154,25 +1167,15 @@ class DispatcherService:
                     "return_code": 0,
                     "outcome": "workflow_init_delivered",
                     "delivery_state": "delivered",
+                    "prompt_submitted": True,
+                    "delivery_confirmed": True,
                     "provenance": list(provenance),
                     "native_session_id": session_id,
                 },
             )
             self.continuity._emit_and_materialize([event])
 
-    def resolve_runtime_identity(
-        self,
-        *,
-        slot_id: str | None = None,
-        gui: str | None = None,
-        name: str | None = None,
-        trusted_observation: Mapping[str, Any] | None = None,
-        runtime_snapshot: Any = None,
-    ) -> dict[str, Any]:
-        """LLMD-52: Resolve authoritative runtime identity read-only using trusted slot + runtime evidence."""
-        from .workflows import resolve_authoritative_runtime_identity
-
-        slot: dict[str, Any] | None = None
+    def _slot_snapshot_ro(self, *, slot_id: str | None = None, gui: str | None = None, name: str | None = None) -> dict[str, Any] | None:
         if slot_id:
             row = self._row(
                 "SELECT s.*, g.alias AS gui_alias FROM agent_slots s JOIN dispatcher_gui_conversations g USING(gui_id) WHERE s.slot_id = ?",
@@ -1180,7 +1183,7 @@ class DispatcherService:
             )
             if row:
                 history = self._history(row["slot_id"])
-                slot = {**row, "history": history, "current": history[-1] if history else None}
+                return {**row, "history": history, "current": history[-1] if history else None}
         elif gui and name:
             gui_row = self._row(
                 "SELECT * FROM dispatcher_gui_conversations WHERE gui_id = ? OR alias_key = ?",
@@ -1193,9 +1196,59 @@ class DispatcherService:
                 )
                 if slot_row:
                     history = self._history(slot_row["slot_id"])
-                    slot = {**slot_row, "gui_alias": gui_row["alias"], "history": history, "current": history[-1] if history else None}
+                    return {**slot_row, "gui_alias": gui_row["alias"], "history": history, "current": history[-1] if history else None}
+        return None
 
+    def resolve_runtime_identity(
+        self,
+        *,
+        slot_id: str | None = None,
+        gui: str | None = None,
+        name: str | None = None,
+        invoking_pid: int | None = None,
+        trusted_observation: Mapping[str, Any] | None = None,
+        runtime_snapshot: Any = None,
+    ) -> dict[str, Any]:
+        """LLMD-52: Resolve authoritative runtime identity read-only using trusted slot + runtime evidence."""
+        from .runtime_discovery import ManagementState, MatchStatus, ProcessLiveness
+        from .workflows import resolve_authoritative_runtime_identity
+
+        slot = self._slot_snapshot_ro(slot_id=slot_id, gui=gui, name=name)
         observation = trusted_observation
+
+        if observation is None and invoking_pid is not None:
+            candidate_rows = self._rows(
+                """SELECT s.slot_id FROM agent_slots s
+                   WHERE EXISTS (SELECT 1 FROM agent_slot_activations a WHERE a.slot_id = s.slot_id)"""
+            )
+            candidates = [self._slot_snapshot_ro(slot_id=r["slot_id"]) for r in candidate_rows]
+            candidates = [c for c in candidates if c and c.get("current")]
+            keys = [
+                (c["current"]["provider"], c["current"]["environment_id"], c["current"]["native_session_id"])
+                for c in candidates
+            ]
+            obs_map = self.observe_runtime_sessions(keys) if keys else {}
+            matched_slots: list[tuple[dict[str, Any], Any]] = []
+            for cand in candidates:
+                cur = cand["current"]
+                obs = obs_map.get((cur["provider"], cur["environment_id"], cur["native_session_id"]))
+                if obs is None:
+                    continue
+                pids = set(getattr(obs, "pids", ()) or ())
+                if invoking_pid in pids:
+                    matched_slots.append((cand, obs))
+            if len(matched_slots) > 1:
+                observation = {"conflict": True, "management": "conflict"}
+                if slot is None:
+                    slot = matched_slots[0][0]
+            elif len(matched_slots) == 1:
+                matched_slot, matched_obs = matched_slots[0]
+                if slot is not None and slot["slot_id"] != matched_slot["slot_id"]:
+                    observation = {"conflict": True, "slot_id": matched_slot["slot_id"], "management": "conflict"}
+                else:
+                    slot = matched_slot
+                    observation = self._observation_from_runtime(slot, matched_obs)
+
         if observation is None and slot and slot.get("current"):
             current = slot["current"]
             obs = self.observe_runtime_session(
@@ -1203,24 +1256,47 @@ class DispatcherService:
                 current["environment_id"],
                 current["native_session_id"],
             )
-            if self._is_observed_runtime(obs):
-                observation = {
-                    "slot_id": slot["slot_id"],
-                    "agent_number": slot.get("agent_number"),
-                    "agent_name": slot["name"],
-                    "gui_alias": slot.get("gui_alias"),
-                    "native_session_id": current["native_session_id"],
-                    "status": "observed",
-                }
+            if obs is not None:
+                if (
+                    obs.management == ManagementState.CONFLICT
+                    or obs.process_session_match == MatchStatus.AMBIGUOUS
+                    or obs.process_liveness == ProcessLiveness.AMBIGUOUS
+                ):
+                    observation = {"conflict": True, "slot_id": slot["slot_id"], "management": "conflict"}
+                elif obs.management == ManagementState.UNMANAGED:
+                    observation = {"slot_id": slot["slot_id"], "management": "unmanaged"}
+                elif self._is_observed_runtime(obs):
+                    observation = self._observation_from_runtime(slot, obs)
         return resolve_authoritative_runtime_identity(trusted_slot=slot, trusted_observation=observation)
 
     @staticmethod
+    def _observation_from_runtime(slot: Mapping[str, Any], obs: Any) -> dict[str, Any]:
+        current = slot.get("current") or {}
+        mgmt = getattr(getattr(obs, "management", None), "value", getattr(obs, "management", "managed"))
+        return {
+            "slot_id": slot["slot_id"],
+            "agent_number": slot.get("agent_number"),
+            "agent_name": slot["name"],
+            "gui_alias": slot.get("gui_alias"),
+            "native_session_id": current.get("native_session_id"),
+            "management": str(mgmt),
+            "status": "observed",
+        }
+
+    @staticmethod
     def _is_observed_runtime(obs: Any) -> bool:
+        from .runtime_discovery import ManagementState, MatchStatus, ProcessLiveness
+
         if obs is None:
             return False
-        liveness = getattr(getattr(obs, "process_liveness", None), "value", getattr(obs, "process_liveness", None))
-        match = getattr(getattr(obs, "process_session_match", None), "value", getattr(obs, "process_session_match", None))
-        return liveness == "running" and match == "exact_match"
+        liveness = getattr(obs, "process_liveness", None)
+        match = getattr(obs, "process_session_match", None)
+        management = getattr(obs, "management", None)
+        return (
+            liveness == ProcessLiveness.RUNNING
+            and match == MatchStatus.EXACT
+            and management == ManagementState.MANAGED
+        )
 
     def validate_handoff(
         self,
@@ -1229,6 +1305,7 @@ class DispatcherService:
         slot_id: str | None = None,
         gui: str | None = None,
         name: str | None = None,
+        invoking_pid: int | None = None,
         trusted_observation: Mapping[str, Any] | None = None,
         runtime_snapshot: Any = None,
     ) -> dict[str, Any]:
@@ -1239,6 +1316,7 @@ class DispatcherService:
             slot_id=slot_id,
             gui=gui,
             name=name,
+            invoking_pid=invoking_pid,
             trusted_observation=trusted_observation,
             runtime_snapshot=runtime_snapshot,
         )
@@ -1264,9 +1342,16 @@ class DispatcherService:
                       source_timestamp, observed_timestamp, payload_json, rowid
                FROM activity_events
                WHERE json_extract(payload_json, '$.slot_id') = ?
-                  OR (native_session_id IS NOT NULL AND native_session_id IN (
-                      SELECT native_session_id FROM agent_slot_activations WHERE slot_id = ?
-                  ))
+                  OR (
+                      provider IS NOT NULL AND environment_id IS NOT NULL AND native_session_id IS NOT NULL
+                      AND EXISTS (
+                          SELECT 1 FROM agent_slot_activations a
+                          WHERE a.slot_id = ?
+                            AND a.provider = activity_events.provider
+                            AND a.environment_id = activity_events.environment_id
+                            AND a.native_session_id = activity_events.native_session_id
+                      )
+                  )
                ORDER BY rowid""",
             (slot_id, slot_id),
         )
@@ -1306,6 +1391,7 @@ class DispatcherService:
 
         result = reconcile_activity_and_associations(replay_events, provider_evidence=evidence)
         reconciled = result["selections"].get(slot_id)
+        activation_sequences = [row["sequence"] for row in slot.get("history", ())]
         if current and reconciled:
             current_identity = (current["provider"], current["environment_id"], current["native_session_id"])
             rec_identity = (reconciled["provider"], reconciled["environment_id"], reconciled["native_session_id"])
@@ -1314,6 +1400,7 @@ class DispatcherService:
                     "action": "reconcile",
                     "replaced": False,
                     "selected_session_preserved": True,
+                    "authoritative_activation_sequences": activation_sequences,
                     "reason": "newer_selection_preserved",
                     "current": current_identity,
                     "reconciled": reconciled,
@@ -1324,10 +1411,76 @@ class DispatcherService:
             "action": "reconcile",
             "replaced": False,
             "selected_session_preserved": True,
+            "authoritative_activation_sequences": activation_sequences,
             "reconciled": reconciled,
             "duplicates_skipped": result["duplicates_skipped"],
             "fingerprint": result["fingerprint"],
         }
+
+    def check_or_consume_restoration_reservation(
+        self,
+        *,
+        slot_id: str,
+        provider: str | None = None,
+        environment_id: str | None = None,
+        session_id: str | None = None,
+        reservation_id: str | None = None,
+        reservation_token: str | None = None,
+        checkpoint_id: str | None = None,
+        queue_entry_id: str | None = None,
+        attempt: int | None = None,
+        launch_id: str | None = None,
+        pane_id: str | None = None,
+    ) -> Any:
+        """Consume Agent #3's restoration reservation when provided, or fail closed if one is active."""
+        try:
+            from .workspace_ownership import RestorationReservationStore
+        except ImportError:
+            return None
+        store = RestorationReservationStore(self.home_dir)
+        lease_path = store._lease_path(slot_id)
+        if lease_path.exists():
+            lease = store.get_active_lease(slot_id)
+            owns_lease = bool(
+                reservation_id
+                and lease
+                and lease.get("checkpoint_id") == checkpoint_id
+                and lease.get("queue_entry_id") == queue_entry_id
+            )
+            if not owns_lease:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Slot {slot_id!r} has an active workspace preparation lease; competing operation refused.",
+                    {"slot_id": slot_id},
+                )
+        if reservation_id:
+            if not reservation_token:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Restoration reservation token is required.")
+            if not all((provider, environment_id, session_id, checkpoint_id, attempt, launch_id, pane_id)):
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    "Exact checkpoint, attempt, provider, environment, session, launch, and pane identity are required to consume a restoration reservation.",
+                )
+            return store.consume_reservation_locked(
+                reservation_id,
+                reservation_token=reservation_token,
+                checkpoint_id=checkpoint_id,
+                queue_entry_id=queue_entry_id,
+                attempt=attempt,
+                slot_id=slot_id,
+                provider=provider,
+                native_session_id=session_id,
+                environment_id=environment_id,
+                launch_id=launch_id,
+                pane_id=pane_id,
+            )
+        active = store.get_active_for_slot(slot_id)
+        if active is not None:
+            raise ContinuityError(
+                ErrorCode.ASSOCIATION_CONFLICT,
+                f"Slot {slot_id!r} has an active restoration reservation ({active.reservation_id}); competing launch refused.",
+            )
+        return None
 
     def transfer_slot(
         self,
@@ -1411,10 +1564,57 @@ class DispatcherService:
             "events": [event.to_dict()],
         }
 
-    def _hold_slot_lock(self, slot_id: str):
-        if (str(self.home_dir.resolve()), slot_id) in _HELD_SLOT_LOCKS.get():
+    def _hold_slot_lock(self, slot_id: str, *, wait_for_metadata_contention: bool = False):
+        key = (str(self.home_dir.resolve()), slot_id)
+        if key in _HELD_SLOT_LOCKS.get():
             return contextlib.nullcontext()
-        return _slot_runtime_lock(self.home_dir, slot_id, blocking=False)
+
+        @contextlib.contextmanager
+        def _guarded_slot_operation():
+            lock_context = _slot_runtime_lock(self.home_dir, slot_id, blocking=False)
+            try:
+                lock_context.__enter__()
+            except ContinuityError:
+                if not wait_for_metadata_contention:
+                    raise
+                snapshot = self._slot_snapshot_ro(slot_id=slot_id)
+                current = snapshot.get("current") if snapshot else None
+                if current:
+                    observed = self.observe_runtime_session(
+                        current["provider"], current["environment_id"], current["native_session_id"]
+                    )
+                    if self._is_observed_runtime(observed):
+                        raise ContinuityError(
+                            ErrorCode.INVALID_INPUT,
+                            f"Agent slot {slot_id} has an exactly observed active provider session.",
+                        ) from None
+                lock_context = _slot_runtime_lock(self.home_dir, slot_id, blocking=True)
+                lock_context.__enter__()
+            try:
+                try:
+                    from .workspace_ownership import RestorationReservationStore
+
+                    reservations = RestorationReservationStore(self.home_dir)
+                    active = reservations.get_active_for_slot(slot_id)
+                    if active is not None:
+                        raise ContinuityError(
+                            ErrorCode.ASSOCIATION_CONFLICT,
+                            f"Slot {slot_id!r} has an active restoration reservation; competing operation refused.",
+                            {"slot_id": slot_id},
+                        )
+                    if reservations._lease_path(slot_id).exists():
+                        raise ContinuityError(
+                            ErrorCode.ASSOCIATION_CONFLICT,
+                            f"Slot {slot_id!r} has an active workspace preparation lease; competing operation refused.",
+                            {"slot_id": slot_id},
+                        )
+                except ImportError:
+                    pass
+                yield
+            finally:
+                lock_context.__exit__(None, None, None)
+
+        return _guarded_slot_operation()
 
     def _hold_session_lock(self, provider: str, environment_id: str, session_id: str):
         lock_name = _session_lock_name(provider, environment_id, session_id)
@@ -2322,10 +2522,10 @@ class DispatcherService:
         if apply:
             with _mutation_lock(self.home_dir):
                 self._sync()
-                validate()
-            with contextlib.ExitStack() as held_locks:
+                with contextlib.ExitStack() as held_locks:
                     held_locks.enter_context(self._hold_slot_lock(source_slot_id))
                     held_locks.enter_context(self._hold_slot_lock(destination_slot_id))
+                    validate()
                     self.continuity._emit_and_materialize([event])
         return {"action": "slot-transition", "applied": apply,
                 "summary": "Agent transition applied." if apply else "Preview: agent transition not applied.",
@@ -2480,8 +2680,7 @@ class DispatcherService:
         if apply:
             with _mutation_lock(self.home_dir):
                 self._sync()
-                validate()
-            with contextlib.ExitStack() as held_locks:
+                with contextlib.ExitStack() as held_locks:
                     held_locks.enter_context(self._hold_slot_lock(source_slot_id))
                     held_locks.enter_context(self._hold_slot_lock(destination_slot_id))
                     identities = [identity for identity in (expected_source,
@@ -2491,6 +2690,7 @@ class DispatcherService:
                         held_locks.enter_context(self._hold_session_lock(
                             runtime_provider, runtime_environment, runtime_session
                         ))
+                    validate()
                     latest_history = self._history(destination_slot_id)
                     payload["activation"]["sequence"] = (latest_history[-1]["sequence"] if latest_history else 0) + 1
                     payload["activation"]["activation_id"] = generate_id("act")
@@ -2596,7 +2796,9 @@ class DispatcherService:
                         raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch was already resolved or failed.")
                 current_slot = self._slot(conversation["gui_id"], slot["slot_id"])
             with contextlib.ExitStack() as held_locks:
-                    held_locks.enter_context(self._hold_slot_lock(current_slot["slot_id"]))
+                    held_locks.enter_context(
+                        self._hold_slot_lock(current_slot["slot_id"], wait_for_metadata_contention=True)
+                    )
                     if not launch_id and self._row(
                         "SELECT 1 FROM dispatcher_pending_launches WHERE slot_id = ? AND status = 'pending' LIMIT 1",
                         (current_slot["slot_id"],),

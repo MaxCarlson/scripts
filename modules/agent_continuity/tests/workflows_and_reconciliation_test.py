@@ -10,6 +10,7 @@ import pytest
 from agent_continuity.dispatcher import DispatcherService
 from agent_continuity.dispatcher_cli import build_parser, dispatch
 from agent_continuity.errors import ContinuityError
+from agent_continuity.runtime_discovery import ManagementState, MatchStatus, ProcessLiveness
 from agent_continuity.workflows import (
     discover_workflow_resources,
     prepare_additive_workflow_init,
@@ -79,18 +80,27 @@ def test_managed_restoration_contracts_and_fail_closed_guards(tmp_path: Path) ->
 def test_llmd_50_to_54_workflow_identity_handoff_and_reconciliation() -> None:
     bridge = SimpleNamespace(
         list_resources=lambda _p, _r: [
-            {"resource_id": "wf.review", "revision": "1", "digest": "abc", "installed": True, "callable": True, "runtime_verified": True},
+            {"resource_id": "wf.review", "revision": "1", "digest": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "content": "foo", "installed": True, "callable": True, "runtime_verified": True},
             {"resource_id": "wf.missing", "revision": "1", "digest": "def", "installed": False, "callable": False},
         ],
         read_resource=lambda _rid, _rev=None: None,
     )
-    resources = discover_workflow_resources(bridge, provider="codex", runtime="windows", expected_digests={"wf.review": "abc"})
+    resources = discover_workflow_resources(bridge, provider="codex", runtime="windows", expected_digests={"wf.review": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"})
     assert [r.status for r in resources] == ["available", "missing"]
 
     init_new = prepare_additive_workflow_init(provider="codex", runtime="windows", is_new_session=True, resources=resources)
     assert init_new["applied"] is True and init_new["status"] == "degraded"
     assert init_new["provenance"] == [
-        {"resource_id": "wf.review", "revision": "1", "digest": "abc", "status": "available", "selection": "standard"}
+        {
+            "resource_id": "wf.review",
+            "revision": "1",
+            "digest": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+            "status": "available",
+            "selection": "standard",
+            "integrity_verified": True,
+            "installed": True,
+            "callable": True,
+        }
     ]
     assert prepare_additive_workflow_init(provider="codex", runtime="windows", is_new_session=False, resources=resources)["applied"] is False
     assert prepare_additive_workflow_init(provider="claude", runtime="windows", is_new_session=True, resources=resources)["status"] == "unsupported"
@@ -156,10 +166,13 @@ def test_dispatcher_workflow_init_and_pane_run_expected_identity_guard(tmp_path:
     d = DispatcherService(home_dir=home)
     d.workflow_bridge = SimpleNamespace(
         list_resources=lambda _p, _r: [
-            {"resource_id": "wf.init", "revision": "2", "digest": "d2", "installed": True, "callable": True, "runtime_verified": True}
+            {"resource_id": "wf.init", "revision": "2", "digest": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "content": "foo", "installed": True, "callable": True, "runtime_verified": True}
         ],
         read_resource=lambda _rid, _rev=None: None,
     )
+    d.create_gui("G", apply=True)
+    d.create_slot(gui="G", name="A", apply=True)
+    d.set_workflow_type(gui="G", agent="A", workflow_type="standard", apply=True)
     launch = d.prepare_start(gui="G", name="A", provider="codex", apply=True)
     prep = d.prepare_new_session_workflow(
         slot_id=launch["details"]["slot_id"],
@@ -282,7 +295,12 @@ def test_end_to_end_workflow_delivery_transfer_handoff_and_reconcile_cli(tmp_pat
     monkeypatch.setattr(
         DispatcherService,
         "observe_runtime_session",
-        lambda *_a, **_kw: SimpleNamespace(process_liveness="running", process_session_match="exact_match", pids=(4242,)),
+        lambda *_a, **_kw: SimpleNamespace(
+            management=ManagementState.MANAGED,
+            process_liveness=ProcessLiveness.RUNNING,
+            process_session_match=MatchStatus.EXACT,
+            pids=(4242,),
+        ),
     )
     out = StringIO()
     rc = dispatch(parser.parse_args(["-H", str(home), "handoff-validate", "-g", "SrcGUI", "-n", "Worker One", "--text", "Agent: #2 — Worker One", "-j"]), parser, input_stream=StringIO(), output_stream=out)

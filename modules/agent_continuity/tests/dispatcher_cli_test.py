@@ -92,7 +92,7 @@ def test_public_help_hides_internal_pane_run_but_parser_keeps_it_callable():
     parser = build_parser()
     help_text = parser.format_help()
     assert "pane-run" not in help_text
-    assert "Primary: start, continue, switch, review, return, list, open, history." in help_text
+    assert "Primary: start, continue, switch, review, return, save, restore, list, open, history." in help_text
     assert "Recovery and diagnostics" in help_text
     args = parser.parse_args(["pane-run", "-s", "slot-example"])
     assert args.command == "pane-run"

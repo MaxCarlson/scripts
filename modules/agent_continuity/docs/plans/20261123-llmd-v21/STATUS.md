@@ -2,6 +2,14 @@
 
 ## Current feature batch — LLMD-25 / LLMD-48 / LLMD-49 / LLMD-50..55 (v2.3.0 integration candidate)
 
+### Agent #1 integration progress — 2026-11-27
+
+- Resumed the non-main integration worktree at `a18bc3a59fec124e15317112faaf9e3748a3d22e`; recovered three dirty dispatcher/workflow files and the paused workspace checkpoint's dirty reservation implementation. The main checkout's unrelated edits remain untouched.
+- Integrated checkpoint, queue, lifecycle, adapter, ownership, and CLI modules plus focused tests/API documentation. Wired `save`, `restore`, `checkpoints`, and `queue`; managed restore now emits exact `pane-run` identity and reservation correlation. Manual restore emits exact `llmd continue -S ... --provider ... --session-id ... --environment ...`; `--direct-native` remains explicit.
+- Corrected locked reservation consumption, preparation lease checks, unconfirmed-by-default provider association, exact runtime enum comparison, concurrent WAL initialization, terminal-size test isolation, concurrent metadata attachment ordering, and stale-head transition serialization.
+- Validation so far: 484/484 module tests passed as 30 independent per-file processes (12-way cap); full pytest-xdist rerun passed at 12 workers. Focused workspace/CLI/terminal/schema/concurrency/workflow suites passed. Actual `llmd save` and `llmd checkpoints list` smoke used an E: disposable home. Ruff/help-registry/package checks and final diff review remain.
+- Delivery remains pending: no final commit or push yet. No main merge, production install/registry mutation, real provider execution, or shutdown was performed. Continue with remaining focused qualification, update checklist, commit and push the feature branch.
+
 - **Baseline:** Reconciled `v2.3.0` (`8892e90077c50db8c46ef02d5a06561397d4e7c9`) with `v2.1.2` Claude lifecycle corrective candidate (`4ad834c3233f348b443fe14d377a908b2d95a90f`) on `feature/llmd-v230-integration-20261127`. `v2.1.2` is now merged into `main` (`4ad834c3233f348b443fe14d377a908b2d95a90f`) and pushed to `origin/main`.
 - **Scope:** Persistent invocation-safe launch profiles; nullable descriptive workflow type; immutable slot identity and monotonic per-GUI agent numbers; `llmd list` activity ordering and restoration contracts; LLMD-50..55 operationalization (dispatcher-connected workflow discovery & additive new-session initialization distinguishing `prepared` vs `delivered`, authoritative runtime identity resolution, `Agent: #N — exact-slot-name` / `To-Agent:` addressed handoff validation, late-activity reconciliation without altering authoritative selection, atomic `transfer_slot` preserving immutable `slot_id`/history/destination monotonic numbers, and `pane-run` `--expected-provider`/`--expected-environment`/`--expected-session-id` stale-selection guards).
 - **Release boundary:** `v2.1.2` is merged on `main`; `v2.3.0` remains on `feature/llmd-v230-integration-20261127` (unmerged, pending independent review).

@@ -24,6 +24,7 @@ from agent_continuity.dispatcher_cli import (
 from agent_continuity.errors import ContinuityError, ErrorCode
 from agent_continuity.models import EnvironmentInfo, EventEnvelope, EventType, Provider
 from agent_continuity.providers import ClaudeAdapter, default_adapters
+from agent_continuity.runtime_discovery import ManagementState, MatchStatus, ProcessLiveness
 
 
 def test_claude_is_registered_as_a_first_class_provider():
@@ -653,6 +654,15 @@ def test_slot_wide_exclusion_blocks_concurrent_resume_attach_switch_and_open(
     dispatcher.attach_session(gui="GUI", name="Agent", provider="codex", session_id="hist-1", apply=True)
     dispatcher.attach_session(gui="GUI", name="Agent", provider="agy", session_id="curr-1", apply=True)
     slot = dispatcher.get_slot(gui="GUI", name="Agent")
+    monkeypatch.setattr(
+        dispatcher,
+        "observe_runtime_session",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            management=ManagementState.MANAGED,
+            process_liveness=ProcessLiveness.RUNNING,
+            process_session_match=MatchStatus.EXACT,
+        ),
+    )
 
     entered = Event()
     release = Event()
@@ -680,7 +690,7 @@ def test_slot_wide_exclusion_blocks_concurrent_resume_attach_switch_and_open(
                 dispatcher, slot_id=slot["slot_id"], launch_id=None,
                 input_stream=StringIO(), output_stream=StringIO(),
             )
-        with pytest.raises(ContinuityError, match="active or launching session"):
+        with pytest.raises(ContinuityError, match="active provider session"):
             dispatcher.attach_session(
                 gui="GUI", name="Agent", provider="codex", session_id="hist-1", apply=True,
             )

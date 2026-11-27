@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 
 from .errors import ContinuityError, ErrorCode
 from .identifiers import now_utc_iso
@@ -313,7 +314,20 @@ def configure_connection(conn: sqlite3.Connection, *, read_only: bool = False) -
     if not read_only:
         mode_row = conn.execute("PRAGMA journal_mode;").fetchone()
         if not mode_row or str(mode_row[0]).casefold() != "wal":
-            conn.execute("PRAGMA journal_mode = WAL;")
+            deadline = time.monotonic() + 5.0
+            while True:
+                try:
+                    conn.execute("PRAGMA journal_mode = WAL;")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if not any(word in str(exc).casefold() for word in ("locked", "busy")):
+                        raise
+                    mode_row = conn.execute("PRAGMA journal_mode;").fetchone()
+                    if mode_row and str(mode_row[0]).casefold() == "wal":
+                        break
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.025)
 
 
 def get_schema_version(conn: sqlite3.Connection) -> int | None:

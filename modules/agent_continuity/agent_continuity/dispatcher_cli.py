@@ -49,6 +49,7 @@ _BOOTSTRAP_PROMPT = "Session initialization only. Reply READY and await further 
 _BOOTSTRAP_TIMEOUT_SECONDS = 180
 _NATIVE_ARG_COMMANDS = {"continue", "start", "switch", "review", "return", "last", "open"}
 _COLOR_MODE: ContextVar[str] = ContextVar("llmd_color_mode", default="auto")
+_get_terminal_size = shutil.get_terminal_size
 _STARTUP_PROGRESS: ContextVar[bool] = ContextVar("llmd_startup_progress", default=False)
 _STARTUP_STARTED: ContextVar[float | None] = ContextVar("llmd_startup_started", default=None)
 _PROFILE_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar("llmd_profile_context", default=None)
@@ -141,7 +142,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Resume named Codex, AGY, and Claude Code sessions associated with local GUI conversation aliases.\n\n"
-            "Primary: start, continue, switch, review, return, list, open, history.\n"
+            "Primary: start, continue, switch, review, return, save, restore, list, open, history.\n"
+            "Workspace: checkpoints, queue.\n"
             "Administration: gui, slot, register.\n"
             "Recovery and diagnostics: attach, pending, recover, doctor."
         ),
@@ -153,6 +155,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Color human-readable output (default: auto).")
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
+    from .workspace_cli import register_workspace_subcommands
+
+    register_workspace_subcommands(sub)
 
     profile = sub.add_parser("profile", help="Manage persistent, provider-scoped launch profiles.")
     profile_sub = profile.add_subparsers(dest="profile_command")
@@ -226,6 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
     handoff_val.add_argument("--slot-id", help="Exact slot ID to validate against.")
     handoff_val.add_argument("-g", "--gui", help="GUI conversation alias or ID.")
     handoff_val.add_argument("-n", "--name", help="Agent slot name.")
+    handoff_val.add_argument("--invoking-pid", type=int, help="Trusted invoking process PID to resolve authoritative slot identity.")
     handoff_val.add_argument("--text", help="Handoff text to validate.")
     handoff_val.add_argument("--file", help="Path to handoff text file to validate.")
 
@@ -355,6 +361,9 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("-B", "--no-profile", action="store_true", help="Ignore the slot profile for this invocation.")
         command.add_argument("-U", "--allow-native-unknown", action="store_true",
                              help="Authorize validated generic provider options after `--`.")
+        command.add_argument("-W", "--workflow", choices=("standard", "handoff", "goal", "hybrid"),
+                             help="One-shot workflow instruction selection for a new session.")
+        command.add_argument("--instruction-file", help="Optional custom instruction file for a new session.")
         _add_execution_options(command)
         if command_name == "start":
             command.add_argument("-N", "--new", action="store_true", help="Start a new native conversation instead of resuming the selected session.")
@@ -374,12 +383,18 @@ def build_parser() -> argparse.ArgumentParser:
     cont.add_argument("-A", "--all", action="store_true", help="Include completed agents in the interactive picker.")
     cont.add_argument("-p", "--provider", choices=("agy", "codex", "claude"), help="Select the most recently activated matching historical provider session.")
     cont.add_argument("-i", "--session-id", help="Select this exact session from the agent's existing history.")
+    cont.add_argument("-e", "--environment", help="Require the exact session's environment ID or alias.")
+    cont.add_argument("-S", "--slot-id", help="Select an exact registered slot ID for scripted restoration.")
     cont.add_argument("-R", "--reactivate", action="store_true", help="Explicitly reactivate an inactive agent before resuming.")
     cont.add_argument("-C", "--cwd", help="Use this working directory for this invocation only.")
     cont.add_argument("-P", "--profile", help="Use this launch profile for this invocation.")
     cont.add_argument("-B", "--no-profile", action="store_true", help="Ignore the slot profile for this invocation.")
     cont.add_argument("-U", "--allow-native-unknown", action="store_true",
                       help="Authorize validated generic provider options after `--`.")
+    cont.add_argument("--expected-provider", choices=("agy", "codex", "claude"),
+                      help="Require exact provider match before resuming.")
+    cont.add_argument("--expected-environment", help="Require exact environment ID match before resuming.")
+    cont.add_argument("--expected-session-id", help="Require exact native session ID match before resuming.")
 
     review = sub.add_parser(
         "review", help="Open or resume a reviewer agent linked to an original agent.",
@@ -429,6 +444,14 @@ def build_parser() -> argparse.ArgumentParser:
     pane.add_argument("--expected-provider", help=argparse.SUPPRESS)
     pane.add_argument("--expected-environment", help=argparse.SUPPRESS)
     pane.add_argument("--expected-session-id", help=argparse.SUPPRESS)
+    pane.add_argument("--cwd", help=argparse.SUPPRESS)
+    pane.add_argument("--reservation-id", help=argparse.SUPPRESS)
+    pane.add_argument("--reservation-token", help=argparse.SUPPRESS)
+    pane.add_argument("--checkpoint-id", help=argparse.SUPPRESS)
+    pane.add_argument("--queue-entry-id", help=argparse.SUPPRESS)
+    pane.add_argument("--attempt", type=int, help=argparse.SUPPRESS)
+    pane.add_argument("--reservation-launch-id", help=argparse.SUPPRESS)
+    pane.add_argument("--pane-id", help=argparse.SUPPRESS)
     # argparse renders help=SUPPRESS literally for subparser choices. Keep the
     # parser routable for terminal_launcher while hiding its internal command.
     sub._choices_actions[:] = [action for action in sub._choices_actions if action.dest != "pane-run"]
@@ -1252,6 +1275,15 @@ def _run_pane(
     expected_session_identity: tuple[str, str, str] | None = None,
     allow_native_unknown: bool = False,
     launcher_terminal_context: str | None = None,
+    workflow_selection: str | None = None,
+    custom_instruction_path: str | None = None,
+    reservation_id: str | None = None,
+    reservation_token: str | None = None,
+    checkpoint_id: str | None = None,
+    queue_entry_id: str | None = None,
+    attempt: int | None = None,
+    reservation_launch_id: str | None = None,
+    pane_id: str | None = None,
 ) -> int:
     from .dispatcher import _slot_runtime_lock
 
@@ -1269,6 +1301,15 @@ def _run_pane(
             expected_session_identity=expected_session_identity,
             allow_native_unknown=allow_native_unknown,
             launcher_terminal_context=launcher_terminal_context,
+            workflow_selection=workflow_selection,
+            custom_instruction_path=custom_instruction_path,
+            reservation_id=reservation_id,
+            reservation_token=reservation_token,
+            checkpoint_id=checkpoint_id,
+            queue_entry_id=queue_entry_id,
+            attempt=attempt,
+            reservation_launch_id=reservation_launch_id,
+            pane_id=pane_id,
         )
     if isinstance(status_or_menu, int):
         return status_or_menu
@@ -1300,6 +1341,15 @@ def _run_pane_locked(
     expected_session_identity: tuple[str, str, str] | None = None,
     allow_native_unknown: bool = False,
     launcher_terminal_context: str | None = None,
+    workflow_selection: str | None = None,
+    custom_instruction_path: str | None = None,
+    reservation_id: str | None = None,
+    reservation_token: str | None = None,
+    checkpoint_id: str | None = None,
+    queue_entry_id: str | None = None,
+    attempt: int | None = None,
+    reservation_launch_id: str | None = None,
+    pane_id: str | None = None,
 ) -> int | dict[str, Any]:
     dispatcher._sync()
     slot = dispatcher.get_slot_by_id(slot_id)
@@ -1354,6 +1404,19 @@ def _run_pane_locked(
         else:
             process_cwd = cwd
     _validated_native_args(provider, native_args, allow_unknown=allow_native_unknown)
+    dispatcher.check_or_consume_restoration_reservation(
+        slot_id=slot_id,
+        provider=launch_identity[0] if launch_identity else provider,
+        environment_id=launch_identity[1] if launch_identity else environment_id,
+        session_id=launch_identity[2] if launch_identity else session_id,
+        reservation_id=reservation_id,
+        reservation_token=reservation_token,
+        checkpoint_id=checkpoint_id,
+        queue_entry_id=queue_entry_id,
+        attempt=attempt,
+        launch_id=reservation_launch_id,
+        pane_id=pane_id,
+    )
     bootstrap_cwd = cwd
     if cwd_override is not None:
         _validate_cwd_override(dispatcher, environment_id, cwd_override)
@@ -1987,9 +2050,9 @@ def _switch_to_existing_agent(
     selector_color = color_enabled(_current_color_mode(), is_tty=output_stream.isatty(), stream=output_stream)
     action, selected = select_item(
         rows, title=f"LLMD — Switch agent in {source['gui_alias']}",
-        render_line=lambda row: _agent_selector_line(row, shutil.get_terminal_size((100, 24)).columns,
+        render_line=lambda row: _agent_selector_line(row, _get_terminal_size((100, 24)).columns,
                                                      enabled=selector_color),
-        header=lambda: _agent_selector_line({}, shutil.get_terminal_size((100, 24)).columns, header=True,
+        header=lambda: _agent_selector_line({}, _get_terminal_size((100, 24)).columns, header=True,
                                              enabled=selector_color),
         input_stream=input_stream, output_stream=output_stream, filter_key="search_text",
         color_mode=_current_color_mode(),
@@ -2503,7 +2566,7 @@ def _run_picker(dispatcher: DispatcherService, args: argparse.Namespace, input_s
     picker_color = color_enabled(getattr(args, "color", "auto"), is_tty=output_stream.isatty(),
                                  stream=output_stream)
     action, item = select_item(items, title="LLMD — Resume Agent",
-        render_line=lambda row: _continue_picker_line(row, shutil.get_terminal_size((100, 24)).columns,
+        render_line=lambda row: _continue_picker_line(row, _get_terminal_size((100, 24)).columns,
                                                      enabled=picker_color),
         input_stream=input_stream, output_stream=output_stream, filter_key="search_text",
         color_mode=getattr(args, "color", "auto"))
@@ -2827,6 +2890,7 @@ def _render_doctor_report(report: dict[str, Any], stream: TextIO, color: str = "
 
 def _resolve_historical_session(dispatcher: DispatcherService, *, gui: str, name: str,
                                 provider: str | None, session_id: str | None,
+                                environment_id: str | None = None,
                                 allow_latest: bool = False) -> dict[str, Any] | None:
     slot = dispatcher.get_slot(gui=gui, name=name)
     history = slot["history"]
@@ -2834,6 +2898,8 @@ def _resolve_historical_session(dispatcher: DispatcherService, *, gui: str, name
         matches = [row for row in history if row["native_session_id"] == session_id]
         if provider:
             matches = [row for row in matches if row["provider"] == provider]
+        if environment_id:
+            matches = [row for row in matches if row["environment_id"] == environment_id]
         if not matches:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Requested session ID is not in this agent's activation history.")
         return matches[-1]
@@ -2984,7 +3050,7 @@ def _render_listing(
     result: dict[str, Any], stream: TextIO, color: str, *, dispatcher: DispatcherService | None = None,
 ) -> None:
     use_color = color_enabled(color, is_tty=stream.isatty(), stream=stream)
-    width = shutil.get_terminal_size((100, 24)).columns
+    width = _get_terminal_size((100, 24)).columns
     all_rows = (result.get("slots", []) if "conversations" not in result else
                 [row for conversation in result["conversations"] for row in conversation.get("slots", [])])
     longest_session = max((display_width(str(row.get("current_session_id") or
@@ -3498,7 +3564,7 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
         return run_interactive(DispatcherService(home_dir=args.home), input_stream=input_stream,
                                output_stream=output_stream, color_mode=getattr(args, "color", "auto"))
 
-    if args.command in {"start", "continue"}:
+    if args.command in {"start", "continue"} and not (args.command == "continue" and getattr(args, "slot_id", None)):
         args.gui = _resolve_name(args.gui_pos, args.gui, "GUI")
         args.agent_name = _resolve_name(args.agent_pos, args.agent_name, "agent")
         if args.command == "start" and (not args.gui or not args.agent_name):
@@ -3506,6 +3572,45 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
         if args.command == "continue" and args.agent_name and not args.gui:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "A GUI is required when an agent is specified.")
     dispatcher = DispatcherService(home_dir=args.home)
+    if args.command in {"save", "restore", "checkpoints", "queue"}:
+        from .workspace_cli import handle_checkpoints, handle_queue, handle_restore, handle_save
+
+        handler = {
+            "save": handle_save,
+            "restore": handle_restore,
+            "checkpoints": handle_checkpoints,
+            "queue": handle_queue,
+        }[args.command]
+        kwargs: dict[str, Any] = {"dispatcher": dispatcher, "stream": output_stream}
+        if args.command == "restore" and args.apply and not args.manual:
+            from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
+            from terminal_launcher.managed import ManagedProcessStore
+
+            from .workspace_adapters import (
+                TerminalLauncherRestoreAdapter,
+                canonical_llmd_pane_command,
+            )
+            from .workspace_ownership import ReservationOwnershipVerifier, RestorationReservationStore
+
+            class _CanonicalBuilder:
+                supports_exact_session = True
+
+                def build_pane_command(self, request: Any) -> tuple[str, ...]:
+                    return canonical_llmd_pane_command(request, home_dir=Path(dispatcher.home_dir))
+
+            state_root = Path(dispatcher.home_dir) / "workspace_state"
+            reservation_store = RestorationReservationStore(Path(dispatcher.home_dir))
+            kwargs["launcher"] = TerminalLauncherRestoreAdapter(
+                backend=WindowsTerminalBackend(),
+                managed_store=ManagedProcessStore(state_root / "terminal-launcher.sqlite3"),
+                home_dir=Path(dispatcher.home_dir),
+                command_builder=_CanonicalBuilder(),
+                ownership_verifier=ReservationOwnershipVerifier(Path(dispatcher.home_dir)),
+                reservation_store=reservation_store,
+                require_exact_session_support=True,
+                require_dispatcher_ownership=True,
+            )
+        return handler(args, **kwargs)
     native_args = getattr(args, "native_args", [])
     original_native_args = list(native_args)
     native_args = _resolve_profile_invocation(dispatcher, args, native_args)
@@ -3777,13 +3882,33 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
                 for event in result["events"]:
                     event["environment_id"] = preview_environment_id
     elif args.command == "continue":
-        if not args.agent_name:
+        if not args.agent_name and not args.slot_id:
             return _run_picker(dispatcher, args, input_stream, output_stream, native_args=native_args,
                                allow_native_unknown=allow_native_unknown)
-        slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
+        slot = dispatcher.get_slot_by_id(args.slot_id) if args.slot_id else dispatcher.get_slot(gui=args.gui, name=args.agent_name)
+        environment_id = _resolve_environment(dispatcher, args.environment).environment_id if args.environment else None
+        if args.slot_id:
+            if not args.session_id:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Exact slot restoration requires --session-id.")
+            candidates = [
+                row for row in slot["history"]
+                if row["native_session_id"] == args.session_id
+                and (args.provider is None or row["provider"] == args.provider)
+                and (environment_id is None or row["environment_id"] == environment_id)
+            ]
+            if len(candidates) != 1:
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    "Exact provider/session/environment is not in this slot's history.",
+                )
+            target = candidates[0]
+        else:
+            target = _resolve_historical_session(
+                dispatcher, gui=args.gui, name=args.agent_name,
+                provider=args.provider, session_id=args.session_id,
+                environment_id=environment_id,
+            ) if (args.provider or args.session_id or environment_id) else slot["current"]
         expected_current = _session_identity(slot)
-        target = _resolve_historical_session(dispatcher, gui=args.gui, name=args.agent_name,
-            provider=args.provider, session_id=args.session_id) if (args.provider or args.session_id) else slot["current"]
         if target is None:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "This slot has no selected session; use `llmd start`.")
         target_identity = (target["provider"], target["environment_id"], target["native_session_id"])
@@ -3822,12 +3947,12 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
             if native_args:
                 _render_launch_preview(preview, output_stream)
             dispatcher.attach_session(
-                gui=args.gui, name=args.agent_name, provider=target_identity[0],
+                gui=slot["gui_alias"], name=slot["name"], provider=target_identity[0],
                 session_id=target_identity[2], environment_selector=target_identity[1],
                 expected_current=expected_current, check_current=True, reactivate=args.reactivate,
                 apply=True, provenance="dispatcher_reuse",
             )
-            current_slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
+            current_slot = dispatcher.get_slot_by_id(slot["slot_id"])
             return _run_pane(dispatcher, slot_id=current_slot["slot_id"], launch_id=None,
                              input_stream=input_stream, output_stream=output_stream,
                              native_args=native_args, cwd_override=args.cwd,
@@ -3847,6 +3972,13 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
         return _run_pane(dispatcher, slot_id=args.slot_id, launch_id=args.launch_id,
                          input_stream=input_stream, output_stream=output_stream,
                          expected_session_identity=expected,
+                         reservation_id=args.reservation_id,
+                         reservation_token=args.reservation_token,
+                         checkpoint_id=args.checkpoint_id,
+                         queue_entry_id=args.queue_entry_id,
+                         attempt=args.attempt,
+                         reservation_launch_id=args.reservation_launch_id,
+                         pane_id=args.pane_id,
                          launcher_terminal_context=args.launcher_terminal_context)
     else:
         parser.error("command required")

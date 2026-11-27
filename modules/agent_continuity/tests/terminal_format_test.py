@@ -1,3 +1,4 @@
+import os
 from io import StringIO
 
 from agent_continuity import terminal_format as fmt
@@ -44,7 +45,7 @@ def test_selectors_clip_unicode_and_keep_columns_with_ansi():
 def test_listing_compact_color_timestamp_runtime_and_gui_separators(monkeypatch):
     from agent_continuity import dispatcher_cli
 
-    monkeypatch.setattr(dispatcher_cli.shutil, "get_terminal_size", lambda fallback: type("Size", (), {"columns": 72})())
+    monkeypatch.setattr(dispatcher_cli, "_get_terminal_size", lambda fallback: os.terminal_size((72, 24)))
     monkeypatch.setattr(dispatcher_cli, "_runtime_label", lambda *args, **kwargs: "IN USE")
     monkeypatch.delenv("NO_COLOR", raising=False)
     now = "2026-11-23T12:00:00+00:00"
@@ -86,7 +87,7 @@ def test_listing_colors_semantic_provider_and_unpadded_lifecycle_values(monkeypa
     from agent_continuity import dispatcher_cli
 
     monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.setattr(dispatcher_cli.shutil, "get_terminal_size", lambda fallback: type("Size", (), {"columns": 120})())
+    monkeypatch.setattr(dispatcher_cli, "_get_terminal_size", lambda fallback: os.terminal_size((120, 24)))
     result = {"gui": "GUI", "last_activity_at": None, "slots": [
         {"name": "Agent", "current_provider": "codex", "current_session_id": "native-session",
          "state": "active", "last_activity_at": None}], "shown": 1, "total": 1, "omitted": 0}
@@ -140,7 +141,7 @@ def test_responsive_listing_widths_preserve_cell_bounds_and_json_purity(monkeypa
          ]}], "shown": 1, "total": 1, "omitted": 0}
     monkeypatch.delenv("NO_COLOR", raising=False)
     for width in (40, 60, 80, 100, 120, 200):
-        monkeypatch.setattr(dispatcher_cli.shutil, "get_terminal_size", lambda fallback, w=width: type("Size", (), {"columns": w})())
+        monkeypatch.setattr(dispatcher_cli, "_get_terminal_size", lambda fallback, w=width: os.terminal_size((w, 24)))
         output = StringIO()
         _render_listing(result, output, "always")
         lines = [line for line in output.getvalue().splitlines() if line]
@@ -155,7 +156,7 @@ def test_responsive_listing_widths_preserve_cell_bounds_and_json_purity(monkeypa
 def test_120_column_listing_preserves_uuid_and_allocates_name_width_from_data(monkeypatch):
     from agent_continuity import dispatcher_cli
 
-    monkeypatch.setattr(dispatcher_cli.shutil, "get_terminal_size", lambda fallback: type("Size", (), {"columns": 120})())
+    monkeypatch.setattr(dispatcher_cli, "_get_terminal_size", lambda fallback: os.terminal_size((120, 24)))
     native_id = "12345678-1234-4234-8234-123456789abc"
     result = {"gui": "GUI", "last_activity_at": None, "slots": [
         {"name": "A" * 48, "current_provider": "codex", "current_environment_id": "local",

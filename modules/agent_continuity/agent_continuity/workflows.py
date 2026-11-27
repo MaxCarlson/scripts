@@ -179,43 +179,76 @@ def prepare_additive_workflow_init(
     runtime: str,
     is_new_session: bool,
     resources: Sequence[ResourceStatus],
-    selection: str = "standard",
+    selection: str | None = "standard",
     custom_instruction_path: str | None = None,
     supported_providers: frozenset[str] = frozenset({"codex", "agy"}),
 ) -> dict[str, Any]:
     """LLMD-51: Prepare one-time additive workflow provenance and prompt for new native sessions only."""
     if not is_new_session:
-        return {"applied": False, "reason": "resume_never_replays_init", "provenance": [], "delivery_prompt": None}
+        return {
+            "applied": False,
+            "status": "skipped_resume",
+            "reason": "resume_never_replays_init",
+            "provider_qualified": provider in supported_providers,
+            "prompt_submitted": False,
+            "delivery_confirmed": False,
+            "provenance": [],
+            "delivery_prompt": None,
+        }
+    if selection is None and not custom_instruction_path:
+        return {
+            "applied": False,
+            "status": "untyped_legacy",
+            "reason": "untyped legacy slot retains existing initialization behavior",
+            "provider_qualified": provider in supported_providers,
+            "prompt_submitted": False,
+            "delivery_confirmed": False,
+            "provenance": [],
+            "delivery_prompt": None,
+        }
+    effective_selection = selection or "standard"
     if provider not in supported_providers:
         return {
             "applied": False,
             "status": "unsupported",
-            "reason": f"provider {provider!r} does not support additive workflow initialization",
+            "reason": f"provider {provider!r} has no qualified additive workflow initialization surface",
+            "provider_qualified": False,
+            "prompt_submitted": False,
+            "delivery_confirmed": False,
             "provenance": [],
             "delivery_prompt": None,
         }
     provenance: list[dict[str, Any]] = []
     prompt_parts: list[str] = []
+    blocked: list[dict[str, Any]] = []
     for r in resources:
         if r.status != "available":
+            if r.status in {"missing", "changed", "unsupported", "unavailable"}:
+                blocked.append({"resource_id": r.resource_id, "status": r.status, "detail": r.detail})
+            continue
+        if not r.content:
+            blocked.append(
+                {
+                    "resource_id": r.resource_id,
+                    "status": "unavailable",
+                    "detail": "resource metadata was present without verifiable content",
+                }
+            )
             continue
         entry: dict[str, Any] = {
             "resource_id": r.resource_id,
             "revision": r.revision,
             "digest": r.digest,
             "status": r.status,
-            "selection": selection,
+            "selection": effective_selection,
+            "integrity_verified": True,
+            "installed": r.installed,
+            "callable": r.callable,
         }
         if r.path:
             entry["path"] = r.path
         provenance.append(entry)
-        if r.content:
-            prompt_parts.append(f"[{r.resource_id}@{r.revision}]\n{r.content.strip()}")
-    blocked = [
-        {"resource_id": r.resource_id, "status": r.status, "detail": r.detail}
-        for r in resources
-        if r.status in {"missing", "changed", "unsupported", "unavailable"}
-    ]
+        prompt_parts.append(f"[{r.resource_id}@{r.revision}]\n{r.content.strip()}")
     if custom_instruction_path:
         custom_file = Path(custom_instruction_path)
         if custom_file.is_file():
@@ -227,7 +260,10 @@ def prepare_additive_workflow_init(
                     "revision": custom_digest[:12],
                     "digest": custom_digest,
                     "status": "available",
-                    "selection": selection,
+                    "selection": effective_selection,
+                    "integrity_verified": True,
+                    "installed": True,
+                    "callable": True,
                 }
             )
             prompt_parts.append(f"[custom:{custom_file.name}@{custom_digest[:12]}]\n{raw.decode('utf-8').strip()}")
@@ -241,11 +277,14 @@ def prepare_additive_workflow_init(
             )
     delivery_prompt = "\n\n".join(prompt_parts) if prompt_parts else None
     return {
-        "applied": bool(provenance),
-        "status": "degraded" if blocked else "ready",
-        "selection": selection,
+        "applied": bool(provenance and delivery_prompt),
+        "status": "degraded" if blocked else ("ready" if provenance else "unavailable"),
+        "selection": effective_selection,
         "provider": provider,
         "runtime": runtime,
+        "provider_qualified": True,
+        "prompt_submitted": False,
+        "delivery_confirmed": False,
         "custom_instruction_path": custom_instruction_path,
         "provenance": provenance,
         "limitations": blocked,
@@ -271,13 +310,14 @@ def resolve_authoritative_runtime_identity(
             "slot_id": trusted_slot.get("slot_id"),
             "agent_number": trusted_slot.get("agent_number"),
         }
+    obs_management = str(trusted_observation.get("management") or "managed")
     obs_slot_id = trusted_observation.get("slot_id")
     obs_num = trusted_observation.get("agent_number")
     obs_name = trusted_observation.get("agent_name")
     obs_session = trusted_observation.get("native_session_id")
     current = trusted_slot.get("current") or {}
     slot_session = current.get("native_session_id")
-    contradiction = bool(trusted_observation.get("conflict"))
+    contradiction = bool(trusted_observation.get("conflict")) or obs_management == "conflict"
     if obs_slot_id is not None and obs_slot_id != trusted_slot.get("slot_id"):
         contradiction = True
     if obs_num is not None and trusted_slot.get("agent_number") is not None and int(obs_num) != int(trusted_slot["agent_number"]):
@@ -289,6 +329,22 @@ def resolve_authoritative_runtime_identity(
     if contradiction:
         return {
             "authority": "contradictory",
+            "gui_alias": trusted_slot.get("gui_alias"),
+            "agent_name": trusted_slot.get("name"),
+            "slot_id": trusted_slot.get("slot_id"),
+            "agent_number": trusted_slot.get("agent_number"),
+        }
+    if obs_management == "unmanaged":
+        return {
+            "authority": "unmanaged",
+            "gui_alias": trusted_slot.get("gui_alias"),
+            "agent_name": trusted_slot.get("name"),
+            "slot_id": trusted_slot.get("slot_id"),
+            "agent_number": trusted_slot.get("agent_number"),
+        }
+    if obs_management != "managed":
+        return {
+            "authority": "unavailable",
             "gui_alias": trusted_slot.get("gui_alias"),
             "agent_name": trusted_slot.get("name"),
             "slot_id": trusted_slot.get("slot_id"),

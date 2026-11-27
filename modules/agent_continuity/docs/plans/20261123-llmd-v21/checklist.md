@@ -2,6 +2,18 @@
 
 ## LLMD-25 / LLMD-48 / LLMD-49 — profiles and identity metadata (v2.3.0 candidate)
 
+## Agent #1 workspace and correctness integration — 2026-11-27
+
+- [x] Recover the existing feature and workspace-checkpoint worktrees without touching main's unrelated changes.
+- [x] Integrate workspace checkpoint, restoration queue, lifecycle, adapter, ownership, CLI, docs, and focused tests into the v2.3.0 candidate.
+- [x] Keep the canonical slot lock continuously held through reservation consumption and dispatcher execution; validate complete checkpoint/queue-attempt/token/slot/provider/environment/session/launch/pane identity.
+- [x] Make ordinary slot operations inspect reservation and preparation-lease state under the canonical lock; distinguish exact live provider ownership from transient metadata contention.
+- [x] Wire `save`, `restore`, `checkpoints`, `queue`, exact-session `continue`, managed pane execution, and help registration. Keep direct native fallback opt-in.
+- [x] Fix terminal-size mocks, concurrent WAL first use, independent metadata attachment ordering, production enum matching, and stale-head transition commit serialization.
+- [x] Run 484 tests as 30 independent per-file processes (12-way cap) and full pytest-xdist (12 workers); all passed. Exercise canonical CLI-to-managed-relay-to-dispatcher restore with harmless subprocesses and disposable registries.
+- [ ] Run Ruff, help-registry compatibility, packaging/version checks, and final diff/status review.
+- [ ] Commit and push the non-main feature branch; report any remaining provider/live gates and independent v2.1.2 backports. Do not merge or deploy.
+
 - [x] Specify immutable, event-sourced profile definitions, revisions, precedence, compatibility checks, and authorization exclusion.
 - [x] Add schema-v4 profile projection and assignment; preserve legacy untyped slots and existing verified numbers.
 - [x] Add profile CLI, invocation overrides, bypass, provenance previews, and retired/provider/runtime mismatch protections.

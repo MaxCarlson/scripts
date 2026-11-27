@@ -1,8 +1,33 @@
 from __future__ import annotations
 
+import os
 import sqlite3
+import subprocess
+import sys
+from pathlib import Path
 
 from agent_continuity.schema import SCHEMA_VERSION, ensure_schema
+
+
+def test_concurrent_first_use_initialization_converges_on_durable_wal(tmp_path):
+    path = tmp_path / "first-use.sqlite"
+    module_root = Path(__file__).resolve().parents[1]
+    script = (
+        "import sqlite3, sys; from agent_continuity.schema import ensure_schema; "
+        "conn=sqlite3.connect(sys.argv[1], timeout=10); ensure_schema(conn); "
+        "assert conn.execute('PRAGMA journal_mode').fetchone()[0].lower() == 'wal'; conn.close()"
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(module_root)
+    processes = [
+        subprocess.Popen([sys.executable, "-c", script, str(path)], cwd=module_root, env=env)
+        for _ in range(4)
+    ]
+    results = [process.wait(timeout=30) for process in processes]
+    assert results == [0, 0, 0, 0]
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
 
 
 def test_schema_v1_migrates_dispatcher_tables_without_losing_workflows(tmp_path):
