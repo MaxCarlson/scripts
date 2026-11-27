@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import queue
 import re
+from dataclasses import dataclass
 
 import pytest
-
 from procwatch.config import ConfigValidationError, GuardConfig, GuardMode
 from procwatch.guard.window_guard import (
     CHILDID_SELF,
@@ -147,6 +146,32 @@ def test_smart_mode_empty_title_create_is_pending_then_interactive_allowed() -> 
     assert ev2 is not None
     assert ev2.state == WindowState.ALLOWED
     assert backend.windows[300].minimized is False
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_state", "expected_minimized"),
+    [
+        (GuardMode.SMART, WindowState.ALLOWED, False),
+        (GuardMode.ALL_CONSOLES, WindowState.SUPPRESSED, True),
+    ],
+)
+def test_powershell_7_title_is_interactive_only_in_smart_mode(mode, expected_state, expected_minimized) -> None:
+    backend = FakeWindowBackend()
+    engine = NeutralizeEngine(GuardConfig(mode=mode), backend=backend, boot_id="b1")
+    backend.windows[350] = FakeWindow(
+        hwnd=350,
+        pid=3500,
+        tid=3501,
+        cls_name="CASCADIA_HOSTING_WINDOW_CLASS",
+        title="PowerShell 7",
+        visible=True,
+    )
+
+    event = engine.handle_win_event(EVENT_OBJECT_SHOW, 350)
+
+    assert event is not None
+    assert event.state is expected_state
+    assert backend.windows[350].minimized is expected_minimized
 
 
 def test_smart_mode_suppresses_automation_title_and_restores_originals() -> None:
