@@ -198,9 +198,13 @@ class PsutilProcessEnumerator:
         rows: list[ProcessRecord] = []
         inaccessible = 0
         try:
-            iterator = psutil.process_iter(
-                attrs=("pid", "ppid", "name", "create_time", "cmdline"), ad_value=None
+            ppid_map = psutil.ppid_map() if hasattr(psutil, "ppid_map") else None
+            attrs = (
+                ("pid", "name", "create_time", "cmdline")
+                if ppid_map is not None
+                else ("pid", "ppid", "name", "create_time", "cmdline")
             )
+            iterator = psutil.process_iter(attrs=attrs, ad_value=None)
             for process in iterator:
                 try:
                     info = process.info
@@ -209,9 +213,10 @@ class PsutilProcessEnumerator:
                         process_identity_from_psutil(int(pid), float(created))
                         if pid and created else None
                     )
+                    raw_ppid = ppid_map.get(int(pid)) if (ppid_map is not None and pid is not None) else info.get("ppid")
                     rows.append(ProcessRecord(
                         identity=identity,
-                        parent_pid=int(info["ppid"]) if info.get("ppid") is not None else None,
+                        parent_pid=int(raw_ppid) if raw_ppid is not None else None,
                         image_name=Path(str(info.get("name") or "")).name or None,
                         argv=tuple(str(part) for part in argv_value) if argv_value is not None else None,
                     ))

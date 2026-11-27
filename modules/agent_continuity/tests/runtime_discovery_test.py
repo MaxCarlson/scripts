@@ -919,6 +919,7 @@ def test_process_inventory_and_observation_never_repr_raw_arguments():
     assert "secret-like-prompt" not in str(observed.to_dict())
 
 
+@pytest.mark.real_runtime_discovery
 def test_psutil_source_returns_a_safe_availability_record():
     snapshot = PsutilProcessEnumerator().enumerate_processes()
     assert snapshot.availability in {

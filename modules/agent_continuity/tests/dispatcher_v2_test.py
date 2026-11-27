@@ -845,7 +845,8 @@ def test_retry_after_partial_registration(tmp_path, monkeypatch):
     def interrupted(events):
         nonlocal calls
         calls += 1
-        if calls == 3:
+        if calls == 1 and len(events) > 2:
+            original(events[:2])
             raise OSError('simulated interruption')
         original(events)
     monkeypatch.setattr(service.continuity, '_emit_and_materialize', interrupted)

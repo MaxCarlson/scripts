@@ -113,3 +113,23 @@ def provider_process_guard(monkeypatch: pytest.MonkeyPatch, fake_provider_bin: P
         return original_system(command)
 
     monkeypatch.setattr(os, "system", guarded_system)
+
+
+@pytest.fixture(autouse=True)
+def synthetic_runtime_discovery(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ordinary unit tests fast and host-isolated unless real_runtime_discovery is requested."""
+    if request.node.get_closest_marker("real_runtime_discovery") is not None:
+        return
+    from datetime import UTC, datetime
+
+    from agent_continuity.runtime_discovery import (
+        EvidenceAvailability,
+        ProcessInventory,
+        PsutilProcessEnumerator,
+    )
+
+    monkeypatch.setattr(
+        PsutilProcessEnumerator,
+        "enumerate_processes",
+        lambda self: ProcessInventory((), EvidenceAvailability.COMPLETE, datetime.now(UTC)),
+    )

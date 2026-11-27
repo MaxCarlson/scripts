@@ -238,7 +238,7 @@ def test_open_all_reports_unresolved_pending_slots_without_starting_a_session(tm
         {
             "slot_id": pending["details"]["slot_id"],
             "agent_name": "AgentPerf",
-            "reason": "native codex session identity pending",
+            "reason": "pending codex destination must be recovered before opening this slot",
         }
     ]
 

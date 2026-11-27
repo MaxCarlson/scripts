@@ -75,20 +75,30 @@ class SQLiteMaterializer:
 
     def ingest_event(self, event: EventEnvelope, *, spool_file: str | None = None, checksum: str = "") -> bool:
         """Ingest a single event transactionally and idempotently. Returns True if newly applied."""
+        return self.ingest_events([(event, spool_file, checksum)]) > 0
+
+    def ingest_events(self, items: list[tuple[EventEnvelope, str | None, str]]) -> int:
+        """Ingest a batch of events in one SQLite transaction. Returns newly applied count."""
+        if not items:
+            return 0
+        applied_count = 0
         with closing(self._connect_rw()) as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                applied = self._apply_event_in_tx(conn, event, spool_file=spool_file, checksum=checksum)
+                for event, spool_file, checksum in items:
+                    if self._apply_event_in_tx(conn, event, spool_file=spool_file, checksum=checksum):
+                        applied_count += 1
                 conn.commit()
-                return applied
+                return applied_count
             except Exception as exc:
                 conn.rollback()
                 if isinstance(exc, ContinuityError):
                     raise
+                last_ev = items[-1][0]
                 raise ContinuityError(
                     ErrorCode.MATERIALIZER_FAILED,
-                    f"Failed to materialize event {event.event_id} ({event.event_type}): {exc}",
-                    {"event_id": event.event_id, "event_type": event.event_type},
+                    f"Failed to materialize event {last_ev.event_id} ({last_ev.event_type}): {exc}",
+                    {"event_id": last_ev.event_id, "event_type": last_ev.event_type},
                 ) from exc
 
     def sync_from_spools(self, extra_roots: list[Path] | None = None) -> SyncResult:
@@ -108,6 +118,38 @@ class SQLiteMaterializer:
                 db_path=str(self.db_path),
                 rebuilt=False,
             )
+
+        if self.db_path.exists():
+            ro_conn = self._connect_ro()
+            if ro_conn is not None:
+                try:
+                    with closing(ro_conn):
+                        from .schema import SCHEMA_VERSION, get_schema_version
+
+                        if get_schema_version(ro_conn) == SCHEMA_VERSION:
+                            if not scan.records:
+                                return SyncResult(
+                                    ingested_count=0,
+                                    skipped_duplicates=0,
+                                    total_spool_events=0,
+                                    issues=scan.issues,
+                                    db_path=str(self.db_path),
+                                    rebuilt=False,
+                                )
+                            applied_ids = {
+                                row[0] for row in ro_conn.execute("SELECT event_id FROM applied_events").fetchall()
+                            }
+                            if all(rec.envelope.event_id in applied_ids for rec in scan.records):
+                                return SyncResult(
+                                    ingested_count=0,
+                                    skipped_duplicates=len(scan.records),
+                                    total_spool_events=len(scan.records),
+                                    issues=scan.issues,
+                                    db_path=str(self.db_path),
+                                    rebuilt=False,
+                                )
+                except sqlite3.Error:
+                    pass
 
         with closing(self._connect_rw()) as conn:
             try:

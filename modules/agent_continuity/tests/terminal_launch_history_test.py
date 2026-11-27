@@ -244,7 +244,7 @@ def test_new_session_history_records_requested_and_native_cwd(tmp_path: Path, mo
             return subprocess.CompletedProcess(argv, 0, stdout, "")
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(dispatcher_cli.subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     result = dispatcher_cli._run_pane(
         dispatcher, slot_id=launch["details"]["slot_id"], launch_id=launch["details"]["launch_id"],
         input_stream=io.StringIO("1\n"), output_stream=io.StringIO(), show_summary=False,
@@ -399,7 +399,7 @@ def test_launcher_context_survives_provider_switch_and_reviewer_return(tmp_path:
             return subprocess.CompletedProcess(argv, 0, "", "")
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(dispatcher_cli.subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     monkeypatch.setattr(
         "agent_continuity.interactive.select_item",
         lambda items, **_kwargs: ("selected", next(row for row in items if row["name"] == "Original")),
@@ -489,7 +489,7 @@ def test_provider_failure_outcomes_are_recorded_distinctly(tmp_path: Path, monke
             raise FileNotFoundError("fake provider missing")
         return subprocess.CompletedProcess(argv, expected_code)
 
-    monkeypatch.setattr(dispatcher_cli.subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     if outcome == "spawn":
         with pytest.raises(ContinuityError, match="Failed to launch"):
             dispatcher_cli._run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
@@ -510,7 +510,7 @@ def test_abnormal_exit_diagnostic_uses_selected_color_mode(tmp_path: Path, monke
     slot = dispatcher.get_slot(gui="GUI", name="Agent")
     monkeypatch.setenv("TERMINAL_SESSION_ID", str(uuid4()))
     monkeypatch.setattr(dispatcher_cli, "_native_argv", lambda *_args, **_kwargs: ["fake-codex", "resume"])
-    monkeypatch.setattr(dispatcher_cli.subprocess, "run",
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process",
                         lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 7))
     requested_modes = []
     monkeypatch.setattr(dispatcher_cli, "color_enabled",
@@ -540,7 +540,7 @@ def test_interrupted_interactive_provider_is_recorded_as_interrupted(tmp_path: P
             return subprocess.CompletedProcess(argv, 0, "", "")
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(dispatcher_cli.subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     with pytest.raises(KeyboardInterrupt):
         dispatcher_cli._run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
                                  input_stream=io.StringIO(), output_stream=io.StringIO(), show_summary=False)

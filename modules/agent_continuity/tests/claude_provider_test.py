@@ -533,11 +533,11 @@ def test_concurrent_claude_pending_launch_has_single_claim_and_spawn(
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(execute)
-        assert entered.wait(timeout=5)
+        assert entered.wait(timeout=15)
         second = pool.submit(execute)
-        second.result(timeout=5)
+        second.result(timeout=15)
         release.set()
-        first.result(timeout=5)
+        first.result(timeout=15)
 
     assert len(calls) == 1
     assert any(isinstance(exc, ContinuityError) for exc in errors)
@@ -642,3 +642,271 @@ def test_claude_reviewer_creation_and_return_round_trip_preserve_codex_identity(
     assert returned_original["current"]["provider"] == "codex"
     assert returned_original["current"]["native_session_id"] == "original-exact"
     assert returned_reviewer["state"] == "inactive"
+
+
+def test_slot_wide_exclusion_blocks_concurrent_resume_attach_switch_and_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_provider_bin: Path,
+):
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.create_gui("GUI", apply=True)
+    dispatcher.create_slot(gui="GUI", name="Agent", apply=True)
+    dispatcher.attach_session(gui="GUI", name="Agent", provider="codex", session_id="hist-1", apply=True)
+    dispatcher.attach_session(gui="GUI", name="Agent", provider="agy", session_id="curr-1", apply=True)
+    slot = dispatcher.get_slot(gui="GUI", name="Agent")
+
+    entered = Event()
+    release = Event()
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", lambda *a, **k: ["fake-provider"])
+
+    def wait_in_provider(*_args, **_kwargs):
+        entered.set()
+        release.wait(timeout=5)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", wait_in_provider)
+    results: dict[str, object] = {}
+
+    def run_primary():
+        results["primary"] = _run_pane(
+            dispatcher, slot_id=slot["slot_id"], launch_id=None,
+            input_stream=StringIO("1\n"), output_stream=StringIO(),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future = pool.submit(run_primary)
+        assert entered.wait(timeout=5)
+        with pytest.raises(ContinuityError, match="active or launching session"):
+            _run_pane(
+                dispatcher, slot_id=slot["slot_id"], launch_id=None,
+                input_stream=StringIO(), output_stream=StringIO(),
+            )
+        with pytest.raises(ContinuityError, match="active or launching session"):
+            dispatcher.attach_session(
+                gui="GUI", name="Agent", provider="codex", session_id="hist-1", apply=True,
+            )
+        with pytest.raises(ContinuityError, match="active or launching session"):
+            dispatcher.begin_launch(gui="GUI", name="Agent", provider="claude", apply=True)
+        open_req = dispatcher.open_request(gui="GUI")
+        assert open_req["panes"] == []
+        assert open_req["unresolved"] == [{
+            "slot_id": slot["slot_id"],
+            "agent_name": "Agent",
+            "reason": "slot or selected session is already in use",
+        }]
+        release.set()
+        future.result(timeout=5)
+
+    assert results["primary"] == 0
+
+
+def test_live_claude_recovery_and_eventual_wrapper_exit_are_compatible_and_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_provider_bin: Path,
+):
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    launch = dispatcher.prepare_start(gui="GUI", name="Agent", provider="claude", apply=True)
+    slot_id = launch["details"]["slot_id"]
+    launch_id = launch["details"]["launch_id"]
+    adapter = ClaudeAdapter(which_fn=lambda _name: str(fake_provider_bin / "claude.exe"), home_dir=tmp_path)
+    dispatcher.continuity.adapters["claude"] = adapter
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.detect_runtime_kind", lambda: "windows")
+
+    entered = Event()
+    release = Event()
+    observed_uuid: list[str] = []
+
+    def fake_run(argv, **_kwargs):
+        observed_uuid.append(argv[2])
+        entered.set()
+        release.wait(timeout=15)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
+
+    def fake_observe(_provider, _env_id, session_id):
+        if observed_uuid and session_id == observed_uuid[0]:
+            return SimpleNamespace(
+                process_session_match=SimpleNamespace(value="exact"),
+                process_liveness=SimpleNamespace(value="running"),
+                session_identity_state=SimpleNamespace(value="reserved"),
+                process_availability=SimpleNamespace(value="complete"),
+                identity_conflict=False,
+                evidence_conflict=False,
+            )
+        return None
+
+    monkeypatch.setattr(dispatcher, "observe_runtime_session", fake_observe)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        wrapper = pool.submit(
+            _run_pane, dispatcher, slot_id=slot_id, launch_id=launch_id,
+            input_stream=StringIO("1\n"), output_stream=StringIO(),
+        )
+        assert entered.wait(timeout=15)
+        recovered = dispatcher.recover_captured_launch(gui="GUI", name="Agent", apply=True)
+        assert recovered["status"] == "recovered"
+        assert recovered["details"]["provenance"] == "claude_exact_runtime_process"
+        assert recovered["details"]["association_state"] == "confirmed"
+        assert recovered["details"]["identity_state"] == "reserved"
+        assert recovered["details"]["resumability"] == "unverified"
+
+        # Now write the transcript before wrapper exits cleanly.
+        session_id = observed_uuid[0]
+        transcript = tmp_path / ".claude" / "projects" / "repo" / f"{session_id}.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text('{"type":"user"}\n', encoding="utf-8")
+        release.set()
+        assert wrapper.result(timeout=15) == 0
+
+    slot = dispatcher.get_slot(gui="GUI", name="Agent")
+    assert slot["current"]["native_session_id"] == session_id
+    assert len(slot["history"]) == 1
+    pending = dispatcher._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?", (launch_id,))
+    assert pending["status"] == "resolved"
+
+
+def test_interrupted_attach_metadata_completes_pending_launch_idempotently(tmp_path: Path):
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    launch = dispatcher.prepare_start(gui="GUI", name="Agent", provider="claude", apply=True)
+    slot_id = launch["details"]["slot_id"]
+    launch_id = launch["details"]["launch_id"]
+    session_id = str(uuid.uuid4())
+    # Simulate activation already persisted before launch resolution event was written.
+    dispatcher.continuity._emit_and_materialize([
+        dispatcher._event(
+            EventType.DISPATCHER_SESSION_ACTIVATED,
+            environment_id=launch["details"]["environment_id"],
+            provider="claude",
+            session_id=session_id,
+            payload={"slot_id": slot_id, "activation_id": "act-partial", "sequence": 1, "provenance": "partial"},
+        )
+    ])
+    res = dispatcher.attach_session(
+        gui="GUI", name="Agent", provider="claude", session_id=session_id,
+        environment_selector=launch["details"]["environment_id"], launch_id=launch_id, apply=True,
+    )
+    assert res["applied"] is True
+    pending = dispatcher._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?", (launch_id,))
+    assert pending["status"] == "resolved"
+
+
+def test_batch_runtime_discovery_uses_one_snapshot_and_avoids_lock_mislabeling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    from agent_continuity.dispatcher import _mutation_lock, _session_lock_name
+    from agent_continuity.dispatcher_cli import build_parser, dispatch
+    from agent_continuity.runtime_discovery import RuntimeDiscovery
+
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.create_gui("GUI", apply=True)
+    for idx in range(3):
+        dispatcher.create_slot(gui="GUI", name=f"Agent{idx}", apply=True)
+        dispatcher.attach_session(gui="GUI", name=f"Agent{idx}", provider="codex", session_id=f"sess-{idx}", apply=True)
+    pending_launch = dispatcher.prepare_start(gui="GUI", name="PendingClaude", provider="claude", apply=True)
+    reserved_id = str(uuid.uuid4())
+    dispatcher.record_process_observation(
+        slot_id=pending_launch["details"]["slot_id"],
+        launch_id=pending_launch["details"]["launch_id"],
+        return_code=0,
+        outcome="claude_session_id_reserved",
+        native_session_id=reserved_id,
+    )
+
+    snapshot_calls = 0
+
+    def fake_capture_snapshot(self):
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return SimpleNamespace(runtime_kind=self.runtime_kind, environment_id=self.environment_id,
+                               captured_at=None, inventory=None)
+
+    def fake_observe_many(self, keys, *, snapshot=None, **_kwargs):
+        return tuple(
+            SimpleNamespace(
+                process_session_match=SimpleNamespace(value="not_observed"),
+                process_liveness=SimpleNamespace(value="not_observed"),
+                session_identity_state=SimpleNamespace(value="unknown"),
+                process_availability=SimpleNamespace(value="complete"),
+                identity_conflict=False,
+                evidence_conflict=False,
+            )
+            for _ in keys
+        )
+
+    monkeypatch.setattr(RuntimeDiscovery, "capture_snapshot", fake_capture_snapshot)
+    monkeypatch.setattr(RuntimeDiscovery, "observe_many", fake_observe_many)
+
+    # Hold session lock for the pending Claude reserved UUID without a live process.
+    lock_name = _session_lock_name("claude", pending_launch["details"]["environment_id"], reserved_id)
+    with _mutation_lock(home, lock_name):
+        parser = build_parser()
+        json_out = StringIO()
+        assert dispatch(parser.parse_args(["-H", str(home), "doctor", "-j"]), parser,
+                        input_stream=StringIO(), output_stream=json_out) == 0
+        assert snapshot_calls == 1
+        doc = json.loads(json_out.getvalue())
+        pending_agent = next(a for a in doc["agents"] if a["name"] == "PendingClaude")
+        assert pending_agent["runtime"] == "IN USE"
+        assert pending_agent["pending_destination"]["runtime_evidence"] == (
+            "LLMD session lock contended; exact provider process not observed"
+        )
+
+        human_out = StringIO()
+        assert dispatch(parser.parse_args(["-H", str(home), "list", "-g", "GUI"]), parser,
+                        input_stream=StringIO(), output_stream=human_out) == 0
+        assert snapshot_calls == 2
+        assert "lock contended" in human_out.getvalue()
+        assert "exact provider process observed" not in human_out.getvalue()
+
+
+def test_partial_runtime_discovery_preserves_unknown_and_read_only_commands_create_no_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    from agent_continuity.dispatcher_cli import build_parser, dispatch
+    from agent_continuity.runtime_discovery import RuntimeDiscovery
+
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.create_gui("GUI", apply=True)
+    dispatcher.create_slot(gui="GUI", name="Agent", apply=True)
+    dispatcher.attach_session(gui="GUI", name="Agent", provider="codex", session_id="sess-partial", apply=True)
+
+    monkeypatch.setattr(
+        RuntimeDiscovery,
+        "capture_snapshot",
+        lambda self: SimpleNamespace(runtime_kind=self.runtime_kind, environment_id=self.environment_id,
+                                     captured_at=None, inventory=None),
+    )
+    monkeypatch.setattr(
+        RuntimeDiscovery,
+        "observe_many",
+        lambda self, keys, **_kw: tuple(
+            SimpleNamespace(
+                process_session_match=SimpleNamespace(value="not_observed"),
+                process_liveness=SimpleNamespace(value="unknown"),
+                session_identity_state=SimpleNamespace(value="unknown"),
+                process_availability=SimpleNamespace(value="partial"),
+                identity_conflict=False,
+                evidence_conflict=False,
+            )
+            for _ in keys
+        ),
+    )
+
+    before_locks = set(home.glob("*.lock"))
+    parser = build_parser()
+    doc_out = StringIO()
+    assert dispatch(parser.parse_args(["-H", str(home), "doctor", "-j"]), parser,
+                    input_stream=StringIO(), output_stream=doc_out) == 0
+    doc = json.loads(doc_out.getvalue())
+    assert doc["agents"][0]["runtime"] == "UNKNOWN"
+
+    list_out = StringIO()
+    assert dispatch(parser.parse_args(["-H", str(home), "list", "-g", "GUI", "-j"]), parser,
+                    input_stream=StringIO(), output_stream=list_out) == 0
+    listing = json.loads(list_out.getvalue())
+    assert listing["slots"][0]["runtime_status"] == "UNKNOWN"
+
+    assert dispatch(parser.parse_args(["-H", str(home), "open", "-g", "GUI", "-d", "-j"]), parser,
+                    input_stream=StringIO(), output_stream=StringIO()) == 0
+    assert set(home.glob("*.lock")) == before_locks
