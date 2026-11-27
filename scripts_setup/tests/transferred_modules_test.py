@@ -71,13 +71,6 @@ def _retired_toolkit_source_dirs() -> set[str]:
 def _preserved_data_paths(directory: str) -> set[str]:
     if directory == "agent_memory":
         return {"modules/agent_memory/notes/.index/notes.sqlite3"}
-    if directory == "llm_monitor":
-        return {
-            path for path in _tracked_module_paths()
-            if path == "modules/llm_monitor/README.md"
-            or path.startswith("modules/llm_monitor/docs/")
-            or path.startswith("modules/llm_monitor/examples/")
-        }
     return set()
 def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scripts_modules() -> None:
     assert len(TRANSFERRED_MODULE_DIRS) == 23
