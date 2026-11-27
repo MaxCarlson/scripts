@@ -359,6 +359,14 @@ class RestorationReservationStore:
                     f"Cannot bind launch to reservation {reservation_id!r} in state {latest.state!r}.",
                     {"slot_id": latest.slot_id, "reservation_id": reservation_id, "state": latest.state},
                 )
+            if (latest.launch_id is not None and latest.launch_id != launch_id) or (
+                latest.pane_id is not None and latest.pane_id != pane_id
+            ):
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} is already bound to a different launch/pane identity.",
+                    {"slot_id": latest.slot_id, "reservation_id": reservation_id},
+                )
             updated = RestorationReservation(
                 **{
                     **latest.to_dict(),
@@ -522,42 +530,67 @@ class RestorationReservationStore:
         provider_pid: int | None = None,
         provider_startup_confirmed: bool | None = None,
         exact_association_confirmed: bool = False,
+        launch_id: str | None = None,
+        pane_id: str | None = None,
     ) -> RestorationReservation:
         """Record actual provider startup and association separately after consumption (caller holds lock)."""
         _require_non_empty(reservation_id, "reservation_id")
         _require_non_empty(reservation_token, "reservation_token")
-        res = self.get_reservation(reservation_id)
-        if res.state != "consumed" or not res.dispatcher_ownership_acknowledged:
-            raise ContinuityError(
-                ErrorCode.ASSOCIATION_CONFLICT,
-                f"Reservation {reservation_id!r} must be consumed before acknowledging provider association.",
-                {"slot_id": res.slot_id, "reservation_id": reservation_id, "state": res.state},
+        with self._meta_lock(self.get_reservation(reservation_id).slot_id):
+            res = self.get_reservation(reservation_id)
+            if res.state != "consumed" or not res.dispatcher_ownership_acknowledged:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} must be consumed before acknowledging provider association.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id, "state": res.state},
+                )
+            if not secrets.compare_digest(res.reservation_token, reservation_token):
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation token mismatch for {reservation_id!r}.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id},
+                )
+            if launch_id is not None and res.launch_id != launch_id:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} launch_id mismatch on provider association acknowledgment.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id},
+                )
+            if pane_id is not None and res.pane_id != pane_id:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} pane_id mismatch on provider association acknowledgment.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id},
+                )
+            effective_pid = provider_pid if provider_pid is not None else res.provider_pid
+            if (
+                res.exact_association_confirmed
+                and res.provider_pid is not None
+                and effective_pid is not None
+                and int(effective_pid) != int(res.provider_pid)
+            ):
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} already confirmed association with a different provider_pid.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id},
+                )
+            startup_ok = (
+                bool(provider_startup_confirmed)
+                if provider_startup_confirmed is not None
+                else (effective_pid is not None and int(effective_pid) > 0)
             )
-        if not secrets.compare_digest(res.reservation_token, reservation_token):
-            raise ContinuityError(
-                ErrorCode.ASSOCIATION_CONFLICT,
-                f"Reservation token mismatch for {reservation_id!r}.",
-                {"slot_id": res.slot_id, "reservation_id": reservation_id},
-            )
-        effective_pid = provider_pid if provider_pid is not None else res.provider_pid
-        startup_ok = (
-            bool(provider_startup_confirmed)
-            if provider_startup_confirmed is not None
-            else (effective_pid is not None and int(effective_pid) > 0)
-        )
-        if startup_ok and (effective_pid is None or int(effective_pid) <= 0):
-            raise ContinuityError(
-                ErrorCode.INVALID_INPUT,
-                f"Provider startup confirmation for {reservation_id!r} requires a positive provider_pid.",
-                {"slot_id": res.slot_id, "reservation_id": reservation_id},
-            )
-        if exact_association_confirmed and not startup_ok:
-            raise ContinuityError(
-                ErrorCode.ASSOCIATION_CONFLICT,
-                f"Exact provider association for {reservation_id!r} requires confirmed provider startup.",
-                {"slot_id": res.slot_id, "reservation_id": reservation_id},
-            )
-        with self._meta_lock(res.slot_id):
+            if startup_ok and (effective_pid is None or int(effective_pid) <= 0):
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    f"Provider startup confirmation for {reservation_id!r} requires a positive provider_pid.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id},
+                )
+            if exact_association_confirmed and not startup_ok:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Exact provider association for {reservation_id!r} requires confirmed provider startup.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id},
+                )
             updated = RestorationReservation(
                 **{
                     **res.to_dict(),
@@ -577,6 +610,8 @@ class RestorationReservationStore:
         provider_pid: int | None = None,
         provider_startup_confirmed: bool | None = None,
         exact_association_confirmed: bool = False,
+        launch_id: str | None = None,
+        pane_id: str | None = None,
     ) -> RestorationReservation:
         """Acquire `slot-<slot_id>.lock` and record provider startup/association after consumption."""
         current = self.get_reservation(reservation_id)
@@ -587,6 +622,8 @@ class RestorationReservationStore:
                 provider_pid=provider_pid,
                 provider_startup_confirmed=provider_startup_confirmed,
                 exact_association_confirmed=exact_association_confirmed,
+                launch_id=launch_id,
+                pane_id=pane_id,
             )
 
     def mark_ambiguous(
@@ -635,8 +672,26 @@ class RestorationReservationStore:
         current = self.get_reservation(reservation_id)
         with self._meta_lock(current.slot_id):
             latest = self.get_reservation(reservation_id)
+            if latest.state == "aborted":
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Cannot mark aborted reservation {reservation_id!r} as ambiguous.",
+                    {"slot_id": latest.slot_id, "reservation_id": reservation_id, "state": latest.state},
+                )
             if preserve_consumed and latest.state == "consumed":
                 return latest
+            if launch_id is not None and latest.launch_id is not None and latest.launch_id != launch_id:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Stale mark_ambiguous on {reservation_id!r}: launch_id mismatch.",
+                    {"slot_id": latest.slot_id, "reservation_id": reservation_id},
+                )
+            if pane_id is not None and latest.pane_id is not None and latest.pane_id != pane_id:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Stale mark_ambiguous on {reservation_id!r}: pane_id mismatch.",
+                    {"slot_id": latest.slot_id, "reservation_id": reservation_id},
+                )
             active = self.get_active_for_slot(latest.slot_id)
             if active is not None and active.reservation_id != reservation_id:
                 raise ContinuityError(

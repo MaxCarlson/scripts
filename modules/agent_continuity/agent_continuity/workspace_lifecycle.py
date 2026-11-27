@@ -1208,8 +1208,10 @@ class TopologyRestorer:
             startup_confirmed = bool(launch_res.provider_startup_confirmed)
             startup_unconfirmed = bool(reservation_id is not None and not startup_confirmed)
             association_unconfirmed = bool(reservation_id is not None and launch_res.association_confirmed is not True)
+            observed_failure = bool(launch_res.failure_reason and str(launch_res.failure_reason).strip())
             if (
-                not spawn_confirmed
+                observed_failure
+                or not spawn_confirmed
                 or (require_dispatcher_ownership and not dispatcher_ack)
                 or startup_unconfirmed
                 or association_unconfirmed

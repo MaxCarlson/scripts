@@ -1484,6 +1484,7 @@ def test_restoration_queue_v2_to_v3_migration_and_restart_recovery(tmp_path: Pat
         spawn_confirmed=True,
         relay_spawn_acknowledged=True,
         dispatcher_ownership_acknowledged=True,
+        provider_startup_confirmed=True,
         association_confirmed=True,
         current_liveness="alive",
     )
@@ -1606,7 +1607,7 @@ def test_release_critical_ownership_startup_association_and_lock_safety(tmp_path
         native_session_id=slot_a.native_session_id,
         environment_id=slot_a.environment_id,
     )
-    with pytest.raises(ContinuityError, match="newer active reservation"):
+    with pytest.raises(ContinuityError, match=r"aborted|newer active reservation"):
         rsv_store.mark_ambiguous(rsv_old.reservation_id, reason="stale_attempt")
     rsv_store.abort_reservation(rsv_old.reservation_id, reason="stale_abort_must_not_clear_new")
     assert rsv_store.get_active_for_slot(slot_id) is not None
@@ -1762,3 +1763,271 @@ def test_release_critical_ownership_startup_association_and_lock_safety(tmp_path
     assert rep_delayed.outcomes[0].provider_startup_confirmed is True
     assert rep_delayed.outcomes[0].association_confirmed is True
     assert q_delayed.list_entries(checkpoint_id=chk.checkpoint_id)[0].status is QueueEntryStatus.COMPLETED
+
+
+def test_monotonic_reservation_transitions_nonzero_exit_and_queue_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Qualify positive-evidence+nonzero-exit rejection, reservation-backed queue.complete, and monotonic transitions."""
+    import subprocess
+    import sys
+
+    from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
+
+    from agent_continuity.identifiers import generate_id
+    from agent_continuity.restoration_queue import QueueEntryStatus, RestorationQueue
+    from agent_continuity.workspace_checkpoint import CheckpointStore
+    from agent_continuity.workspace_lifecycle import TopologyRestorer
+    from agent_continuity.workspace_ownership import (
+        ReservationOwnershipVerifier,
+        RestorationReservationStore,
+    )
+
+    _install_guarded_provider(tmp_path, monkeypatch, "codex")
+
+    home_dir = tmp_path / "llmd_invariants"
+    work_dir = tmp_path / "repo"
+    work_dir.mkdir()
+    dispatcher, ids = _seed_dispatcher_with_mixed_sessions(home_dir, work_dir, work_dir)
+    slot_id = ids["codex_slot"]
+    adapter = DispatcherWorkspaceAdapter(dispatcher)
+    slot_a = next(s for s in adapter.list_candidate_slots() if s.slot_id == slot_id)
+
+    ft = 134000000000000000
+    obs_run = RuntimeDiscovery(
+        environment_id=ids["env_id"],
+        runtime_kind=detect_runtime_kind(),
+        process_enumerator=_StaticEnumerator(
+            (
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(7101, ft),
+                    parent_pid=710,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", ids["codex_sid"]),
+                ),
+            )
+        ),
+    )
+    chk = CheckpointStore(home_dir / "workspace_state").create_checkpoint([slot_a], observers=obs_run)
+    obs_after = RuntimeDiscovery(environment_id=ids["env_id"], runtime_kind=detect_runtime_kind(), process_enumerator=_StaticEnumerator(()))
+    rsv_store = RestorationReservationStore(home_dir)
+
+    # 1. Monotonic reservation transitions: aborted cannot be resurrected; conflicting bind/ack fail closed
+    rsv = rsv_store.create_reservation(
+        checkpoint_id=chk.checkpoint_id,
+        queue_entry_id="rq_mono_1",
+        attempt=1,
+        slot_id=slot_id,
+        provider=slot_a.provider,
+        native_session_id=slot_a.native_session_id,
+        environment_id=slot_a.environment_id,
+    )
+    bound = rsv_store.bind_launch(rsv.reservation_id, launch_id="tl_1", pane_id="tl_1:0:0")
+    assert bound.state == "submitted"
+    with pytest.raises(ContinuityError, match="different launch/pane"):
+        rsv_store.bind_launch(rsv.reservation_id, launch_id="tl_2", pane_id="tl_2:0:0")
+
+    rsv_store.abort_reservation(rsv.reservation_id, reason="cancelled_by_operator")
+    with pytest.raises(ContinuityError, match="aborted"):
+        rsv_store.mark_ambiguous(rsv.reservation_id, reason="delayed_ambiguity")
+    with pytest.raises(ContinuityError, match="aborted"):
+        rsv_store.mark_ambiguous_locked(rsv.reservation_id, reason="delayed_ambiguity_locked")
+    assert rsv_store.get_reservation(rsv.reservation_id).state == "aborted"
+    assert rsv_store.get_active_for_slot(slot_id) is None
+
+    rsv2 = rsv_store.create_reservation(
+        checkpoint_id=chk.checkpoint_id,
+        queue_entry_id="rq_mono_2",
+        attempt=2,
+        slot_id=slot_id,
+        provider=slot_a.provider,
+        native_session_id=slot_a.native_session_id,
+        environment_id=slot_a.environment_id,
+    )
+    rsv_store.bind_launch(rsv2.reservation_id, launch_id="tl_2", pane_id="tl_2:0:0")
+    rsv_store.consume_reservation(
+        rsv2.reservation_id,
+        reservation_token=rsv2.reservation_token,
+        checkpoint_id=chk.checkpoint_id,
+        queue_entry_id="rq_mono_2",
+        attempt=2,
+        slot_id=slot_id,
+        provider=slot_a.provider,
+        native_session_id=slot_a.native_session_id,
+        environment_id=slot_a.environment_id,
+        launch_id="tl_2",
+        pane_id="tl_2:0:0",
+    )
+    with pytest.raises(ContinuityError, match="launch_id mismatch"):
+        rsv_store.acknowledge_provider_association(
+            rsv2.reservation_id,
+            reservation_token=rsv2.reservation_token,
+            provider_pid=9001,
+            provider_startup_confirmed=True,
+            exact_association_confirmed=True,
+            launch_id="tl_wrong",
+            pane_id="tl_2:0:0",
+        )
+    rsv_store.acknowledge_provider_association(
+        rsv2.reservation_id,
+        reservation_token=rsv2.reservation_token,
+        provider_pid=9001,
+        provider_startup_confirmed=True,
+        exact_association_confirmed=True,
+        launch_id="tl_2",
+        pane_id="tl_2:0:0",
+    )
+    with pytest.raises(ContinuityError, match="different provider_pid"):
+        rsv_store.acknowledge_provider_association(
+            rsv2.reservation_id,
+            reservation_token=rsv2.reservation_token,
+            provider_pid=9002,
+            provider_startup_confirmed=True,
+            exact_association_confirmed=True,
+        )
+
+    # 2. Direct reservation-backed queue.complete enforces provider_startup_confirmed + association_confirmed
+    q_boundary = RestorationQueue(tmp_path / "q_boundary")
+    enq = q_boundary.enqueue_checkpoint(chk)
+    q_id = enq.enqueued[0].queue_entry_id
+    claim = q_boundary.claim(q_id, operator_id="op_bound")
+    assert claim.claim_token is not None
+    q_boundary.mark_launching(q_id, claim_token=claim.claim_token, reservation_id="rsv_bound_1")
+    with pytest.raises(ContinuityError, match="provider_startup_confirmed"):
+        q_boundary.complete(
+            q_id,
+            claim_token=claim.claim_token,
+            launch_id="tl_b",
+            spawn_confirmed=True,
+            dispatcher_ownership_acknowledged=True,
+            provider_startup_confirmed=False,
+            association_confirmed=True,
+        )
+    with pytest.raises(ContinuityError, match="provider_startup_confirmed"):
+        q_boundary.complete(
+            q_id,
+            claim_token=claim.claim_token,
+            launch_id="tl_b",
+            spawn_confirmed=True,
+            dispatcher_ownership_acknowledged=True,
+            provider_startup_confirmed=True,
+            association_confirmed=False,
+        )
+    done_entry = q_boundary.complete(
+        q_id,
+        claim_token=claim.claim_token,
+        launch_id="tl_b",
+        spawn_confirmed=True,
+        dispatcher_ownership_acknowledged=True,
+        provider_startup_confirmed=True,
+        association_confirmed=True,
+    )
+    assert done_entry.status is QueueEntryStatus.COMPLETED
+    assert done_entry.provider_startup_confirmed is True
+    assert done_entry.association_confirmed is True
+    q_boundary.db_path.unlink()
+    assert q_boundary.rebuild_index() >= 4
+    replayed = q_boundary.get_entry(q_id)
+    assert replayed.status is QueueEntryStatus.COMPLETED
+    assert replayed.provider_startup_confirmed is True
+    assert replayed.association_confirmed is True
+
+    # 3. Positive startup/association evidence + nonzero exit MUST NOT complete the queue
+    tl_store = ManagedProcessStore(
+        tmp_path / f"managed_{generate_id('nz')}.sqlite3",
+        process_identity_lookup=lambda pid: (pid, ft),
+        process_liveness_lookup=lambda _pid: TLProcessLiveness.ALIVE,
+    )
+    spawned: list[subprocess.Popen[str]] = []
+
+    def _runner(cmd: Sequence[str], **_kwargs):
+        modules_root = str(Path(__file__).resolve().parents[2])
+        pkg_root = str(Path(__file__).resolve().parents[1])
+        py_path = f"{pkg_root}{os.pathsep}{modules_root}"
+        idx = 0
+        while idx < len(cmd):
+            if cmd[idx].endswith("_pane_runner.py") and idx + 1 < len(cmd):
+                proc = subprocess.Popen(
+                    [cmd[idx - 1], cmd[idx], cmd[idx + 1]],
+                    text=True,
+                    env={**os.environ, "PYTHONPATH": py_path},
+                )
+                spawned.append(proc)
+                idx += 2
+            else:
+                idx += 1
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    class _PositiveThenNonzeroBuilder:
+        supports_exact_session = True
+
+        def build_pane_command(self, request: RestoreLaunchRequest) -> tuple[str, ...]:
+            code = (
+                "import os, sys\nfrom pathlib import Path\n"
+                "from agent_continuity.workspace_ownership import RestorationReservationStore, acquire_canonical_slot_lock\n"
+                "home = Path(sys.argv[1])\nstore = RestorationReservationStore(home)\n"
+                "with acquire_canonical_slot_lock(home, sys.argv[6], blocking=True):\n"
+                "    store.consume_reservation_locked("
+                "sys.argv[2], reservation_token=sys.argv[3], checkpoint_id=sys.argv[4], "
+                "queue_entry_id=sys.argv[5], attempt=int(sys.argv[10]), slot_id=sys.argv[6], "
+                "provider=sys.argv[7], native_session_id=sys.argv[8], environment_id=sys.argv[9], "
+                "launch_id=sys.argv[11], pane_id=sys.argv[12])\n"
+                "    store.acknowledge_provider_association_locked("
+                "sys.argv[2], reservation_token=sys.argv[3], provider_pid=os.getpid(), "
+                "provider_startup_confirmed=True, exact_association_confirmed=True)\n"
+                "sys.exit(7)\n"
+            )
+            return (
+                sys.executable,
+                "-c",
+                code,
+                str(home_dir),
+                str(request.reservation_id),
+                str(request.reservation_token),
+                request.checkpoint_id,
+                str(request.queue_entry_id),
+                request.slot_id,
+                request.provider,
+                request.native_session_id,
+                request.environment_id,
+                str(request.attempt),
+                str(request.reservation_launch_id),
+                str(request.reservation_pane_id),
+            )
+
+    q_pos_nz = RestorationQueue(tmp_path / "q_pos_nz")
+    launcher = TerminalLauncherRestoreAdapter(
+        backend=WindowsTerminalBackend(runner=_runner),
+        managed_store=tl_store,
+        home_dir=home_dir,
+        command_builder=_PositiveThenNonzeroBuilder(),
+        ownership_verifier=ReservationOwnershipVerifier(home_dir, dispatcher=dispatcher),
+        require_dispatcher_ownership=True,
+        reservation_store=rsv_store,
+        startup_timeout=2.0,
+    )
+    restorer = TopologyRestorer()
+    plan = restorer.preview_restore(chk, queue=q_pos_nz, current_slots=[slot_a], observers=obs_after)
+    rep = restorer.execute_restore(
+        plan,
+        authorized=True,
+        operator_id="op_pos_nz",
+        launcher=launcher,
+        checkpoint=chk,
+        queue=q_pos_nz,
+        receipt_store=tl_store,
+        slot_guard=DispatcherSlotExecutionGuard(home_dir),
+        current_slots=[slot_a],
+        observers=obs_after,
+        reservation_store=rsv_store,
+        require_dispatcher_ownership=True,
+    )
+    for proc in spawned:
+        proc.wait(timeout=15.0)
+
+    out = rep.outcomes[0]
+    assert out.status == "accepted_unconfirmed"
+    assert out.reason == "provider_nonzero_exit:7"
+    assert out.provider_startup_confirmed is True
+    assert out.association_confirmed is True
+    assert q_pos_nz.list_entries(checkpoint_id=chk.checkpoint_id)[0].status is QueueEntryStatus.AMBIGUOUS

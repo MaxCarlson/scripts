@@ -782,6 +782,7 @@ class RestorationQueue:
         association_confirmed: bool = False,
         current_liveness: str = "unknown",
         resumability_confirmed: bool = False,
+        reservation_id: str | None = None,
     ) -> QueueEntry:
         """Mark a claimed/launching entry completed only with positive spawn and (when required) ownership evidence."""
         relay_ack = bool(spawn_confirmed if relay_spawn_acknowledged is None else relay_spawn_acknowledged)
@@ -798,11 +799,21 @@ class RestorationQueue:
             )
         with _checkpoint_lock(self.lock_path):
             self._ensure_initialized_locked()
-            self._require_claimed_row_locked(
+            row = self._require_claimed_row_locked(
                 queue_entry_id,
                 claim_token=claim_token,
                 allowed_statuses={QueueEntryStatus.CLAIMED.value, QueueEntryStatus.LAUNCHING.value},
             )
+            effective_reservation_id = reservation_id or (
+                str(row["reservation_id"]) if row["reservation_id"] is not None else None
+            )
+            if effective_reservation_id is not None and (not provider_startup_confirmed or not association_confirmed):
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    "Cannot mark reservation-backed queue entry completed without positive "
+                    "provider_startup_confirmed=True and association_confirmed=True; use mark_ambiguous instead.",
+                    {"queue_entry_id": queue_entry_id, "reservation_id": effective_reservation_id},
+                )
             now = now_utc_iso()
             self._commit_event_locked(
                 "queue.completed",

@@ -683,6 +683,16 @@ class TerminalLauncherRestoreAdapter:
                 if current_liveness in {"exited", "failed"} and exit_code not in {None, 0}:
                     break
                 if ownership_ok and startup_ok and association_ok:
+                    if self.managed_store is not None:
+                        time.sleep(0.05)
+                        with contextlib.suppress(Exception):
+                            for cand in self.managed_store.enumerate_processes(launch_id=launch_id):
+                                if getattr(cand, "pane_id", None) == pane_id:
+                                    latest_rec = cand
+                                    raw_state = getattr(latest_rec, "state", None)
+                                    current_liveness = str(getattr(raw_state, "value", raw_state) or "unknown")
+                                    exit_code = getattr(latest_rec, "exit_code", None)
+                                    break
                     break
                 if (
                     not self.require_dispatcher_ownership or not getattr(req, "reservation_id", None)
