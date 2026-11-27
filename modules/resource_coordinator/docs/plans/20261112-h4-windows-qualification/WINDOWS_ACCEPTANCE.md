@@ -109,17 +109,17 @@ pwsh -File .\Bootstrap-H4GuestBundle.ps1 -ArchivePath .\h4-windows-acceptance.zi
 
 ### Dependency readiness & guest prerequisite check (Stage D)
 
-`dependencies/dependency-lock.json` (`schema_version=2`) explicitly separates dependency provenance and remains classified as **`dependency_status: resolved_not_hashed`** and **`wheelhouse_status: unavailable`** (this bundle is **not** a self-contained offline wheelhouse installer for PyPI packages):
+`dependencies/dependency-lock.json` (`schema_version=2`) explicitly separates dependency provenance. The canonical Resource Metrics wheel is staged and hash-pinned; the remaining third-party runtime and development dependencies are not all hashed or vendored, so this bundle is **not** a complete offline installer:
 
 | Category | Status | Details |
 |---|---|---|
-| Direct runtime pins | Pinned, not wheel-hashed | `anyio==4.12.1`, `httpx==0.28.1`, `starlette==0.50.0`, `uvicorn==0.40.0`, `psutil==7.1.3`, `PyYAML==6.0.3`, `rich==14.2.0` (`dependencies/requirements.txt`) |
+| Direct runtime pins | Pinned, not wheel-hashed | `anyio==4.12.1`, `httpx==0.28.1`, `starlette==0.50.0`, `uvicorn==0.40.0`, `psutil==7.1.3`, `PyYAML==6.0.3`, `rich==14.2.0`, `mxc-resource-metrics==0.3.0` (`dependencies/requirements.txt`) |
 | Transitive runtime versions | Pinned, not wheel-hashed | `certifi==2025.11.12`, `click==8.3.1`, `colorama==0.4.6`, `h11==0.16.0`, `httpcore==1.0.9`, `idna==3.11`, `markdown-it-py==4.0.0`, `mdurl==0.1.2`, `Pygments==2.19.2`, `sniffio==1.3.1`, `typing_extensions==4.15.0` |
 | Dev / test & build system | Pinned (`requirements-dev.txt`) | `iniconfig==2.3.0`, `packaging==25.0`, `pluggy==1.6.0`, `pytest==9.0.3`, `pytest-asyncio==1.3.0`; build: `setuptools>=68`, `wheel` |
-| Artifact-level wheel hashes | **Unavailable** | PyPI `.whl` SHA-256 digests and binary wheels are not shipped in-bundle; use `pip download` + `pip hash` / `--require-hashes` on a networked guest staging step if needed |
+| Artifact-level wheel hashes | Partial | The canonical `mxc-resource-metrics==0.3.0` wheel is shipped under `dependencies/wheelhouse/` and pinned by SHA-256 in `dependency-lock.json`; other PyPI wheels are not shipped or hashed |
 | Python / platform compatibility | Distinguished | RC runtime supports Python `>=3.10`; H4 release/acceptance tooling requires Python `>=3.12` (Windows x86_64 validated on `3.12.10`) |
 | Guest-side package availability | Unverified until guest check | Do not assume guest Python 3.12 has third-party packages installed; run the prerequisite check below before `offline` or lifecycle profiles |
-| In-repo `resource-metrics` | Staged & hashed in-bundle | `resource-metrics==0.2.0` staged at `sources/rc-1.0.0/modules/resource_metrics` and covered by `manifest.json` (`files` SHA-256) |
+| Resource Metrics import API | Canonical wheel staged & hashed | `mxc-resource-metrics==0.3.0` provides the existing `resource_metrics` import namespace from its wheel; duplicate module source is not exported |
 
 Run this read-only prerequisite check in the guest's Python `3.12+` environment before running guest test profiles:
 

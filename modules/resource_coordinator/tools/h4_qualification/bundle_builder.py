@@ -81,6 +81,9 @@ PINNED_RUNTIME_DIRECT = [
     "psutil==7.1.3",
     "PyYAML==6.0.3",
     "rich==14.2.0",
+    "mxc-resource-metrics==0.3.0",
+    "fastapi==0.128.0",
+    "llm-monitor==0.9.0",
 ]
 PINNED_RUNTIME_TRANSITIVE = [
     "certifi==2025.11.12",
@@ -108,6 +111,71 @@ PINNED_BUILD_SYSTEM = [
 ]
 _HEX64_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
+RESOURCE_METRICS_WHEEL_FILENAME = "mxc_resource_metrics-0.3.0-py3-none-any.whl"
+RESOURCE_METRICS_WHEEL_SHA256 = "a1e0e66c5d1b8bed507af26a906d0728b1da65fa14684be4a369da4b60ccac71"
+LLM_MONITOR_WHEEL_FILENAME = "llm_monitor-0.9.0-py3-none-any.whl"
+LLM_MONITOR_WHEEL_SHA256 = "bc503adab4b02416f56cd1c286ab827116e2ba527afcd49790a79704c4175adb"
+LLM_MONITOR_SOURCE_COMMIT = "e10544f63ceb2f2082bc716edb4d6227087b8e03"
+
+
+def _stage_resource_metrics_wheel(bundle_root: Path) -> Dict[str, str]:
+    source = Path(__file__).resolve().parent / "wheelhouse" / RESOURCE_METRICS_WHEEL_FILENAME
+    try:
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise SourceIntegrityError("dependency_wheel_missing", f"Canonical resource metrics wheel is unavailable: {source}") from exc
+    if digest != RESOURCE_METRICS_WHEEL_SHA256:
+        raise SourceIntegrityError("dependency_wheel_digest_mismatch", f"Canonical resource metrics wheel digest mismatch: {source}")
+    with zipfile.ZipFile(source) as archive:
+        names = set(archive.namelist())
+        if "resource_metrics/__init__.py" not in names:
+            raise SourceIntegrityError("dependency_wheel_invalid", "Canonical resource metrics wheel has no import package")
+        metadata = next((name for name in names if name.endswith(".dist-info/METADATA")), None)
+        if metadata is None:
+            raise SourceIntegrityError("dependency_wheel_invalid", "Canonical resource metrics wheel has no distribution metadata")
+        package_metadata = archive.read(metadata).decode("utf-8", errors="replace").splitlines()
+        if "Name: mxc-resource-metrics" not in package_metadata or "Version: 0.3.0" not in package_metadata:
+            raise SourceIntegrityError("dependency_wheel_invalid", "Canonical resource metrics wheel metadata is unexpected")
+    wheel_path = bundle_root / "dependencies" / "wheelhouse" / RESOURCE_METRICS_WHEEL_FILENAME
+    wheel_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, wheel_path)
+    return {
+        "version": "0.3.0",
+        "filename": RESOURCE_METRICS_WHEEL_FILENAME,
+        "sha256": digest,
+        "path": f"dependencies/wheelhouse/{RESOURCE_METRICS_WHEEL_FILENAME}",
+    }
+
+
+def _stage_llm_monitor_wheel(bundle_root: Path) -> Dict[str, str]:
+    source = Path(__file__).resolve().parent / "wheelhouse" / LLM_MONITOR_WHEEL_FILENAME
+    try:
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise SourceIntegrityError("dependency_wheel_missing", f"Canonical LLM Monitor wheel is unavailable: {source}") from exc
+    if digest != LLM_MONITOR_WHEEL_SHA256:
+        raise SourceIntegrityError("dependency_wheel_digest_mismatch", f"Canonical LLM Monitor wheel digest mismatch: {source}")
+    with zipfile.ZipFile(source) as archive:
+        names = set(archive.namelist())
+        if "llm_monitor/__init__.py" not in names:
+            raise SourceIntegrityError("dependency_wheel_invalid", "Canonical LLM Monitor wheel has no import package")
+        metadata = next((name for name in names if name.endswith(".dist-info/METADATA")), None)
+        if metadata is None:
+            raise SourceIntegrityError("dependency_wheel_invalid", "Canonical LLM Monitor wheel has no distribution metadata")
+        package_metadata = archive.read(metadata).decode("utf-8", errors="replace").splitlines()
+        if "Name: llm-monitor" not in package_metadata or "Version: 0.9.0" not in package_metadata:
+            raise SourceIntegrityError("dependency_wheel_invalid", "Canonical LLM Monitor wheel metadata is unexpected")
+    wheel_path = bundle_root / "dependencies" / "wheelhouse" / LLM_MONITOR_WHEEL_FILENAME
+    wheel_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, wheel_path)
+    return {
+        "version": "0.9.0",
+        "filename": LLM_MONITOR_WHEEL_FILENAME,
+        "sha256": digest,
+        "source_repository": "https://github.com/MaxCarlson/llm-agent-toolkit",
+        "source_commit": LLM_MONITOR_SOURCE_COMMIT,
+        "path": f"dependencies/wheelhouse/{LLM_MONITOR_WHEEL_FILENAME}",
+    }
 
 
 def _resolve_commit(repo_root: Path, ref: str) -> str:
@@ -258,7 +326,13 @@ if (-not $integrityInfo.verified) {
     [Console]::Error.WriteLine("Bundle component verification failed (bundle_component_mismatch).")
     exit 2
 }
-$env:PYTHONPATH = (Join-Path $newSource "modules\\resource_coordinator") + [IO.Path]::PathSeparator + (Join-Path $newSource "modules\\resource_metrics")
+if ($IntegrityOnly) {
+    Write-Output ($integrityRaw -join "`n")
+    exit 0
+}
+$metricsWheel = Join-Path $bundle "dependencies\\wheelhouse\\mxc_resource_metrics-0.3.0-py3-none-any.whl"
+$monitorWheel = Join-Path $bundle "dependencies\\wheelhouse\\llm_monitor-0.9.0-py3-none-any.whl"
+$env:PYTHONPATH = (Join-Path $newSource "modules\\resource_coordinator") + [IO.Path]::PathSeparator + $metricsWheel + [IO.Path]::PathSeparator + $monitorWheel
 $run = Join-Path $env:TEMP ("h4-rc-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $run | Out-Null
 & $Python -B $runner --test-root $run --source-root $newSource --old-source-root $oldSource --source-manifest $manifest --json
@@ -278,9 +352,11 @@ def _render_bundle_readme(manifest: Dict[str, Any]) -> str:
         f"- **Legacy RC `0.14.0`**: `{old_src['commit_sha']}` (`{old_src['source_tree_sha256']}`)\n"
         f"- **Python Compatibility**: Production RC package supports `{RC_PACKAGE_PYTHON_REQUIRES}`; "
         f"H4 release/acceptance tooling requires Python `{H4_TOOLING_PYTHON_REQUIRES}` (validated `{manifest['tool_python_version']}`).\n"
-        "- **Dependencies**: `resource-metrics==0.2.0` is staged in-bundle under `sources/rc-1.0.0/modules/resource_metrics`. "
-        "Third-party PyPI packages are recorded in `dependencies/dependency-lock.json` (`dependency_status=resolved_not_hashed`, "
-        "`wheelhouse_status=unavailable`; no offline wheelhouse is staged in this bundle).\n\n"
+        "- **Dependencies**: canonical `mxc-resource-metrics==0.3.0` and `llm-monitor==0.9.0` wheels are staged in "
+        "`dependencies/wheelhouse/` and SHA-256 pinned in `dependency-lock.json`. They supply the existing "
+        "`resource_metrics` and `llm_monitor` import packages. Legacy staged module source is not included. "
+        "Other third-party dependencies remain recorded in `dependencies/dependency-lock.json` but are not all hashed or vendored "
+        "(`dependency_status=partially_hashed`, `wheelhouse_status=partial`).\n\n"
         "## Trusted Guest Bootstrap (Read-Only Preflight)\n\n"
         "1. Obtain `<PUBLISHED_SHA256>` from **separately trusted release evidence** — never trust an unauthenticated `.sha256` file transferred alongside an untrusted ZIP.\n"
         "2. `Bootstrap-H4GuestBundle.ps1` verifies Python 3.12+ and compares `Get-FileHash -Algorithm SHA256` against `-ExpectedSha256` **before** calling `Expand-Archive` (its extraction step assumes that external digest check succeeded), then runs `scripts/Verify-H4GuestBundle.ps1` (`source_integrity.py -b` + read-only `preflight` only).\n\n"
@@ -289,7 +365,7 @@ def _render_bundle_readme(manifest: Dict[str, Any]) -> str:
         "```\n\n"
         "## Guest Python & Dependency Prerequisite Check\n\n"
         "```powershell\n"
-        "python -c \"import sys, importlib.util; mods=('anyio','httpx','starlette','uvicorn','psutil','yaml','rich','pytest','pytest_asyncio'); missing=[m for m in mods if importlib.util.find_spec(m) is None]; print({'python': sys.version.split()[0], 'ok': sys.version_info[:2]>=(3,12) and not missing, 'missing': missing}); raise SystemExit(0 if sys.version_info[:2]>=(3,12) and not missing else 2)\"\n"
+        "python -c \"import sys, importlib.util; mods=('anyio','httpx','starlette','uvicorn','psutil','yaml','rich','fastapi','pytest','pytest_asyncio'); missing=[m for m in mods if importlib.util.find_spec(m) is None]; print({'python': sys.version.split()[0], 'ok': sys.version_info[:2]>=(3,12) and not missing, 'missing': missing}); raise SystemExit(0 if sys.version_info[:2]>=(3,12) and not missing else 2)\"\n"
         "```\n"
     )
 
@@ -443,8 +519,8 @@ def build_bundle(
     bundle_root = out / "h4-windows-acceptance"
     new_dest = bundle_root / "sources" / "rc-1.0.0"
     old_dest = bundle_root / "sources" / "rc-0.14.0"
-    _export_git_paths(repo, new_commit, new_dest, ("modules/resource_coordinator", "modules/resource_metrics"))
-    _export_git_paths(repo, old_commit, old_dest, ("modules/resource_coordinator", "modules/resource_metrics"))
+    _export_git_paths(repo, new_commit, new_dest, ("modules/resource_coordinator",))
+    _export_git_paths(repo, old_commit, old_dest, ("modules/resource_coordinator",))
 
     new_info = verify_source_tree(new_dest, expected_version="1.0.0")
     old_info = verify_source_tree(old_dest, expected_version="0.14.0")
@@ -466,6 +542,8 @@ def build_bundle(
 
     deps_dir = bundle_root / "dependencies"
     deps_dir.mkdir(parents=True, exist_ok=True)
+    metrics_wheel = _stage_resource_metrics_wheel(bundle_root)
+    monitor_wheel = _stage_llm_monitor_wheel(bundle_root)
     all_runtime = [*PINNED_RUNTIME_DIRECT, *PINNED_RUNTIME_TRANSITIVE]
     (deps_dir / "requirements.txt").write_text("\n".join(all_runtime) + "\n", encoding="utf-8")
     (deps_dir / "requirements-dev.txt").write_text("\n".join(PINNED_DEV_TEST) + "\n", encoding="utf-8")
@@ -475,21 +553,19 @@ def build_bundle(
             "python_requires": RC_PACKAGE_PYTHON_REQUIRES,
             "rc_package_python_requires": RC_PACKAGE_PYTHON_REQUIRES,
             "h4_tooling_python_requires": H4_TOOLING_PYTHON_REQUIRES,
-            "dependency_status": "resolved_not_hashed",
-            "wheelhouse_status": "unavailable",
+            "dependency_status": "partially_hashed",
+            "wheelhouse_status": "partial",
             "runtime_direct": PINNED_RUNTIME_DIRECT,
             "runtime_transitive": PINNED_RUNTIME_TRANSITIVE,
             "dev_test": PINNED_DEV_TEST,
             "build_system": PINNED_BUILD_SYSTEM,
-            "in_repo_packages": {
-                "resource-metrics": {
-                    "version": "0.2.0",
-                    "path": "sources/rc-1.0.0/modules/resource_metrics",
-                }
+            "canonical_packages": {
+                "mxc-resource-metrics": metrics_wheel,
+                "llm-monitor": monitor_wheel,
             },
             "guest_hash_verification_note": (
-                "PyPI wheel SHA-256 hashes are not staged in-bundle; on a networked guest, generate hashes with "
-                "'pip hash' or 'pip download' into a guest-local wheelhouse before installing with --require-hashes."
+                "The canonical mxc-resource-metrics and llm-monitor wheels are bundled and hash-pinned. Other third-party PyPI package "
+                "hashes are not staged; do not treat this partial wheelhouse as a complete offline installer."
             ),
         }, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

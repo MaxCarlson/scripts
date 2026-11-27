@@ -97,5 +97,177 @@
     "type": "retirement",
     "path": "modules/orchestrator_web_viewer",
     "reason": "Canonical viewer and TermDash attachment qualified in toolkit and shared-package worktrees"
+  },
+  {
+    "type": "retirement",
+    "path": "modules/resource_metrics",
+    "reason": "Retire Scripts copy after H4 bundle migration to the published mxc-resource-metrics==0.3.0 wheel and consumer metadata reconciliation"
+  },
+  {
+    "type": "retirement",
+    "path": "modules/llm_monitor",
+    "reason": "Retire Scripts duplicate after Resource Coordinator launcher and H4 bundle use the canonical llm-monitor wheel from Toolkit e10544f63ceb2f2082bc716edb4d6227087b8e03"
+  },
+  {
+    "path": "modules/resource_coordinator/docs/plans/20261112-h4-windows-qualification/STATUS.md",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "3157718446ef25f97e56cb8f3fc6a890417fc52f",
+    "after": "1e407a533ff94932ae5d0262d2805d04b40a9ebb",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/docs/plans/20261112-h4-windows-qualification/WINDOWS_ACCEPTANCE.md",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "7fe3cd46f967b0b43b5c70165d93db877d8964bc",
+    "after": "13394e4e443f2fc73f1e5d817498fb2c091dd0c6",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/docs/plans/20261112-h4-windows-qualification/checklist.md",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "1380c719ba34cac6bedf74e3931276ecc084b5f5",
+    "after": "47f6a80647fc2706eb064348e82fa57f6fd64076",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/docs/plans/20261124-canonical-llm-monitor-bundle/STATUS.md",
+    "action": "A",
+    "before_mode": "000000",
+    "after_mode": "100644",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "799fb129fd8e25be9f7c9981beda972b3df97e1d",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/docs/plans/20261124-canonical-llm-monitor-bundle/checklist.md",
+    "action": "A",
+    "before_mode": "000000",
+    "after_mode": "100644",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "94a40d9f3f8c0befa1936939f3451460047f3838",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/docs/plans/20261125-canonical-resource-metrics-bundle/STATUS.md",
+    "action": "A",
+    "before_mode": "000000",
+    "after_mode": "100644",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "9e02576f0716da8ba074819ca387b4d0886c3af2",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/docs/plans/20261125-canonical-resource-metrics-bundle/checklist.md",
+    "action": "A",
+    "before_mode": "000000",
+    "after_mode": "100644",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "7aab1bdfd7d2c721a14a17dccf97838f7ce96445",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/pyproject.toml",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "0f5d4ffd932f75bdbc18527b87c22a1d3c330be2",
+    "after": "ad084ebcf9161f03e30d8c11e870adadd5185064",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/resource_coordinator/installation.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "5c113de84e8231ca5a674c8cb136cb1f5583d785",
+    "after": "105103352ede496841f9510328d6ae0ac4d28ed6",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/tests/test_h4_canonical_monitor_integration.py",
+    "action": "A",
+    "before_mode": "000000",
+    "after_mode": "100644",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "bb1db5315a64ec8f1feb4f5e5b2ea6b87dbc4aba",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/tests/test_h4_release_compatibility.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "0814396cf9b094e7e8fc70bf072eea16efb50d4c",
+    "after": "66dc86cfdc18ebd0cdeb063f9965a1a52b5f7eae",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/tests/test_h4_release_hardening.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "9eb0a0b835bcf999ebabd53853b77e2470694fdf",
+    "after": "ff662a1dd01bdcdc7f14125fd9232c7d1e145413",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/tests/test_h4_windows_acceptance.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "e34bfb899692fb2c1aa4dd370d3a04cb3f60c343",
+    "after": "08abbca8b46534611b2f5916c68631afcbc463d3",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/tests/test_phase1_proxy_chain_integration.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "b4a009ddd6b76b68860aaa616dea35e9ccd5286a",
+    "after": "35e89a239bd080c59610143e5176fcd605b0459e",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/tools/h4_qualification/bundle_builder.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "49fdddfa50a3bcf9cf4d5022fb023bc4b387dccd",
+    "after": "4e773564994f2294deb4879bd650d6cc64856697",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/tools/h4_qualification/wheelhouse/llm_monitor-0.9.0-py3-none-any.whl",
+    "action": "A",
+    "before_mode": "000000",
+    "after_mode": "100644",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "8f07713f053da9fe36b34f2f52e24e1205b3f4b7",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/tools/h4_qualification/wheelhouse/mxc_resource_metrics-0.3.0-py3-none-any.whl",
+    "action": "A",
+    "before_mode": "000000",
+    "after_mode": "100644",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "021285caa2be7b98b66d5a8b0bec3fc244474312",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "path": "modules/resource_coordinator/tools/h4_qualification/windows_acceptance.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "d2fc19a3513748c7e99daffcc5c3da52b6bb72b3",
+    "after": "dfc102d3321f21dddc835daf303240374833e084",
+    "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
   }
 ]
