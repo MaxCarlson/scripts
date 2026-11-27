@@ -1,46 +1,15 @@
 # Post-P6 source retirement checklist
 
-- [x] Verify current scripts main and preserve the primary checkout's untracked/ignored data.
-- [x] Inspect the old PR #27/#28 branches and worktrees; retain them unchanged and build replacements from current main.
-- [x] Compare all 25 unique directories to canonical toolkit/shared ownership and inspect remaining imports, package metadata, launchers, and data.
-- [x] Preserve the seven remaining ownership/data/optional-integration holds: `agent_abilities`, `agent_skills`, `agent_memory`, `llm_local`, `resource_coordinator`, `resource_metrics`, and `orchestrator_web_viewer`.
-- [x] Stage 13 toolkit-only source removals on `retire/toolkit-sources-current-main`.
-- [x] Stage four shared-source removals and dependency/validation-target corrections on `retire/shared-sources-current-main`.
-- [x] Verify qualified wheel hashes/metadata, offline wheel install, import provenance, TermDash help, XInstall fallback, Runmux CLI, setup ownership tests, and bootstrap dry-runs.
-- [x] Preserve the TermDash `TERMDASH_WEB_ATTACH` integration by holding `orchestrator_web_viewer`; update its optional dependency to `mxc-termdash` and verify package metadata.
-- [x] Inventory tracked, untracked, and ignored primary-checkout module files read-only; record inaccessible ignored-cache paths and the unapplied synchronization/quarantine plan in `STATUS.md`.
-- [x] Keep current-main validation targets and the recent media/procparsers work intact.
-- [x] Create and push isolated qualification refs for `main + PR #33 + PR #35` and the combined `main + PR #33 + PR #34 + PR #35`; preserve the PR branches.
-- [x] Refresh local retirement checks on the exact qualification SHAs: 62 tests on toolkit-only, 65 ownership/Help/Gitlink tests on combined, and 13 Runmux CLI/package-metadata tests on combined.
-- [x] Recheck the five staged wheel SHA-256 values and isolated import provenance on the combined ref; all five `mxc-*` versions resolve from the qualification target and all five legacy distributions are absent there.
-- [x] Correct the TermDash/viewer disposition: `mxc-termdash` source can retire; `orchestrator_web_viewer` remains held because the optional `TERMDASH_WEB_ATTACH` path calls its API.
-- [x] Record dependency contracts and evidence for the seven remaining holds in `STATUS.md`, including nested Gitlink SHAs, Agent Memory DB paths/sidecars, optional `llm_local`, H4 bundle/source pins, and viewer metadata/API parity.
-- [x] Recheck the Harbor/Monitor transfer; preserve its source feature branch/worktree and verify all 176 Monitor source paths and historical evidence against the toolkit branch.
-- [x] Confirm no active Monitor process, no scripts `.venv` Monitor installation, Runmux's `package_missing` fallback, and the telemetry database outside the module tree.
-- [x] Remove the 176 tracked `llm_monitor` files and obsolete Scripts Help module entry in an isolated worktree; retain the transferred distribution and CLI exclusion records.
-- [x] Re-run the ownership, Scripts Help, Runmux optional-package, and consumer regressions on the stacked proposal: 58 ownership/Help tests, 19 Runmux integration/API tests (including the package-missing case), and 11 web CLI tests passed.
-- [x] Record the active Resource Coordinator H4 worktree's exact dirty/untracked state without modifying it.
-- [x] Complete a fresh dependency-resolved bootstrap and clean `pip check` on the preserved toolkit-only and combined refs through hosted qualification.
-- [x] Dispatch and complete hosted Linux qualification on both retirement refs: runs `45321529713` and `45321531381` passed the recorded checks.
-- [x] Complete authenticated submodule checkout/bootstrap, installed import provenance, launcher ownership, synthetic Runmux HTTP tests, and consumer regressions for those exact refs in hosted Linux CI.
-- [ ] Run hosted qualification on this additional stacked Monitor-removal follow-up before treating it as merge-ready.
-- [ ] Complete clean Windows root bootstrap through its owning agent; preserve the known Windows descriptor/socket limitation.
-- [x] Push replacement branches and open replacement review PRs #34 and #35; do not merge.
-- [x] Close stale PRs #27 and #28 with comments linking their current-main replacements.
-- [ ] Merge the toolkit-only PR only with separate approval; keep shared-source PR pending clean-index package availability.
-- [ ] Do not synchronize/clean primary checkout, quarantine local residuals, or alter any hold without a separate inventory and approval.
-
-## Candidate split
-
-- Toolkit-only PR: 13 directories (`agent_sync`, `agt`, `knowledge_manager`, `llm-interface`, `llm-models`, `llm-patcher`, `lmstui`, `local_agent_bridge`, `web_ai_automator`, `agent_benchmark`, `benchmark_core`, `interactive_reports`, `ai_orchestrator`).
-- Shared-source PR: four directories (`script_logging`, `termdash`, `cross_platform`, `web_ui_tools`).
-- Retained: seven directories, detailed in `STATUS.md`.
-
-## Qualification refs
-
-- Toolkit-only: `qualify/retirement-toolkit-pr33-pr35-20261124` at `526af4aafda829013f246c6b13e0947fe62806b0` — 62 local tests passed.
-- Combined: `qualify/retirement-combined-pr33-pr34-pr35-20261124` at `f4a06aab3a24fe2bb672f5b63ba0b06d8e2e752a` — 65 ownership/Help/Gitlink tests and 13 Runmux CLI/package-metadata tests passed locally.
-- Hosted PR #33 run `45302927058` remains the workflow-correction baseline; post-removal hosted runs are `45321529713` and `45321531381` on the preserved qualification refs.
-- PR #34 remains draft and PR #35 remains open. No merge occurred.
-- The Monitor follow-up branch is based on PR #35 head `217ba2ab8c22ebb3c493bfaae13341a686e04925`; local post-removal checks are recorded above, but no hosted run or merge is claimed.
-- The existing ownership-protection draft PR #36 remains separate and unmodified; its review/remaining launcher audit is still open.
+- [x] Audit the 25-directory ownership inventory and preserve primary-checkout untracked/ignored data.
+- [x] Prepare 13 toolkit-source and four shared-source retirements on separate PRs.
+- [x] Qualify exact integration refs locally, then hosted: runs 45321529713 (toolkit-only) and 45321531381 (combined) passed wheel, import, HTTP, consumer, Gitlink, clean-bootstrap, launcher and pip-health checks.
+- [x] Restore PR #35's qualified module tree with corrective revert `e54550da`; source tree matches qualification checkpoint `f4f8e158`.
+- [x] Complete ownership protection PR #36; parser, exact exception, Gitlink and mode changes exercised through the production CLI.
+- [x] Prepare separate `llm_local` retirement PR #38 at `1422d0df`; Agent Memory absent-package suite passed 20, canonical package suite passed 10, and installed canonical package consumer tests passed 2 with mocked completions.
+- [x] Prepare separate viewer retirement PR #39 at `1d7689f5`; canonical viewer API tests passed 7, direct TermDash attachment smoke passed, and scripts ownership/Help tests passed 50.
+- [x] Prepare canonical Monitor metadata PR #5 at `edd54bd`; Runmux adapter/API compatibility tests passed 19 against an installed canonical wheel plus canonical web UI package.
+- [ ] Obtain ordinary install-source availability and fresh hosted qualification for PRs #38 and #39 before merge approval.
+- [ ] Repair or explain canonical Monitor PR #5 hosted matrix failures; logs were unavailable. Resolve H4 bundle staging before removing scripts Monitor source.
+- [ ] Resolve `agent_abilities`/`agent_skills` Gitlink ownership and initialization; establish Agent Memory data-path migration without touching live data; resolve Resource Coordinator H4 and `resource_metrics` bundle contracts.
+- [ ] Keep PR #34 gated on ordinary package-index availability and clean-index install qualification.
+- [ ] Do not merge, publish, synchronize the primary checkout, or migrate runtime data without the existing separate authorization.

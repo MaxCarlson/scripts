@@ -3,4 +3,5 @@
 torch>=2.5
 torchvision>=0.20
 numpy>=1.26
+Pillow>=9.0.0,<13
 PyNvVideoCodec>=2.1

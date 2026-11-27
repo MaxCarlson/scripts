@@ -233,3 +233,81 @@ def test_installer_dry_run_does_not_call_pip(monkeypatch, capsys) -> None:
     assert shared_packages.ensure_shared_distributions(python="isolated-python", dry_run=True)
     assert calls == []
     assert "[DRY RUN] Would install shared distribution" in capsys.readouterr().out
+
+
+def test_installer_falls_back_to_local_shared_package_when_index_lacks_distribution(monkeypatch, tmp_path, capsys) -> None:
+    import json
+    from importlib import metadata
+    from scripts_setup import shared_packages
+
+    shared_root = tmp_path / "shared-python-modules"
+    termdash_dir = shared_root / "packages" / "termdash"
+    termdash_dir.mkdir(parents=True)
+    (termdash_dir / "pyproject.toml").write_text('[project]\nname = "mxc-termdash"\nversion = "0.10.0"\n', encoding="utf-8")
+
+    installed: dict[str, object] = {}
+    calls: list[list[str]] = []
+
+    class Dist:
+        def __init__(self, direct_url: dict | None = None) -> None:
+            self._direct_url = direct_url
+
+        def read_text(self, filename: str) -> str:
+            if filename == "direct_url.json" and self._direct_url is not None:
+                return json.dumps(self._direct_url)
+            return ""
+
+    def distribution(name: str):
+        if name in installed:
+            return installed[name]
+        raise metadata.PackageNotFoundError(name)
+
+    def run(command, **_kwargs):
+        calls.append(list(command))
+        if command[4] == "install":
+            target = command[-1]
+            if target.startswith("mxc-termdash"):
+                return type("Result", (), {"returncode": 1, "stdout": "", "stderr": "No matching distribution"})()
+            if target == str(termdash_dir):
+                installed["mxc-termdash"] = Dist({"url": termdash_dir.as_uri(), "dir_info": {}})
+                return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            installed[target.split(">", 1)[0]] = Dist()
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setenv("SHARED_PYTHON_MODULES_DIR", str(shared_root))
+    monkeypatch.setattr(shared_packages.metadata, "distribution", distribution)
+    monkeypatch.setattr(shared_packages.metadata, "distributions", lambda: [])
+    monkeypatch.setattr(shared_packages.subprocess, "run", run)
+    monkeypatch.setattr(shared_packages, "_legacy_editable_consumer_paths", lambda _root: [])
+
+    assert shared_packages.ensure_shared_distributions(python="isolated-python")
+    assert ["isolated-python", "-I", "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "-q", str(termdash_dir)] in calls
+    assert "installing directly from" in capsys.readouterr().out
+
+
+def test_orphaned_worktree_legacy_consumer_detection(tmp_path) -> None:
+    import json
+    from scripts_setup.shared_packages import _orphaned_worktree_legacy_consumers
+
+    root = tmp_path / "scripts"
+    worktree_pkg = root / ".worktrees" / "videocompress-123" / "modules" / "videocompress"
+    worktree_pkg.mkdir(parents=True)
+    main_pkg = root / "modules" / "other_pkg"
+    main_pkg.mkdir(parents=True)
+
+    class Dist:
+        def __init__(self, name: str, source: Path, requires: list[str]) -> None:
+            self.metadata = {"Name": name}
+            self.requires = requires
+            self._source = source
+
+        def read_text(self, filename: str) -> str:
+            if filename != "direct_url.json":
+                return ""
+            return json.dumps({"url": self._source.as_uri(), "dir_info": {"editable": True}})
+
+    distributions = [
+        Dist("videocompress", worktree_pkg, ["cross_platform>=0.8.0", "termdash>=0.8.0"]),
+        Dist("other-pkg", main_pkg, ["cross_platform>=0.8.0"]),
+    ]
+    assert _orphaned_worktree_legacy_consumers(root, distributions) == ["videocompress"]
