@@ -9,7 +9,7 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -1067,6 +1067,192 @@ class DispatcherService:
         return {"slot_id": slot_id, "stage": stage, "provider": provider,
                 "environment_id": environment_id, "native_session_id": session_id}
 
+    def prepare_new_session_workflow(
+        self,
+        *,
+        slot_id: str,
+        launch_id: str,
+        provider: str,
+        environment_id: str,
+        bridge: Any = None,
+        expected_digests: Mapping[str, str] | None = None,
+        custom_instruction_path: str | None = None,
+    ) -> dict[str, Any]:
+        """LLMD-50/51: Discover resources and record prepared workflow provenance once for a new launch."""
+        from .workflows import discover_workflow_resources, prepare_additive_workflow_init
+
+        self._sync()
+        env = next((e for e in self.materializer.list_environments() if e.environment_id == environment_id), None)
+        runtime_kind = env.runtime_kind if env else "unknown"
+        resources = discover_workflow_resources(
+            bridge, provider=provider, runtime=runtime_kind, expected_digests=expected_digests
+        )
+        prepared = prepare_additive_workflow_init(
+            provider=provider,
+            runtime=runtime_kind,
+            is_new_session=True,
+            resources=resources,
+            custom_instruction_path=custom_instruction_path,
+        )
+        with _mutation_lock(self.home_dir):
+            self._sync()
+            event = self._event(
+                EventType.DISPATCHER_PROCESS_OBSERVED,
+                environment_id=environment_id,
+                provider=provider,
+                payload={
+                    "slot_id": slot_id,
+                    "launch_id": launch_id,
+                    "return_code": 0,
+                    "outcome": "workflow_init_prepared" if prepared.get("applied") else "workflow_init_unsupported",
+                    "delivery_state": "prepared",
+                    "provenance": prepared.get("provenance", []),
+                    "limitations": prepared.get("limitations", []),
+                },
+            )
+            self.continuity._emit_and_materialize([event])
+        return prepared
+
+    def confirm_workflow_init_delivered(
+        self,
+        *,
+        slot_id: str,
+        launch_id: str,
+        provider: str,
+        environment_id: str,
+        session_id: str | None,
+        provenance: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Record confirmed delivery separately from preparation once provider launch starts."""
+        with _mutation_lock(self.home_dir):
+            self._sync()
+            event = self._event(
+                EventType.DISPATCHER_PROCESS_OBSERVED,
+                environment_id=environment_id,
+                provider=provider,
+                session_id=session_id,
+                payload={
+                    "slot_id": slot_id,
+                    "launch_id": launch_id,
+                    "return_code": 0,
+                    "outcome": "workflow_init_delivered",
+                    "delivery_state": "delivered",
+                    "provenance": list(provenance),
+                    "native_session_id": session_id,
+                },
+            )
+            self.continuity._emit_and_materialize([event])
+
+    def reconcile_late_activity(
+        self,
+        *,
+        slot_id: str,
+        observed_events: Sequence[Mapping[str, Any]],
+        provider_evidence: Mapping[tuple[str, str, str], Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """LLMD-54: Reconcile activity without letting late observations overwrite a newer selection."""
+        from .workflows import reconcile_activity_and_associations
+
+        self._sync()
+        slot = self.get_slot_by_id(slot_id)
+        current = slot["current"]
+        result = reconcile_activity_and_associations(observed_events, provider_evidence=provider_evidence)
+        reconciled = result["selections"].get(slot_id)
+        if current and reconciled:
+            current_identity = (current["provider"], current["environment_id"], current["native_session_id"])
+            rec_identity = (reconciled["provider"], reconciled["environment_id"], reconciled["native_session_id"])
+            if rec_identity != current_identity:
+                return {
+                    "action": "reconcile",
+                    "replaced": False,
+                    "reason": "newer_selection_preserved",
+                    "current": current_identity,
+                    "reconciled": reconciled,
+                }
+        return {"action": "reconcile", "replaced": False, "reconciled": reconciled}
+
+    def transfer_slot(
+        self,
+        *,
+        gui: str,
+        name: str,
+        destination_gui: str,
+        apply: bool = False,
+    ) -> dict[str, Any]:
+        """LLMD-55: Atomically transfer an immutable slot between GUI memberships."""
+        source_gui = self._gui(gui)
+        dest_gui = self._gui(destination_gui)
+        if source_gui["gui_id"] == dest_gui["gui_id"]:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Source and destination GUIs must be distinct.")
+        slot = self._slot(source_gui["gui_id"], name)
+        if self._row(
+            "SELECT 1 FROM dispatcher_pending_launches WHERE slot_id = ? AND status = 'pending' LIMIT 1",
+            (slot["slot_id"],),
+        ):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Cannot transfer a slot with an unresolved pending launch.")
+        if self._row(
+            "SELECT 1 FROM agent_slots WHERE gui_id = ? AND name_key = ? LIMIT 1",
+            (dest_gui["gui_id"], slot["name"].casefold()),
+        ):
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                f"Destination GUI {dest_gui['alias']!r} already has an agent named {slot['name']!r}.",
+            )
+        env = load_or_create_environment(self.home_dir, persist=apply)
+        dest_number = self._next_agent_number(dest_gui["gui_id"])
+        event = self._event(
+            EventType.DISPATCHER_SLOT_TRANSFERRED,
+            environment_id=env.environment_id,
+            payload={
+                "slot_id": slot["slot_id"],
+                "source_gui_id": source_gui["gui_id"],
+                "destination_gui_id": dest_gui["gui_id"],
+                "destination_agent_number": dest_number,
+                "source_reserved_number": slot.get("agent_number"),
+            },
+        )
+        if apply:
+            with _mutation_lock(self.home_dir):
+                self._sync()
+                latest_slot = self._slot(source_gui["gui_id"], slot["slot_id"])
+                if self._row(
+                    "SELECT 1 FROM dispatcher_pending_launches WHERE slot_id = ? AND status = 'pending' LIMIT 1",
+                    (latest_slot["slot_id"],),
+                ):
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, "Cannot transfer a slot with an unresolved pending launch.")
+                if self._row(
+                    "SELECT 1 FROM agent_slots WHERE gui_id = ? AND name_key = ? LIMIT 1",
+                    (dest_gui["gui_id"], latest_slot["name"].casefold()),
+                ):
+                    raise ContinuityError(
+                        ErrorCode.INVALID_INPUT,
+                        f"Destination GUI {dest_gui['alias']!r} already has an agent named {latest_slot['name']!r}.",
+                    )
+                dest_number = self._next_agent_number(dest_gui["gui_id"])
+                event.payload["destination_agent_number"] = dest_number
+                history = self._history(latest_slot["slot_id"])
+                current = history[-1] if history else None
+                with contextlib.ExitStack() as held_locks:
+                    held_locks.enter_context(self._hold_slot_lock(latest_slot["slot_id"]))
+                    if current:
+                        held_locks.enter_context(self._hold_session_lock(
+                            current["provider"], current["environment_id"], current["native_session_id"]
+                        ))
+                    self.continuity._emit_and_materialize([event])
+        return {
+            "action": "slot-transfer",
+            "applied": apply,
+            "summary": f"{'Transferred' if apply else 'Dry-run: would transfer'} {slot['name']!r} from {source_gui['alias']!r} to {dest_gui['alias']!r} as #{dest_number}.",
+            "details": {
+                "slot_id": slot["slot_id"],
+                "source_gui_id": source_gui["gui_id"],
+                "destination_gui_id": dest_gui["gui_id"],
+                "destination_agent_number": dest_number,
+                "source_reserved_number": slot.get("agent_number"),
+            },
+            "events": [event.to_dict()],
+        }
+
     def _hold_slot_lock(self, slot_id: str):
         if (str(self.home_dir.resolve()), slot_id) in _HELD_SLOT_LOCKS.get():
             return contextlib.nullcontext()
@@ -1820,7 +2006,12 @@ class DispatcherService:
                 "cwd": pane_cwd,
                 "provider_cwd": native.cwd_native,
                 "provider_argv": native_plan.argv if native_plan else None,
-                "argv": ["llmd", "pane-run", "--slot-id", slot["slot_id"]],
+                "argv": [
+                    "llmd", "pane-run", "--slot-id", slot["slot_id"],
+                    "--expected-provider", provider,
+                    "--expected-environment", slot["current_environment_id"],
+                    "--expected-session-id", session_id,
+                ],
             })
         return {"gui_id": conversation["gui_id"], "gui_alias": conversation["alias"],
                 "panes": panes, "unresolved": unresolved}

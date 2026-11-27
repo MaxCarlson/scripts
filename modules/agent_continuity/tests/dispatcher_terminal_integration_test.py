@@ -114,8 +114,14 @@ def test_noninteractive_open_previews_then_submits_grouped_active_slots(
         ["llmd", "pane-run", "--slot-id", slot["slot_id"]]
         for slot in active_slots[:pane_count]
     ]
-    contexts = [argv[5] for argv in child_argvs]
-    assert all(argv[4] == "-T" and UUID(context) for argv, context in zip(child_argvs, contexts, strict=True))
+    contexts = [argv[argv.index("-T") + 1] for argv in child_argvs]
+    assert all(
+        "--expected-provider" in argv
+        and "--expected-environment" in argv
+        and "--expected-session-id" in argv
+        and UUID(context)
+        for argv, context in zip(child_argvs, contexts, strict=True)
+    )
     assert len(set(contexts)) == pane_count
     assert [cwd for _, cwd in child_payloads] == [rf"C:\Workspace Area;雪\{slot['name']}" for slot in active_slots]
 

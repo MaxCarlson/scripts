@@ -354,8 +354,10 @@ def test_open_creates_pane_specs_and_delegates_layout_and_launch(tmp_path, monke
     assert result["launch"] == {"launched": True}
     pane_argv = result["request"]["panes"][0]["argv"]
     assert pane_argv[:4] == ["llmd", "pane-run", "--slot-id", dispatcher.list_slots(gui="AgentImprovement")[0]["slot_id"]]
-    assert pane_argv[4] == "-T"
-    assert UUID(pane_argv[5])
+    assert "--expected-provider" in pane_argv
+    assert "--expected-environment" in pane_argv
+    assert "--expected-session-id" in pane_argv
+    assert UUID(pane_argv[pane_argv.index("-T") + 1])
     assert result["request"]["panes"][0]["provider_argv"] == ["agy", "--conversation", "a-1"]
 
 

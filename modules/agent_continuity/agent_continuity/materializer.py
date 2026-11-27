@@ -601,6 +601,21 @@ class SQLiteMaterializer:
             conn.execute("UPDATE agent_slots SET workflow_type = ?, updated_at = ? WHERE slot_id = ?",
                          (p.get("workflow_type"), ts, str(p["slot_id"])))
 
+        elif etype == EventType.DISPATCHER_SLOT_TRANSFERRED.value:
+            slot_id = str(p["slot_id"])
+            dest_gui_id = str(p["destination_gui_id"])
+            dest_num = int(p["destination_agent_number"])
+            conn.execute(
+                "UPDATE agent_slots SET gui_id = ?, agent_number = ?, updated_at = ? WHERE slot_id = ?",
+                (dest_gui_id, dest_num, ts, slot_id),
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO dispatcher_agent_number_reservations(
+                       gui_id, agent_number, slot_id, reserved_at
+                   ) VALUES (?, ?, ?, ?)""",
+                (dest_gui_id, dest_num, slot_id, ts),
+            )
+
         elif etype == EventType.DISPATCHER_LAUNCH_PROFILE_CREATED.value:
             conn.execute(
                 """INSERT OR IGNORE INTO dispatcher_launch_profiles(

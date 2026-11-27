@@ -405,6 +405,9 @@ def build_parser() -> argparse.ArgumentParser:
     pane.add_argument("-s", "--slot-id", required=True)
     pane.add_argument("-L", "--launch-id")
     pane.add_argument("-T", "--launcher-terminal-context", help=argparse.SUPPRESS)
+    pane.add_argument("--expected-provider", help=argparse.SUPPRESS)
+    pane.add_argument("--expected-environment", help=argparse.SUPPRESS)
+    pane.add_argument("--expected-session-id", help=argparse.SUPPRESS)
     # argparse renders help=SUPPRESS literally for subparser choices. Keep the
     # parser routable for terminal_launcher while hiding its internal command.
     sub._choices_actions[:] = [action for action in sub._choices_actions if action.dest != "pane-run"]
@@ -1347,6 +1350,15 @@ def _run_pane_locked(
     )
     terminal_record_written = False
     bootstrap_completed = False
+    workflow_prep = None
+    if launch_id and getattr(dispatcher, "workflow_bridge", None) is not None:
+        workflow_prep = dispatcher.prepare_new_session_workflow(
+            slot_id=slot_id,
+            launch_id=launch_id,
+            provider=provider,
+            environment_id=environment_id,
+            bridge=dispatcher.workflow_bridge,
+        )
     _startup_progress("environment, executable and Git worktree context resolved")
     try:
         if launch_id and provider == "claude":
@@ -1541,6 +1553,15 @@ def _run_pane_locked(
             _startup_progress("interactive provider handoff")
             _STARTUP_PROGRESS.set(False)
             result = _run_provider_process(argv, cwd=process_cwd, check=False)
+            if workflow_prep and workflow_prep.get("applied"):
+                dispatcher.confirm_workflow_init_delivered(
+                    slot_id=slot_id,
+                    launch_id=launch_id or "",
+                    provider=provider,
+                    environment_id=environment_id,
+                    session_id=session_id,
+                    provenance=workflow_prep.get("provenance", ()),
+                )
     except KeyboardInterrupt:
         if launch_id:
             if provider == "claude":
@@ -3739,8 +3760,14 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
             print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True, default=_json_default) if args.json_output else result["summary"], file=output_stream)
             return 2
     elif args.command == "pane-run":
+        expected = None
+        if args.expected_provider or args.expected_environment or args.expected_session_id:
+            if not (args.expected_provider and args.expected_environment and args.expected_session_id):
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Partial expected session identity on pane-run.")
+            expected = (args.expected_provider, args.expected_environment, args.expected_session_id)
         return _run_pane(dispatcher, slot_id=args.slot_id, launch_id=args.launch_id,
                          input_stream=input_stream, output_stream=output_stream,
+                         expected_session_identity=expected,
                          launcher_terminal_context=args.launcher_terminal_context)
     else:
         parser.error("command required")

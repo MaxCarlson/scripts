@@ -173,6 +173,7 @@ def resolve_authoritative_runtime_identity(
 
 
 _RECIPIENT_HEADER_RE = re.compile(r"^\s*To-Agent\s*:\s*(.+?)\s*$", re.IGNORECASE)
+_AGENT_HEADER_RE = re.compile(r"^\s*Agent\s*:\s*(?:#(\d+)\s*[—–-]\s*)?(.+?)\s*$", re.IGNORECASE)
 
 
 def validate_addressed_handoff(
@@ -185,7 +186,7 @@ def validate_addressed_handoff(
     if authority in {"unavailable", "unmanaged", "contradictory"}:
         return {"valid": False, "outcome": authority, "recipients": []}
 
-    recipients: list[str] = []
+    parsed: list[tuple[int | None, str]] = []
     in_fence = False
     for raw_line in text.splitlines():
         stripped = raw_line.lstrip()
@@ -194,21 +195,30 @@ def validate_addressed_handoff(
             continue
         if in_fence or stripped.startswith(">"):
             continue
+        agent_match = _AGENT_HEADER_RE.match(raw_line)
+        if agent_match:
+            num = int(agent_match.group(1)) if agent_match.group(1) is not None else None
+            parsed.append((num, agent_match.group(2).strip()))
+            continue
         match = _RECIPIENT_HEADER_RE.match(raw_line)
         if match:
-            recipients.append(match.group(1).strip())
+            parsed.append((None, match.group(1).strip()))
 
-    unique = list(dict.fromkeys(recipients))
+    unique = list(dict.fromkeys(parsed))
+    recipients = [name for _, name in unique]
     if not unique:
         return {"valid": False, "outcome": "unaddressed", "recipients": []}
     if len(unique) > 1:
-        return {"valid": False, "outcome": "contradictory_headers", "recipients": unique}
+        return {"valid": False, "outcome": "contradictory_headers", "recipients": recipients}
 
+    header_num, recipient = unique[0]
     expected_name = str(authoritative_identity.get("agent_name") or "")
-    recipient = unique[0]
+    expected_num = authoritative_identity.get("agent_number")
+    if header_num is not None and expected_num is not None and header_num != int(expected_num):
+        return {"valid": False, "outcome": "mismatch", "recipients": recipients, "expected": expected_name}
     if recipient != expected_name:
-        return {"valid": False, "outcome": "mismatch", "recipients": unique, "expected": expected_name}
-    return {"valid": True, "outcome": "matched", "recipients": unique}
+        return {"valid": False, "outcome": "mismatch", "recipients": recipients, "expected": expected_name}
+    return {"valid": True, "outcome": "matched", "recipients": recipients}
 
 
 def reconcile_activity_and_associations(

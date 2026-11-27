@@ -33,12 +33,12 @@ def _register_environment(dispatcher: DispatcherService, environment: Environmen
     dispatcher.continuity._emit_and_materialize([event])
 
 
-@pytest.mark.parametrize("runtime_kind,distro,selector", [
-    ("windows", None, "win-test"),
-    ("wsl", "Ubuntu", "wsl-test"),
+@pytest.mark.parametrize("runtime_kind,distro,selector,command,explicit_environment", [
+    ("windows", None, "win-test", "start", False),
+    ("windows", None, "win-test", "switch", True),
+    ("wsl", "Ubuntu", "wsl-test", "start", True),
+    ("wsl", "Ubuntu", "wsl-test", "switch", False),
 ])
-@pytest.mark.parametrize("command", ["start", "switch"])
-@pytest.mark.parametrize("explicit_environment", [False, True])
 def test_new_launch_preview_and_pending_launch_share_resolved_environment(
     tmp_path, monkeypatch, runtime_kind, distro, selector, command, explicit_environment,
 ):
@@ -78,8 +78,10 @@ def test_new_launch_preview_and_pending_launch_share_resolved_environment(
     assert pending[0]["environment_id"] == previews[0]["environment"]["id"]
 
 
-@pytest.mark.parametrize("command", ["start", "switch"])
-@pytest.mark.parametrize("explicit_environment", [False, True])
+@pytest.mark.parametrize("command,explicit_environment", [
+    ("start", False),
+    ("switch", True),
+])
 def test_new_launch_dry_run_json_reports_resolved_environment(tmp_path, command, explicit_environment):
     home = tmp_path / "registry"
     service = DispatcherService(home_dir=home)

@@ -98,6 +98,7 @@ class EventType(StrEnum):
     DISPATCHER_LAUNCH_PROFILE_RETIRED = "dispatcher.launch_profile_retired"
     DISPATCHER_SLOT_PROFILE_ASSIGNED = "dispatcher.slot_profile_assigned"
     DISPATCHER_SLOT_WORKFLOW_TYPE_CHANGED = "dispatcher.slot_workflow_type_changed"
+    DISPATCHER_SLOT_TRANSFERRED = "dispatcher.slot_transferred"
     DISPATCHER_AGENT_NUMBER_ASSIGNED = "dispatcher.agent_number_assigned"
 
 
