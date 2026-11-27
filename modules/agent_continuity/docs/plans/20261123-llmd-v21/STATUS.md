@@ -1,5 +1,15 @@
 # LLMD Implementation Status
 
+## Final v2.3.0 integration correction pass — 2026-11-27
+
+- Closed the remaining managed restoration gaps: checkpoint cwd and validated provider settings reach canonical `pane-run`; manual and managed restoration share provider-setting encoding; AGY additional directories map to `additional_directories`.
+- Added a non-consuming early reservation exclusion before bootstrap/provider subprocess preparation, then retained exact consumption under dispatcher locks. Post-consumption interruption/spawn/execution failures remain explicitly ambiguous.
+- Provider association now requires exact current provider/environment/native-session evidence; consumption alone is only accepted ownership, not successful restoration.
+- Fresh qualification: agent_continuity xdist suite exited 0 at 100%; guarded restoration execution subset **3 passed**; exact-session/reservation focused tests **5 passed**; scripts_help **66 passed, 1 skipped**; terminal_launcher suite exited 0; Ruff and `git diff --check` passed.
+- `scripts-help registry validate -j` confirmed `llmd` and `agents` entry points. It also reported unrelated import errors for `diff`, `func_replacer`, and `rgcodeblock`; the adjacent `W11-powershell` repository is absent, so its integration test skipped.
+- Version consistency is confirmed at **2.3.0** across `pyproject.toml`, package `__version__`, and the `scripts_help` registry. All provider subprocess tests used guarded harmless substitutes; no live provider, production registry, or shutdown operation was used.
+- No main merge or production install is authorized; independent GUI review remains the gate before integration. LLMD-57 portability is a separate branch and qualification track.
+
 ## Current feature batch — LLMD-25 / LLMD-48 / LLMD-49 / LLMD-50..55 (v2.3.0 integration candidate)
 
 ### Agent #1 integration progress — 2026-11-27

@@ -127,6 +127,38 @@ def validate_provider_launch_settings(
     return sanitized
 
 
+def provider_settings_argv(provider: str, settings: Mapping[str, Any]) -> list[str]:
+    """Encode validated checkpoint settings for the exact destination provider."""
+    argv: list[str] = []
+    if provider == "codex":
+        for key, option in (("model", "--model"), ("sandbox", "--sandbox"),
+                            ("approval_policy", "--ask-for-approval"), ("profile", "--profile")):
+            if settings.get(key) is not None:
+                argv.extend([option, str(settings[key])])
+        if settings.get("reasoning_effort"):
+            argv.extend(["--config", f"model_reasoning_effort={settings['reasoning_effort']}"])
+        if settings.get("search"):
+            argv.append("--search")
+        for path in settings.get("add_dirs", settings.get("additional_directories", [])):
+            argv.extend(["--add-dir", str(path)])
+    elif provider == "claude":
+        for key, option in (("model", "--model"), ("effort", "--effort"),
+                            ("permission_mode", "--permission-mode")):
+            if settings.get(key) is not None:
+                argv.extend([option, str(settings[key])])
+        for path in settings.get("add_dirs", settings.get("additional_directories", [])):
+            argv.extend(["--add-dir", str(path)])
+    elif provider == "agy":
+        mapped = {"additional_directories" if key == "add_dirs" else key: settings[key]
+                  for key in ("model", "effort", "reasoning_effort", "sandbox", "agent", "add_dirs",
+                              "additional_directories") if key in settings}
+        if "reasoning_effort" in mapped:
+            mapped["effort"] = mapped.pop("reasoning_effort")
+        if mapped:
+            argv.extend(["--settings", json.dumps(mapped, ensure_ascii=False, separators=(",", ":"))])
+    return argv
+
+
 class DispatcherWorkspaceAdapter:
     """Read-only adapter translating DispatcherService slots and launches into WorkspaceSlotInput."""
 
@@ -431,6 +463,14 @@ def canonical_llmd_pane_command(
         ])
         if request.queue_entry_id is not None:
             argv.extend(["--queue-entry-id", request.queue_entry_id])
+    if request.cwd:
+        argv.extend(["--cwd", request.cwd])
+    compatible_settings = validate_provider_launch_settings(
+        request.provider, request.launch_settings, strict=True
+    )
+    provider_args = provider_settings_argv(request.provider, compatible_settings)
+    if provider_args:
+        argv.extend(["--", *provider_args])
     return tuple(argv)
 
 
@@ -467,29 +507,7 @@ def build_manual_restore_command(
         if item.cwd:
             argv.extend(["-C", item.cwd])
         settings = validate_provider_launch_settings(item.provider, item.launch_settings, strict=False)
-        provider_args: list[str] = []
-        if item.provider == "codex":
-            for key, option in (("model", "--model"), ("sandbox", "--sandbox"),
-                                ("approval_policy", "--ask-for-approval"), ("profile", "--profile")):
-                if settings.get(key) is not None:
-                    provider_args.extend([option, str(settings[key])])
-            if settings.get("reasoning_effort"):
-                provider_args.extend(["--config", f"model_reasoning_effort={settings['reasoning_effort']}"])
-            if settings.get("search"):
-                provider_args.append("--search")
-            for path in settings.get("add_dirs", []):
-                provider_args.extend(["--add-dir", str(path)])
-        elif item.provider == "claude":
-            for key, option in (("model", "--model"), ("effort", "--effort"),
-                                ("permission_mode", "--permission-mode")):
-                if settings.get(key) is not None:
-                    provider_args.extend([option, str(settings[key])])
-            for path in settings.get("add_dirs", []):
-                provider_args.extend(["--add-dir", str(path)])
-        elif item.provider == "agy":
-            mapped = {key: settings[key] for key in ("model", "effort", "sandbox", "add_dirs") if key in settings}
-            if mapped:
-                provider_args.extend(["--settings", json.dumps(mapped, ensure_ascii=False, separators=(",", ":"))])
+        provider_args = provider_settings_argv(item.provider, settings)
         if provider_args:
             argv.extend(["--", *provider_args])
         return argv

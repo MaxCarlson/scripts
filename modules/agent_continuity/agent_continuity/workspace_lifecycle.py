@@ -1203,11 +1203,14 @@ class TopologyRestorer:
             )
             relay_ack = bool(launch_res.relay_spawn_acknowledged or spawn_confirmed)
             dispatcher_ack = bool(launch_res.dispatcher_ownership_acknowledged)
-            if not spawn_confirmed or (require_dispatcher_ownership and not dispatcher_ack):
+            association_unconfirmed = bool(reservation_id is not None and launch_res.association_confirmed is not True)
+            if not spawn_confirmed or (require_dispatcher_ownership and not dispatcher_ack) or association_unconfirmed:
                 uncertain_reason = launch_res.failure_reason or (
                     "launch_accepted_spawn_unconfirmed"
                     if not spawn_confirmed
                     else "relay_spawned_dispatcher_ownership_unconfirmed"
+                    if require_dispatcher_ownership and not dispatcher_ack
+                    else "exact_provider_association_unconfirmed"
                 )
                 if reservation_store is not None and reservation_id is not None:
                     with contextlib.suppress(Exception):

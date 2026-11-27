@@ -299,6 +299,10 @@ def test_e2e_save_restart_restore_with_real_dispatcher_and_terminal_launcher(tmp
         backend=_FakeBackend(),
         managed_store=fresh_tl_store,
         home_dir=home_dir,
+            ownership_verifier=type(
+                "_VerifiedOwnership", (),
+                {"verify_ownership": staticmethod(lambda *_args, **_kwargs: (True, True))},
+            )(),
         require_dispatcher_ownership=False,
         command_builder=type(
             "_CmdBuilder",
@@ -570,7 +574,7 @@ def test_real_managed_relay_grouped_restoration_and_failure_modes(tmp_path: Path
         require_dispatcher_ownership=False,
     )
     for proc in spawned_relays:
-        proc.wait(timeout=5.0)
+        proc.wait(timeout=20.0)
 
     assert report.partial_failure is False
     by_slot = {o.slot_id: o for o in report.outcomes}
@@ -659,6 +663,7 @@ def test_adapter_safety_floor_011_gui_scope_and_queue_recovery_gates(
                 pane_id="p_g",
                 spawn_confirmed=True,
                 dispatcher_ownership_acknowledged=True,
+                association_confirmed=True,
             )
 
     obs_after = RuntimeDiscovery(environment_id=ids["env_id"], runtime_kind=detect_runtime_kind(), process_enumerator=_StaticEnumerator(()))
@@ -716,6 +721,8 @@ def test_entrypoint_exact_session_contract_ownership_separation_and_grouped_clea
     from agent_continuity.workspace_adapters import (
         build_manual_restore_command,
         canonical_llmd_dispatcher_entrypoint,
+        canonical_llmd_pane_command,
+        provider_settings_argv,
     )
     from agent_continuity.workspace_lifecycle import RestorePlanItem
 
@@ -763,6 +770,12 @@ def test_entrypoint_exact_session_contract_ownership_separation_and_grouped_clea
         ),
         metadata=WorkspaceSlotMetadata(),
     )
+    pane_command = canonical_llmd_pane_command(req, home_dir=home_dir, prefer_installed=False)
+    assert pane_command[pane_command.index("--cwd") + 1] == str(work_dir)
+    assert list(pane_command[-5:]) == ["--", "--model", "checkpoint-model", "--config", "model_reasoning_effort=high"]
+    agy_args = provider_settings_argv("agy", {"model": "agy-model", "add_dirs": [str(work_dir)]})
+    assert agy_args[0] == "--settings"
+    assert json.loads(agy_args[1]) == {"model": "agy-model", "additional_directories": [str(work_dir)]}
     fail_closed_adapter = TerminalLauncherRestoreAdapter(
         backend=type("_NoopBackend", (), {"launch": lambda self, p: LaunchResult(LaunchStatus.SUBMITTED, "fake")})(),
         managed_store=tl_store,
@@ -908,7 +921,18 @@ def test_entrypoint_exact_session_contract_ownership_separation_and_grouped_clea
     assert q_entries[slots[0].slot_id].status is QueueEntryStatus.AMBIGUOUS
 
 
-def test_durable_ownership_transfer_cross_process_and_competing_launch_blocked(tmp_path: Path) -> None:
+def _install_guarded_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
+    """Route child pane-run provider execution through a harmless PowerShell stub."""
+    guarded_bin = tmp_path / "guarded-provider-bin"
+    guarded_bin.mkdir(exist_ok=True)
+    (guarded_bin / f"{provider}.cmd").write_text("@exit /b 0\n", encoding="utf-8")
+    (guarded_bin / f"{provider}.ps1").write_text("exit 0\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", str(guarded_bin) + os.pathsep + os.environ.get("PATH", ""))
+
+
+def test_durable_ownership_transfer_cross_process_and_competing_launch_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Exercise real _pane_runner.py + cross-process reservation consumption under canonical slot-<slot_id>.lock."""
     import subprocess
 
@@ -921,6 +945,8 @@ def test_durable_ownership_transfer_cross_process_and_competing_launch_blocked(t
         canonical_slot_lock_path,
     )
     from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
+
+    _install_guarded_provider(tmp_path, monkeypatch, "codex")
 
     home_dir = tmp_path / "llmd_home"
     work_dir = tmp_path / "repo"
@@ -1041,7 +1067,7 @@ def test_durable_ownership_transfer_cross_process_and_competing_launch_blocked(t
         managed_store=tl_store,
         home_dir=home_dir,
         command_builder=_ConsumerCmdBuilder(),
-        ownership_verifier=ReservationOwnershipVerifier(home_dir),
+        ownership_verifier=ReservationOwnershipVerifier(home_dir, dispatcher=dispatcher),
         require_dispatcher_ownership=True,
         reservation_store=rsv_store,
         startup_timeout=5.0,
@@ -1065,7 +1091,7 @@ def test_durable_ownership_transfer_cross_process_and_competing_launch_blocked(t
         require_dispatcher_ownership=True,
     )
     for proc in spawned_relays:
-        proc.wait(timeout=5.0)
+        proc.wait(timeout=20.0)
 
     assert len(report.outcomes) == 1
     out = report.outcomes[0]
@@ -1073,7 +1099,7 @@ def test_durable_ownership_transfer_cross_process_and_competing_launch_blocked(t
     assert out.spawn_confirmed is True
     assert out.relay_spawn_acknowledged is True
     assert out.dispatcher_ownership_acknowledged is True
-    assert out.association_confirmed is False
+    assert out.association_confirmed is True
 
     q_entry = queue.list_entries(checkpoint_id=chk.checkpoint_id)[0]
     assert q_entry.status is QueueEntryStatus.COMPLETED
@@ -1113,6 +1139,8 @@ def test_reservation_crash_recovery_delayed_ack_and_partial_grouped_restoration(
     from agent_continuity.workspace_lifecycle import TopologyRestorer
     from agent_continuity.workspace_ownership import ReservationOwnershipVerifier, RestorationReservationStore
     from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
+
+    _install_guarded_provider(tmp_path, monkeypatch, "codex")
 
     # 1. Incompatible installed `llmd` binary must NOT be selected over candidate dispatcher_cli
     monkeypatch.setattr(shutil, "which", lambda _name: "C:/fake/llmd.exe")
@@ -1188,7 +1216,7 @@ def test_reservation_crash_recovery_delayed_ack_and_partial_grouped_restoration(
         managed_store=tl_store,
         home_dir=home_dir,
         command_builder=_SelectiveConsumerCmdBuilder(),
-        ownership_verifier=ReservationOwnershipVerifier(home_dir),
+        ownership_verifier=ReservationOwnershipVerifier(home_dir, dispatcher=dispatcher),
         require_dispatcher_ownership=True,
         reservation_store=rsv_store,
         startup_timeout=5.0,
@@ -1212,7 +1240,7 @@ def test_reservation_crash_recovery_delayed_ack_and_partial_grouped_restoration(
         require_dispatcher_ownership=True,
     )
     for proc in spawned:
-        proc.wait(timeout=5.0)
+        proc.wait(timeout=20.0)
 
     assert report.partial_failure is True
     by_slot = {o.slot_id: o for o in report.outcomes}

@@ -1261,6 +1261,19 @@ def _bootstrap_attempt_error(dispatcher: DispatcherService, *, slot_id: str, lau
     )
 
 
+def _mark_restoration_execution_uncertain(
+    dispatcher: DispatcherService, *, reservation_id: str | None, launch_id: str | None,
+    pane_id: str | None, reason: str,
+) -> None:
+    if not reservation_id:
+        return
+    from .workspace_ownership import RestorationReservationStore
+
+    RestorationReservationStore(dispatcher.home_dir).mark_ambiguous_locked(
+        reservation_id, reason=reason, launch_id=launch_id, pane_id=pane_id,
+    )
+
+
 def _run_pane(
     dispatcher: DispatcherService,
     *,
@@ -1403,6 +1416,23 @@ def _run_pane_locked(
             process_cwd = None
         else:
             process_cwd = cwd
+    # Refuse competing launches before executable/bootstrap preparation can
+    # reach any provider subprocess. The canonical slot lock remains held, and
+    # exact reservation consumption is repeated under the session lock below.
+    dispatcher.check_or_consume_restoration_reservation(
+        slot_id=slot_id,
+        provider=launch_identity[0] if launch_identity else provider,
+        environment_id=launch_identity[1] if launch_identity else environment_id,
+        session_id=launch_identity[2] if launch_identity else session_id,
+        reservation_id=reservation_id,
+        reservation_token=reservation_token,
+        checkpoint_id=checkpoint_id,
+        queue_entry_id=queue_entry_id,
+        attempt=attempt,
+        launch_id=reservation_launch_id,
+        pane_id=pane_id,
+        consume=False,
+    )
     _validated_native_args(provider, native_args, allow_unknown=allow_native_unknown)
     bootstrap_cwd = cwd
     if cwd_override is not None:
@@ -1423,6 +1453,7 @@ def _run_pane_locked(
     )
     terminal_record_written = False
     bootstrap_completed = False
+    reservation_consumed = False
     workflow_prep = None
     if launch_id and getattr(dispatcher, "workflow_bridge", None) is not None:
         workflow_prep = dispatcher.prepare_new_session_workflow(
@@ -1636,7 +1667,7 @@ def _run_pane_locked(
             # Keep the exact slot and session locks while consuming. All fallible
             # cwd, argv, selection, and lock checks are complete before ownership
             # is acknowledged; consumption still precedes provider execution.
-            dispatcher.check_or_consume_restoration_reservation(
+            consumed = dispatcher.check_or_consume_restoration_reservation(
                 slot_id=slot_id,
                 provider=launch_identity[0] if launch_identity else provider,
                 environment_id=launch_identity[1] if launch_identity else environment_id,
@@ -1649,6 +1680,7 @@ def _run_pane_locked(
                 launch_id=reservation_launch_id,
                 pane_id=pane_id,
             )
+            reservation_consumed = bool(reservation_id and consumed is not None)
             if launch_id and provider == "claude":
                 dispatcher.claim_claude_launch(launch_id=launch_id, slot_id=slot_id, session_id=session_id)
             if terminal_record and not terminal_record_written:
@@ -1658,6 +1690,11 @@ def _run_pane_locked(
             _STARTUP_PROGRESS.set(False)
             result = _run_provider_process(argv, cwd=process_cwd, check=False)
     except KeyboardInterrupt:
+        if reservation_consumed:
+            _mark_restoration_execution_uncertain(
+                dispatcher, reservation_id=reservation_id, launch_id=reservation_launch_id,
+                pane_id=pane_id, reason="provider_interrupted_after_ownership_consumption",
+            )
         if launch_id:
             if provider == "claude":
                 dispatcher.record_process_observation(
@@ -1672,11 +1709,21 @@ def _run_pane_locked(
                                                apply=True)
         _finish_terminal_launch(dispatcher, terminal_record, exit_code=130, status="interrupted")
         raise
-    except ContinuityError:
+    except ContinuityError as exc:
+        if reservation_consumed:
+            _mark_restoration_execution_uncertain(
+                dispatcher, reservation_id=reservation_id, launch_id=reservation_launch_id,
+                pane_id=pane_id, reason=f"provider_execution_error:{type(exc).__name__}",
+            )
         if terminal_record_written:
             _finish_terminal_launch(dispatcher, terminal_record, exit_code=1, status="failed")
         raise
     except OSError as exc:
+        if reservation_consumed:
+            _mark_restoration_execution_uncertain(
+                dispatcher, reservation_id=reservation_id, launch_id=reservation_launch_id,
+                pane_id=pane_id, reason=f"provider_spawn_error:{type(exc).__name__}",
+            )
         if launch_id:
             dispatcher.mark_launch_failed(launch_id=launch_id, detail=str(exc), apply=True)
         elif session_id:
@@ -3620,7 +3667,7 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
                 managed_store=ManagedProcessStore(state_root / "terminal-launcher.sqlite3"),
                 home_dir=Path(dispatcher.home_dir),
                 command_builder=_CanonicalBuilder(),
-                ownership_verifier=ReservationOwnershipVerifier(Path(dispatcher.home_dir)),
+                ownership_verifier=ReservationOwnershipVerifier(Path(dispatcher.home_dir), dispatcher=dispatcher),
                 reservation_store=reservation_store,
                 require_exact_session_support=True,
                 require_dispatcher_ownership=True,
