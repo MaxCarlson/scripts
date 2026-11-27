@@ -6,6 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 from terminal_launcher.backend import LaunchStatus
@@ -108,10 +109,14 @@ def test_noninteractive_open_previews_then_submits_grouped_active_slots(
     assert options["shell"] is False
     assert [command[index + 1] for index, token in enumerate(command) if token == "split-pane"] == split_directions
     child_payloads = _child_payloads(command)
-    assert [argv for argv, _ in child_payloads] == [
+    child_argvs = [argv for argv, _ in child_payloads]
+    assert [argv[:4] for argv in child_argvs] == [
         ["llmd", "pane-run", "--slot-id", slot["slot_id"]]
         for slot in active_slots[:pane_count]
     ]
+    contexts = [argv[5] for argv in child_argvs]
+    assert all(argv[4] == "-T" and UUID(context) for argv, context in zip(child_argvs, contexts, strict=True))
+    assert len(set(contexts)) == pane_count
     assert [cwd for _, cwd in child_payloads] == [rf"C:\Workspace Area;雪\{slot['name']}" for slot in active_slots]
 
 
