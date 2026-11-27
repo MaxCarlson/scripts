@@ -8,7 +8,7 @@ import shlex
 import shutil
 import sqlite3
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,9 @@ class AgyAdapter(ProviderAdapter):
     ) -> None:
         self._which = which_fn
         self._home_dir = home_dir or Path.home()
+
+    def find_executable(self) -> str | None:
+        return self._which("agy")
 
     def detect_installation(self) -> ProviderInstallation:
         exe = self._which("agy")
@@ -286,8 +289,9 @@ class AgyAdapter(ProviderAdapter):
         cwd: str | None = None,
         environment_id: str = "",
         runtime_kind: str = "",
+        native_args: Sequence[str] = (),
     ) -> ResumePlan:
-        argv = ["agy", "--conversation", native_session_id]
+        argv = ["agy", "--conversation", native_session_id, *native_args]
         notes = "Verified syntax for agy CLI (`agy --conversation <ID>`)."
         if cwd:
             notes += f" Run from working directory: {cwd}"

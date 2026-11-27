@@ -86,6 +86,19 @@ def test_console_entry_points_are_aliases_and_flags_work_after_subcommand():
     assert args.window == "2"
 
 
+def test_public_help_hides_internal_pane_run_but_parser_keeps_it_callable():
+    parser = build_parser()
+    help_text = parser.format_help()
+    assert "pane-run" not in help_text
+    assert "Primary: start, continue, switch, review, return, list, open, history." in help_text
+    assert "Recovery and diagnostics" in help_text
+    args = parser.parse_args(["pane-run", "-s", "slot-example"])
+    assert args.command == "pane-run"
+    assert args.slot_id == "slot-example"
+    assert "--history-count" in parser._subparsers._group_actions[0].choices["list"].format_help()
+    assert "--new" in parser._subparsers._group_actions[0].choices["start"].format_help()
+
+
 def test_open_creates_pane_specs_and_delegates_layout_and_launch(tmp_path, monkeypatch):
     dispatcher = DispatcherService(ContinuityService(tmp_path / "registry"))
     dispatcher.create_gui("AgentImprovement", apply=True)
