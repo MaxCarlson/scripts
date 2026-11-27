@@ -175,6 +175,12 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# ruff
+.ruff_cache/
+
+# Setup logs
+setup_logs/
+
 # Pyre type checker
 .pyre/
 
@@ -229,6 +235,11 @@ bin/
 # Scheduler Stuff
 modules/scheduler/scheduler_data.json
 modules/scheduler/scheduler_history.sqlite3
+
+# Legacy media-tool runtime state retained outside public source control.
+/modules/video_dataset_tools/copy_state.json
+/modules/ytaedl/urlscan-latest.json
+/modules/ytaedl/logs/
 
 # Superpowers temporary artifacts
 .superpowers/

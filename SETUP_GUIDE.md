@@ -37,23 +37,58 @@ python setup.py -v
 python setup.py -R ~/scripts/ -D ~/dotfiles/ -B ~/src/scripts/bin/
 ```
 
+### Repository-Only Setup
+
+Use repository-only mode when you need the project environment and local `bin/`
+launchers without wiring the current user or system:
+
+```powershell
+python setup.py --repository-only
+# Short form:
+python setup.py -r
+```
+
+This mode still installs the public modules and, when the pinned `pscripts`
+submodule is available, its modules. It refreshes managed launchers and the
+manifest, including standalone Python scripts under `pscripts/pyscripts/`. It
+skips user PATH/PYTHONPATH registration, shell and PowerShell profile snippets,
+agent-skill links, venv auto-activation, WSL system setup, and interactive help
+registry updates. The mode is carried into setup subprocesses through the
+`SCRIPTS_REPOSITORY_ONLY` environment marker.
+
+Normal setup retains those integrations. Skill links can be directed to one or
+more explicit destinations instead of the default CLI skill folders:
+
+```powershell
+python setup.py --skills-dir C:\tools\codex-skills --skills-dir D:\shared\skills
+```
+
+Repository-only setup ignores inherited `SCRIPTS` and bootstrap-skip settings,
+uses the invoked checkout's `.venv`, and clears common Python and pip install
+destination overrides before child installers run. It resolves managed output
+paths before writing. This limits setup-owned destinations and integration
+hooks; package build scripts still execute with the current user's normal
+filesystem and network access, so this mode is not a general-purpose security
+sandbox.
+
 ## How It Works
 
 ### 1. Virtual Environment Bootstrap
 
-**setup.py** (lines 61-97):
-- Detects if already running in `.venv/bin/python` or `Scripts\python.exe`
+**setup.py**:
+- Checks `sys.prefix` against the repository `.venv` to identify the active environment. This works when POSIX venv Python executables resolve through symlinks to the base interpreter.
 - If not, creates `.venv` (preferring `uv venv --seed` if available)
 - Re-execs itself under the venv Python
 - All subsequent operations use the venv
 
-### 2. Module Installation
+### 2. Module Installation and Ownership Boundary
 
-**modules/setup.py**:
-- Scans `modules/` directory
-- Installs each module in editable mode (`pip install -e`)
-- Tracks package names for proxy generation
-- Handles dependencies via `dependency_resolver.py`
+**modules/setup.py** and **scripts_setup/transferred_modules.py**:
+- Scans `modules/` directory while excluding the 23 modules transferred to `MaxCarlson/llm-agent-toolkit` (`TRANSFERRED_MODULE_DIRS` / `TRANSFERRED_NORMALIZED_DISTRIBUTIONS` in `scripts_setup/transferred_modules.py`).
+- Transferred-module ownership remains recorded in `scripts_setup/transferred_modules.py`; retired historical source directories are absent from the active tree, and the remaining toolkit-owned sources are not installed into `scripts/.venv` or exposed through `scripts/bin`.
+- Installs each `scripts`-owned module in editable mode (`pip install -e`).
+- Tracks package names for proxy generation and handles dependencies via `dependency_resolver.py`.
+- `scripts/bin` wrappers delegate invocation logging to `script_logging.launcher` using the sibling `llm-agent-toolkit/.venv` interpreter (or `LLM_AGENT_TOOLKIT_ROOT`) with `-I` and `--target-python` pointing to `scripts/.venv`.
 
 ### 3. Console Script Proxies
 

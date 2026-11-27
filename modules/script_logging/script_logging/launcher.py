@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -157,6 +158,9 @@ def launch_target(
     if kind == "python_file":
         py_exe = find_venv_python(manifest_file)
         child_cmd = [py_exe, str(target_path), *target_args]
+    elif kind == "powershell_script":
+        pwsh_exe = shutil.which("pwsh") or shutil.which("powershell") or "pwsh"
+        child_cmd = [pwsh_exe, "-NoProfile", "-File", str(target_path), *target_args]
     else:
         child_cmd = [str(target_path), *target_args]
 

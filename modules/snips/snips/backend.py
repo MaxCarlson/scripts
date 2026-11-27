@@ -6,14 +6,17 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from runtime_lifecycle import TaskSpec
 
 OFFICIAL_DOWNLOADS = "https://www.autohotkey.com/download/2.0/"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE = "Snips"
+DEFAULT_WATCHDOG_INTERVAL = "PT1M"
 
 
 def is_windows() -> bool:
@@ -217,3 +220,67 @@ def startup_status(executable: Path, script: Path) -> dict[str, str | bool]:
     except FileNotFoundError:
         value = None
     return {"configured": value == expected, "command": str(value) if value else ""}
+
+
+def legacy_startup_value() -> str | None:
+    """Read only the exact Snips-owned per-user Run value."""
+    if not is_windows():
+        return None
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_QUERY_VALUE) as key:
+            value, _ = winreg.QueryValueEx(key, RUN_VALUE)
+            return str(value)
+    except FileNotFoundError:
+        return None
+
+
+def remove_legacy_startup(expected_command: str) -> bool:
+    """Remove the Snips Run value only when it exactly matches the expected command."""
+    if not is_windows():
+        raise RuntimeError("Per-user startup migration is supported on Windows only")
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as key:
+            try:
+                existing, _ = winreg.QueryValueEx(key, RUN_VALUE)
+            except FileNotFoundError:
+                return False
+            if existing != expected_command:
+                raise RuntimeError(
+                    f"HKCU Run value {RUN_VALUE!r} changed before migration; refusing to remove a non-matching value"
+                )
+            winreg.DeleteValue(key, RUN_VALUE)
+            return True
+    except FileNotFoundError:
+        return False
+
+
+def runtime_task_spec(config_path: Path | None = None, interval: str = DEFAULT_WATCHDOG_INTERVAL) -> TaskSpec:
+    """Build the hidden per-user ensure task used by snips install/startup."""
+    if not is_windows():
+        raise RuntimeError("Scheduled Task startup is supported on Windows only")
+    from runtime_lifecycle import LogonTrigger, RepeatingIntervalTrigger, TaskPrincipal, TaskSpec, resolve_pythonw
+
+    arguments = ["-m", "snips.cli", "ensure-runtime", "--apply", "--quiet"]
+    if config_path is not None:
+        arguments.extend(["--config", str(config_path.resolve())])
+    return TaskSpec(
+        owner="snips",
+        name="runtime",
+        executable=resolve_pythonw(),
+        args=tuple(arguments),
+        working_dir=Path(sys.prefix).resolve(),
+        triggers=(
+            LogonTrigger(delay="PT5S"),
+            RepeatingIntervalTrigger(interval=interval),
+        ),
+        principal=TaskPrincipal.current_user_limited(),
+        hidden=True,
+        execution_time_limit="PT2M",
+        multiple_instances="IgnoreNew",
+        allow_on_battery=True,
+        start_when_available=True,
+    )

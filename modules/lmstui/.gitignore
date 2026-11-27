@@ -1,5 +1,0 @@
-.pytest_tmp_root/
-__pycache__/
-*.egg-info/
-build/
-dist/

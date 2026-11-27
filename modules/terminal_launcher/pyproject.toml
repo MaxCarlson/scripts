@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "terminal-launcher"
+version = "0.1.1"
+description = "Reusable terminal-independent process layouts with a Windows Terminal backend"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[tool.setuptools]
+packages = ["terminal_launcher", "terminal_launcher.backends"]
+
+[tool.setuptools.package-dir]
+terminal_launcher = "."
+"terminal_launcher.backends" = "backends"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".."]
+addopts = "-q -p no:cacheprovider --basetemp=.pytest_tmp_root/pytest"
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]

@@ -1,0 +1,31 @@
+{
+  "session_start_new": {
+    "session_id": "019a0000-0000-7000-8000-000000000101",
+    "hook_event_name": "SessionStart",
+    "source": "startup",
+    "cwd": "C:\\Users\\mcarls\\src\\scripts",
+    "transcript_path": "C:\\Users\\mcarls\\.codex\\sessions\\2026\\11\\19\\rollout-sample.jsonl"
+  },
+  "session_start_resume": {
+    "session_id": "019a0000-0000-7000-8000-000000000101",
+    "hook_event_name": "SessionStart",
+    "source": "resume",
+    "cwd": "C:\\Users\\mcarls\\src\\scripts"
+  },
+  "user_prompt_submit_tagged": {
+    "session_id": "019a0000-0000-7000-8000-000000000101",
+    "hook_event_name": "UserPromptSubmit",
+    "cwd": "C:\\Users\\mcarls\\src\\scripts",
+    "prompt": "Workflow-ID: wf_7d3a92\n\nImplement Phase 2."
+  },
+  "stop": {
+    "session_id": "019a0000-0000-7000-8000-000000000101",
+    "hook_event_name": "Stop",
+    "cwd": "C:\\Users\\mcarls\\src\\scripts"
+  },
+  "session_end": {
+    "session_id": "019a0000-0000-7000-8000-000000000101",
+    "hook_event_name": "SessionEnd",
+    "cwd": "C:\\Users\\mcarls\\src\\scripts"
+  }
+}

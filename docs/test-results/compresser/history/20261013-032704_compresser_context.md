@@ -58,4 +58,3 @@ _Missing at validation time: `C:\Users\mcarls\src\scripts\modules\compresser\doc
 ### `docs/plans/20261013-0151_compression-module-and-mangadl-integration/00_implementation-plan.md`
 
 _Missing at validation time: `C:\Users\mcarls\src\scripts\modules\compresser\docs\plans\20261013-0151_compression-module-and-mangadl-integration\00_implementation-plan.md`_
-

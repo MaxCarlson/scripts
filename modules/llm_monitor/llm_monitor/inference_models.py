@@ -209,6 +209,7 @@ class InferenceRequest:
     gpu_scope: str | None = None
     hardware_telemetry: dict[str, Any] | None = None
     coverage: dict[str, str] = field(default_factory=dict)
+    benchmark_correlation: dict[str, Any] | None = None
     content: tuple[ContentSegment, ...] = ()
 
     @classmethod
@@ -247,6 +248,7 @@ class InferenceRequest:
             gpu_scope=payload.get("gpu_scope") if isinstance(payload.get("gpu_scope"), str) else None,
             hardware_telemetry=dict(hw_tel) if isinstance(hw_tel, dict) else None,
             coverage={str(key): str(value) for key, value in coverage.items()} if isinstance(coverage, dict) else {},
+            benchmark_correlation=dict(payload["benchmark_correlation"]) if isinstance(payload.get("benchmark_correlation"), dict) else None,
             content=tuple(ContentSegment.from_dict(item) for item in content if isinstance(item, dict))
             if isinstance(content, list) else (),
         )
@@ -283,6 +285,7 @@ class InferenceRequest:
             "gpu_scope": self.gpu_scope,
             "hardware_telemetry": self.hardware_telemetry,
             "coverage": dict(self.coverage),
+            "benchmark_correlation": self.benchmark_correlation,
             "content": [segment.to_dict() for segment in self.content],
         }
 

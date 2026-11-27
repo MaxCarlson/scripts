@@ -74,9 +74,9 @@ Console scripts are defined in `[project.scripts]` in `pyproject.toml`. The `.cm
 - Use `$PATH` / the active virtual environment.
 - When adding, renaming, or removing a script, bump MAJOR and document the change.
 
-## ytaedl Partial / Temp Conventions
+## Resumable Operation Temp Conventions
 
-When a module manages per-operation working directories:
+When an operation needs resumable temporary state:
 
 - Use `_partial/<hash12>/` where `hash12` is the first 12 hex chars of a sha256 key.
 - Write `meta.json` before starting work.

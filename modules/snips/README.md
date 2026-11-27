@@ -14,9 +14,9 @@ Canonical config lives at `%APPDATA%\snips\config.json`. Runtime files live sepa
 
 ## Install and use
 
-Install the `snips` module with the repository's normal setup, or from the repository root run `python -m pip install -e .\modules\snips` to create the `snips` command in the active Python environment.
+Install the `snips` module with the repository's normal setup, or from the repository root run `python -m pip install -e .\modules\snips` to create the `snips` command in the active Python environment. The package depends on `runtime-lifecycle`, which manages its per-user Scheduled Task watchdog.
 
-Mutating commands preview by default. Add `--apply` to persist. `snips install --apply` reuses an installed AutoHotkey v2, or installs in this order: WinGet `AutoHotkey.AutoHotkey`, Scoop Extras `autohotkey`, then the official v2 installer. It creates starter actions for Markdown code blocks (`Ctrl+Alt+B`) and fenced clipboard text (`Ctrl+Alt+V`), starts the runtime, and registers it under the current user's Windows Run key. No Python process stays running.
+Mutating commands preview by default. Add `--apply` to persist. `snips install --apply` reuses an installed AutoHotkey v2, or installs in this order: WinGet `AutoHotkey.AutoHotkey`, Scoop Extras `autohotkey`, then the official v2 installer. It creates starter actions for Markdown code blocks (`Ctrl+Alt+B`) and fenced clipboard text (`Ctrl+Alt+V`), starts the runtime, and registers a hidden per-user Scheduled Task under `\\Scripts\\snips-runtime`. If the exact legacy `HKCU` Run entry exists, it is removed only after the new task is registered and verified. The task runs a quiet `pythonw.exe` health check at logon and every minute; no Python process remains running between checks.
 
 ```powershell
 snips install --apply
@@ -56,7 +56,13 @@ The import default merges by binding ID. `--replace` replaces all managed bindin
 snips status --json
 snips doctor
 snips reload --apply
+snips startup status --json
+snips startup disable --apply
+snips startup enable --apply
+snips startup remove --apply
 ```
+
+`snips startup preview` shows the desired task XML. `snips startup apply --apply` registers or updates it. `snips ensure-runtime --apply` checks or starts AutoHotkey; healthy checks are silent when `--quiet` is supplied and do not replace the running process. `snips startup disable` pauses future checks. `stop` stops only the Scheduled Task's current ensure action; an already-running AutoHotkey process continues until it exits or is separately stopped. `remove` deletes only the task owned by `snips` and an exact matching legacy Run entry.
 
 Exit codes are `0` for success or preview, `2` for invalid input/configuration, `3` for filesystem errors, and `4` for backend, runtime, or diagnostics failures. Argument-parser usage errors also return `2`.
 

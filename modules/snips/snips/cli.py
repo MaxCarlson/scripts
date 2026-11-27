@@ -6,11 +6,20 @@ import argparse
 import json
 import subprocess
 import sys
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
 from ._version import __version__
-from snips.backend import ensure_autohotkey, find_autohotkey, register_startup, startup_status
+from snips.backend import (
+    DEFAULT_WATCHDOG_INTERVAL,
+    ensure_autohotkey,
+    find_autohotkey,
+    legacy_startup_value,
+    remove_legacy_startup,
+    runtime_task_spec,
+    startup_command,
+)
 from snips.config import (
     ConfigError,
     atomic_write,
@@ -21,7 +30,7 @@ from snips.config import (
     serialize_config,
     validate_config,
 )
-from snips.runtime import deploy, runtime_status, start_runtime
+from snips.runtime import deploy, ensure_runtime, generate_script, runtime_status, start_runtime
 
 
 def _read_exact(path: Path) -> str:
@@ -60,6 +69,22 @@ def build_parser() -> argparse.ArgumentParser:
         "install", "Detect/install AutoHotkey, create starter actions, and register per-user startup", mutating=True
     )
     p.add_argument("-s", "--skip-start", action="store_true", help="Do not start the runtime now")
+    p.add_argument(
+        "-i", "--interval", default=DEFAULT_WATCHDOG_INTERVAL, help="Watchdog repetition interval, e.g. PT1M"
+    )
+
+    p = command("ensure-runtime", "Ensure the configured AutoHotkey runtime is running", mutating=True)
+    p.add_argument("-q", "--quiet", action="store_true", help="Silence healthy no-op checks")
+
+    startup = commands.add_parser("startup", help="Manage the per-user Scheduled Task watchdog")
+    startup_commands = startup.add_subparsers(dest="startup_command", required=True)
+    for startup_name in ("preview", "apply", "status", "enable", "disable", "start", "stop", "remove"):
+        sub = startup_commands.add_parser(startup_name, help=f"{startup_name.title()} snips scheduled startup")
+        _add_common(sub)
+        if startup_name in {"apply", "enable", "disable", "start", "stop", "remove"}:
+            _add_apply(sub)
+        if startup_name in {"preview", "apply"}:
+            sub.add_argument("-i", "--interval", default=DEFAULT_WATCHDOG_INTERVAL, help="Watchdog repetition interval")
 
     p = command("add", "Add a template or action", mutating=True)
     p.add_argument("-i", "--id", required=True, help="Stable lowercase binding id")
@@ -112,6 +137,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _print(value: Any, as_json: bool) -> None:
+    def jsonable(item: Any) -> Any:
+        if is_dataclass(item):
+            return jsonable(asdict(item))
+        if isinstance(item, Path):
+            return str(item)
+        if isinstance(item, dict):
+            return {key: jsonable(inner) for key, inner in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [jsonable(inner) for inner in item]
+        return item
+
+    value = jsonable(value)
     if as_json:
         print(json.dumps(value, ensure_ascii=False, indent=2))
     elif isinstance(value, str):
@@ -204,44 +241,182 @@ def _run_mutation(
     return {"applied": True, "message": message, "config": str(path)}
 
 
+def _task_spec(path: Path, interval: str = DEFAULT_WATCHDOG_INTERVAL):
+    custom_path = path if path.resolve() != config_default_path().resolve() else None
+    return runtime_task_spec(custom_path, interval)
+
+
+def _startup_status(path: Path, interval: str = DEFAULT_WATCHDOG_INTERVAL) -> dict[str, Any]:
+    from runtime_lifecycle import status as task_status
+
+    spec = _task_spec(path, interval)
+    task = task_status(spec.owner, spec.name, spec=spec)
+    return {
+        "configured": task.registration_state == "registered",
+        "task": task,
+        "legacy_run_value": legacy_startup_value(),
+        "last_recovery_error": _last_recovery_error(runtime_default_path()),
+    }
+
+
+def _last_recovery_error(runtime_dir: Path) -> str | None:
+    log_path = runtime_dir / "lifecycle.log"
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        if "recovery failed:" in line:
+            return line.split("recovery failed:", 1)[1].strip()
+    return None
+
+
+def _apply_startup(path: Path, interval: str = DEFAULT_WATCHDOG_INTERVAL) -> dict[str, Any]:
+    from runtime_lifecycle import apply as apply_task, status as task_status
+
+    executable, _version = find_autohotkey()
+    if not executable:
+        raise RuntimeError("AutoHotkey v2 is not installed; run `snips install --apply`")
+    expected_run = startup_command(executable, runtime_default_path() / "snips.ahk")
+    legacy_value = legacy_startup_value()
+    if legacy_value is not None and legacy_value != expected_run:
+        raise RuntimeError("HKCU Run value 'Snips' contains a different command; refusing to replace or remove it")
+
+    spec = _task_spec(path, interval)
+    applied = apply_task(spec)
+    verified = task_status(spec.owner, spec.name, spec=spec)
+    if verified.registration_state != "registered":
+        raise RuntimeError(
+            f"Scheduled Task verification failed ({verified.registration_state}); legacy Run value was preserved"
+        )
+    removed_legacy = remove_legacy_startup(expected_run) if legacy_value == expected_run else False
+    return {
+        "task": applied,
+        "verified": verified,
+        "legacy_run_removed": removed_legacy,
+        "message": "Scheduled Task is registered and its definition matches the requested snips watchdog",
+    }
+
+
+def _remove_startup(path: Path) -> dict[str, Any]:
+    from runtime_lifecycle import remove as remove_task
+
+    executable, _version = find_autohotkey()
+    expected_run = startup_command(executable, runtime_default_path() / "snips.ahk") if executable else None
+    legacy_value = legacy_startup_value()
+    if legacy_value is not None and legacy_value != expected_run:
+        raise RuntimeError("HKCU Run value 'Snips' does not match the expected command; refusing to remove it")
+    task_removed = remove_task("snips", "runtime")
+    legacy_removed = remove_legacy_startup(expected_run) if expected_run and legacy_value == expected_run else False
+    return {
+        "task_removed": task_removed,
+        "legacy_run_removed": legacy_removed,
+        "runtime": runtime_status(runtime_default_path()),
+        "message": "Scheduled startup removed; an already-running AutoHotkey process may continue until exited",
+    }
+
+
+def _ensure_runtime_command(path: Path, *, apply: bool, quiet: bool) -> tuple[dict[str, Any], int]:
+    if not apply:
+        return {
+            "applied": False,
+            "runtime": runtime_status(runtime_default_path()),
+            "message": "Preview only; pass --apply to ensure the runtime",
+        }, 0
+    executable, _version = find_autohotkey()
+    if not executable:
+        return {"applied": True, "ok": False, "message": "AutoHotkey v2 is not installed"}, 4
+    config = _current(path)
+    runtime_dir = runtime_default_path()
+    source, expected_build, data = generate_script(config, runtime_dir / "data", runtime_dir / "status.txt")
+    script = runtime_dir / "snips.ahk"
+    needs_deploy = not script.exists() or script.read_text(encoding="utf-8") != source
+    if not needs_deploy:
+        needs_deploy = any(
+            not (runtime_dir / "data" / filename).is_file()
+            or (runtime_dir / "data" / filename).read_text(encoding="utf-8") != content
+            for filename, content in data.items()
+        )
+    if needs_deploy:
+        script, expected_build = deploy(config, runtime_dir)
+    ok, message = ensure_runtime(executable, script, runtime_dir, expected_build)
+    silent_noop = quiet and ok and ("already running" in message or "another ensure check" in message)
+    return {"applied": True, "ok": ok, "message": message, "quiet_noop": silent_noop}, 0 if ok else 4
+
+
+def _dispatch_startup(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
+    from runtime_lifecycle import disable, enable, preview as preview_task, start, status as task_status, stop
+
+    action = args.startup_command
+    if action == "preview":
+        return preview_task(_task_spec(path, args.interval)), 0
+    if action == "status":
+        return _startup_status(path), 0
+    if action == "apply":
+        if not args.apply:
+            return preview_task(_task_spec(path, args.interval)), 0
+        return _apply_startup(path, args.interval), 0
+    if action == "remove":
+        if not args.apply:
+            return {
+                "applied": False,
+                "task": _startup_status(path),
+                "legacy_run_value": legacy_startup_value(),
+                "message": "Preview only; pass --apply to remove owned startup",
+            }, 0
+        return _remove_startup(path), 0
+
+    if not args.apply:
+        return {
+            "applied": False,
+            "action": action,
+            "task": _startup_status(path),
+            "runtime": runtime_status(runtime_default_path()),
+            "message": f"Preview only; pass --apply to {action} the scheduled action",
+        }, 0
+
+    operations = {"enable": enable, "disable": disable, "start": start, "stop": stop}
+    result = operations[action]("snips", "runtime")
+    task = task_status("snips", "runtime", spec=_task_spec(path))
+    payload: dict[str, Any] = {"applied": True, "action": action, "result": result, "task": task}
+    if action == "stop":
+        payload["runtime"] = runtime_status(runtime_default_path())
+        payload["message"] = "Stopped the scheduled ensure action; an already-running AutoHotkey process may continue"
+    return payload, 0
+
+
 def _install(args: argparse.Namespace, path: Path) -> dict[str, Any]:
     executable, version, backend_message = ensure_autohotkey(apply=args.apply)
     runtime_dir = runtime_default_path()
     script = runtime_dir / "snips.ahk"
     if not args.apply:
+        startup_preview: Any = "AutoHotkey must be available before a task preview can be rendered"
+        if executable:
+            from runtime_lifecycle import preview as preview_task
+
+            startup_preview = preview_task(_task_spec(path, args.interval))
         return {
             "applied": False,
             "backend": backend_message,
             "config": str(path),
-            "startup": "would register per-user startup",
+            "startup": startup_preview,
             "message": "Dry run; pass --apply to install and configure",
         }
     config = load_config(path, missing_ok=True)
-    # Refuse a conflicting Run value before changing config or launching the runtime.
-    from snips.backend import RUN_KEY, RUN_VALUE, is_windows, startup_command
-
-    if is_windows():
-        import winreg
-
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_QUERY_VALUE) as key:
-                existing, _ = winreg.QueryValueEx(key, RUN_VALUE)
-        except FileNotFoundError:
-            existing = None
-        expected = startup_command(executable, script)
-        if existing is not None and existing != expected:
-            raise RuntimeError(
-                f"HKCU Run value {RUN_VALUE!r} already exists with a different command; refusing to overwrite it"
-            )
+    expected = startup_command(executable, script)
+    existing = legacy_startup_value()
+    if existing is not None and existing != expected:
+        raise RuntimeError(
+            "HKCU Run value 'Snips' already exists with a different command; refusing to change or remove it"
+        )
     message = _apply_config(path, config, executable=executable, start=not args.skip_start)
-    startup_changed, startup_message = register_startup(executable, script)
+    startup_result = _apply_startup(path, args.interval)
     return {
         "applied": True,
         "backend": backend_message,
         "backend_version": version,
         "runtime": message,
-        "startup": startup_message,
-        "startup_changed": startup_changed,
+        "startup": startup_result,
         "config": str(path),
     }
 
@@ -251,6 +426,10 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
     command_name = args.command
     if command_name == "install":
         return _install(args, path), 0
+    if command_name == "ensure-runtime":
+        return _ensure_runtime_command(path, apply=args.apply, quiet=args.quiet)
+    if command_name == "startup":
+        return _dispatch_startup(args, path)
     config = _current(path)
     if command_name == "add":
         if any(item["id"] == args.id for item in config["bindings"]):
@@ -305,16 +484,13 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
     if command_name == "status":
         executable, version = find_autohotkey()
         runtime = runtime_status(runtime_default_path())
-        startup = (
-            startup_status(executable, runtime_default_path() / "snips.ahk")
-            if executable
-            else {"configured": False, "command": ""}
-        )
+        startup = _startup_status(path)
         return {
             "backend": str(executable) if executable else None,
             "backend_version": version,
             "runtime": runtime,
             "startup": startup,
+            "legacy_run_value": legacy_startup_value(),
             "config": str(path),
             "config_exists": path.exists(),
             "config_valid": True,
@@ -330,6 +506,7 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
             if power_toys_file.exists()
             else "No Keyboard Manager remap file found; unrelated AutoHotkey hotkeys remain unenumerable"
         )
+        startup_detail = _startup_status(path)
         checks = [
             {
                 "name": "configuration",
@@ -344,12 +521,8 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
             {"name": "runtime", "ok": runtime["running"], "detail": runtime},
             {
                 "name": "startup",
-                "ok": bool(startup_status(executable, runtime_default_path() / "snips.ahk").get("configured"))
-                if executable
-                else False,
-                "detail": startup_status(executable, runtime_default_path() / "snips.ahk")
-                if executable
-                else "requires AutoHotkey",
+                "ok": bool(startup_detail.get("configured")),
+                "detail": startup_detail,
             },
             {
                 "name": "external conflicts",
@@ -406,9 +579,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         result, code = _dispatch(args)
+        if isinstance(result, dict) and result.pop("quiet_noop", False):
+            return code
         _print(result, args.json)
         return code
-    except (ConfigError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+    except (ConfigError, OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         if args.json:
             _print({"error": str(exc)}, True)
         else:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 import sys
 import re
@@ -162,8 +162,11 @@ def run_clipboard_replace(file_path_str: str, no_stats: bool):
                 table.add_row(str(key), str(value))
             console_stdout.print(table)
         
-        sys.exit(exit_code)
+        return exit_code
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser_cr.parse_args(argv)
+    return run_clipboard_replace(args.file, args.no_stats)
 
 if __name__ == "__main__":
-    args = parser_cr.parse_args()
-    run_clipboard_replace(args.file, args.no_stats)
+    sys.exit(main())

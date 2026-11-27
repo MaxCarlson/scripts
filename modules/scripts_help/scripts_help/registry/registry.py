@@ -287,18 +287,18 @@ REGISTRY: dict = {
         "desc": "Package repos for LLMs, apply AI patches, download datasets, automate AI web UIs",
         "items": [
             {
-                "name": "agent-bench (module)",
-                "path": "modules/agent_benchmark",
-                "desc": "Plan, execute, recover, and report persistent Harbor benchmark cohorts with monitored and compact CLI modes",
-                "help_cmd": ["agent-bench", "--help"],
-                "version": "1.22.0",
+                "name": "agents (module)",
+                "path": "modules/agent_continuity",
+                "desc": "Manage legacy workflow associations and durable Codex/AGY session continuity",
+                "help_cmd": ["agents", "--help"],
+                "version": "1.1.0",
             },
             {
-                "name": "local-agent (module)",
-                "path": "modules/local_agent_bridge",
-                "desc": "Set up Codex/Antigravity profiles, manage the local bridge, and retrieve bounded source context",
-                "help_cmd": ["local-agent", "--help"],
-                "version": "3.4.0",
+                "name": "llmd / llm-dispatcher (module)",
+                "path": "modules/agent_continuity",
+                "desc": "Select GUI conversations and named Codex/AGY agent slots, inspect history, and request grouped terminal launches",
+                "help_cmd": ["llmd", "--help"],
+                "version": "1.5.2",
             },
             {
                 "name": "run_tests.py",
@@ -349,20 +349,6 @@ REGISTRY: dict = {
                 "help_cmd": ["python", "pyscripts/download_dataset.py", "--help"],
                 "version": "0.1.0",
             },
-            {
-                "name": "llm-patcher (module)",
-                "path": "modules/llm-patcher",
-                "desc": "Apply LEP/v1 LLM Edit Protocol patches from file, stdin, or clipboard",
-                "help_cmd": ["python", "modules/llm-patcher/cli.py", "--help"],
-                "version": "0.1.0",
-            },
-            {
-                "name": "web_ai_automator (module)",
-                "path": "modules/web_ai_automator",
-                "desc": "Automate interaction with web-based AI platforms via Chrome/Firefox",
-                "help_cmd": ["python", "-m", "web_ai_automator", "--help"],
-                "version": "0.1.0",
-            },
         ],
     },
     "Documentation & PDFs": {
@@ -410,10 +396,24 @@ REGISTRY: dict = {
             },
             {
                 "name": "mangadl (module)",
-                "path": "modules/mangadl",
-                "desc": "Concurrent manga/gallery downloader with resumable jobs, integrity audits, SSD-aware workers, safe partial cleanup, and preview-first Kavita collection tools",
+                "path": "pscripts/modules/mangadl",
+                "desc": "Private gallery and library management command",
                 "help_cmd": ["mangadl", "--help"],
-                 "version": "3.2.0",
+                "version": "3.4.0",
+            },
+            {
+                "name": "ytaedl (private module)",
+                "path": "pscripts/modules/ytaedl",
+                "desc": "Private batch media downloader command",
+                "help_cmd": ["ytaedl", "--help"],
+                "version": "2.18.0",
+            },
+            {
+                "name": "aebndl (private module)",
+                "path": "pscripts/modules/aebndl_module",
+                "desc": "Private AEBN downloader command",
+                "help_cmd": ["aebndl", "--help"],
+                "version": "0.8.1",
             },
             {
                 "name": "edit_video_file.py",
@@ -496,6 +496,20 @@ REGISTRY: dict = {
                 "version": "1.0.0",
             },
             {
+                "name": "vm_lab (module)",
+                "path": "modules/vm_lab",
+                "desc": "Disposable Windows Hyper-V lab VM lifecycle, ownership, and safety manager (vm-lab)",
+                "help_cmd": ["pwsh", "-NoProfile", "-Command", "Get-Help ./modules/vm_lab/Invoke-VmLab.ps1"],
+                "version": "0.1.0",
+            },
+            {
+                "name": "privileged_execution (module)",
+                "path": "modules/privileged_execution",
+                "desc": "Least-privilege local Windows session broker and privexec CLI for narrowly authorized admin ops",
+                "help_cmd": ["privexec", "--help"],
+                "version": "0.1.0",
+            },
+            {
                 "name": "monitor-disks.py",
                 "path": "pyscripts/monitor-disks.py",
                 "desc": "Real-time disk usage monitoring with interactive Rich terminal UI",
@@ -512,9 +526,16 @@ REGISTRY: dict = {
             {
                 "name": "proc_stats.py",
                 "path": "pyscripts/proc_stats.py",
-                "desc": "Interactive process stats viewer with Rich UI; sort by CPU/memory/disk",
+                "desc": "Legacy-compatible process stats viewer (delegates to proc-stats)",
                 "help_cmd": ["python", "pyscripts/proc_stats.py", "--help"],
-                "version": "0.1.0",
+                "version": "0.2.0",
+            },
+            {
+                "name": "proc-stats (system_manager)",
+                "path": "modules/system_manager",
+                "desc": "Interactive read-only process explorer with tree, history, GPU telemetry, and JSON/CSV export",
+                "help_cmd": ["proc-stats", "--help"],
+                "version": "1.0.0",
             },
             {
                 "name": "procwatch (module)",
@@ -528,7 +549,7 @@ REGISTRY: dict = {
                 "path": "modules/system_manager",
                 "desc": "Manage system services, processes, and scheduled tasks cross-platform",
                 "help_cmd": ["python", "-m", "system_manager", "--help"],
-                "version": "0.3.0",
+                "version": "1.0.0",
             },
             {
                 "name": "system_tools (module)",
@@ -644,24 +665,24 @@ REGISTRY: dict = {
         "desc": "Manage reusable text snippets and Windows global keyboard shortcuts",
         "items": [
             {
+                "name": "runtime_lifecycle (module)",
+                "path": "modules/runtime_lifecycle",
+                "desc": "Preview and manage owned Windows Scheduled Tasks for user-session runtimes",
+                "help_cmd": ["python", "-m", "runtime_lifecycle", "--help"],
+                "version": "0.1.0",
+            },
+            {
                 "name": "snips (module)",
                 "path": "modules/snips",
                 "desc": "Manage versioned text templates, clipboard fencing, and AutoHotkey v2 hotkeys",
                 "help_cmd": ["python", "-m", "snips", "--help"],
-                "version": "0.1.1",
+                "version": "0.2.0",
             },
         ],
     },
     "Knowledge & Project Management": {
         "desc": "Manage projects, tasks, backups, and tmux sessions",
         "items": [
-            {
-                "name": "knowledge_manager (module)",
-                "path": "modules/knowledge_manager",
-                "desc": "Manage projects, tasks, and LLM assets with local files and interactive TUI",
-                "help_cmd": ["python", "-m", "knowledge_manager", "--help"],
-                "version": "0.5.1",
-            },
             {
                 "name": "backup_module (module)",
                 "path": "modules/backup_module",

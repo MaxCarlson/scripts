@@ -64,8 +64,15 @@ def _discover_cli_programs() -> set[str]:
 
     modules_dir = repo / "modules"
     if modules_dir.exists():
+        try:
+            if str(repo) not in sys.path:
+                sys.path.insert(0, str(repo))
+            from scripts_setup.transferred_modules import is_transferred_module_dir
+        except ImportError:
+            is_transferred_module_dir = lambda _p: False  # noqa: E731
+
         for mod in modules_dir.iterdir():
-            if not mod.is_dir() or mod.name.startswith("_"):
+            if not mod.is_dir() or mod.name.startswith("_") or is_transferred_module_dir(mod):
                 continue
 
             has_cli_file = (mod / "cli.py").exists() or (mod / "__main__.py").exists()
@@ -626,19 +633,41 @@ def _render_in_glow(text: str) -> None:
 
 def _run_help_cmd(item: dict) -> None:
     repo = find_repo_root()
+    raw_cmd = list(item["help_cmd"])
+    try:
+        if str(repo) not in sys.path:
+            sys.path.insert(0, str(repo))
+        from scripts_setup.transferred_modules import is_transferred_module_dir
+    except ImportError:
+        is_transferred_module_dir = lambda _p: False  # noqa: E731
+
+    item_path = str(item.get("path", ""))
+    is_transferred = item_path.startswith("modules/") and is_transferred_module_dir(item_path)
+    toolkit_py: Path | None = None
+    if is_transferred:
+        env_tk = os.environ.get("LLM_AGENT_TOOLKIT_ROOT")
+        for cand_root in ([Path(env_tk)] if env_tk else []) + [repo.parent / "llm-agent-toolkit"]:
+            cand_py = cand_root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            if cand_py.is_file():
+                toolkit_py = cand_py
+                break
+
     resolved: list[str] = []
     after_m = False
-    for part in item["help_cmd"]:
+    for idx, part in enumerate(raw_cmd):
         if part == "python":
-            resolved.append(sys.executable)
+            resolved.append(str(toolkit_py) if toolkit_py is not None else sys.executable)
         elif part == "-m":
             after_m = True
             resolved.append(part)
         elif after_m or part.startswith("-"):
             resolved.append(part)
         else:
-            candidate = repo / part
-            resolved.append(str(candidate) if candidate.exists() else part)
+            if idx == 0 and shutil.which(part):
+                resolved.append(shutil.which(part) or part)
+            else:
+                candidate = repo / part
+                resolved.append(str(candidate) if candidate.exists() else part)
 
     try:
         result = subprocess.run(resolved, capture_output=True, text=True,
@@ -841,6 +870,121 @@ def cmd_sync(args) -> None:
                    dry_run=dry_run, copy=copy)
 
 
+def cmd_registry(args) -> None:
+    import json as _json
+    from scripts_help.command_registry import (
+        SCHEMA_VERSION,
+        detect_collisions,
+        load_command_registry,
+        resolve_command,
+        search_commands,
+        validate_entry_points,
+    )
+
+    entries = load_command_registry()
+    action = getattr(args, "reg_action", "list")
+    use_json = getattr(args, "json", False)
+
+    if action == "list":
+        filtered = search_commands(
+            entries,
+            "",
+            kind=getattr(args, "kind", None),
+            source=getattr(args, "source", None),
+        )
+        if use_json:
+            print(_json.dumps({"schema_version": SCHEMA_VERSION, "commands": [e.to_dict() for e in filtered]}, indent=2))
+            return
+        for e in filtered:
+            print(f"{e.name:<24} {e.kind:<15} {e.program_id:<32} {e.target}")
+        return
+
+    if action == "search":
+        filtered = search_commands(
+            entries,
+            args.pattern,
+            kind=getattr(args, "kind", None),
+            source=getattr(args, "source", None),
+        )
+        if use_json:
+            print(_json.dumps({"schema_version": SCHEMA_VERSION, "matches": [e.to_dict() for e in filtered]}, indent=2))
+            return
+        for e in filtered:
+            print(f"{e.name:<24} {e.kind:<15} {e.target}")
+        return
+
+    if action == "resolve":
+        matches = resolve_command(entries, args.name)
+        if use_json:
+            print(_json.dumps({"schema_version": SCHEMA_VERSION, "name": args.name, "matches": [m.to_dict() for m in matches]}, indent=2))
+        else:
+            for m in matches:
+                print(f"{m.name} -> {m.program_id} ({m.kind}): {m.target}")
+        if not matches:
+            sys.exit(1)
+        return
+
+    if action == "collisions":
+        cols = detect_collisions(entries, repo_root=find_repo_root(), check_path=True)
+        if use_json:
+            print(_json.dumps({"schema_version": SCHEMA_VERSION, "collisions": [c.to_dict() for c in cols]}, indent=2))
+        else:
+            for c in cols:
+                print(f"[{c.collision_type}] {c.name}: {c.details}")
+        return
+
+    if action == "validate":
+        vals = validate_entry_points(entries, repo_root=find_repo_root())
+        has_err = any(v.status in ("missing_target", "import_error") for v in vals)
+        if use_json:
+            print(_json.dumps({"schema_version": SCHEMA_VERSION, "validations": [v.to_dict() for v in vals]}, indent=2))
+        else:
+            for v in vals:
+                if v.status != "ok":
+                    print(f"[{v.status}] {v.name} ({v.program_id}): {v.details}")
+            ok_count = sum(1 for v in vals if v.status == "ok")
+            print(f"Validated {len(vals)} entries ({ok_count} ok).")
+        sys.exit(1 if has_err else 0)
+
+
+def cmd_integrate(args) -> None:
+    import json as _json
+    from scripts_help.shell_integration import run_integration
+
+    repo = find_repo_root()
+    if args.target_dir:
+        target_dir = Path(args.target_dir).expanduser()
+    else:
+        dotfiles = os.environ.get("DOTFILES_REPO")
+        if dotfiles:
+            target_dir = Path(dotfiles) / "dynamic"
+        else:
+            target_dir = repo.parent / "dotfiles" / "dynamic"
+
+    shells = ("pwsh", "posix") if args.shell == "all" else (args.shell,)
+    report = run_integration(
+        target_dir=target_dir,
+        apply=args.apply,
+        check=args.check,
+        rollback=args.rollback,
+        shells=shells,
+        repo_root=repo,
+    )
+    if args.json:
+        print(_json.dumps(report, indent=2))
+    else:
+        mode = "CHECK" if args.check else ("ROLLBACK" if args.rollback else ("APPLY" if args.apply else "DRY-RUN"))
+        print(f"[{mode}] Target directory: {target_dir}")
+        for act in report["actions"]:
+            print(f"  - {act['status']}: {act['path']} ({act['details']})")
+        if report["collisions"]:
+            print("Collision warnings:")
+            for c in report["collisions"]:
+                print(f"  ! [{c['collision_type']}] {c['name']}: {c['details']}")
+    if args.check and not report["clean"]:
+        sys.exit(1)
+
+
 # ── Argument parser ───────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -887,6 +1031,45 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("-C", "--copy", action="store_true",
                         help="Copy prompt to clipboard instead of launching AI")
     p_sync.set_defaults(func=cmd_sync)
+
+    # registry
+    p_reg = subs.add_parser(
+        "registry",
+        help="Inspect, search, validate, and check collisions in the command registry",
+    )
+    reg_subs = p_reg.add_subparsers(dest="reg_action", metavar="action")
+    p_reg.set_defaults(func=cmd_registry, reg_action="list")
+
+    for act_name, help_txt in (
+        ("list", "List registered commands"),
+        ("search", "Search commands by regex"),
+        ("resolve", "Resolve a single command name"),
+        ("collisions", "Detect command name and PATH collisions"),
+        ("validate", "Read-only validation of registered entry points"),
+    ):
+        sp_act = reg_subs.add_parser(act_name, help=help_txt)
+        if act_name == "search":
+            sp_act.add_argument("pattern", help="Regex pattern to match")
+        elif act_name == "resolve":
+            sp_act.add_argument("name", help="Command name to resolve")
+        if act_name in ("list", "search"):
+            sp_act.add_argument("-k", "--kind", default=None, help="Filter by kind")
+            sp_act.add_argument("-s", "--source", default=None, help="Filter by source")
+        sp_act.add_argument("-j", "--json", action="store_true", help="Emit JSON output")
+        sp_act.set_defaults(func=cmd_registry, reg_action=act_name)
+
+    # integrate
+    p_int = subs.add_parser(
+        "integrate",
+        help="Dry-run-first installer for thin shell adapters (PowerShell/Bash/Zsh)",
+    )
+    p_int.add_argument("-a", "--apply", action="store_true", help="Apply changes (default is dry-run)")
+    p_int.add_argument("-c", "--check", action="store_true", help="Verify integration is installed and current")
+    p_int.add_argument("-r", "--rollback", action="store_true", help="Remove managed integration blocks/files")
+    p_int.add_argument("-t", "--target-dir", default=None, help="Directory for managed integration snippets")
+    p_int.add_argument("-s", "--shell", default="all", choices=("all", "pwsh", "posix"), help="Target shell(s)")
+    p_int.add_argument("-j", "--json", action="store_true", help="Emit JSON output")
+    p_int.set_defaults(func=cmd_integrate)
 
     return parser
 

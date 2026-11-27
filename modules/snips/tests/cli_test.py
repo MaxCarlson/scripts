@@ -3,12 +3,87 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from snips import cli
 from snips.config import default_config, serialize_config
 from snips.runtime import generate_script
+import runtime_lifecycle
+
+
+def test_startup_migrates_legacy_run_only_after_task_verification(tmp_path, monkeypatch):
+    executable = tmp_path / "AutoHotkey64.exe"
+    runtime_dir = tmp_path / "runtime"
+    script = runtime_dir / "snips.ahk"
+    spec = SimpleNamespace(owner="snips", name="runtime")
+    expected_run = f'"{executable}" "{script}"'
+    calls = []
+    monkeypatch.setattr(cli, "find_autohotkey", lambda: (executable, "2.0.31.0"))
+    monkeypatch.setattr(cli, "runtime_default_path", lambda: runtime_dir)
+    monkeypatch.setattr(cli, "startup_command", lambda *_args: expected_run)
+    monkeypatch.setattr(cli, "legacy_startup_value", lambda: expected_run)
+    monkeypatch.setattr(cli, "runtime_task_spec", lambda *_args: spec)
+    monkeypatch.setattr(runtime_lifecycle, "apply", lambda _spec: calls.append("apply") or "applied")
+    monkeypatch.setattr(
+        runtime_lifecycle,
+        "status",
+        lambda *_args, **_kwargs: calls.append("status") or SimpleNamespace(registration_state="registered"),
+    )
+    monkeypatch.setattr(cli, "remove_legacy_startup", lambda _expected: calls.append("remove-run") or True)
+
+    result = cli._apply_startup(tmp_path / "config.json")
+
+    assert calls == ["apply", "status", "remove-run"]
+    assert result["legacy_run_removed"] is True
+
+
+def test_startup_leaves_legacy_run_when_task_registration_fails(tmp_path, monkeypatch):
+    executable = tmp_path / "AutoHotkey64.exe"
+    runtime_dir = tmp_path / "runtime"
+    expected_run = f'"{executable}" "{runtime_dir / "snips.ahk"}"'
+    spec = SimpleNamespace(owner="snips", name="runtime")
+    removals = []
+    monkeypatch.setattr(cli, "find_autohotkey", lambda: (executable, "2.0.31.0"))
+    monkeypatch.setattr(cli, "runtime_default_path", lambda: runtime_dir)
+    monkeypatch.setattr(cli, "startup_command", lambda *_args: expected_run)
+    monkeypatch.setattr(cli, "legacy_startup_value", lambda: expected_run)
+    monkeypatch.setattr(cli, "runtime_task_spec", lambda *_args: spec)
+    monkeypatch.setattr(
+        runtime_lifecycle, "apply", lambda _spec: (_ for _ in ()).throw(RuntimeError("register failed"))
+    )
+    monkeypatch.setattr(cli, "remove_legacy_startup", lambda *_args: removals.append(True))
+
+    with pytest.raises(RuntimeError, match="register failed"):
+        cli._apply_startup(tmp_path / "config.json")
+    assert removals == []
+
+
+def test_startup_preserves_foreign_legacy_run_value(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "find_autohotkey", lambda: (tmp_path / "AutoHotkey64.exe", "2.0.31.0"))
+    monkeypatch.setattr(cli, "runtime_default_path", lambda: tmp_path / "runtime")
+    monkeypatch.setattr(cli, "startup_command", lambda *_args: '"expected.exe" "snips.ahk"')
+    monkeypatch.setattr(cli, "legacy_startup_value", lambda: '"other.exe" "other.ahk"')
+    monkeypatch.setattr(runtime_lifecycle, "apply", lambda *_args: pytest.fail("must not replace task first"))
+
+    with pytest.raises(RuntimeError, match="different command"):
+        cli._apply_startup(tmp_path / "config.json")
+
+
+def test_ensure_runtime_preview_does_not_launch(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "runtime_default_path", lambda: tmp_path / "runtime")
+    monkeypatch.setattr(cli, "runtime_status", lambda _path: {"running": False})
+    monkeypatch.setattr(cli, "ensure_runtime", lambda *_args, **_kwargs: pytest.fail("preview launched runtime"))
+    result, code = cli._ensure_runtime_command(tmp_path / "config.json", apply=False, quiet=False)
+    assert code == 0 and result["applied"] is False
+
+
+def test_quiet_healthy_ensure_has_no_output(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_ensure_runtime_command", lambda *_args, **_kwargs: ({"quiet_noop": True}, 0))
+    code = cli.main(["ensure-runtime", "--apply", "--quiet", "--config", str(tmp_path / "config.json")])
+    assert code == 0
+    assert capsys.readouterr().out == ""
 
 
 def test_mutating_cli_is_dry_run_by_default(tmp_path, capsys):
@@ -165,7 +240,7 @@ def test_cli_imports_when_resolved_as_namespace_package():
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "0.1.1"
+    assert result.stdout.strip() == "0.2.0"
 
 
 def test_export_requires_apply_and_writes_valid_config(tmp_path, capsys):

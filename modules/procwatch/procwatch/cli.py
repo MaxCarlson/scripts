@@ -74,6 +74,26 @@ def build_parser() -> argparse.ArgumentParser:
         "Distinctions:\n"
         "  Window Owner       Process owning the HWND (often WindowsTerminal.exe).\n"
         "  Suspected Cause    Candidate initiating process correlated by timing/ancestry.\n"
+        "\n"
+        "Examples:\n"
+        "  procwatch watch -g -m all-consoles\n"
+        "      Stream live events while minimizing every newly created console/terminal\n"
+        "      window so background popups do not disrupt your active work.\n"
+        "  procwatch guard -m all-consoles\n"
+        "      Low-overhead subset of `procwatch watch -g -m all-consoles` that runs\n"
+        "      only the window-suppression loop without printing the full event stream.\n"
+        "  procwatch watch -p -c\n"
+        "      Observe popup/window events in read-only mode with burst collapsing.\n"
+        "  procwatch doctor -v\n"
+        "      Inspect collector availability, terminal delegation, and DB health.\n"
+        "  procwatch history -t 24h -p\n"
+        "      List popup/guard incidents recorded over the last 24 hours.\n"
+        "  procwatch scan -d . -u\n"
+        "      Scan Python/PowerShell files for popup-launching patterns with diffs.\n"
+        "  procwatch exec -- python -m pytest -q\n"
+        "      Run a command headlessly inside a Windows Job Object (no popup console).\n"
+        "\n"
+        "Run `procwatch <command> -h` for subcommand options and examples."
     )
     parser = argparse.ArgumentParser(
         prog="procwatch",
@@ -95,6 +115,20 @@ def build_parser() -> argparse.ArgumentParser:
         "watch",
         help="Live stream of process and window events (read-only unless -g is set).",
         description="Observe transient console/terminal windows and process starts/stops in real time.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  procwatch watch\n"
+            "      Read-only live stream of window and process events.\n"
+            "  procwatch watch -g -m all-consoles\n"
+            "      Watch live events while minimizing every newly created console/terminal\n"
+            "      window so popups do not disrupt you (`procwatch guard -m all-consoles`\n"
+            "      is the low-overhead subset without live event streaming).\n"
+            "  procwatch watch -g -m smart -p -c\n"
+            "      Suppress only automation-like popups, show popup events, collapse bursts.\n"
+            "  procwatch watch -s -f \"python|pwsh\" -o .\\events.jsonl\n"
+            "      Include headless conhost 0x4 spawns, filter by regex, and save JSONL."
+        ),
     )
     watch_p.add_argument(
         "-p",
@@ -147,6 +181,19 @@ def build_parser() -> argparse.ArgumentParser:
         "guard",
         help="Dedicated low-overhead window guard loop (defaults to observe mode).",
         description="Intercept newly created console/terminal popup windows without interfering with interactive terminals.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  procwatch guard\n"
+            "      Dry-run observe mode: log would-be interceptions without hiding windows.\n"
+            "  procwatch guard -m all-consoles\n"
+            "      Minimize every newly created console window and restore foreground focus.\n"
+            "      This is the low-overhead subset of `procwatch watch -g -m all-consoles`.\n"
+            "  procwatch guard -m smart -e \"Interactive|Admin\"\n"
+            "      Suppress automation-matching console titles while protecting excluded titles.\n"
+            "  pythonw.exe -m procwatch guard -m smart -q -o .\\guard.jsonl\n"
+            "      Run silently in the background and append redacted JSONL events to disk."
+        ),
     )
     guard_p.add_argument(
         "-m",
@@ -211,6 +258,17 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_p = subparsers.add_parser(
         "doctor",
         help="Check collector availability, terminal delegation, privileges, and DB health (read-only).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  procwatch doctor\n"
+            "      Run a quick read-only check of collectors, privileges, and DB status.\n"
+            "  procwatch doctor -v\n"
+            "      Show detailed collector states (WinEvent, WMI, Sysmon, TaskScheduler)\n"
+            "      and any recorded ingest gaps.\n"
+            "  procwatch doctor -j -d C:\\path\\to\\events.db\n"
+            "      Emit machine-readable JSON diagnostics for a specific SQLite DB."
+        ),
     )
     doctor_p.add_argument(
         "-v",
@@ -235,6 +293,18 @@ def build_parser() -> argparse.ArgumentParser:
     history_p = subparsers.add_parser(
         "history",
         help="Query persisted flight recorder incidents and optionally export a redacted bundle.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  procwatch history\n"
+            "      Show up to 50 incidents recorded in the last 24 hours.\n"
+            "  procwatch history -t 7d -p -l 100\n"
+            "      List up to 100 popup/guard incidents from the past 7 days.\n"
+            "  procwatch history -t 2h -r -a codex\n"
+            "      Replay matching incidents chronologically for `codex` agent runs.\n"
+            "  procwatch history -t 24h -e .\\bundle.json\n"
+            "      Export a secret-redacted JSON diagnostic bundle to disk."
+        ),
     )
     history_p.add_argument(
         "-t",
@@ -285,6 +355,16 @@ def build_parser() -> argparse.ArgumentParser:
     explain_p = subparsers.add_parser(
         "explain",
         help="Explain causal evidence edges and ancestry for an incident ID or PID.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  procwatch explain -i 42\n"
+            "      Show causal evidence edges, window owner, and ancestry for incident 42.\n"
+            "  procwatch explain -p 12345\n"
+            "      Inspect recorded ancestry and linked incidents for PID 12345.\n"
+            "  procwatch explain -i 42 -j -d C:\\path\\to\\events.db\n"
+            "      Emit JSON causal attribution from a specific flight recorder DB."
+        ),
     )
     explain_p.add_argument(
         "-i",
@@ -317,6 +397,14 @@ def build_parser() -> argparse.ArgumentParser:
     mark_p = subparsers.add_parser(
         "mark",
         help="Record a timestamped user bookmark for manual popup correlation.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  procwatch mark -l \"flash during git pull\"\n"
+            "      Save a bookmark correlating events from the last 3 seconds.\n"
+            "  procwatch mark -l \"modal console flash\" -w 10.0 -j\n"
+            "      Correlate over a 10-second lookback window and output JSON."
+        ),
     )
     mark_p.add_argument(
         "-l",
@@ -348,6 +436,18 @@ def build_parser() -> argparse.ArgumentParser:
     scan_p = subparsers.add_parser(
         "scan",
         help="Scan Python and PowerShell codebases for unintended console-launching patterns (read-only by default).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  procwatch scan -d C:\\path\\to\\repo\n"
+            "      Read-only scan of Python and PowerShell files for popup-launching calls.\n"
+            "  procwatch scan -d C:\\path\\to\\repo -w -u\n"
+            "      Include active git worktrees and preview unified diffs for safe fixes.\n"
+            "  procwatch scan -d C:\\path\\to\\repo -a\n"
+            "      Apply verified safe Python patches with backups (skips dirty git files).\n"
+            "  procwatch scan -d C:\\path\\to\\repo -j\n"
+            "      Emit machine-readable JSON scan findings."
+        ),
     )
     scan_p.add_argument(
         "-d",
@@ -397,6 +497,16 @@ def build_parser() -> argparse.ArgumentParser:
     audit_p = subparsers.add_parser(
         "audit",
         help="Audit Scheduled Tasks, Startup folders, Registry Run keys, and Default Terminal (read-only by default).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  procwatch audit\n"
+            "      Read-only audit of Scheduled Tasks, Startup folders, Run keys, and Default Terminal.\n"
+            "  procwatch audit -t tasks -n \"Backup\"\n"
+            "      Audit only Scheduled Tasks whose name or path contains `Backup`.\n"
+            "  procwatch audit -t defterm -j\n"
+            "      Inspect Windows Default Terminal delegation settings as JSON."
+        ),
     )
     audit_p.add_argument(
         "-t",
@@ -434,6 +544,16 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_p = subparsers.add_parser(
         "analyze",
         help="Detect recurring process/popup bursts and compare coverage-normalized baselines.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  procwatch analyze\n"
+            "      Compare the last 1 hour of recorded events against a 24-hour baseline.\n"
+            "  procwatch analyze -p -b 7d -w 1800\n"
+            "      Filter to periodic/bursty signatures comparing the last 30m to a 7d baseline.\n"
+            "  procwatch analyze -j -D C:\\path\\to\\events.db\n"
+            "      Emit JSON periodicity/baseline analysis from a specific SQLite DB."
+        ),
     )
     analyze_p.add_argument(
         "-p",
@@ -471,6 +591,18 @@ def build_parser() -> argparse.ArgumentParser:
     exec_p = subparsers.add_parser(
         "exec",
         help="Run a background command under Windows Job Object supervision without opening a popup console.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  procwatch exec -- python -m pytest -q\n"
+            "      Run headlessly inside a Windows Job Object with no popup console.\n"
+            "  procwatch exec -t 30 -w C:\\path\\to\\repo -- git status\n"
+            "      Run in a target working directory and kill the process tree after 30s.\n"
+            "  procwatch exec -j -k -- pwsh -NoProfile -File .\\build.ps1\n"
+            "      Emit structured RunResult JSON and log stderr diagnostics on failure.\n"
+            "  procwatch exec -p inherited-console -- cmd /c echo ok\n"
+            "      Share the caller's existing console while keeping Job Object containment."
+        ),
     )
     exec_p.add_argument(
         "-c",

@@ -1,2 +1,0 @@
-https://example.com/priority1
-https://example.com/priority2

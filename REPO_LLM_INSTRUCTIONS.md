@@ -8,7 +8,7 @@
 - A changed module uses its `pyproject.toml` version and any exposed `__version__` in sync. A changed standalone `pyscripts/` file bumps its embedded `__version__`.
 - Add new CLIs to `modules/scripts_help/scripts_help/registry/registry.py`.
 - Keep module test temp roots inside the owning module, normally `modules/<module>/.pytest_tmp_root/`.
-- Prefer reusable terminal UI components in `modules/termdash`.
+- Prefer reusable terminal UI components in the canonical `shared-python-modules/packages/termdash` source.
 
 Read `docs/agent/PYTHON_REPO_STANDARDS.md` and `docs/agent/SCRIPTS_REPO_STANDARDS.md` for the full rules when changing Python or CLI behavior. `MODULE_STANDARDS.md` points to those split files and the legacy planning guide.
 
@@ -23,3 +23,5 @@ For a task using the repository validation dispatcher, read `validation-targets.
 Use `project_root/docs/plans/YYYYMMDD-HHMM_descriptive-plan-name/` for substantial multi-stage work. A nested module with its own package boundary or handoff uses that module as `project_root`; module-owned plans and handoffs belong under that module's `docs/`. Use `scripts/docs/` only for shared or repository-wide work. When a session starts at the repository root, explicitly inspect the target module's `AGENTS.md` and any more-specific instruction files before editing; Codex does not preload descendant instructions. Read only existing docs that apply to the task. Older `plans/modules/<module>/` documents are historical; consult them only when relevant. The active plan's `STATUS.md` and `checklist.md` should identify implemented work, verification, approval state, and the next action.
 
 For hybrid browser/local work, read `docs/agent/HYBRID_REMOTE_LOCAL_DEVELOPMENT_WORKFLOW.md`. Its publish steps describe a possible division of work; they do not authorize a commit, push, or merge. Follow the approval boundary in `AGENTS.md` and the user's instructions. Avoid simultaneous edits to the same branch from local and remote agents.
+
+After an authorized GitHub PR merge to `main`, local agents must synchronize clean/compatible local `main` checkouts by invoking `pwsh -NoProfile -File pwsh/Sync-LocalRepos.ps1 -Apply -Json` (see `docs/LOCAL_REPO_SYNC.md`).

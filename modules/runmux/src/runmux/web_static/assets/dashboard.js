@@ -1549,12 +1549,20 @@ function renderTimeSeriesChart(container, options) {
   const start = Number.isFinite(options.startEpoch) ? options.startEpoch : (epochs.length ? Math.min(...epochs) : Date.now() / 1000 - 3600);
   const end = Number.isFinite(options.endEpoch) ? options.endEpoch : (epochs.length ? Math.max(...epochs) : Date.now() / 1000);
   const span = Math.max(1, end - start);
+  const expectedIntervals = allPoints.filter((point) => !point.is_gap).map((point) => Number(point.sample_interval_seconds)).filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
+  const medianInterval = expectedIntervals.length ? expectedIntervals[Math.floor((expectedIntervals.length - 1) / 2)] : 5;
+  const staleAfter = Number.isFinite(options.staleAfterSeconds) ? options.staleAfterSeconds : Math.max(15, medianInterval * 3);
+  const isStalePoint = (point) => point.is_stale === true || (Number.isFinite(Number(point.sample_interval_seconds)) && Number(point.sample_interval_seconds) > staleAfter);
+  const isValidPoint = (item, point) => {
+    const epoch = Number(point.epoch);
+    const rawValue = point[item.field];
+    const value = typeof rawValue === "number" ? rawValue : NaN;
+    return Number.isFinite(epoch) && Number.isFinite(value) && !point.is_gap && !isStalePoint(point);
+  };
   const validValues = [];
   for (const item of options.series || []) {
     for (const point of item.values || []) {
-      const rawValue = point[item.field];
-      const value = typeof rawValue === "number" ? rawValue : NaN;
-      if (!point.is_gap && Number.isFinite(value)) validValues.push(value);
+      if (isValidPoint(item, point)) validValues.push(point[item.field]);
     }
   }
   const maxValue = validValues.length ? Math.max(...validValues) : 0;
@@ -1573,10 +1581,6 @@ function renderTimeSeriesChart(container, options) {
     label.textContent = options.unit === "bytes" ? formatBytes(tickValue) : (options.unit === "bytes/s" ? formatBytesRate(tickValue) : `${tickValue.toFixed(0)}${options.unit === "%" ? "%" : ""}`);
     svg.appendChild(label);
   }
-  const expectedIntervals = allPoints.filter((point) => !point.is_gap).map((point) => Number(point.sample_interval_seconds)).filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
-  const medianInterval = expectedIntervals.length ? expectedIntervals[Math.floor((expectedIntervals.length - 1) / 2)] : 5;
-  const staleAfter = Number.isFinite(options.staleAfterSeconds) ? options.staleAfterSeconds : Math.max(15, medianInterval * 3);
-
   for (const item of options.series || []) {
     let segment = [];
     let previous = null;
@@ -1595,10 +1599,7 @@ function renderTimeSeriesChart(container, options) {
     };
     for (const point of item.values || []) {
       const epoch = Number(point.epoch);
-      const rawValue = point[item.field];
-      const value = typeof rawValue === "number" ? rawValue : NaN;
-      const stale = point.is_stale === true || (Number.isFinite(Number(point.sample_interval_seconds)) && Number(point.sample_interval_seconds) > staleAfter);
-      const valid = Number.isFinite(epoch) && Number.isFinite(value) && !point.is_gap && !stale;
+      const valid = isValidPoint(item, point);
       const discontinuity = previous && (epoch - previous.epoch > Math.max(15, medianInterval * 3) || (point.run_id && previous.run_id && point.run_id !== previous.run_id));
       if (!valid || discontinuity) flush();
       if (valid) segment.push({ ...point, epoch });

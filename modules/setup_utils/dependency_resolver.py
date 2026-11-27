@@ -36,8 +36,20 @@ class DependencyResolver:
         if not self.modules_dir.exists():
             return
 
+        try:
+            repo_root = self.modules_dir.parent
+            if str(repo_root) not in sys.path:
+                sys.path.insert(0, str(repo_root))
+            from scripts_setup.transferred_modules import is_transferred_module_dir
+            from scripts_setup.shared_packages import is_shared_module_dir
+        except ImportError:
+            is_transferred_module_dir = lambda _p: False  # noqa: E731
+            is_shared_module_dir = lambda _p: False  # noqa: E731
+
         for entry in self.modules_dir.iterdir():
             if not entry.is_dir() or entry.name.startswith('.'):
+                continue
+            if is_transferred_module_dir(entry) or is_shared_module_dir(entry):
                 continue
 
             pyproject = entry / "pyproject.toml"

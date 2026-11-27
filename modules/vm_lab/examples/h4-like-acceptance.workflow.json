@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "workflow_id": "h4-like-windows-acceptance",
+  "description": "Example external project workflow reproducing the H4-like setup, checkpoint, restart, acceptance, and evidence sequence using generic vm_lab primitives.",
+  "operation_root": "C:\\VM-Lab-Operations",
+  "vm": {
+    "template": "windows11-dev",
+    "name": "Disp-Workflow-Example-01",
+    "root": "C:\\VMs\\Disp-Workflow-Example-01",
+    "iso": "C:\\ISOs\\Win11.iso",
+    "network_policy": "disconnected",
+    "guest_identity": {
+      "os": "Windows 11",
+      "architecture": "x64",
+      "require_local_admin": true
+    }
+  },
+  "commands": {
+    "project_acceptance": {
+      "executable": "C:\\GuestWork\\accept\\runner.exe",
+      "args": ["--profile", "full", "--json"],
+      "working_directory": "C:\\GuestWork\\accept"
+    }
+  },
+  "stages": [
+    { "id": "preflight", "type": "host.preflight", "depends_on": [] },
+    { "id": "create", "type": "vm.create", "depends_on": ["preflight"], "capability": "host_mutation" },
+    { "id": "install_handoff", "type": "windows.install_handoff", "depends_on": ["create"] },
+    { "id": "start_after_install", "type": "vm.start", "depends_on": ["install_handoff"], "capability": "vm_lifecycle" },
+    { "id": "wait_ready", "type": "guest.wait", "depends_on": ["start_after_install"] },
+    { "id": "deploy_bundle", "type": "artifact.deploy", "depends_on": ["wait_ready"], "manifest": "C:\\Staging\\artifacts.json", "capability": "guest_mutation" },
+    { "id": "baseline_cp", "type": "vm.checkpoint_transaction", "depends_on": ["deploy_bundle"], "checkpoint_name": "clean-baseline", "require_off": true, "restart_after": true, "capability": "vm_lifecycle" },
+    { "id": "wait_after_cp", "type": "guest.wait", "depends_on": ["baseline_cp"] },
+    { "id": "run_acceptance", "type": "guest.exec", "depends_on": ["wait_after_cp"], "command_ref": "project_acceptance", "expected_status": "passed", "capability": "guest_exec" },
+    { "id": "collect_evidence", "type": "evidence.collect", "depends_on": ["run_acceptance"], "sources": ["C:\\GuestWork\\evidence"], "capability": "host_mutation" },
+    { "id": "verify_all", "type": "workflow.assert", "depends_on": ["collect_evidence"], "assertions": ["all_required_stages_succeeded"] }
+  ]
+}

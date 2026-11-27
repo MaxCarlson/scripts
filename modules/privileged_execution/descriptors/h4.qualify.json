@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "capability_id": "h4.qualify",
+  "version": "1.0.0",
+  "runner_type": "powershell",
+  "executable_path": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+  "executable_sha256": null,
+  "script_path": "C:\\ProgramData\\PrivExec\\adapters\\Invoke-H4QualifyAdapter.ps1",
+  "script_sha256": "4de6046100e53eee48d4a267313e8ca4664f635df9337eb56988c46bf883dc65",
+  "working_directory": "C:\\ProgramData\\PrivExec\\work",
+  "target_types": ["hyperv_vm"],
+  "allowed_targets": ["d8483f98-8884-4758-abd1-cd6107c83c03"],
+  "supports_dry_run": true,
+  "supports_apply": true,
+  "is_mutating": true,
+  "max_duration_seconds": 1800,
+  "requires_guest_credential": true,
+  "fixed_args": [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    "{script_path}",
+    "-H4QualificationScript",
+    "C:\\ProgramData\\PrivExec\\h4_scripts\\Invoke-H4GuestQualification.ps1",
+    "-OperationId",
+    "{operation_id}",
+    "-VmId",
+    "{target_id}"
+  ],
+  "dry_run_args": [],
+  "apply_args": ["-Apply"],
+  "parameter_schema": {
+    "stage": {
+      "type": "enum",
+      "required": true,
+      "allowed_values": ["Preflight", "Setup", "Acceptance"],
+      "cli_flag": "-Stage",
+      "mode_scope": "any"
+    },
+    "authorize_guest_mutation": {
+      "type": "bool",
+      "required": false,
+      "cli_flag": "-AuthorizeGuestMutation",
+      "mode_scope": "apply"
+    },
+    "run_suffix": {
+      "type": "string",
+      "required": false,
+      "pattern": "^[A-Za-z0-9_-]{1,32}$",
+      "cli_flag": "-RunSuffix",
+      "mode_scope": "any"
+    }
+  }
+}

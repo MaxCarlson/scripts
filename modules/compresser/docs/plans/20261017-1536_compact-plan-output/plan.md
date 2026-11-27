@@ -44,7 +44,7 @@ unaffected.
 | `modules/compresser/compresser/reporting.py` | Correct labels in the detailed plan report |
 | `modules/compresser/compresser/report_session.py` | Plan-only display routing and artifact footer ownership |
 | `modules/compresser/tests/operation_reports_test.py` | CLI report lifecycle and artifact failure tests |
-| `modules/mangadl/tests/compress_test.py` | MangaDL normal-header inventory/plan integration |
+| `pscripts/modules/mangadl/tests/compress_test.py` | MangaDL normal-header inventory/plan integration |
 | Both modules' pyproject.toml, exposed __version__, MangaDL root shim | Feature version/dependency synchronization |
 | `modules/scripts_help/scripts_help/registry/registry.py` | Only compresser/MangaDL version entries; preserve unrelated edits |
 | Both README.md, compresser docs/HANDOFF.md and docs/plans/HANDOFF.md; this STATUS/checklist | Usage, verification, remaining manual gate |
@@ -138,7 +138,7 @@ compress_test.py and the release/documentation paths in the file map.
   verbose and JSON artifact behavior, and every non-plan operation, intact. Correct
   detailed pilot labels and perceptual quality display in reporting.py.
 - [x] **Step5: Run GREEN for Step3 and the MangaDL combined header-plan/resume test.**
-  From modules/mangadl with `PYTHONPATH=..;../compresser;.`:
+  From pscripts/modules/mangadl with `PYTHONPATH=..;../compresser;.`:
   `../../.venv/Scripts/python.exe -m pytest -p no:cacheprovider --basetemp .pytest_tmp_root/compact-cli-green tests/compress_test.py -k combined_all_format_plan -q --tb=short`.
 - [x] **Step6: Synchronize release/docs.** Set compresser/MangaDL3.2.0 in each
   pyproject/exposed version (including MangaDL root shim), dependency>=3.2.0, and
@@ -153,7 +153,7 @@ compress_test.py and the release/documentation paths in the file map.
   unrelated parts of large historical test files or the user-modified registry.
   Require exit0; record counts or named failures without inventing omitted counts.
 - [x] **Step8: Refresh local editable metadata only after passing checks:** from root
-  `.venv/Scripts/python.exe -m pip install --no-deps --no-build-isolation -e modules/compresser -e modules/mangadl`.
+  `.venv/Scripts/python.exe -m pip install --no-deps --no-build-isolation -e modules/compresser -e pscripts/modules/mangadl`.
   Verify source/installed versions and installed CLI default/-v/-J against generated
   test inventories. Inspect Windows console at80/120/160 widths with color on/off;
   keep that acceptance pending if unavailable, with the exact boundary recorded.

@@ -32,6 +32,60 @@ from threading import Thread, Lock
 SCRIPTS_DIR = Path(__file__).resolve().parent
 VENV_DIR = SCRIPTS_DIR / ".venv"
 IS_WINDOWS = os.name == "nt"
+REPOSITORY_ONLY_ENV = "SCRIPTS_REPOSITORY_ONLY"
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse root setup options without performing setup work."""
+    parser = argparse.ArgumentParser(description="Master setup script for managing project components.")
+    parser.add_argument("-R", "--scripts-dir", type=Path, required=False,
+                        help="Base directory for the project scripts. Defaults to $SCRIPTS or ~/scripts.")
+    parser.add_argument("-D", "--dotfiles-dir", type=Path, required=False,
+                        help="Root directory of dotfiles. Defaults to $DOTFILES or ~/dotfiles.")
+    parser.add_argument("-B", "--bin-dir", type=Path, required=False,
+                        help="Target directory for symlinked executables. Defaults to <scripts-dir>/bin.")
+    parser.add_argument(
+        "-f", "--force-reinstall", action="store_true", default=False,
+        help="Force re-installation even when modules already match the desired install mode.",
+    )
+    parser.add_argument(
+        "-s", "--skip-reinstall", action=argparse.BooleanOptionalAction, default=None,
+        help="Skip reinstall when modules already match the desired install mode.",
+    )
+    parser.add_argument("-p", "--production", action="store_true",
+                        help="Install Python modules in production mode (non-editable).")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable detailed output.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Suppress some fallback INFO logs.")
+    parser.add_argument("-E", "--no-venv", dest="no_venv", action="store_true",
+                        help="(Advanced) Skip venv bootstrap even if not in ./.venv.")
+    parser.add_argument(
+        "-F", "--fail-fast", action="store_true", default=False,
+        help="Halt immediately when modules/setup.py fails (default is to continue and warn).",
+    )
+    parser.add_argument(
+        "-I", "--repair-invalid-aebndl-dists", action="store_true", default=False,
+        help="Remove invalid ~*aebndl* pip distribution leftovers from the repo venv before setup continues.",
+    )
+    parser.add_argument(
+        "-U", "--no-update-help", action="store_true", default=False,
+        help="Skip the post-install help registry drift check and AI update offer.",
+    )
+    parser.add_argument(
+        "-r", "--repository-only", action="store_true",
+        help="Install repository packages and generate local launchers without user or system integration.",
+    )
+    parser.add_argument(
+        "-K", "--skills-dir", type=Path, action="append", default=None,
+        help="Skill-link destination (repeatable; normal integration only).",
+    )
+    args = parser.parse_args(argv)
+    if args.force_reinstall and args.skip_reinstall is True:
+        parser.error("--force-reinstall conflicts with --skip-reinstall")
+    if args.repository_only and args.no_venv:
+        parser.error("--repository-only requires the invoked repository's .venv and cannot be combined with --no-venv")
+    return args
+
+
+_BOOTSTRAP_ARGS = parse_args() if __name__ == "__main__" else None
 
 def _which(cmd: str) -> str | None:
     return shutil.which(cmd) if (shutil := __import__("shutil")) else None
@@ -115,6 +169,73 @@ def report_or_repair_invalid_aebndl_dists(*, repair: bool = False) -> int:
 def _venv_python() -> Path:
     return VENV_DIR / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
 
+def _repository_only_requested(argv: list[str] | None = None) -> bool:
+    """Return repository-only mode using the same parser as the full CLI."""
+    return parse_args(argv).repository_only
+
+
+def _sanitize_repository_only_environment() -> None:
+    """Remove inherited interpreter and pip destination overrides for this setup run."""
+    inherited_pythonpath = os.environ.pop("PYTHONPATH", None)
+    if inherited_pythonpath:
+        inherited_paths = set()
+        for entry in inherited_pythonpath.split(os.pathsep):
+            try:
+                inherited_paths.add(Path(entry or os.curdir).resolve())
+            except (OSError, RuntimeError):
+                continue
+        if inherited_paths:
+            retained_paths = []
+            for entry in sys.path:
+                try:
+                    resolved_entry = Path(entry or os.curdir).resolve()
+                except (OSError, RuntimeError):
+                    retained_paths.append(entry)
+                    continue
+                if resolved_entry not in inherited_paths:
+                    retained_paths.append(entry)
+            sys.path[:] = retained_paths
+
+    for variable in ("PYTHONHOME", "PYTHONUSERBASE", "PIP_TARGET", "PIP_PREFIX", "PIP_USER", "PIP_ROOT"):
+        os.environ.pop(variable, None)
+    os.environ["PYTHONNOUSERSITE"] = "1"
+
+def _resolve_repository_only_paths(
+    repository_root: Path,
+    scripts_override: Path | None,
+    bin_override: Path | None,
+) -> tuple[Path, Path]:
+    root = repository_root.resolve()
+    scripts_dir = (scripts_override if scripts_override is not None else root).resolve()
+    if scripts_dir != root:
+        raise ValueError(f"--repository-only requires --scripts-dir to resolve to the invoked repository: {root}")
+
+    bin_dir = (bin_override if bin_override is not None else root / "bin").resolve()
+    try:
+        relative_bin = bin_dir.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"--repository-only requires --bin-dir inside the invoked repository: {root}") from exc
+    if not relative_bin.parts:
+        raise ValueError("--repository-only requires --bin-dir to be a subdirectory of the invoked repository")
+    return scripts_dir, bin_dir
+
+def _prevalidate_repository_only_invocation(args: argparse.Namespace) -> None:
+    """Reject unsafe repository-only targets before venv bootstrap can write files."""
+    if not args.repository_only:
+        return
+
+    if args.no_venv:
+        print("[ERROR] --repository-only requires the invoked repository's .venv; --no-venv is incompatible.", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        _resolve_repository_only_paths(SCRIPTS_DIR, args.scripts_dir, args.bin_dir)
+        expected_venv = SCRIPTS_DIR.resolve() / ".venv"
+        if VENV_DIR.resolve() != expected_venv:
+            raise ValueError(f"--repository-only requires .venv inside the invoked repository: {expected_venv}")
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
 def _venv_site_packages_pyver() -> str | None:
     """Return the pythonX.Y version string found in .venv/lib/, or None."""
     lib_dir = VENV_DIR / "lib"
@@ -137,14 +258,25 @@ def _create_venv():
         subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
     _ensure_pip_in_venv(_venv_python())
 
-def _bootstrap_venv_if_needed():
-    # Allow skipping (for legacy/advanced scenarios)
-    if os.environ.get("SKIP_VENV_BOOTSTRAP") == "1":
+def _bootstrap_venv_if_needed(args: argparse.Namespace | None = None):
+    if args is None:
+        args = parse_args()
+
+    repository_only = args.repository_only
+    if repository_only:
+        _sanitize_repository_only_environment()
+        _prevalidate_repository_only_invocation(args)
+
+    # A repository-only run must never inherit a caller's bootstrap bypass.
+    if repository_only:
+        os.environ.pop("SKIP_VENV_BOOTSTRAP", None)
+    elif os.environ.get("SKIP_VENV_BOOTSTRAP") == "1":
         return
 
-    # If we're already using the repo venv python, nothing to do
+    # Compare environment identity rather than executable paths: POSIX venv
+    # interpreters are commonly symlinks to the system Python executable.
     vpy = _venv_python()
-    if vpy.exists() and Path(sys.executable).resolve() == vpy.resolve():
+    if vpy.exists() and Path(sys.prefix).resolve() == VENV_DIR.resolve():
         return
 
     current_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
@@ -166,11 +298,13 @@ def _bootstrap_venv_if_needed():
 
     # Re-exec this script under the venv python so all downstream pip installs
     # use the venv and never hit system PEP 668.
-    if Path(sys.executable).resolve() != vpy.resolve():
+    if Path(sys.prefix).resolve() != VENV_DIR.resolve():
         os.execv(str(vpy), [str(vpy), *sys.argv])
 
-# Run the bootstrap ASAP (before any pip installs or sub-setups)
-_bootstrap_venv_if_needed()
+# Run the bootstrap ASAP (before any pip installs or sub-setups). Script invocations
+# parse the authoritative CLI first so help and invalid arguments exit without setup writes.
+if _BOOTSTRAP_ARGS is not None:
+    _bootstrap_venv_if_needed(_BOOTSTRAP_ARGS)
 
 # From this point on, we are guaranteed to be running under ./.venv/bin/python
 
@@ -192,8 +326,6 @@ except Exception:
 # ─────────────────────────────────────────────────────────
 MODULES_DIR = SCRIPTS_DIR / "modules"
 STANDARD_UI_SETUP_DIR = MODULES_DIR / "standard_ui"
-CROSS_PLATFORM_DIR = MODULES_DIR / "cross_platform"
-SCRIPT_LOGGING_DIR = MODULES_DIR / "script_logging"
 PYTHON_SETUP_DIR = MODULES_DIR / "python_setup"
 SCRIPTS_SETUP_PACKAGE_DIR = SCRIPTS_DIR / "scripts_setup"
 
@@ -853,6 +985,66 @@ def _check_version_action(module_dir: Path, verbose: bool) -> str:
     return "skip"
 
 
+def _expected_import_modules(module_dir: Path, pkg_name: str) -> list[str]:
+    """Infer top-level Python module name(s) expected to be importable for module_dir."""
+    if (module_dir / "__init__.py").is_file():
+        pyproject_file = module_dir / "pyproject.toml"
+        if pyproject_file.is_file():
+            try:
+                with open(pyproject_file, "rb") as f:
+                    data = tomllib.load(f)
+                setuptools_config = data.get("tool", {}).get("setuptools", {})
+                package_dir = setuptools_config.get("package-dir", {})
+                root_packages = [
+                    name
+                    for name in setuptools_config.get("packages", [])
+                    if package_dir.get(name) == "."
+                ]
+                if root_packages:
+                    return root_packages
+            except Exception:
+                pass
+        return [pkg_name.replace("-", "_")]
+    candidates: list[str] = []
+    src_dir = module_dir / "src"
+    search_root = src_dir if src_dir.is_dir() else module_dir
+    excluded = {"tests", "test", "docs", "build", "dist", "__pycache__"}
+    for child in sorted(search_root.iterdir()):
+        if not child.is_dir() or child.name in excluded or child.name.endswith(".egg-info") or child.name.startswith("."):
+            continue
+        if (child / "__init__.py").is_file():
+            candidates.append(child.name)
+    return candidates or [pkg_name.replace("-", "_")]
+
+
+def _is_package_importable(module_dir: Path, verbose: bool) -> bool:
+    """Verify the installed distribution is actually importable in an isolated interpreter."""
+    pkg = _get_pkg_name_from_source(module_dir, verbose)
+    modules = _expected_import_modules(module_dir, pkg)
+    code = (
+        "import importlib, sys\n"
+        "failed = []\n"
+        "for m in sys.argv[1:]:\n"
+        "    try:\n"
+        "        importlib.import_module(m)\n"
+        "    except Exception:\n"
+        "        failed.append(m)\n"
+        "sys.exit(1 if failed else 0)\n"
+    )
+    try:
+        res = subprocess.run(
+            [sys.executable, "-I", "-c", code, *modules],
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            errors="ignore",
+        )
+        return res.returncode == 0
+    except Exception:
+        return True
+
+
 def _get_current_install_mode(module_dir: Path, verbose: bool) -> str | None:
     pkg = _get_pkg_name_from_source(module_dir, verbose)
     try:
@@ -882,19 +1074,40 @@ def _get_current_install_mode(module_dir: Path, verbose: bool) -> str | None:
 def ensure_module_installed(module_display_name: str, install_path: Path,
                             skip_reinstall: bool, editable: bool, verbose: bool,
                             soft_fail: bool = False):
+    try:
+        from scripts_setup.transferred_modules import is_transferred_module_dir
+        from scripts_setup.shared_packages import is_shared_module_dir
+        if is_shared_module_dir(install_path):
+            status_line(
+                f"{module_display_name}: installed from shared distribution — source skipped",
+                "unchanged",
+                "shared package",
+            )
+            return
+        if is_transferred_module_dir(install_path):
+            status_line(
+                f"{module_display_name}: transferred to llm-agent-toolkit — skipped",
+                "unchanged",
+                "skip",
+            )
+            return
+    except ImportError:
+        pass
     desired_mode = "editable" if editable else "normal"
 
     # Version-aware skip / reinstall decision (MODULE_STANDARDS.md §1)
     if skip_reinstall:
         version_action = _check_version_action(install_path, verbose)
         if version_action == "skip":
-            # Patch-only: editable install already has the latest source
+            # Patch-only: editable install already has the latest source, unless import is broken
             current_mode = _get_current_install_mode(install_path, verbose)
             if current_mode == desired_mode:
-                status_line(f"{module_display_name}: already installed ({current_mode})", "unchanged", "skip")
-                if module_display_name == "standard_ui":
-                    _try_reload_standard_ui_globally()
-                return
+                if _is_package_importable(install_path, verbose):
+                    status_line(f"{module_display_name}: already installed ({current_mode})", "unchanged", "skip")
+                    if module_display_name == "standard_ui":
+                        _try_reload_standard_ui_globally()
+                    return
+                status_line(f"{module_display_name}: broken installation detected — reinstalling", "warn")
         elif version_action == "reinstall_full":
             # MAJOR version bump: entry points changed → uninstall first to recreate .cmd files
             pkg = _get_pkg_name_from_source(install_path, verbose)
@@ -1111,82 +1324,21 @@ def _run_post_install_drift_check(no_update_help: bool) -> None:
     _offer_registry_update_via_ai(drift, _build_update_prompt)
 
 
-# ─────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────
-def main():
-    global _is_verbose
-    _log_init()
-
-    parser = argparse.ArgumentParser(description="Master setup script for managing project components.")
-    parser.add_argument("-R", "--scripts-dir", type=Path, required=False,
-                        help="Base directory for the project scripts. Defaults to $SCRIPTS or ~/scripts.")
-    parser.add_argument("-D", "--dotfiles-dir", type=Path, required=False,
-                        help="Root directory of dotfiles. Defaults to $DOTFILES or ~/dotfiles.")
-    parser.add_argument("-B", "--bin-dir", type=Path, required=False,
-                        help="Target directory for symlinked executables. Defaults to <scripts-dir>/bin.")
-    parser.add_argument(
-        "-f", "--force-reinstall",
-        action="store_true",
-        default=False,
-        help="Force re-installation even when modules already match the desired install mode.",
-    )
-    parser.add_argument(
-        "-s",
-        "--skip-reinstall",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Skip reinstall when modules already match the desired install mode.",
-    )
-    parser.add_argument("-p", "--production", action="store_true",
-                        help="Install Python modules in production mode (non-editable).")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Enable detailed output.")
-    parser.add_argument("-q", "--quiet", action="store_true",
-                        help="Suppress some fallback INFO logs.")
-    parser.add_argument("-E", "--no-venv", dest="no_venv", action="store_true", help="(Advanced) Skip venv bootstrap even if not in ./.venv.")
-    parser.add_argument(
-        "-F", "--fail-fast",
-        action="store_true",
-        default=False,
-        help="Halt immediately when modules/setup.py fails (default is to continue and warn).",
-    )
-    parser.add_argument(
-        "-I", "--repair-invalid-aebndl-dists",
-        action="store_true",
-        default=False,
-        help="Remove invalid ~*aebndl* pip distribution leftovers from the repo venv before setup continues.",
-    )
-    parser.add_argument(
-        "-U", "--no-update-help",
-        action="store_true",
-        default=False,
-        help="Skip the post-install help registry drift check and AI update offer.",
-    )
-
-    args = parser.parse_args()
-    _is_verbose = args.verbose
-    with setup_group("Environment Checks", 1):
-        leftover_count = report_or_repair_invalid_aebndl_dists(repair=args.repair_invalid_aebndl_dists)
-        detail = "clean" if not leftover_count else f"{leftover_count} pip leftover(s) noted in setup_log.log"
-        status_line("aebndl pip distribution health", "unchanged", detail)
-
-    if args.force_reinstall and args.skip_reinstall is True:
-        parser.error("--force-reinstall conflicts with --skip-reinstall")
-
-    if args.no_venv:
-        os.environ["SKIP_VENV_BOOTSTRAP"] = "1"
-
-    # Resolve directories with fallback defaults
+def _resolve_setup_directories(args: argparse.Namespace) -> tuple[Path, Path, Path]:
+    """Resolve setup source and output paths, confining repository-only work to this checkout."""
     env_scripts = os.environ.get("SCRIPTS", "").strip()
     env_dotfiles = os.environ.get("DOTFILES", "").strip()
+
+    if args.repository_only:
+        scripts_dir, bin_dir = _resolve_repository_only_paths(SCRIPTS_DIR, args.scripts_dir, args.bin_dir)
+        dotfiles_dir = args.dotfiles_dir if args.dotfiles_dir is not None else Path.home() / "dotfiles"
+        return scripts_dir, dotfiles_dir, bin_dir
 
     if args.scripts_dir:
         scripts_dir = args.scripts_dir
     elif env_scripts:
         scripts_dir = Path(env_scripts)
     else:
-        # Default to the directory containing this setup.py script
         scripts_dir = SCRIPTS_DIR
 
     if args.dotfiles_dir:
@@ -1197,6 +1349,165 @@ def main():
         dotfiles_dir = Path.home() / "dotfiles"
 
     bin_dir = args.bin_dir if args.bin_dir else scripts_dir / "bin"
+    return scripts_dir, dotfiles_dir, bin_dir
+
+
+def _validate_repository_only_interpreter() -> None:
+    """Ensure repository-only installation runs in the invoked checkout's own venv."""
+    repository_root = SCRIPTS_DIR.resolve()
+    expected_venv = repository_root / ".venv"
+    actual_venv = VENV_DIR.resolve()
+    venv_python = _venv_python()
+
+    if actual_venv != expected_venv:
+        raise RuntimeError(f"Repository-only setup requires .venv inside the invoked repository: {expected_venv}")
+    if not venv_python.is_file():
+        raise RuntimeError(f"Repository-only setup cannot find its venv interpreter: {venv_python}")
+    try:
+        active_prefix = Path(sys.prefix).resolve()
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(f"Could not resolve the repository .venv interpreter: {exc}") from exc
+    if active_prefix != expected_venv:
+        raise RuntimeError(
+            "Repository-only setup must run with the invoked repository's .venv interpreter "
+            f"({venv_python}); active interpreter is {sys.executable} with prefix {sys.prefix}."
+        )
+
+
+def _configure_repository_only(repository_only: bool) -> None:
+    """Set or clear the child-process marker for the current setup invocation."""
+    if repository_only:
+        _sanitize_repository_only_environment()
+        os.environ[REPOSITORY_ONLY_ENV] = "1"
+    else:
+        os.environ.pop(REPOSITORY_ONLY_ENV, None)
+
+
+def _build_sub_setups(setup_root: Path, repository_only: bool) -> list[tuple[Path, list[str]]]:
+    """Return setup hooks, omitting integration wrappers in repository-only mode."""
+    if repository_only:
+        return [
+            (setup_root / "modules" / "setup.py", []),
+            (setup_root / "pscripts" / "modules" / "setup.py", []),
+        ]
+    return [
+        (setup_root / "pyscripts" / "setup.py", []),
+        (setup_root / "shell-scripts" / "setup.py", []),
+        (setup_root / "modules" / "setup.py", []),
+        (setup_root / "pscripts" / "setup.py", []),
+    ]
+
+
+def _run_wsl2_integration(repository_only: bool, verbose: bool) -> None:
+    with setup_group("WSL2 Integration", 1):
+        if repository_only:
+            status_line("win32yank setup skipped (--repository-only)", "unchanged")
+            return
+        try:
+            release = platform.uname().release
+        except Exception:
+            release = ""
+        if "microsoft" in release.lower() and "WSL" in release.upper():
+            run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_wsl2.py", "--verbose")
+        else:
+            status_line("win32yank setup skipped: not WSL2", "unchanged")
+
+
+def _run_auto_activation(dotfiles_dir: Path, verbose: bool) -> None:
+    try:
+        from python_setup.venv_activation import setup_auto_activation
+        ps_changed, bash_changed = setup_auto_activation(dotfiles_dir, verbose=verbose)
+        if ps_changed or bash_changed:
+            log_success("Auto-activation configured for Python venvs")
+            if ps_changed:
+                log_info(f"PowerShell: source {dotfiles_dir / 'dynamic' / 'venv_auto_activation.ps1'} in your profile")
+            if bash_changed:
+                log_info(f"Bash/Zsh: source {dotfiles_dir / 'dynamic' / 'venv_auto_activation.sh'} in your rc file")
+        else:
+            status_line("Auto-activation already configured", "unchanged")
+    except Exception as e:
+        log_warning(f"Could not setup venv auto-activation: {e}")
+        log_info("You can manually run: setup-venv-activation -D /path/to/dotfiles")
+
+
+def _run_environment_integrations(
+    *,
+    repository_only: bool,
+    scripts_dir: Path,
+    dotfiles_dir: Path,
+    bin_dir: Path,
+    skills_dirs: list[Path] | None,
+    verbose: bool,
+) -> None:
+    """Run user-environment hooks only for the default, integrated setup mode."""
+    if repository_only:
+        with setup_group("User Environment Integration", 4):
+            status_line("PATH/profile/skills/activation hooks skipped (--repository-only)", "unchanged")
+        return
+
+    with setup_group("Shell PATH Configuration", 1):
+        path_args = ["--bin-dir", str(bin_dir), "--dotfiles-dir", str(dotfiles_dir), "--verbose"]
+        run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_path.py", *path_args)
+
+    with setup_group("PowerShell Profile Wiring", 1):
+        run_setup(
+            SCRIPTS_SETUP_PACKAGE_DIR / "setup_pwsh_profile.py",
+            "--scripts-dir", str(scripts_dir), "--dotfiles-dir", str(dotfiles_dir), "--verbose",
+        )
+
+    with setup_group("Agent Skill Symlinks", 1):
+        skill_args = ["--verbose"]
+        for skills_dir in skills_dirs or []:
+            skill_args.extend(["--skills-dir", str(skills_dir)])
+        run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_skills.py", *skill_args)
+
+    with setup_group("Virtual Environment Auto-Activation", 1):
+        _run_auto_activation(dotfiles_dir, verbose)
+
+
+# ─────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────
+def main():
+    global _is_verbose
+    args = _BOOTSTRAP_ARGS if _BOOTSTRAP_ARGS is not None else parse_args()
+    _configure_repository_only(args.repository_only)
+    if args.repository_only:
+        args.no_update_help = True
+    _is_verbose = args.verbose
+
+    try:
+        scripts_dir, dotfiles_dir, bin_dir = _resolve_setup_directories(args)
+        if args.repository_only:
+            _validate_repository_only_interpreter()
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    _log_init()
+    _local_rb = SCRIPTS_DIR.parent / "shared-python-modules" / "packages" / "repo-bootstrap" / "src"
+    if _local_rb.is_dir() and str(_local_rb) not in sys.path:
+        sys.path.insert(0, str(_local_rb))
+    try:
+        from repo_bootstrap.console_ui import ConsoleUI, format_duration
+        _ui = ConsoleUI(verbose=args.verbose)
+        _ui.header("Scripts", "Bootstrap")
+        _ui.kv("Mode", "repository-only" if args.repository_only else ("production" if args.production else "editable"))
+        _ui.kv("Python", f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+        _ui.kv("Environment", str(VENV_DIR) if args.verbose else ".venv")
+        _ui.write("")
+    except ImportError:
+        _ui = None
+        format_duration = None
+    _setup_started = time.monotonic()
+
+    with setup_group("Environment Checks", 1):
+        leftover_count = report_or_repair_invalid_aebndl_dists(repair=args.repair_invalid_aebndl_dists)
+        detail = "clean" if not leftover_count else f"{leftover_count} pip leftover(s) noted in setup_log.log"
+        status_line("aebndl pip distribution health", "unchanged", detail)
+
+    if args.no_venv:
+        os.environ["SKIP_VENV_BOOTSTRAP"] = "1"
 
     if args.skip_reinstall is None:
         skip_reinstall = not args.force_reinstall
@@ -1210,14 +1521,17 @@ def main():
     except Exception:
         pass
 
-    # Core modules — now safe because we're under ./.venv
-    # Order matters: cross_platform must be installed before python_setup (dependency)
-    with setup_group("Core Modules", 6):
+    # Ensure reusable libraries come from their qualified distributions before local consumers install.
+    from scripts_setup.shared_packages import ensure_shared_distributions
+
+    if not ensure_shared_distributions(verbose=args.verbose):
+        log_error("Shared Python package installation or validation failed; see the pip diagnostic above.")
+        sys.exit(1)
+
+    # Core modules — cross_platform is installed above as a shared distribution.
+    with setup_group("Core Modules", 3):
         for name, path in [
             ("standard_ui", STANDARD_UI_SETUP_DIR),
-            ("cross_platform", CROSS_PLATFORM_DIR),
-            ("script_logging", SCRIPT_LOGGING_DIR),
-            ("resource_metrics", MODULES_DIR / "resource_metrics"),
             ("python_setup", PYTHON_SETUP_DIR),
             ("scripts_setup", SCRIPTS_SETUP_PACKAGE_DIR),
         ]:
@@ -1232,17 +1546,7 @@ def main():
             else:
                 log_warning(f"{name} setup files not found in {path} or it's not a directory.")
 
-    # WSL2 helper
-    try:
-        rel = platform.uname().release
-    except Exception:
-        rel = ""
-    if "microsoft" in rel.lower() and "WSL" in rel.upper():
-        with setup_group("WSL2 Integration", 1):
-            run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_wsl2.py", "--verbose")
-    else:
-        with setup_group("WSL2 Integration", 1):
-            status_line("win32yank setup skipped: not WSL2", "unchanged")
+    _run_wsl2_integration(args.repository_only, args.verbose)
 
     # Sub-setups
     common_setup_args = [
@@ -1259,12 +1563,9 @@ def main():
     if args.production:
         common_setup_args.append("--production")
 
-    sub_setups = [
-        (SCRIPTS_DIR / "pyscripts" / "setup.py", []),
-        (SCRIPTS_DIR / "pscripts" / "setup.py", []),
-        (SCRIPTS_DIR / "shell-scripts" / "setup.py", []),
-        (MODULES_DIR / "setup.py", []),
-    ]
+    # Repository-only mode still installs packages, but managed wrapper discovery
+    # replaces these alias-writing and symlink-oriented setup wrappers.
+    sub_setups = _build_sub_setups(SCRIPTS_DIR, repository_only=args.repository_only)
     for full_script_path, extra_args in sub_setups:
         try:
             title_rel_path = full_script_path.relative_to(SCRIPTS_DIR)
@@ -1276,40 +1577,30 @@ def main():
         with setup_group(title, total, modules=is_modules):
             run_setup(full_script_path, *(common_setup_args + extra_args), soft_fail_modules=soft_fail_modules)
 
-    with setup_group("Shell PATH Configuration", 1):
-        setup_path_script = SCRIPTS_SETUP_PACKAGE_DIR / "setup_path.py"
-        path_args = ["--bin-dir", str(bin_dir), "--dotfiles-dir", str(dotfiles_dir)]
-        path_args.append("--verbose")
-        run_setup(setup_path_script, *path_args)
+    # Public module setup runs before pscripts so shared dependencies are ready.
+    # Refresh wrappers after pscripts installs its console entry points.
+    with setup_group("Console Launcher Refresh", 1):
+        launcher_script = SCRIPTS_SETUP_PACKAGE_DIR / "launcher_generator.py"
+        launcher_args = [
+            "--apply",
+            "--repo-root",
+            str(scripts_dir),
+            "--bin-dir",
+            str(bin_dir),
+            "--verbose",
+        ]
+        if args.repository_only:
+            launcher_args.append("--cleanup")
+        run_setup(launcher_script, *launcher_args)
 
-    # Optional: wire PowerShell profile if on Windows/WSL
-    with setup_group("PowerShell Profile Wiring", 1):
-        run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_pwsh_profile.py",
-                  "--scripts-dir", str(scripts_dir),
-                  "--dotfiles-dir", str(dotfiles_dir),
-                  "--verbose")
-
-    # Discover and symlink SKILL.md-based skills to CLI directories
-    with setup_group("Agent Skill Symlinks", 1):
-        skill_args = ["--verbose"]
-        run_setup(SCRIPTS_SETUP_PACKAGE_DIR / "setup_skills.py", *skill_args)
-
-    # Setup automatic venv activation
-    with setup_group("Virtual Environment Auto-Activation", 1):
-        try:
-            from python_setup.venv_activation import setup_auto_activation
-            ps_changed, bash_changed = setup_auto_activation(dotfiles_dir, verbose=args.verbose)
-            if ps_changed or bash_changed:
-                log_success("Auto-activation configured for Python venvs")
-                if ps_changed:
-                    log_info(f"PowerShell: source {dotfiles_dir / 'dynamic' / 'venv_auto_activation.ps1'} in your profile")
-                if bash_changed:
-                    log_info(f"Bash/Zsh: source {dotfiles_dir / 'dynamic' / 'venv_auto_activation.sh'} in your rc file")
-            else:
-                status_line("Auto-activation already configured", "unchanged")
-        except Exception as e:
-            log_warning(f"Could not setup venv auto-activation: {e}")
-            log_info("You can manually run: setup-venv-activation -D /path/to/dotfiles")
+    _run_environment_integrations(
+        repository_only=args.repository_only,
+        scripts_dir=scripts_dir,
+        dotfiles_dir=dotfiles_dir,
+        bin_dir=bin_dir,
+        skills_dirs=args.skills_dir,
+        verbose=args.verbose,
+    )
 
     if args.verbose:
         try:
@@ -1318,7 +1609,10 @@ def main():
             pass
 
     with setup_group("Help Registry Drift Check", 1):
-        _run_post_install_drift_check(args.no_update_help)
+        if args.repository_only:
+            status_line("Help registry drift check skipped (--repository-only)", "unchanged")
+        else:
+            _run_post_install_drift_check(args.no_update_help)
 
     failure_messages = [message for message in warnings if "failed" in message.lower()]
     run_failed = bool(errors or failure_messages)
@@ -1337,6 +1631,15 @@ def main():
             shutil.copyfile(GLOBAL_LOG, ERROR_LOG)
         except OSError as exc:
             log_error(f"Failed to copy verbose setup log to '{ERROR_LOG}': {exc}")
+    if _ui is not None:
+        _ui.write("")
+        _ui.rule("muted")
+        if errors:
+            _ui.write(_ui.style(f"{_ui.glyphs.fail} Bootstrap finished with {len(errors)} error(s)", "bold_red"))
+        else:
+            _ui.write(_ui.style(f"{_ui.glyphs.ok} Bootstrap completed successfully", "bold_green"))
+        if format_duration is not None:
+            _ui.write(_ui.style(f"Elapsed: {format_duration(time.monotonic() - _setup_started)}", "muted"))
     sys.exit(1 if errors else 0)
 
 if __name__ == "__main__":

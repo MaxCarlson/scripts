@@ -13,3 +13,6 @@
 /testing/
 /tests/_tmp/
 /.pytest_tmp/
+
+# Legacy CWD state filename; current default state lives outside the repository.
+/copy_state.json
