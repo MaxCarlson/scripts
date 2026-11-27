@@ -11,6 +11,16 @@ def test_headless_task_logs_output_and_preserves_exit_code(tmp_path, monkeypatch
     assert "dispatch checked" in (tmp_path / "outbox.log").read_text(encoding="utf-8")
 
 
+def test_headless_task_preserves_cli_system_exit_code(tmp_path, monkeypatch):
+    from notifications import cli, headless_task
+
+    def fake_main(argv):
+        raise SystemExit(7)
+
+    monkeypatch.setattr(cli, "main", fake_main)
+    assert headless_task.run(["coordinator", "poll"], log_directory=tmp_path) == 7
+
+
 def test_headless_task_logs_uncaught_exception_and_returns_failure(
     tmp_path, monkeypatch
 ):

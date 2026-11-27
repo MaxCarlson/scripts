@@ -162,9 +162,24 @@ def test_cli_coordinator_status_and_test(tmp_path: Path, capsys):
     assert ret_bad == 1
 
 
-def test_cli_coordinator_prune_and_task_lifecycle(tmp_path: Path, capsys):
+def test_cli_coordinator_prune_and_task_lifecycle(tmp_path: Path, capsys, monkeypatch):
     """Coordinator CLI commands support observation pruning and scheduled task dry-run."""
     db_file = tmp_path / "cli.db"
+
+    # Keep scheduler status deterministic and prevent tests from querying or
+    # changing the host Task Scheduler.
+    status_calls = []
+
+    def synthetic_task_status():
+        status_calls.append(True)
+        return {
+            "ok": True,
+            "task_name": "Coordinator Observer",
+            "task_installed": False,
+            "state": "NotInstalled",
+        }
+
+    monkeypatch.setattr("notifications.cli.get_coordinator_task_status", synthetic_task_status)
 
     # Prune dry-run
     ret_prune_dry = main(["coordinator", "prune", "-d", str(db_file), "-j"])
@@ -188,6 +203,8 @@ def test_cli_coordinator_prune_and_task_lifecycle(tmp_path: Path, capsys):
     cap_task_stat = capsys.readouterr()
     data_ts = json.loads(cap_task_stat.out)
     assert data_ts["ok"] is True
+    assert data_ts["task_installed"] is False
+    assert status_calls == [True]
 
     # Task install dry-run
     ret_task_inst = main(["coordinator", "task", "install", "-i", "5", "-j"])
