@@ -27,7 +27,7 @@
 
 ### Task 1: Recorder project-scope diagnostics
 
-**Files:** `modules/llm_monitor/llm_monitor/cli.py`, `modules/llm_monitor/tests/cli_test.py`, `modules/llm_monitor/README.md`, `modules/llm_monitor/pyproject.toml`.
+**Files:** `modules/llm_monitor/llm_monitor/cli.py`, `modules/llm_monitor/tests/cli_test.py`, `docs/archive/llm_monitor/README.md`, `modules/llm_monitor/pyproject.toml`.
 
 - [x] Add a failing CLI test for an `--all --project-directory` recorder invocation; assert the project and sanitized server endpoint are visible and endpoint userinfo/query are absent.
 - [x] Run the focused test and confirm the expected assertion fails.

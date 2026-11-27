@@ -444,7 +444,7 @@ Do not confuse successful startup, an HTTP connection, completed inference, comp
 Repository:
 
 - `modules/local_agent_bridge/README.md`
-- `modules/llm_monitor/README.md`
+- `docs/archive/llm_monitor/README.md`
 - `modules/agent_benchmark/README.md`
 
 Upstream documentation:

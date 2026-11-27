@@ -11,6 +11,14 @@ Date: 2026-11-12 (Pacific)
 - [ ] H4 owner review and integration; real guest lifecycle remains separately gated.
 - [x] Four host-dependent tests fail because Task Scheduler/session inventory and isolated credential ACL checks are unavailable in this sandbox; see current `STATUS.md`.
 
+## Canonical LLM Monitor bundle integration (2026-11-24)
+
+- [x] Build the Monitor wheel from canonical Toolkit commit `edd54bd07ec9b1058e9c35e57ca320aaf993b6b2` in a disposable source archive and pin its hash.
+- [x] Remove the scripts Monitor source path from the managed launcher and H4 proxy-chain tests.
+- [x] Verify gateway API imports and a synthetic Runmux snapshot through the canonical wheel.
+- [x] Offline H4 suite: 77 passed, 1 skipped, 4 host-dependent deselections; Ruff, compileall, and whitespace checks passed.
+- [ ] H4 owner review/integration; physical Scripts source retirement and clean bootstrap remain in separate follow-up work.
+
 ## H4.5 full lifecycle acceptance infrastructure (2026-11-15)
 
 - [x] Verify the assigned H4 source checkpoint and V3 checksum in the isolated implementation worktree.

@@ -201,8 +201,12 @@ def test_offline_apply_runs_scoped_test_profile_without_guest_mutation(tmp_path,
     assert "RC_WINDOWS_TASK_INTEGRATION" not in captured["env"]
     metrics_wheel = (MODULE_PATH.parent / "wheelhouse" / "mxc_resource_metrics-0.3.0-py3-none-any.whl")
     assert str(metrics_wheel) in captured["env"]["PYTHONPATH"].split(os.pathsep)
+    monitor_wheel = MODULE_PATH.parent / "wheelhouse" / "llm_monitor-0.9.0-py3-none-any.whl"
+    assert str(monitor_wheel) in captured["env"]["PYTHONPATH"].split(os.pathsep)
     legacy_metrics_source = MODULE_PATH.parents[3] / "resource_metrics"
     assert str(legacy_metrics_source) not in captured["env"]["PYTHONPATH"]
+    legacy_monitor_source = MODULE_PATH.parents[3] / "llm_monitor"
+    assert str(legacy_monitor_source) not in captured["env"]["PYTHONPATH"]
     assert json.loads((root / "test-results.json").read_text(encoding="utf-8"))["status"] == "passed"
     preflight = json.loads((root / "preflight.json").read_text(encoding="utf-8"))
     assert preflight["guest_verified"] is False

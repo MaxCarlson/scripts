@@ -41,6 +41,7 @@ def _repack_zip_with_edit(src_zip: Path, dst_zip: Path, target_suffix: str, new_
     "dependencies/dependency-lock.json",
     "config/config.production-template.yaml",
     "dependencies/wheelhouse/mxc_resource_metrics-0.3.0-py3-none-any.whl",
+    "dependencies/wheelhouse/llm_monitor-0.9.0-py3-none-any.whl",
 ])
 def test_b1_component_tampering_is_rejected(tmp_path, target_suffix):
     _, zip_path, expected_sha = _build_test_bundle(tmp_path)
