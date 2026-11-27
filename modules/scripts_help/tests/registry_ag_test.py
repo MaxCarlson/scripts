@@ -16,7 +16,7 @@ def test_command_registry_load_search_resolve_and_validate(tmp_path: Path):
     (repo / "modules" / "demo").mkdir(parents=True)
     (repo / "pyscripts" / "hello.py").write_text("print('hi')\n", encoding="utf-8")
     (repo / "modules" / "demo" / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n\n[project.scripts]\ndemo-cli = "scripts_help.ag:main"\n',
+        '[project]\nname = "demo"\nversion = "0.1.0"\ndescription = "Demo project command tools."\n\n[project.scripts]\ndemo-cli = "scripts_help.ag:main"\n',
         encoding="utf-8",
     )
     manifest = {
@@ -45,6 +45,7 @@ def test_command_registry_load_search_resolve_and_validate(tmp_path: Path):
     entries = command_registry.load_command_registry(repo)
     names = {e.name for e in entries}
     assert {"hello", "ghost", "demo-cli", "ag"}.issubset(names)
+    assert next(e for e in entries if e.name == "demo-cli").description == "Demo project command tools."
 
     found = command_registry.search_commands(entries, "demo")
     assert [e.name for e in found] == ["demo-cli"]
@@ -71,6 +72,18 @@ def test_command_registry_load_search_resolve_and_validate(tmp_path: Path):
     assert u_val.status == "unsupported_platform"
 
 
+def test_clipboard_registered_tools_have_specific_help_descriptions():
+    repo = command_registry.find_repo_root()
+    entries = command_registry.load_command_registry(repo)
+    c2c = next(e for e in entries if e.name == "c2c")
+    assert c2c.description == "Copy selected file or path contents to the clipboard."
+    assert c2c.description != c2c.target
+    clipboard_entries = [e for e in entries if e.distribution == "clipboard_tools"]
+    assert len(clipboard_entries) == 21
+    assert all(e.description for e in clipboard_entries)
+    assert all(e.description != "Clipboard command suite with multi-buffer support and tmux/Windows bridge." for e in clipboard_entries)
+
+
 def test_ag_search_formatting_shell_inventory_and_silver_searcher_collision(tmp_path: Path, monkeypatch, capsys):
     inv_file = tmp_path / "inv.json"
     inv_file.write_text(
@@ -78,8 +91,8 @@ def test_ag_search_formatting_shell_inventory_and_silver_searcher_collision(tmp_
             {
                 "shell": "pwsh",
                 "items": [
-                    {"name": "gcb", "kind": "shell_alias", "source": "pwsh", "definition": "Get-Clipboard"},
-                    {"name": "myHelper", "kind": "shell_function", "source": "pwsh", "definition": "Write-Host hi"},
+                    {"name": "gcb", "kind": "shell_alias", "source": "pwsh", "definition": "Get-Clipboard", "curated": True},
+                    {"name": "myHelper", "kind": "shell_function", "source": "pwsh", "definition": "Write-Host hi", "curated": False},
                 ],
             }
         ),
@@ -90,25 +103,107 @@ def test_ag_search_formatting_shell_inventory_and_silver_searcher_collision(tmp_
     ext_dir.mkdir()
     ext_ag = ext_dir / ("ag.exe" if os.name == "nt" else "ag")
     ext_ag.write_text("binary", encoding="utf-8")
+    path_tool = ext_dir / ("only-path-tool.exe" if os.name == "nt" else "only-path-tool")
+    path_tool.write_text("binary", encoding="utf-8")
     if os.name != "nt":
         ext_ag.chmod(0o755)
+        path_tool.chmod(0o755)
     monkeypatch.setenv("PATH", str(ext_dir))
 
-    rc = ag.main(["--shell-inventory", str(inv_file), "--type", "alias", "clip"])
+    rc = ag.main(["--shell-inventory", str(inv_file), "--type", "alias", "gcb"])
     assert rc == 0
     captured = capsys.readouterr()
     assert "Name" in captured.out
-    assert "Definition" in captured.out
+    assert "Help" in captured.out
+    assert "Definition" not in captured.out
     assert "gcb" in captured.out
-    assert "Get-Clipboard" in captured.out
+    assert "Shell alias" in captured.out
+    assert "Get-Clipboard" not in captured.out
     assert "External `ag`" in captured.err
 
-    rc_json = ag.main(["--shell-inventory", str(inv_file), "--json", "myhelper"])
+    assert ag.main(["--shell-inventory", str(inv_file), "--type", "alias", "--definitions", "Get-Clipboard"]) == 0
+    definition_output = capsys.readouterr().out
+    assert "Get-Clipboard" in definition_output
+
+    rc_json = ag.main(["--shell-inventory", str(inv_file), "--all", "--json", "myhelper"])
     assert rc_json == 0
     data = json.loads(capsys.readouterr().out)
     assert data["count"] == 1
     assert data["matches"][0]["name"] == "myHelper"
     assert data["silver_searcher_collision"] is not None
+
+    assert ag.main(["--executables", "--json", "only-path-tool"]) == 0
+    path_result = json.loads(capsys.readouterr().out)
+    assert path_result["matches"][0]["source"] == "path"
+
+
+def test_ag_curated_default_and_definition_mode(tmp_path: Path, capsys, monkeypatch):
+    inv_file = tmp_path / "inv.json"
+    inv_file.write_text(json.dumps({"shell": "pwsh", "items": [
+        {"name": "c2c", "kind": "shell_alias", "source": "pwsh", "definition": "copy_main", "description": "Copy text to clipboard", "curated": True},
+        {"name": "Get-OdbcDsn", "kind": "shell_function", "source": "pwsh", "definition": "system function", "description": "system function", "curated": False},
+    ]}), encoding="utf-8")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    assert ag.main(["--shell-inventory", str(inv_file), "clip"]) == 0
+    default = capsys.readouterr().out
+    assert "c2c" in default and "Copy text to clipboard" in default
+    assert "Get-OdbcDsn" not in default
+    assert "copy_main" not in default
+
+    assert ag.main(["--shell-inventory", str(inv_file), "--definitions", "copy_main"]) == 0
+    definitions = capsys.readouterr().out
+    assert "Definition" in definitions and "copy_main" in definitions
+
+    assert ag.main(["--shell-inventory", str(inv_file), "--all", "odbc"]) == 0
+    all_output = capsys.readouterr().out
+    assert "Get-OdbcDsn" in all_output
+
+
+def test_ag_color_is_terminal_only_and_no_color_wins(tmp_path: Path, capsys, monkeypatch):
+    inv_file = tmp_path / "inv.json"
+    inv_file.write_text(json.dumps({"shell": "pwsh", "items": [
+        {"name": "myclip", "kind": "shell_alias", "source": "pwsh", "definition": "copy_main", "description": "Clipboard copy", "curated": True},
+    ]}), encoding="utf-8")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(ag.sys.stdout, "isatty", lambda: True)
+    assert ag.main(["--shell-inventory", str(inv_file), "clip"]) == 0
+    assert "\x1b[" in capsys.readouterr().out
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert ag.main(["--shell-inventory", str(inv_file), "clip"]) == 0
+    assert "\x1b[" not in capsys.readouterr().out
+
+
+def test_ag_output_width_and_json_remain_clean(tmp_path: Path, capsys, monkeypatch):
+    entry = command_registry.CommandEntry(
+        name="very-long-command-name",
+        program_id="module:demo",
+        invoked_name="very-long-command-name",
+        kind="console_script",
+        source="pyproject",
+        target="demo.entrypoint:main --very-long-option",
+        description="A long help description that should be clipped to fit the terminal width.",
+    )
+    table = ag._format_table([entry], definitions=True, terminal_width=34)
+    assert all(len(line) <= 34 for line in table.splitlines())
+    assert "..." in table
+
+    inv_file = tmp_path / "inv.json"
+    inv_file.write_text(json.dumps({"shell": "pwsh", "items": [
+        {"name": "myclip", "kind": "shell_alias", "source": "pwsh", "definition": "copy_main", "description": "Clipboard copy", "curated": True},
+    ]}), encoding="utf-8")
+    monkeypatch.setattr(ag.sys.stdout, "isatty", lambda: True)
+    assert ag.main(["--shell-inventory", str(inv_file), "--json", "clip"]) == 0
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert set(payload) == {"schema_version", "pattern", "count", "matches", "silver_searcher_collision"}
+    assert "\x1b[" not in output
+
+
+def test_ag_adapter_emits_curated_classification():
+    assert "curated" in shell_integration.render_pwsh_adapter()
+    assert "curated" in shell_integration.render_posix_adapter()
 
 
 def test_shell_integration_dry_run_apply_idempotent_and_rollback(tmp_path: Path):

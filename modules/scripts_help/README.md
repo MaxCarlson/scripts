@@ -1,4 +1,4 @@
-<!-- version: 1.0.0 -->
+<!-- version: 2.0.0 -->
 # scripts-help
 
 Interactive help browser, command registry, `ag` discovery, and shell integration for the scripts repository.
@@ -12,12 +12,15 @@ scripts-help drift                  # print drift report
 scripts-help sync                   # launch AI to fix drift
 scripts-help registry list [--json] # list/search/resolve/collisions/validate
 scripts-help integrate [-a|-c|-r]   # dry-run-first shell adapter installer
-ag [pattern]                        # search registered commands & live shell aliases/functions
+ag [pattern]                        # search registered tools and configured shell shortcuts
+ag -A [pattern]                     # include the full shell inventory and PATH executables
+ag -D [pattern]                     # show and search raw command definitions
 ```
 
 ## Command Registry, `ag`, and Shell Integration
 - **Canonical registry** (`scripts_help/command_registry.py`): Aggregates `scripts_manifest.json`, `scripts_help.registry.REGISTRY`, and `modules/*/pyproject.toml` `[project.scripts]` without duplicating metadata, using `script_logging`'s `program_id` / `invoked_name` contract.
-- **`ag`** (`scripts_help/ag.py`): Case-insensitive regex search over command names and definitions (`Name`/`Definition` table or `--json`), with `--type`, `--source`, `--executables`, `--shell-inventory`, and Silver Searcher `ag` PATH collision detection.
+- **`ag`** (`scripts_help/ag.py`): Case-insensitive regex search over command names and help descriptions (`Name`/`Help` table by default), with `-A/--all` for the broad shell/PATH inventory, `-D/--definitions` for raw targets, `--type`, `--source`, `--executables`, `--shell-inventory`, and JSON output. Interactive tables use kind colors unless `NO_COLOR` is set.
+- Console-script help comes from explicit command descriptions when available and falls back to the module's `pyproject.toml` project description. Modules may define per-command summaries in `[tool.scripts_help.descriptions]`.
 - **Installer & Rollback** (`scripts-help integrate`):
   - Dry-run by default: `scripts-help integrate`
   - Apply managed snippets (`ag_integration.ps1` / `ag_integration.sh` in `dotfiles/dynamic/`): `scripts-help integrate --apply`

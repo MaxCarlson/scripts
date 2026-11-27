@@ -20,7 +20,7 @@ from scripts_help.command_registry import (
 )
 
 
-def _load_shell_inventory(path: Path | None) -> list[CommandEntry]:
+def _load_shell_inventory(path: Path | None, *, include_all: bool = False) -> list[CommandEntry]:
     """Load live shell aliases/functions exported by a thin shell adapter."""
     if path is None or not path.is_file():
         return []
@@ -42,6 +42,8 @@ def _load_shell_inventory(path: Path | None) -> list[CommandEntry]:
     for item in items:
         if not isinstance(item, dict):
             continue
+        if not include_all and not bool(item.get("curated", False)):
+            continue
         name = str(item.get("name", "")).strip()
         if not name:
             continue
@@ -56,7 +58,8 @@ def _load_shell_inventory(path: Path | None) -> list[CommandEntry]:
                 kind=kind,
                 source=source,
                 target=definition,
-                description=definition,
+                description=str(item.get("description", "")).strip()
+                or ("Shell alias" if "alias" in kind else "Shell function"),
                 shell_adapter_required=True,
             )
         )
@@ -160,8 +163,9 @@ def search_ag(
     case_sensitive: bool = False,
     command_type: str | None = None,
     source: str | None = None,
+    match_definitions: bool = False,
 ) -> list[CommandEntry]:
-    """Match pattern against command name and target definition (case-insensitive regex by default)."""
+    """Match names and help text, optionally including raw definitions."""
     flags = 0 if case_sensitive else re.IGNORECASE
     try:
         rx = re.compile(pattern, flags)
@@ -174,54 +178,97 @@ def search_ag(
             continue
         if source and source != "all" and entry.source.lower() != source.lower():
             continue
-        if rx.search(entry.name) or rx.search(entry.target):
+        if rx.search(entry.name) or rx.search(entry.description) or (
+            match_definitions and rx.search(entry.target)
+        ):
             matches.append(entry)
     return sorted(matches, key=lambda e: (e.name.lower(), e.source, e.kind))
 
 
-def _format_table(matches: Sequence[CommandEntry], *, verbose: bool = False) -> str:
+_ANSI_BY_KIND = {
+    "alias": "36",
+    "shell_alias": "36",
+    "function": "35",
+    "shell_function": "35",
+    "console_script": "32",
+    "python_file": "32",
+    "shell_script": "33",
+    "executable": "34",
+}
+
+
+def _format_table(
+    matches: Sequence[CommandEntry],
+    *,
+    verbose: bool = False,
+    definitions: bool = False,
+    color: bool = False,
+    terminal_width: int | None = None,
+) -> str:
     if not matches:
         return ""
     if verbose:
-        headers = ("Name", "Kind", "Source", "Definition", "ProgramId")
-        rows = [(m.name, m.kind, m.source, m.target, m.program_id) for m in matches]
+        headers = ("Name", "Kind", "Source", "Help", "Definition", "ProgramId")
+        rows = [(m.name, m.kind, m.source, m.description, m.target, m.program_id) for m in matches]
+    elif definitions:
+        headers = ("Name", "Help", "Definition")
+        rows = [(m.name, m.description, m.target) for m in matches]
     else:
-        headers = ("Name", "Definition")
-        rows = [(m.name, m.target) for m in matches]
+        headers = ("Name", "Help")
+        rows = [(m.name, m.description) for m in matches]
 
+    available = max(1, terminal_width or shutil.get_terminal_size((120, 24)).columns)
+    gaps = 2 * (len(headers) - 1)
+    budget = max(1, available - gaps)
     widths = [len(h) for h in headers]
-    for row in rows:
-        for idx, val in enumerate(row):
-            widths[idx] = max(widths[idx], min(len(val), 80))
+    widths[0] = min(max(widths[0], *(len(row[0]) for row in rows)), max(1, budget // 4))
+    remaining = budget - widths[0]
+    for idx in range(1, len(headers)):
+        columns_left = len(headers) - idx
+        widths[idx] = min(
+            max(len(headers[idx]), *(len(row[idx]) for row in rows)),
+            max(1, remaining // columns_left),
+        )
+        remaining -= widths[idx]
 
-    def _fmt_row(vals: tuple[str, ...]) -> str:
+    def clip(value: str, width: int) -> str:
+        if len(value) <= width:
+            return value
+        marker = "..." if width >= 3 else "." * width
+        return value[: max(0, width - len(marker))] + marker
+
+    def _fmt_row(vals: tuple[str, ...], entry: CommandEntry | None = None) -> str:
         parts = []
         for idx, val in enumerate(vals):
+            val = clip(val, widths[idx])
+            if color and entry is not None and idx == 0:
+                val = f"\x1b[{_ANSI_BY_KIND.get(entry.kind, '37')}m{val}\x1b[0m"
             if idx == len(vals) - 1:
                 parts.append(val)
             else:
-                parts.append(val.ljust(widths[idx]))
+                visible_length = len(re.sub(r"\x1b\[[0-9;]*m", "", val))
+                parts.append(val + " " * max(0, widths[idx] - visible_length))
         return "  ".join(parts)
 
     lines = [
         _fmt_row(headers),
         "  ".join("-" * w for w in widths),
     ]
-    for row in rows:
-        lines.append(_fmt_row(row))
+    for row, entry in zip(rows, matches):
+        lines.append(_fmt_row(row, entry))
     return "\n".join(lines)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ag",
-        description="Search registered Python commands, live shell aliases/functions, and optional PATH executables.",
+        description="Search registered tools and configured shell shortcuts.",
     )
     parser.add_argument(
         "pattern",
         nargs="?",
         default="",
-        help="Regex pattern to match against command name or definition (default: match all).",
+        help="Regex pattern to match command names and help text (default: match all).",
     )
     parser.add_argument(
         "-s", "--case-sensitive",
@@ -241,9 +288,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Filter by source (e.g. pwsh, bash, zsh, scripts_manifest, pyproject, path).",
     )
     parser.add_argument(
+        "-A", "--all",
+        action="store_true",
+        help="Include the full shell inventory and executables found on PATH.",
+    )
+    parser.add_argument(
+        "-D", "--definitions",
+        action="store_true",
+        help="Show raw definitions in a third column and include them in search.",
+    )
+    parser.add_argument(
         "-x", "--executables",
         action="store_true",
-        help="Include executables discovered on PATH.",
+        help="Also include executables discovered on PATH.",
     )
     parser.add_argument(
         "-i", "--shell-inventory",
@@ -258,7 +315,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
-        help="Show Kind, Source, and ProgramId columns in table output.",
+        help="Show Kind, Source, Help, Definition, and ProgramId columns.",
     )
     parser.add_argument(
         "-c", "--check-collisions",
@@ -283,9 +340,9 @@ def main(argv: list[str] | None = None) -> int:
 
     inv_path_str = args.shell_inventory or os.environ.get("AG_SHELL_INVENTORY_FILE")
     if inv_path_str:
-        entries.extend(_load_shell_inventory(Path(inv_path_str)))
+        entries.extend(_load_shell_inventory(Path(inv_path_str), include_all=args.all))
 
-    if args.executables:
+    if args.executables or args.all:
         entries.extend(_discover_path_executables())
 
     matches = search_ag(
@@ -294,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
         case_sensitive=args.case_sensitive,
         command_type=args.command_type,
         source=args.source,
+        match_definitions=args.definitions or args.verbose,
     )
 
     silver_searcher = detect_silver_searcher_collision(repo_root=repo_root)
@@ -322,7 +380,13 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    table = _format_table(matches, verbose=args.verbose)
+    color = bool(sys.stdout.isatty() and "NO_COLOR" not in os.environ)
+    table = _format_table(
+        matches,
+        verbose=args.verbose,
+        definitions=args.definitions,
+        color=color,
+    )
     if table:
         print(table)
     else:

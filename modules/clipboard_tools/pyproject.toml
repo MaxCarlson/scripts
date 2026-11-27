@@ -39,6 +39,29 @@ otcwa = "clipboard_tools.entrypoints:output_to_clipboard_wrap_append_main"
 tmux2winclip = "clipboard_tools.tmux_bridge:cli_main"
 tmuxcp = "clipboard_tools.tmux_bridge:cli_main"
 
+[tool.scripts_help.descriptions]
+c2c = "Copy selected file or path contents to the clipboard."
+c2cd = "Copy selected file or path contents using the default mode."
+c2cr = "Recursively copy matching file contents to the clipboard."
+c2ca = "Append selected file or path contents to the clipboard."
+pclip = "Print the current clipboard contents."
+gcb = "Copy the clipboard's short text value to standard output."
+scb = "Set clipboard text from standard input or arguments."
+rwc = "Replace the current selection with clipboard contents."
+sfcb = "Replace the current selection with clipboard contents."
+rwcp = "Replace the selection with the most recently copied clipboard value."
+cld = "Show a diff between clipboard buffers or recent clipboard values."
+apc = "Append standard input or text to the clipboard."
+crx = "Replace text using clipboard contents and configured rules."
+cb2c = "Copy a named clipboard buffer to the system clipboard."
+cb2cf = "Copy a full clipboard buffer, including metadata, to the system clipboard."
+otc = "Copy command output to the clipboard."
+otcw = "Wrap command output before copying it to the clipboard."
+otca = "Append command output to the current clipboard contents."
+otcwa = "Wrap command output and append it to the clipboard."
+tmux2winclip = "Bridge tmux clipboard data to the Windows clipboard."
+tmuxcp = "Copy tmux selection text to the Windows clipboard."
+
 [tool.setuptools]
 packages = ["clipboard_tools"]
 

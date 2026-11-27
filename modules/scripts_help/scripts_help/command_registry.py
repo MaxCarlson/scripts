@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sys
+import tomllib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -178,7 +179,23 @@ def _load_pyproject_console_scripts(
         dist = dist_m.group(1).strip() if dist_m else mod.name
         ver = ver_m.group(1).strip() if ver_m else None
         rel_mod = f"modules/{mod.name}"
-        desc = descriptions.get(rel_mod, "")
+        project_desc_m = re.search(r'''(?m)^\s*description\s*=\s*["']([^"']*)["']''', proj_sec)
+        project_desc = project_desc_m.group(1).strip() if project_desc_m else ""
+        command_descriptions: dict[str, str] = {}
+        try:
+            project_data = tomllib.loads(text)
+            raw_descriptions = (
+                project_data.get("tool", {}).get("scripts_help", {}).get("descriptions", {})
+            )
+            if isinstance(raw_descriptions, dict):
+                command_descriptions = {
+                    str(name): str(value).strip()
+                    for name, value in raw_descriptions.items()
+                    if str(value).strip()
+                }
+        except (tomllib.TOMLDecodeError, AttributeError):
+            pass
+        module_desc = descriptions.get(rel_mod, "") or project_desc
 
         for raw_line in m_scripts.group(1).splitlines():
             line = raw_line.strip()
@@ -200,7 +217,7 @@ def _load_pyproject_console_scripts(
                     kind="console_script",
                     source="pyproject",
                     target=target,
-                    description=desc,
+                    description=command_descriptions.get(cmd, module_desc),
                     platforms=("windows", "linux", "wsl", "termux"),
                     shell_adapter_required=False,
                     distribution=dist,
