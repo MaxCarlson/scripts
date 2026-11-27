@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-continuity"
-version = "1.7.1"
+version = "2.0.0"
 description = "Local-first GUI-agent session continuity registry for ChatGPT GUI workflows, Codex CLI, and Antigravity CLI."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Maxwell Carlson", email = "carlsonamax@gmail.com" }]
-dependencies = ["terminal-launcher>=0.1.1,<0.2"]
+dependencies = ["terminal-launcher>=0.1.1,<0.3"]
 
 [project.optional-dependencies]
 dev = [

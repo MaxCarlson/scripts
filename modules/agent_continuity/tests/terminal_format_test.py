@@ -152,6 +152,21 @@ def test_responsive_listing_widths_preserve_cell_bounds_and_json_purity(monkeypa
     assert "\x1b[" not in json_text
 
 
+def test_120_column_listing_preserves_uuid_and_allocates_name_width_from_data(monkeypatch):
+    from agent_continuity import dispatcher_cli
+
+    monkeypatch.setattr(dispatcher_cli.shutil, "get_terminal_size", lambda fallback: type("Size", (), {"columns": 120})())
+    native_id = "12345678-1234-4234-8234-123456789abc"
+    result = {"gui": "GUI", "last_activity_at": None, "slots": [
+        {"name": "A" * 48, "current_provider": "codex", "current_environment_id": "local",
+         "current_session_id": native_id,
+         "state": "active", "last_activity_at": None}], "shown": 1, "total": 1, "omitted": 0}
+    output = StringIO()
+    _render_listing(result, output, "never")
+    assert native_id in output.getvalue()
+    assert "A" * 48 not in output.getvalue()
+
+
 def test_selectors_terminal_history_preview_and_cli_color_contract(tmp_path, monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     gui = _gui_selector_line({"alias": "Research", "last_activity_at": None}, 100, enabled=True)

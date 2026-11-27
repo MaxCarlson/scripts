@@ -13,6 +13,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Sequence
 from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
@@ -47,10 +49,45 @@ _BOOTSTRAP_PROMPT = "Session initialization only. Reply READY and await further 
 _BOOTSTRAP_TIMEOUT_SECONDS = 180
 _NATIVE_ARG_COMMANDS = {"continue", "start", "switch", "review", "return", "last", "open"}
 _COLOR_MODE: ContextVar[str] = ContextVar("llmd_color_mode", default="auto")
+_STARTUP_PROGRESS: ContextVar[bool] = ContextVar("llmd_startup_progress", default=False)
+_STARTUP_STARTED: ContextVar[float | None] = ContextVar("llmd_startup_started", default=None)
 
 
 def _current_color_mode() -> str:
     return _COLOR_MODE.get()
+
+
+def _startup_progress(message: str) -> None:
+    started = _STARTUP_STARTED.get()
+    if not _STARTUP_PROGRESS.get() or started is None:
+        return
+    print(f"LLMD startup +{time.monotonic() - started:.2f}s: {message}", file=sys.stderr, flush=True)
+
+
+def _run_provider_with_progress(
+    argv: Sequence[str], *, label: str, progress_interval: float = 4.0, **kwargs: Any
+) -> subprocess.CompletedProcess:
+    """Run a provider process while periodically reporting elapsed wait time to stderr."""
+    done = threading.Event()
+    stage_started = time.monotonic()
+    startup_started = _STARTUP_STARTED.get()
+
+    def report_wait() -> None:
+        while not done.wait(progress_interval):
+            total = time.monotonic() - startup_started if startup_started is not None else time.monotonic() - stage_started
+            print(f"LLMD startup +{total:.2f}s: {label} still running ({time.monotonic() - stage_started:.0f}s elapsed)",
+                  file=sys.stderr, flush=True)
+
+    reporter = None
+    if _STARTUP_PROGRESS.get():
+        reporter = threading.Thread(target=report_wait, name="llmd-startup-progress", daemon=True)
+        reporter.start()
+    try:
+        return subprocess.run(argv, **kwargs)
+    finally:
+        done.set()
+        if reporter is not None:
+            reporter.join(timeout=0.2)
 
 
 class _LLMDArgumentParser(argparse.ArgumentParser):
@@ -86,6 +123,11 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
                         help="Color human-readable output (default: auto).")
 
 
+def _add_execution_options(parser: argparse.ArgumentParser, *, help_text: str = "Execute (compatibility alias; execution is the default).") -> None:
+    parser.add_argument("-d", "--dry-run", action="store_true", help="Preview without performing this operation.")
+    parser.add_argument("-a", "--apply", action="store_true", help=help_text)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = _LLMDArgumentParser(
         prog="llmd",
@@ -96,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Administration: gui, slot, register.\n"
             "Recovery and diagnostics: attach, pending, recover, doctor."
         ),
-        epilog="Register applies by default; legacy mutations and launches require -a/--apply.",
+        epilog="Operational commands execute by default; use -d/--dry-run to preview. -a/--apply remains a compatibility alias.",
     )
     parser.add_argument("-H", "--home", help="Override the shared agent_continuity registry directory.")
     parser.add_argument("-j", "--json", dest="json_output", action="store_true", help="Output JSON.")
@@ -110,12 +152,12 @@ def build_parser() -> argparse.ArgumentParser:
     gui_add = gui_sub.add_parser("add", help="Register a local GUI conversation alias.")
     _add_common_options(gui_add)
     gui_add.add_argument("-n", "--name", required=True)
-    gui_add.add_argument("-a", "--apply", action="store_true")
+    _add_execution_options(gui_add)
     gui_rename = gui_sub.add_parser("rename", help="Rename a local GUI alias while retaining its stable identity and slots.")
     _add_common_options(gui_rename)
     gui_rename.add_argument("-g", "--gui", required=True)
     gui_rename.add_argument("-n", "--name", required=True)
-    gui_rename.add_argument("-a", "--apply", action="store_true")
+    _add_execution_options(gui_rename)
     gui_list = gui_sub.add_parser("list", help="List active GUI conversation aliases.")
     _add_common_options(gui_list)
 
@@ -125,7 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_options(slot_create)
     slot_create.add_argument("-g", "--gui", required=True)
     slot_create.add_argument("-n", "--agent-name", required=True)
-    slot_create.add_argument("-a", "--apply", action="store_true")
+    _add_execution_options(slot_create)
     for action in ("disable", "enable", "complete"):
         help_text = {"disable": "Temporarily disable an agent slot.", "enable": "Enable an agent slot.",
                      "complete": "Mark an agent slot's work complete."}[action]
@@ -133,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
         _add_common_options(command)
         command.add_argument("-g", "--gui", required=True)
         command.add_argument("-n", "--agent-name", required=True)
-        command.add_argument("-a", "--apply", action="store_true")
+        _add_execution_options(command)
 
     listing = sub.add_parser("list", help="List conversations and their agents.")
     _add_common_options(listing)
@@ -148,6 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_options(last)
     last.add_argument("-N", "--count", type=int, help="Show the N newest launches from this terminal.")
     last.add_argument("-a", "--apply", action="store_true", help="Resume the exact recorded session.")
+    last.add_argument("-r", "--resume", action="store_true", help="Resume the exact recorded session (preferred spelling).")
     last.add_argument("-R", "--reactivate", action="store_true",
                       help="Explicitly reactivate an inactive slot before resuming it.")
     last.add_argument("-C", "--cwd", help="Use this working directory for this invocation only.")
@@ -199,7 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
     attach.add_argument("-e", "--environment")
     attach.add_argument("-C", "--cwd")
     attach.add_argument("-L", "--launch-id")
-    attach.add_argument("-a", "--apply", action="store_true")
+    _add_execution_options(attach)
 
     for command_name in ("start", "switch"):
         command = sub.add_parser(
@@ -222,9 +265,9 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("-C", "--cwd")
         command.add_argument("-U", "--allow-native-unknown", action="store_true",
                              help="Authorize validated generic provider options after `--`.")
-        command.add_argument("-a", "--apply", action="store_true")
+        _add_execution_options(command)
         if command_name == "start":
-            command.add_argument("-N", "--new", action="store_true", help="Explicitly authorize a new native conversation.")
+            command.add_argument("-N", "--new", action="store_true", help="Start a new native conversation instead of resuming the selected session.")
             command.add_argument("-r", "--reactivate", action="store_true",
                                  help="Explicitly reactivate an inactive agent before resuming or starting.")
 
@@ -237,7 +280,7 @@ def build_parser() -> argparse.ArgumentParser:
     cont.add_argument("agent_pos", nargs="?")
     cont.add_argument("-g", "--gui")
     cont.add_argument("-n", "--agent-name", "--name")
-    cont.add_argument("-a", "--apply", action="store_true")
+    _add_execution_options(cont)
     cont.add_argument("-A", "--all", action="store_true", help="Include completed agents in the interactive picker.")
     cont.add_argument("-p", "--provider", choices=("agy", "codex"), help="Select the most recently activated matching historical provider session.")
     cont.add_argument("-i", "--session-id", help="Select this exact session from the agent's existing history.")
@@ -248,7 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     review = sub.add_parser(
         "review", help="Open or resume a reviewer agent linked to an original agent.",
-        epilog="Pass supported provider options after `--`; for a new reviewer retain explicit `-N -a` authorization.",
+        epilog="An empty reviewer slot is initialized automatically; pass -N to replace a selected reviewer session. Use -d to preview.",
     )
     _add_common_options(review)
     review.add_argument("-g", "--gui", required=True)
@@ -259,8 +302,8 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("-C", "--cwd", help="Reviewer working directory.")
     review.add_argument("-U", "--allow-native-unknown", action="store_true",
                         help="Authorize validated generic provider options after `--`.")
-    review.add_argument("-N", "--new", action="store_true", help="Explicitly request a new reviewer conversation.")
-    review.add_argument("-a", "--apply", action="store_true")
+    review.add_argument("-N", "--new", action="store_true", help="Start a new reviewer conversation instead of resuming its selected session.")
+    _add_execution_options(review)
 
     returning = sub.add_parser(
         "return", help="Return from an active reviewer cycle to its original agent.",
@@ -269,7 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_options(returning)
     returning.add_argument("-g", "--gui", required=True)
     returning.add_argument("-n", "--agent-name", required=True, help="Original implementation agent.")
-    returning.add_argument("-a", "--apply", action="store_true")
+    _add_execution_options(returning)
     returning.add_argument("-C", "--cwd", help="Use this working directory for this invocation only.")
     returning.add_argument("-U", "--allow-native-unknown", action="store_true",
                            help="Authorize validated generic provider options after `--`.")
@@ -280,7 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
     opening.add_argument("-k", "--panes-per-tab", type=int, choices=range(1, 5), default=2)
     opening.add_argument("-t", "--terminal", choices=("windows-terminal",), default="windows-terminal")
     opening.add_argument("-w", "--window", help="Windows Terminal window target.")
-    opening.add_argument("-a", "--apply", action="store_true")
+    _add_execution_options(opening)
 
     pane = sub.add_parser("pane-run", help=argparse.SUPPRESS)
     _add_common_options(pane)
@@ -1051,6 +1094,7 @@ def _run_pane(
     allow_native_unknown: bool = False,
     launcher_terminal_context: str | None = None,
 ) -> int:
+    _startup_progress("provider handoff preparation and exact-session validation")
     slot = dispatcher.get_slot_by_id(slot_id)
     if launch_id:
         pending = dispatcher.get_pending_launch(launch_id)
@@ -1111,6 +1155,7 @@ def _run_pane(
     )
     terminal_record_written = False
     bootstrap_completed = False
+    _startup_progress("environment, executable and Git worktree context resolved")
     try:
         if launch_id:
             bootstrap_argv = _bootstrap_native_argv(
@@ -1127,8 +1172,11 @@ def _run_pane(
                 detail="Provider bootstrap started; automatic retry is disabled until this launch is resolved.",
             )
             try:
-                bootstrap = subprocess.run(
+                _startup_progress("fixed read-only bootstrap started; waiting for exact session capture")
+                bootstrap = _run_provider_with_progress(
                     bootstrap_argv,
+                    label="provider bootstrap",
+                    progress_interval=4.0,
                     cwd=process_cwd,
                     capture_output=True,
                     text=True,
@@ -1185,6 +1233,7 @@ def _run_pane(
                 return bootstrap.returncode or 1
 
             bootstrap_completed = True
+            _startup_progress("exact native session captured; persisting identity and activation")
             try:
                 dispatcher.record_process_observation(
                     slot_id=slot_id,
@@ -1289,6 +1338,8 @@ def _run_pane(
             if terminal_record and not terminal_record_written:
                 dispatcher.record_terminal_launch(terminal_record)
                 terminal_record_written = True
+            _startup_progress("interactive provider handoff")
+            _STARTUP_PROGRESS.set(False)
             result = subprocess.run(argv, cwd=process_cwd, check=False)
     except KeyboardInterrupt:
         if launch_id:
@@ -1780,51 +1831,44 @@ def _review(dispatcher: DispatcherService, args: argparse.Namespace,
         _validate_cwd_override(dispatcher,
                                reviewer_identity[1] if reviewer_identity and not args.new else (args.environment or "local"),
                                args.cwd)
-    if not args.new:
-        if reviewer_identity is None:
-            raise ContinuityError(ErrorCode.INVALID_INPUT, "Reviewer has no selected session; use -N -a to create one.")
+    create_reviewer = bool(args.new or reviewer_identity is None)
+    if create_reviewer:
+        preview = _new_launch_preview(dispatcher, args.provider, args.environment or "local", args.cwd, native_args,
+                                      allow_native_unknown=allow_native_unknown)
+        if not args.apply:
+            if getattr(args, "json_output", False):
+                print(json.dumps({"action": "review", "applied": False, "launch_preview": preview}, indent=2), file=output_stream)
+            else:
+                _render_launch_preview(preview, output_stream)
+                print("Dry-run only; an empty reviewer slot initializes automatically. Use -N to replace a selected reviewer session.",
+                      file=output_stream)
+            return 0
+    else:
         if reviewer_identity[0] != args.provider:
-            raise ContinuityError(ErrorCode.INVALID_INPUT, "Reviewer provider differs from the selected session; use -N -a for a new one.")
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                  "Reviewer provider differs from its selected session; use -N to start a new reviewer conversation.")
         if _session_in_use(dispatcher, *reviewer_identity):
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Reviewer session is already in use.")
         preview = _launch_preview(dispatcher, reviewer_identity[0], reviewer_identity[2], reviewer_identity[1],
                                   args.cwd or _current_native_cwd(dispatcher, reviewer["current"]), native_args,
                                   allow_native_unknown=allow_native_unknown)
-        if args.apply and native_args:
-            _render_launch_preview(preview, output_stream)
-    elif not args.apply:
-        environment_id = args.environment or (reviewer_identity[1] if reviewer_identity else "local")
-        preview = _new_launch_preview(dispatcher, args.provider, environment_id, args.cwd, native_args,
-                                      allow_native_unknown=allow_native_unknown)
-        if getattr(args, "json_output", False):
-            print(json.dumps({"action": "review", "applied": False, "launch_preview": preview}, indent=2), file=output_stream)
-        else:
-            _render_launch_preview(preview, output_stream)
-            print("New reviewer sessions require both -N and -a; preview only.", file=output_stream)
-        return 0
-    if args.new and not args.apply:
-        print("New reviewer sessions require both -N and -a; no provider was launched.", file=output_stream)
-        return 0
-    if not args.apply:
-        preview = _launch_preview(dispatcher, reviewer_identity[0], reviewer_identity[2], reviewer_identity[1],
-                                  args.cwd or _current_native_cwd(dispatcher, reviewer["current"]), native_args,
-                                  allow_native_unknown=allow_native_unknown)
-        if getattr(args, "json_output", False):
-            print(json.dumps({"action": "review", "applied": False, "launch_preview": preview}, indent=2), file=output_stream)
-        else:
-            _render_launch_preview(preview, output_stream)
-        return 0
-    if args.new:
-        preview = _new_launch_preview(dispatcher, args.provider, args.environment or "local", args.cwd, native_args,
-                                      allow_native_unknown=allow_native_unknown)
+        if not args.apply:
+            if getattr(args, "json_output", False):
+                print(json.dumps({"action": "review", "applied": False, "launch_preview": preview}, indent=2), file=output_stream)
+            else:
+                _render_launch_preview(preview, output_stream)
+            return 0
+    if create_reviewer:
         if native_args:
             _render_launch_preview(preview, output_stream)
+        _startup_progress("reserving reviewer bootstrap and review-cycle intent")
         prepared = dispatcher.prepare_start(
             gui=args.gui, name=args.reviewer_agent, provider=args.provider, cwd=args.cwd,
             environment_selector=args.environment, expected_current=reviewer_identity,
             reactivate=bool(reviewer and reviewer["state"] == "inactive"), defer_reactivate=True, apply=True,
         )
         target_slot_id = prepared["details"]["slot_id"]
+        _startup_progress("reviewer launch reservation committed")
         cycle = _review_cycle_payload(original, target_slot_id, status="pending")
         dispatcher.record_pending_review_cycle(gui=args.gui, cycle=cycle,
                                               expected_original=original_identity,
@@ -2331,11 +2375,21 @@ def _render_listing(
 ) -> None:
     use_color = color_enabled(color, is_tty=stream.isatty(), stream=stream)
     width = shutil.get_terminal_size((100, 24)).columns
-    name_width = max(12, min(32, width - 78))
-    session_width = max(8, width - name_width - 57)
+    all_rows = (result.get("slots", []) if "conversations" not in result else
+                [row for conversation in result["conversations"] for row in conversation.get("slots", [])])
+    longest_session = max((display_width(str(row.get("current_session_id") or
+                                             ("<pending>" if row.get("pending_launch_id") else "<unresolved>")))
+                           for row in all_rows), default=12)
+    # Reserve enough cells for the widest real session identity in this result,
+    # then allocate remaining room to names. This keeps 36-cell UUIDs intact at
+    # 120 columns without imposing a fixed name/session split on every listing.
+    max_table_session = max(8, width - 69)
+    session_width = min(longest_session, max_table_session)
+    name_width = max(12, min(32, width - 57 - session_width))
+    wide_table = width >= 104 and longest_session <= max_table_session
 
     def print_header() -> None:
-        if width < 104:
+        if not wide_table:
             return
         print("  " + pad_semantic("Agent", name_width, "label", enabled=use_color) + "  " +
               pad_semantic("Provider", 8, "label", enabled=use_color) + "  " +
@@ -2368,7 +2422,7 @@ def _render_listing(
                 "pending" if session == "<pending>" else "unresolved"
             )
             session_display = f"UNRESOLVED: {session}" if stored_session and session_semantic == "unresolved" else str(session)
-            if width >= 104:
+            if wide_table:
                 activity_field = pad_semantic(activity, 16, "timestamp", enabled=use_color)
                 runtime_field = pad_semantic(runtime, 12,
                                              {"IN USE": "runtime_in_use", "NOT OBSERVED": "runtime_not_observed",
@@ -2381,11 +2435,16 @@ def _render_listing(
                 first_width = max(10, width - 23)
                 print(f"  {pad_semantic(str(row['name']), first_width, 'agent', enabled=use_color)}  "
                       f"{provider_text}  {state_text}", file=stream)
-                suffix_width = display_width(runtime) + 2 + min(display_width(session_display), max(8, width - 6))
-                date_width = min(16, max(8, width - suffix_width - 8))
-                print(f"    {pad_semantic(activity, date_width, 'timestamp', enabled=use_color)}  "
-                      f"{runtime_text}  {semantic_color(clip_display(session_display, max(8, width - date_width - display_width(runtime) - 8)), session_semantic, enabled=use_color)}",
-                      file=stream)
+                if longest_session > width - 30:
+                    print(f"    {pad_semantic(activity, 16, 'timestamp', enabled=use_color)}  {runtime_text}", file=stream)
+                    print(f"    {semantic_color(clip_display(session_display, max(1, width - 6)), session_semantic, enabled=use_color)}",
+                          file=stream)
+                else:
+                    suffix_width = display_width(runtime) + 2 + min(display_width(session_display), max(8, width - 6))
+                    date_width = min(16, max(8, width - suffix_width - 8))
+                    print(f"    {pad_semantic(activity, date_width, 'timestamp', enabled=use_color)}  "
+                          f"{runtime_text}  {semantic_color(clip_display(session_display, max(8, width - date_width - display_width(runtime) - 8)), session_semantic, enabled=use_color)}",
+                          file=stream)
             else:
                 print("  " + semantic_color(clip_display(str(row['name']), width - 2), "agent", enabled=use_color), file=stream)
                 print(f"    {provider_text.strip()}  {state_text.strip()}  "
@@ -2520,6 +2579,7 @@ def _resume_terminal_launch(
     input_stream: TextIO,
     output_stream: TextIO,
 ) -> int:
+    _startup_progress("resolving the exact terminal-scoped session for resume")
     provider = launch.get("provider")
     environment_id = launch.get("environment_id")
     session_id = launch.get("native_session_id")
@@ -2569,14 +2629,43 @@ def _resume_terminal_launch(
 
 
 def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input_stream: TextIO, output_stream: TextIO) -> int:
+    _resolve_execution_mode(args)
     token = _COLOR_MODE.set(getattr(args, "color", "auto"))
+    started = time.monotonic()
+    startup_enabled = bool(args.command in {"start", "continue", "switch", "review", "return", "last"}
+                           and getattr(args, "apply", False) and not getattr(args, "json_output", False))
+    progress_token = _STARTUP_PROGRESS.set(startup_enabled)
+    started_token = _STARTUP_STARTED.set(started)
     try:
         with temporary_vt_processing(output_stream, _current_color_mode()):
             return _dispatch_impl(args, parser, input_stream=input_stream, output_stream=output_stream)
     finally:
+        _STARTUP_STARTED.reset(started_token)
+        _STARTUP_PROGRESS.reset(progress_token)
         _COLOR_MODE.reset(token)
 
 
+def _resolve_execution_mode(args: argparse.Namespace) -> None:
+    """Resolve the compatibility apply alias and default action behavior before any I/O."""
+    command = getattr(args, "command", None)
+    gui_action = command == "gui" and getattr(args, "gui_command", None) in {"add", "rename"}
+    slot_action = command == "slot" and getattr(args, "slot_command", None) is not None
+    operational = command in {"start", "continue", "switch", "open", "review", "return", "attach"} or gui_action or slot_action
+    if command == "last":
+        args.apply = bool(getattr(args, "apply", False) or getattr(args, "resume", False))
+        if getattr(args, "dry_run", False):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "`last` is read-only by default; use `-r/--resume` to resume.")
+        return
+    if command == "register" and getattr(args, "dry_run", False) and getattr(args, "apply", False):
+        raise ContinuityError(ErrorCode.INVALID_INPUT, "Choose either --dry-run or --apply.")
+    if not operational:
+        return
+    explicit_apply = bool(getattr(args, "apply", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    if explicit_apply and dry_run:
+        raise ContinuityError(ErrorCode.INVALID_INPUT, "Choose either --dry-run or --apply.")
+    args.apply_explicit = explicit_apply
+    args.apply = explicit_apply or not dry_run
 def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input_stream: TextIO, output_stream: TextIO) -> int:
     if args.command is None:
         if not (input_stream.isatty() and output_stream.isatty()):
@@ -2601,6 +2690,8 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
     if args.command == "open" and native_args:
         raise ContinuityError(ErrorCode.INVALID_INPUT,
                               "Provider options are not supported by `llmd open`; use `continue` for one selected session.")
+    if getattr(args, "apply", False) and args.command in {"start", "continue", "switch", "review", "return", "last"}:
+        _startup_progress("registry synchronization, environment and executable discovery starting")
     dispatcher = DispatcherService(home_dir=args.home)
     if args.command == "gui":
         if args.gui_command == "add":
@@ -2651,8 +2742,6 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
         name = _resolve_name(args.agent_pos, args.agent_name, "agent")
         if not gui:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "A GUI name is required.")
-        if args.dry_run and args.apply:
-            raise ContinuityError(ErrorCode.INVALID_INPUT, "Choose either --dry-run or --apply.")
         result = dispatcher.register(gui, name, provider=args.provider, session_id=args.session_id,
                                      apply=not args.dry_run, select=args.select)
     elif args.command == "history":
@@ -2707,6 +2796,7 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
                     raise ContinuityError(ErrorCode.INVALID_INPUT, "Requested session is already in use.")
                 if native_args:
                     _render_launch_preview(preview, output_stream)
+                _startup_progress("validating and reserving exact historical session activation")
                 result = dispatcher.attach_session(
                     gui=args.gui, name=args.agent_name, provider=target_identity[0],
                     session_id=target_identity[2], environment_selector=target_identity[1],
@@ -2742,11 +2832,13 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
                 )
                 if native_args:
                     _render_launch_preview(new_preview, output_stream)
+                _startup_progress("reserving new-provider launch under the registry lock")
             result = dispatcher.begin_launch(gui=args.gui, name=args.agent_name, provider=args.provider,
                                              cwd=args.cwd, environment_selector=launch_environment_selector,
                                              expected_current=expected_current, check_current=True,
                                              reactivate=args.reactivate, apply=args.apply)
             if args.apply:
+                _startup_progress("new-provider launch reservation committed")
                 return _run_pane(dispatcher, slot_id=result["details"]["slot_id"],
                                  launch_id=result["details"]["launch_id"],
                                  input_stream=input_stream, output_stream=output_stream,
@@ -2905,11 +2997,16 @@ def _start(
 ) -> int:
     dispatcher._sync()
     gui_row = dispatcher._row(
-        "SELECT gui_id FROM dispatcher_gui_conversations WHERE alias_key = ?", (args.gui.strip().casefold(),)
+        "SELECT gui_id, alias FROM dispatcher_gui_conversations WHERE alias_key = ?", (args.gui.strip().casefold(),)
     )
-    slot_row = (dispatcher._row("SELECT slot_id FROM agent_slots WHERE gui_id = ? AND name_key = ?",
+    slot_row = (dispatcher._row("SELECT * FROM agent_slots WHERE gui_id = ? AND name_key = ?",
                                 (gui_row["gui_id"], args.agent_name.strip().casefold())) if gui_row else None)
-    slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name) if slot_row else None
+    if slot_row:
+        history = dispatcher._history(slot_row["slot_id"])
+        slot = {**slot_row, "gui_alias": gui_row["alias"], "history": history,
+                "current": history[-1] if history else None}
+    else:
+        slot = None
     current = slot["current"] if slot else None
     expected_current = ((current["provider"], current["environment_id"], current["native_session_id"])
                         if current else None)
@@ -2956,9 +3053,12 @@ def _start(
                          native_args=getattr(args, "native_args", []), cwd_override=args.cwd,
                          allow_native_unknown=getattr(args, "allow_native_unknown", False))
 
-    if not args.new and args.apply:
+    if slot and slot["state"] == "completed":
         raise ContinuityError(ErrorCode.INVALID_INPUT,
-                              "Starting a new conversation requires --new and -a/--apply.")
+                              "Completed agents require an explicit lifecycle change before starting a session.")
+    if slot and slot["state"] == "inactive" and not args.reactivate:
+        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                              "This agent is inactive; pass --reactivate to confirm its lifecycle change.")
     if (current and args.new and args.apply and input_stream.isatty() and output_stream.isatty()
             and not _ask_confirmation(
                 input_stream, output_stream,
@@ -2981,9 +3081,11 @@ def _start(
                                       environment_id if args.apply else environment_selector, args.cwd,
                                       getattr(args, "native_args", []),
                                       allow_native_unknown=getattr(args, "allow_native_unknown", False))
+    _startup_progress("environment and provider executable discovery completed")
     if args.apply and getattr(args, "native_args", []):
         _render_launch_preview(new_preview, output_stream)
 
+    _startup_progress("reserving the pending launch under the registry lock")
     result = dispatcher.prepare_start(
         gui=args.gui,
         name=args.agent_name,
@@ -2995,6 +3097,7 @@ def _start(
         apply=args.apply,
     )
     if args.apply:
+        _startup_progress("launch reservation committed")
         return _run_pane(dispatcher, slot_id=result["details"]["slot_id"],
                          launch_id=result["details"]["launch_id"],
                          input_stream=input_stream, output_stream=output_stream,
@@ -3009,7 +3112,7 @@ def _start(
     if args.json_output:
         print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True, default=_json_default), file=output_stream)
     else:
-        print(f"{result['summary']} New provider session preview only; execution requires --new -a.", file=output_stream)
+        print(f"{result['summary']} Use -N to replace an existing selected session.", file=output_stream)
         _render_launch_preview(result["launch_preview"], output_stream)
     return 0
 
