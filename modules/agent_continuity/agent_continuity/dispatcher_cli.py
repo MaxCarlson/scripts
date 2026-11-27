@@ -31,7 +31,7 @@ from .environment import (
 )
 from .errors import ContinuityError, ErrorCode
 from .identifiers import generate_id, now_utc_iso
-from .launch_context import resolve_portable_launch_context
+from .launch_context import VERIFIED_CAPABILITIES, resolve_portable_launch_context
 from .terminal_format import (
     clip_display,
     color_enabled,
@@ -1112,6 +1112,28 @@ def _launch_preview(dispatcher: DispatcherService, provider: str, session_id: st
     native = dispatcher.materializer.get_session(provider, environment_id, session_id)
     recorded_root = _repository_root(native.cwd_native if native else None)
     requested_root = _repository_root(cwd) if cwd else recorded_root
+    safe_settings = _safe_launch_settings(provider, native_args, allow_unknown=allow_native_unknown)
+    portable, portability = resolve_portable_launch_context({
+        "provider": provider,
+        "repositories": [{key.removeprefix("git_"): value for key, value in
+                          _git_launch_context(dispatcher, environment_id, cwd or (native.cwd_native if native else None)).items()
+                          if value is not None}],
+        "working_directory": cwd or (native.cwd_native if native else None),
+        "explicit_directory_override": cwd,
+        "authorized_directories": safe_settings.get("additional_directories", []),
+        "runtime_identity": {"environment_id": environment_id, "runtime_kind": environment.runtime_kind,
+                             "distro": environment.distro},
+        "semantic_settings": {key: value for key, value in {
+            "reasoning_effort": safe_settings.get("reasoning_effort"),
+            "filesystem": safe_settings.get("sandbox") or safe_settings.get("permission_mode"),
+            "approval": safe_settings.get("approval_policy"),
+            "search": safe_settings.get("search"),
+        }.items() if value is not None},
+        "destination_preferences": {provider: {key: safe_settings[key] for key in ("model", "provider_profile")
+                                                if safe_settings.get(key) is not None}},
+    }, provider, capabilities=VERIFIED_CAPABILITIES, destination_runtime={
+        "environment_id": environment_id, "runtime_kind": environment.runtime_kind, "distro": environment.distro,
+    })
     return {
         "executable": argv[0], "argv": argv, "cwd": cwd or (native.cwd_native if native else None),
         "environment": {"id": environment_id, "runtime_kind": environment.runtime_kind,
@@ -1122,6 +1144,8 @@ def _launch_preview(dispatcher: DispatcherService, provider: str, session_id: st
         "permission_settings": {"requested": requested, "verified_effective": None,
                                 "verification": "Provider enforcement is not observed by a launch preview."},
         "requested_settings": _safe_launch_settings(provider, native_args, allow_unknown=allow_native_unknown),
+        "portable_launch_context": dataclasses.asdict(portable),
+        "portability_preview": [dataclasses.asdict(item) for item in portability],
         "unknown_native_authorization": {"enabled": allow_native_unknown,
                                          "options": _unknown_native_option_names(provider, native_args)},
         "process_environment": "inherited for this invocation; no environment overrides are persisted",
@@ -1189,16 +1213,6 @@ def _new_launch_preview(dispatcher: DispatcherService, provider: str, environmen
             ("approval_policy", "approval"), ("search", "search"),
         ) if (value := safe_settings.get(source_key)) is not None
     }
-    provider_values, provider_flags, _ = _managed_native_spec(provider)
-    verified = set()
-    if any(kind == "effort" for kind in provider_values.values()):
-        verified.add("reasoning_effort")
-    if any(kind in {"sandbox", "permission_mode"} for kind in provider_values.values()) or "sandbox" in provider_flags.values():
-        verified.add("filesystem")
-    if any(kind == "approval" for kind in provider_values.values()) or "auto_approval" in provider_flags.values():
-        verified.add("approval")
-    if "search" in provider_flags.values() or "search" in provider_values.values():
-        verified.add("search")
     launch_context, portability = resolve_portable_launch_context({
         "provider": provider,
         "working_directory": cwd,
@@ -1211,7 +1225,7 @@ def _new_launch_preview(dispatcher: DispatcherService, provider: str, environmen
         "semantic_settings": semantic_settings,
         "destination_preferences": {provider: {key: value for key, value in safe_settings.items()
                                                 if key in {"model", "provider_profile"}}},
-    }, provider, capabilities={provider: verified}, destination_runtime={
+    }, provider, capabilities=VERIFIED_CAPABILITIES, destination_runtime={
         "environment_id": environment_id, "runtime_kind": environment.runtime_kind, "distro": environment.distro,
     })
     return {

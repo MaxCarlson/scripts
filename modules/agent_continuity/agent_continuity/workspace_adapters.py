@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import shutil
 import subprocess
 import sys
@@ -15,6 +14,7 @@ from typing import Any, Protocol
 
 from .errors import ContinuityError, ErrorCode
 from .identifiers import generate_id
+from .launch_context import provider_settings_argv
 from .runtime_discovery import (
     ManagedAssociationState,
     ManagedLaunchAssociation,
@@ -431,6 +431,12 @@ def canonical_llmd_pane_command(
         ])
         if request.queue_entry_id is not None:
             argv.extend(["--queue-entry-id", request.queue_entry_id])
+    if request.cwd:
+        argv.extend(["--cwd", request.cwd])
+    settings = validate_provider_launch_settings(request.provider, request.launch_settings, strict=True)
+    provider_args = provider_settings_argv(request.provider, settings)
+    if provider_args:
+        argv.extend(["--", *provider_args])
     return tuple(argv)
 
 
@@ -467,29 +473,7 @@ def build_manual_restore_command(
         if item.cwd:
             argv.extend(["-C", item.cwd])
         settings = validate_provider_launch_settings(item.provider, item.launch_settings, strict=False)
-        provider_args: list[str] = []
-        if item.provider == "codex":
-            for key, option in (("model", "--model"), ("sandbox", "--sandbox"),
-                                ("approval_policy", "--ask-for-approval"), ("profile", "--profile")):
-                if settings.get(key) is not None:
-                    provider_args.extend([option, str(settings[key])])
-            if settings.get("reasoning_effort"):
-                provider_args.extend(["--config", f"model_reasoning_effort={settings['reasoning_effort']}"])
-            if settings.get("search"):
-                provider_args.append("--search")
-            for path in settings.get("add_dirs", []):
-                provider_args.extend(["--add-dir", str(path)])
-        elif item.provider == "claude":
-            for key, option in (("model", "--model"), ("effort", "--effort"),
-                                ("permission_mode", "--permission-mode")):
-                if settings.get(key) is not None:
-                    provider_args.extend([option, str(settings[key])])
-            for path in settings.get("add_dirs", []):
-                provider_args.extend(["--add-dir", str(path)])
-        elif item.provider == "agy":
-            mapped = {key: settings[key] for key in ("model", "effort", "sandbox", "add_dirs") if key in settings}
-            if mapped:
-                provider_args.extend(["--settings", json.dumps(mapped, ensure_ascii=False, separators=(",", ":"))])
+        provider_args = provider_settings_argv(item.provider, settings)
         if provider_args:
             argv.extend(["--", *provider_args])
         return argv

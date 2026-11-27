@@ -32,6 +32,48 @@ class PortableLaunchContext:
 
 
 _PERMISSION_RANK = {"read-only": 0, "workspace-write": 1, "full-access": 2}
+
+# These capabilities correspond to managed parser/argv support in dispatcher_cli.
+VERIFIED_CAPABILITIES: dict[str, frozenset[str]] = {
+    "codex": frozenset({"reasoning_effort", "filesystem", "approval", "search"}),
+    "agy": frozenset({"reasoning_effort"}),
+    "claude": frozenset({"reasoning_effort"}),
+}
+
+
+def provider_settings_argv(provider: str, settings: Mapping[str, Any]) -> list[str]:
+    """Encode already-validated settings for the same provider; never copy raw argv."""
+    values: dict[str, Any] = dict(settings)
+    argv: list[str] = []
+    if provider == "codex":
+        for key, option in (("model", "--model"), ("sandbox", "--sandbox"),
+                            ("approval_policy", "--ask-for-approval"), ("profile", "--profile")):
+            if values.get(key) is not None:
+                argv.extend((option, str(values[key])))
+        if values.get("reasoning_effort"):
+            argv.extend(("--config", f"model_reasoning_effort={values['reasoning_effort']}"))
+        if values.get("search"):
+            argv.append("--search")
+        for path in values.get("add_dirs", values.get("additional_directories", [])):
+            argv.extend(("--add-dir", str(path)))
+    elif provider == "claude":
+        for key, option in (("model", "--model"), ("effort", "--effort"),
+                            ("permission_mode", "--permission-mode")):
+            if values.get(key) is not None:
+                argv.extend((option, str(values[key])))
+        for path in values.get("add_dirs", values.get("additional_directories", [])):
+            argv.extend(("--add-dir", str(path)))
+    elif provider == "agy":
+        mapped = {key: values[key] for key in ("model", "effort", "sandbox", "agent", "additional_directories")
+                  if key in values}
+        if "reasoning_effort" in values:
+            mapped["effort"] = values["reasoning_effort"]
+        if mapped:
+            import json
+            argv.extend(("--settings", json.dumps(mapped, ensure_ascii=False, separators=(",", ":"))))
+    return argv
+
+
 def resolve_portable_launch_context(
     source: Mapping[str, Any], destination_provider: str, *,
     capabilities: Mapping[str, set[str] | frozenset[str]] | None = None,
