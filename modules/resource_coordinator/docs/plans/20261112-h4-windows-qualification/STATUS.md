@@ -1,5 +1,14 @@
 # H4 Windows Qualification — Read-Only Status
 
+## Canonical Resource Metrics bundle integration (2026-11-24)
+
+- Separate implementation branch `feat/resource-metrics-canonical-bundle-20261125`, based on committed H4 checkpoint `ea6ad23fe705bc828f06a99ccf1ab3477e621d49`; the dirty Phase-D worktree was not changed.
+- H4 bundle now stages the qualified `mxc-resource-metrics==0.3.0` wheel (`1512d9e9ab1a1d603c2dc244d1459baff1abcc738d82c4ee2a5fac835a04189a`) and records the exact filename, path, version, and SHA-256 in `dependency-lock.json`.
+- New and legacy H4 snapshots export only `modules/resource_coordinator`; no `modules/resource_metrics` source is copied. The harness uses the bundled wheel for the existing `resource_metrics` import namespace and fails clearly if it is missing.
+- Focused qualification: canonical wheel bundle/import and dependency metadata tests passed; offline acceptance harness correctly placed the bundled wheel on `PYTHONPATH`; Ruff, compileall, and `git diff --check` passed.
+- Combined H4 offline suite: 70 passed, 1 skipped, 4 failed on this host. Failures are environment-bound Windows checks: two require Task Scheduler service `Schedule`, one cannot validate the test credential ACL in the restricted host, and one cannot query Windows session/task inventory. No guest lifecycle ran.
+- Remaining: review exact branch diff and commit/push for H4 owner integration. No inference or live state mutation occurred.
+
 ## H4.9 final compatibility & mainline reconciliation (2026-11-15)
 
 - Source implementation branch: `agent/rc-h4-final-compatibility-20261115` (`591d41b4921f2809a5bd3e4dc47567986c3107a4`), descended from H4.8 `5faaf5bcc737fc6cc7b1a195a088d55d590e21c4`.
