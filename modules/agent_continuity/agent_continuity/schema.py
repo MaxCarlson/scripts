@@ -311,7 +311,9 @@ def configure_connection(conn: sqlite3.Connection, *, read_only: bool = False) -
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA busy_timeout = 5000;")
     if not read_only:
-        conn.execute("PRAGMA journal_mode = WAL;")
+        mode_row = conn.execute("PRAGMA journal_mode;").fetchone()
+        if not mode_row or str(mode_row[0]).casefold() != "wal":
+            conn.execute("PRAGMA journal_mode = WAL;")
 
 
 def get_schema_version(conn: sqlite3.Connection) -> int | None:
@@ -345,7 +347,7 @@ def ensure_schema(conn: sqlite3.Connection) -> int:
     if current == SCHEMA_VERSION:
         return SCHEMA_VERSION
 
-    conn.executescript(_DDL_V1)
+    conn.executescript(f"BEGIN IMMEDIATE;\n{_DDL_V1}\nCOMMIT;")
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(agent_slots)").fetchall()}
     for name, sql_type in (("workflow_type", "TEXT"), ("profile_id", "TEXT"), ("agent_number", "INTEGER")):
         if name not in columns:

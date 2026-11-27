@@ -34,6 +34,9 @@ testpaths = ["tests"]
 python_files = ["*_test.py"]
 pythonpath = [".."]
 addopts = "-q --basetemp=.pytest_tmp_root/pytest"
+markers = [
+    "real_runtime_discovery: exercise real host process enumeration rather than synthetic unit-test inventory",
+]
 
 [tool.ruff]
 line-length = 120

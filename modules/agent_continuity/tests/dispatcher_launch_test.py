@@ -167,7 +167,7 @@ def test_invalid_native_values_prevent_new_launch_and_registry_mutation(tmp_path
         provider_calls.append((args, kwargs))
         raise AssertionError("Invalid native arguments reached provider initialization.")
 
-    monkeypatch.setattr(subprocess, "run", unexpected_provider_call)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", unexpected_provider_call)
     parser = build_parser()
     args = parser.parse_args(["-H", str(home), *command_args])
     with pytest.raises(ContinuityError, match="Unsupported"):
@@ -196,7 +196,7 @@ def test_continue_preview_is_pure_reports_requested_settings_and_worktree_change
                               cwd=str(original_cwd), apply=True)
     before = dispatcher.get_slot(gui="GUI", name="Agent")
     process_calls = []
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: process_calls.append((a, k)))
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", lambda *a, **k: process_calls.append((a, k)))
     parser = build_parser()
     args = parser.parse_args([
         "-H", str(dispatcher.home_dir), "continue", "GUI", "Agent", "-C", str(requested_cwd), "-j", "-d", "--",
@@ -238,7 +238,7 @@ def test_continue_cwd_override_resumes_exact_session_without_overwriting_provena
         executed.append((argv, kwargs))
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     parser = build_parser()
     args = parser.parse_args([
         "-H", str(dispatcher.home_dir), "continue", "GUI", "Agent", "-C", str(override_cwd), "-a", "--",
@@ -262,7 +262,7 @@ def test_invalid_native_options_fail_before_lifecycle_or_process_change(tmp_path
     dispatcher.register("GUI", "Agent", provider="codex", session_id="native")
     before = dispatcher.get_slot(gui="GUI", name="Agent")
     provider_calls = []
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: provider_calls.append(a))
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", lambda *a, **k: provider_calls.append(a))
     parser = build_parser()
     args = parser.parse_args(["-H", str(dispatcher.home_dir), "continue", "GUI", "Agent", "-a", "--", "--last"])
     with pytest.raises(ContinuityError, match="LLMD-conflicting"):
@@ -499,7 +499,7 @@ def test_post_exit_option_four_reuses_opposite_provider_without_creating_slot(
         calls.append(argv)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv",
                         lambda dispatcher, selected_provider, session_id, **kw: [selected_provider, session_id])
     output = StringIO()
@@ -537,7 +537,7 @@ def test_post_exit_option_four_requires_explicit_confirmation_before_new_provide
         calls.append(argv)
         return next(outputs)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv", lambda *a, **kw: ["agy-bootstrap"])
     monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv",
                         lambda dispatcher, selected_provider, session_id, **kw: [selected_provider, session_id])
@@ -561,7 +561,7 @@ def test_post_exit_option_four_cancel_does_not_bootstrap_new_provider(tmp_path, 
         calls.append(argv)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv",
                         lambda dispatcher, selected_provider, session_id, **kw: [selected_provider, session_id])
     code = _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
@@ -604,7 +604,7 @@ def test_new_codex_launch_bootstraps_captures_associates_then_resumes_exact_sess
     monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv", lambda *a, **k: ["fake-codex", "exec"])
     monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv",
                         lambda *a, **k: ["fake-codex", "resume", *k.get("native_args", []), "codex-bootstrapped"])
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
 
     code = _run_pane(dispatcher, slot_id=launch["details"]["slot_id"], launch_id=launch_id,
                      input_stream=StringIO("\n"), output_stream=StringIO(),
@@ -644,7 +644,7 @@ def test_new_agy_launch_bootstraps_captures_associates_then_resumes_exact_sessio
 
     monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv", lambda *a, **k: ["fake-agy", "--print"])
     monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", lambda *a, **k: ["fake-agy", "--conversation", "agy-bootstrapped"])
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
 
     code = _run_pane(dispatcher, slot_id=launch["details"]["slot_id"], launch_id=launch["details"]["launch_id"],
                      input_stream=StringIO("\n"), output_stream=StringIO())
@@ -670,7 +670,7 @@ def test_bootstrap_capture_failure_is_durable_and_does_not_retry_or_replace_curr
         calls.append((argv, kwargs))
         return SimpleNamespace(returncode=0, stdout="not-json", stderr="sensitive provider output")
 
-    monkeypatch.setattr(subprocess, "run", failed_bootstrap)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", failed_bootstrap)
     result = _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=launch["details"]["launch_id"],
                        input_stream=StringIO(""), output_stream=StringIO())
 
@@ -699,7 +699,7 @@ def test_bootstrap_timeout_preserves_pending_state_and_blocks_duplicate_model_ca
         assert kwargs["timeout"] == 180
         raise subprocess.TimeoutExpired("fake-codex", timeout=180, output="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", timeout)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", timeout)
     result = _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=launch["details"]["launch_id"],
                        input_stream=StringIO(""), output_stream=StringIO())
 
@@ -718,7 +718,7 @@ def test_captured_id_is_recoverable_when_activation_persistence_fails(tmp_path, 
     launch = dispatcher.begin_launch(gui="AgentImprovement", name="AgentPerf", provider="codex", apply=True)
     monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv", lambda *a, **k: ["fake-codex"])
     monkeypatch.setattr(
-        "agent_continuity.dispatcher_cli.subprocess.run",
+        "agent_continuity.dispatcher_cli._run_provider_process",
         lambda *a, **k: SimpleNamespace(
             returncode=0,
             stdout="\n".join((
@@ -778,7 +778,7 @@ def test_concurrent_provider_bootstraps_bind_each_exact_output_to_its_launch(tmp
             stdout = json.dumps({"conversation_id": session_id, "status": "SUCCESS"})
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
 
     for launch in (launch_b, launch_a):
         slot = dispatcher.get_slot_by_id(launch["details"]["slot_id"])
@@ -798,7 +798,7 @@ def test_startup_heartbeat_stops_before_interactive_provider_handoff(tmp_path, m
     monkeypatch.setattr(dispatcher_cli, "_native_argv", lambda *args, **kwargs: ["fake-provider"])
     monkeypatch.setattr(dispatcher_cli, "_run_provider_with_progress",
                         lambda *args, **kwargs: pytest.fail("interactive handoff must not use startup heartbeat"))
-    monkeypatch.setattr(dispatcher_cli.subprocess, "run",
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process",
                         lambda *args, **kwargs: SimpleNamespace(returncode=17))
 
     progress_token = dispatcher_cli._STARTUP_PROGRESS.set(True)
@@ -820,7 +820,7 @@ def test_normal_exit_prompts_and_unexpected_nonzero_exit_preserves_active_state(
     dispatcher, slot = _dispatcher_with_session(tmp_path)
     monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", lambda *a, **k: ["fake-provider"])
     codes = iter((0, 17))
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=next(codes)))
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", lambda *a, **k: SimpleNamespace(returncode=next(codes)))
 
     result = _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
                        input_stream=StringIO("2\n"), output_stream=StringIO())

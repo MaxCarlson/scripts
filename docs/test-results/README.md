@@ -103,6 +103,34 @@ Run all configured targets:
 ./Invoke-Tests.ps1 -Target all
 ```
 
+## Selective Pytest (Existing Environment)
+
+For a focused regression check, pass an explicit consumer target and one or more selectors. The dispatcher supports pytest node IDs, files/directories, dotted test modules, and the `-AffectedTarget` alias for consumer context:
+
+```powershell
+./Invoke-Tests.ps1 -Selective -AffectedTarget compresser -PytestNodeId 'tests/test_pipeline.py::test_retries_after_timeout'
+./Invoke-Tests.ps1 -Selective -Target scheduler -PytestFile tests/test_history.py -PytestModule tests.test_cli.test_help
+```
+
+Use `-PythonExecutable` to select a specific already-existing interpreter. Selective mode invokes only the configured pytest command for the selected items. It does not enter normal target bootstrap, install/uninstall packages, rebuild an environment, run lint/compile/CLI or PowerShell stages, mutate `LATEST.*` or history, or call the development-ledger recorder. It fails closed when the configured import does not resolve to the consumer checkout or a retired source copy is present. If editable distribution metadata points elsewhere while the live import resolves to the selected checkout, the receipt records that stale editable source as a warning rather than mutating the environment. The target must declare a `selective_validation` contract in `validation-targets.json`.
+
+Each run writes an immutable JSON receipt to `docs/test-results/selective/runs/<execution-id>.json` and uses a UUID-scoped pytest temporary directory under the target's `.pytest_tmp_root/`. Pass `-TemporaryRoot <path>` to put temporary files outside the repository. Receipts record exact selectors and commands, interpreter and installed-distribution identities, imports/origins from both preflight and the pytest process, source/dependency hashes, Git revision, duration and exit status. Passing evidence is never reused automatically. Add `-ReuseEvidence` to opt in; reuse is disabled when editable dependency identity cannot be content-verified, and a successful run is marked `invalidated` if relevant inputs change while pytest runs. Failed, blocked, and invalidated attempts are not reused.
+
+The receipt's `qualification_scope` is `source-level` when the contract points imports at the consumer checkout and `installed-distribution` only when every declared import is expected in site-packages. Source-level tests do not qualify a wheel or replace the shared-package artifact validation process.
+
+This is the Scripts-side interface only. Toolkit-native consumers can adopt the command contract independently; this change does not modify Toolkit diagnostics or its test workflows. Selective validation currently supports only manifest targets with `selective_validation` metadata and pytest tests. Editable distributions outside this repository, incomplete installed-distribution metadata, or external symlinks make evidence ineligible for reuse; they do not trigger dependency installation. A source change detected during pytest marks the run `invalidated` even when pytest returned success.
+
+Consumer-facing form for Agent-Environment `test-verify`:
+
+```powershell
+./Invoke-Tests.ps1 -Selective -AffectedTarget <manifest-target> `
+  -PytestNodeId '<target-relative-test-file>::<test-name>' `
+  -PythonExecutable '<existing-python.exe>' `
+  -TemporaryRoot '<external-temp-directory>'
+```
+
+Repeat `-PytestNodeId`, `-PytestFile`, or `-PytestModule` to select multiple items. The default interpreter resolver is used when `-PythonExecutable` is omitted. Evidence reuse requires explicit `-ReuseEvidence`. Selective mode never performs setup as a fallback; choose an existing interpreter whose dependencies and import origins already satisfy the target contract.
+
 ## Safety
 
 Production access is disabled by default. Targets may expose explicit read-only checks through:

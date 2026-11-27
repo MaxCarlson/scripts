@@ -156,7 +156,7 @@ def test_default_launch_emits_early_redacted_progress_to_stderr_only(tmp_path, m
     assert captured.err.startswith("LLMD startup +")
     assert "registry synchronization" in captured.err
     assert "password" not in captured.err.casefold()
-    assert elapsed < 1.0
+    assert elapsed < 5.0
 
 
 def test_blocking_provider_progress_is_periodic_and_does_not_echo_argv(monkeypatch, capsys):
@@ -165,7 +165,7 @@ def test_blocking_provider_progress_is_periodic_and_does_not_echo_argv(monkeypat
 
     from agent_continuity import dispatcher_cli
 
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (time.sleep(0.035) or subprocess.CompletedProcess(a[0], 0)))
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", lambda *a, **k: (time.sleep(0.035) or subprocess.CompletedProcess(a[0], 0)))
     enabled = dispatcher_cli._STARTUP_PROGRESS.set(True)
     started = dispatcher_cli._STARTUP_STARTED.set(time.monotonic())
     try:

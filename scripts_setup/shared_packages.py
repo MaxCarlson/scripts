@@ -15,7 +15,7 @@ from urllib.request import url2pathname
 SHARED_DISTRIBUTION_REQUIREMENTS: dict[str, str] = {
     "mxc-resource-metrics": "mxc-resource-metrics>=0.3.0,<0.4",
     "mxc-script-logging": "mxc-script-logging>=0.1.1,<0.2",
-    "mxc-web-ui-tools": "mxc-web-ui-tools>=0.2.0,<0.3",
+    "mxc-web-ui-tools": "mxc-web-ui-tools>=0.3.0,<0.4",
     "mxc-termdash": "mxc-termdash>=0.10.0,<0.11",
     "mxc-platform-utils": "mxc-platform-utils>=0.9.0,<0.10",
 }
