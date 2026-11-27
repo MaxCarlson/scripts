@@ -37,6 +37,7 @@ def _windows_user_sid() -> Optional[str]:
             capture_output=True,
             text=True,
             timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         match = re.search(r"S-1-[0-9-]+", result.stdout)
         return match.group(0) if match else None
@@ -62,6 +63,7 @@ def _secure_path(path: Path) -> None:
                 capture_output=True,
                 text=True,
                 timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if res_reset.returncode != 0:
                 err_detail = res_reset.stderr.strip() or res_reset.stdout.strip()
@@ -83,6 +85,7 @@ def _secure_path(path: Path) -> None:
                 capture_output=True,
                 text=True,
                 timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if res_grant.returncode != 0:
                 err_detail = res_grant.stderr.strip() or res_grant.stdout.strip()

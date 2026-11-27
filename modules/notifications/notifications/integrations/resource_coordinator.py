@@ -826,12 +826,17 @@ def install_coordinator_task(
             }
 
     python_exe = Path(executable).resolve() if executable else Path(sys.executable).resolve()
+    runner_module = "notifications.cli"
+    if executable is None:
+        from notifications.headless_task import scheduled_runner
+
+        python_exe, runner_module = scheduled_runner(python_exe, windows=sys.platform == "win32")
 
     # Durable default working directory (avoids hardcoding ephemeral git worktree)
     work_dir = Path(working_directory).resolve() if working_directory else Path.home().resolve()
 
     # Safe argument vector quoting via list2cmdline
-    args_list = ["-m", "notifications.cli", "coordinator", "poll", "-u", status_url]
+    args_list = ["-m", runner_module, "coordinator", "poll", "-u", status_url]
     if db_path:
         args_list.extend(["-d", str(Path(db_path))])
     runner_args = subprocess.list2cmdline(args_list)
