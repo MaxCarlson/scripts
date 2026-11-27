@@ -2,13 +2,17 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from .models import TerminalLaunchPlan
+
+if TYPE_CHECKING:
+    from .managed import ManagedProcessRecord
 
 
 class LaunchStatus(str, Enum):
     SUBMITTED = "submitted"
+    AMBIGUOUS = "ambiguous"
     FAILED = "failed"
     NOOP = "no_op"
 
@@ -50,6 +54,20 @@ class LaunchResult:
     returncode: int | None = None
     diagnostic: str | None = None
     warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedLaunchResult:
+    """Request outcome plus durable pane receipts observed before timeout."""
+
+    launch_id: str
+    submission: LaunchResult
+    panes: tuple["ManagedProcessRecord", ...] = ()
+    startup_timed_out: bool = False
+
+    @property
+    def spawn_acknowledged_pane_ids(self) -> tuple[str, ...]:
+        return tuple(pane.pane_id for pane in self.panes if pane.spawn_acknowledged)
 
 
 @runtime_checkable
