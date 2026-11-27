@@ -11,6 +11,7 @@ from agent_continuity.runtime_discovery import (
     CodexSessionStore,
     EvidenceAvailability,
     EvidenceConfidence,
+    ManagedAssociationState,
     ManagedLaunchAssociation,
     ManagedPaneReference,
     ManagedReceiptSnapshot,
@@ -27,6 +28,7 @@ from agent_continuity.runtime_discovery import (
     TerminalLauncherManagedReceiptSource,
     managed_pane_reference_from_terminal_launcher_record,
     match_agy_invocation,
+    match_claude_invocation,
     match_codex_invocation,
 )
 
@@ -65,8 +67,10 @@ class FakeProcessEnumerator:
 class FakeSessionStore:
     def __init__(self, activity: ProviderActivity):
         self.activity = activity
+        self.calls = 0
 
     def observe(self, _key: SessionKey) -> ProviderActivity:
+        self.calls += 1
         return self.activity
 
 
@@ -106,6 +110,154 @@ def test_invocation_matchers_require_exact_provider_session_tokens():
     assert not match_agy_invocation(("agy.exe", "--conversation=" + SESSION + "x"), SESSION)
 
 
+def test_provider_matchers_reject_executable_names_in_option_values_and_conflicts():
+    assert not match_codex_invocation(("pwsh.exe", "-Command", "codex.exe", "resume", SESSION), SESSION)
+    assert not match_codex_invocation(("codex.exe", "resume", "-C", SESSION, OTHER_SESSION), SESSION)
+    assert not match_codex_invocation(("codex.exe", "resume", SESSION, "--last"), SESSION)
+    assert not match_agy_invocation(("agy.exe", "--conversation", SESSION, "--conversation", OTHER_SESSION), SESSION)
+    assert not match_agy_invocation(("agy.exe", "--unknown-option", "--conversation", SESSION), SESSION)
+    assert not match_claude_invocation(("claude.exe", "--resume", SESSION, "--session-id", OTHER_SESSION), SESSION)
+    assert not match_claude_invocation(("claude.exe", "--unknown-option", "--resume", SESSION), SESSION)
+
+
+def test_claude_session_id_selector_matches_exact_reserved_identity():
+    assert match_claude_invocation(("claude.exe", "--session-id", SESSION), SESSION)
+    assert not match_claude_invocation(("claude.exe", "--session-id", OTHER_SESSION), SESSION)
+
+
+def test_claude_reserved_id_is_not_reported_as_missing_durable_session():
+    processes = FakeProcessEnumerator(
+        inventory(record(202, "claude.exe", ("claude.exe", "--session-id", SESSION)))
+    )
+    discovery = RuntimeDiscovery(
+        process_enumerator=processes,
+        provider_stores={"claude": FakeSessionStore(activity(found=False, at=NOW))},
+        environment_id="env-native",
+        clock=lambda: NOW,
+    )
+
+    observed = discovery.observe(SessionKey("claude", SESSION, "env-native"))
+
+    assert observed.session_identity_state.value == "reserved"
+    assert not observed.evidence_conflict
+
+
+def test_managed_identity_comparison_keeps_rounded_psutil_time_ambiguous():
+    exact = runtime_discovery.process_identity_from_windows_filetime(203, 133_000_000_000_000_000)
+    approximate = runtime_discovery.process_identity_from_psutil(
+        exact.pid, exact.creation_time_ns / 1_000_000_000
+    )
+    ref = ManagedPaneReference(
+        provider="codex", native_session_id=SESSION, environment_id="env-native",
+        process_identity=exact, launch_id="launch", pane_id="pane", terminal_session_id="terminal",
+    )
+    discovery = RuntimeDiscovery(
+        process_enumerator=FakeProcessEnumerator(
+            ProcessInventory((ProcessRecord(approximate, 0, "pwsh.exe"),), EvidenceAvailability.COMPLETE, NOW)
+        ),
+        provider_stores={"codex": FakeSessionStore(activity(found=True, at=NOW))},
+        managed_receipt_source=FakeManagedReceipts(receipts(ref)),
+        environment_id="env-native",
+        clock=lambda: NOW,
+    )
+
+    observed = discovery.observe(SessionKey("codex", SESSION, "env-native"))
+
+    assert observed.process_liveness is ProcessLiveness.UNKNOWN
+    assert not observed.identity_conflict
+
+
+def test_observation_serializes_process_identity_precision_for_recovery():
+    approximate = ProcessIdentity(204, 2_000_000_000_000_000_000, precision_ns=200)
+    discovery = RuntimeDiscovery(
+        process_enumerator=FakeProcessEnumerator(
+            inventory(ProcessRecord(approximate, 0, "codex.exe", ("codex.exe", "resume", SESSION)))
+        ),
+        provider_stores={},
+        clock=lambda: NOW,
+    )
+
+    payload = discovery.observe(SessionKey("codex", SESSION)).to_dict()
+
+    assert payload["processes"][0]["creation_time_precision_ns"] == 200
+
+
+def test_ancestry_uses_identity_precision_when_parent_timestamp_rounds_later():
+    terminal = ProcessRecord(ProcessIdentity(210, 10_000, 100), None, "WindowsTerminal.exe")
+    shell = ProcessRecord(ProcessIdentity(211, 9_950, 100), 210, "pwsh.exe")
+    provider = ProcessRecord(
+        ProcessIdentity(212, 11_000, 100), 211, "codex.exe", ("codex.exe", "resume", SESSION)
+    )
+    discovery = RuntimeDiscovery(
+        process_enumerator=FakeProcessEnumerator(inventory(terminal, shell, provider)),
+        provider_stores={},
+        clock=lambda: NOW,
+    )
+
+    observed = discovery.observe(SessionKey("codex", SESSION))
+
+    assert observed.interactive_attachment is AttachmentState.ATTACHED
+    assert not observed.ancestry[0].ambiguous
+
+
+def test_batch_observation_reuses_one_environment_bound_snapshot():
+    environment_id = "env-native"
+    keys = tuple(SessionKey("codex", f"session-{index}", environment_id) for index in range(20))
+    processes = FakeProcessEnumerator(inventory(record(201, "pwsh.exe", ("pwsh.exe",))))
+    discovery = RuntimeDiscovery(
+        process_enumerator=processes,
+        provider_stores={"codex": FakeSessionStore(activity(found=True, at=NOW))},
+        environment_id=environment_id,
+        clock=lambda: NOW,
+    )
+
+    snapshot = discovery.capture_snapshot()
+    observations = discovery.observe_many(keys, snapshot=snapshot)
+
+    assert processes.calls == 1
+    assert len(observations) == len(keys)
+    assert all(item.process_liveness is ProcessLiveness.NOT_OBSERVED for item in observations)
+    assert all(item.key.environment_id == environment_id for item in observations)
+
+
+def test_observer_rejects_environment_mismatch_without_querying_sources():
+    processes = FakeProcessEnumerator(inventory())
+    store = FakeSessionStore(activity(found=True, at=NOW))
+    discovery = RuntimeDiscovery(
+        process_enumerator=processes,
+        provider_stores={"codex": store},
+        environment_id="env-local",
+        clock=lambda: NOW,
+    )
+
+    observed = discovery.observe(SessionKey("codex", SESSION, "env-other"))
+
+    assert observed.availability is EvidenceAvailability.UNAVAILABLE
+    assert processes.calls == 0
+    assert store.calls == 0
+
+
+def test_expired_batch_snapshot_is_not_used_for_negative_process_evidence():
+    now = [NOW]
+    processes = FakeProcessEnumerator(inventory())
+    discovery = RuntimeDiscovery(
+        process_enumerator=processes,
+        provider_stores={},
+        environment_id="env-native",
+        clock=lambda: now[0],
+    )
+    snapshot = discovery.capture_snapshot()
+    now[0] += timedelta(seconds=3)
+
+    observed = discovery.observe_many(
+        (SessionKey("codex", SESSION, "env-native"),), snapshot=snapshot
+    )[0]
+
+    assert observed.process_liveness is ProcessLiveness.UNKNOWN
+    assert observed.availability is EvidenceAvailability.UNAVAILABLE
+    assert processes.calls == 1
+
+
 def test_claude_resume_matcher_is_available_for_runtime_discovery():
     matcher = getattr(runtime_discovery, "match_claude_invocation", None)
 
@@ -122,6 +274,7 @@ def test_claude_process_is_exactly_observed_without_provider_store():
     discovery = RuntimeDiscovery(
         process_enumerator=processes,
         provider_stores={},
+        environment_id="env-win",
         clock=lambda: NOW,
     )
 
@@ -141,6 +294,7 @@ def test_custom_provider_process_matcher_extends_runtime_observation():
         ),
         provider_stores={},
         process_matchers={"custom": matcher},
+        environment_id="env-win",
         clock=lambda: NOW,
     )
 
@@ -163,6 +317,7 @@ def test_exact_codex_process_match_is_live_even_when_provider_activity_is_stale(
         process_enumerator=processes,
         provider_stores={"codex": FakeSessionStore(activity(found=True, at=old))},
         managed_receipt_source=FakeManagedReceipts(receipts()),
+        environment_id="env-win",
         clock=lambda: NOW,
     )
 
@@ -355,6 +510,7 @@ def test_managed_pane_reference_uses_exact_pid_creation_identity():
         process_enumerator=processes,
         provider_stores={"codex": FakeSessionStore(activity(found=True, at=NOW))},
         managed_receipt_source=FakeManagedReceipts(receipts(ref)),
+        environment_id="env-win",
         clock=lambda: NOW,
     )
     observed = discovery.observe(SessionKey("codex", SESSION, "env-win"))
@@ -414,7 +570,10 @@ def test_optional_terminal_launcher_source_joins_exact_session_without_import_de
     source = TerminalLauncherManagedReceiptSource(
         store,
         lambda key: (
-            (ManagedLaunchAssociation("launch-exact", "terminal-exact"),)
+            (ManagedLaunchAssociation(
+                "launch-exact", "terminal-exact", "pane-exact", key,
+                ManagedAssociationState.CURRENT,
+            ),)
             if key.native_session_id == SESSION else ()
         ),
         clock=lambda: NOW,
@@ -438,11 +597,75 @@ def test_optional_terminal_launcher_source_joins_exact_session_without_import_de
         ),
         provider_stores={"codex": FakeSessionStore(activity(found=True, at=NOW))},
         managed_receipt_source=source,
+        environment_id="env-win",
         clock=lambda: NOW,
     )
     observed = discovery.observe(key)
     assert observed.management is ManagementState.MANAGED
     assert observed.interactive_attachment is AttachmentState.ATTACHED
+
+
+def test_terminal_launcher_source_links_exact_pane_and_separates_history_within_launch():
+    from types import SimpleNamespace
+
+    filetime = 133_000_000_000_000_000
+    records = (
+        SimpleNamespace(
+            spawn_acknowledged=True, pid=830, process_created=filetime,
+            launch_id="shared-launch", pane_id="pane-codex", state="running", liveness="alive",
+        ),
+        SimpleNamespace(
+            spawn_acknowledged=True, pid=831, process_created=filetime + 1000,
+            launch_id="shared-launch", pane_id="pane-claude", state="exited", liveness="exited",
+        ),
+    )
+
+    class FakeStore:
+        def enumerate_processes(self, *, launch_id=None):
+            return records if launch_id == "shared-launch" else ()
+
+    codex_key = SessionKey("codex", SESSION, "env-win")
+    claude_key = SessionKey("claude", OTHER_SESSION, "env-win")
+    associations = {
+        codex_key: (
+            SimpleNamespace(
+                session_key=codex_key, launch_id="shared-launch", pane_id="pane-codex",
+                terminal_session_id="terminal-1", association_state="current",
+            ),
+        ),
+        claude_key: (
+            SimpleNamespace(
+                session_key=claude_key, launch_id="shared-launch", pane_id="pane-claude",
+                terminal_session_id="terminal-1", association_state="historical",
+            ),
+        ),
+    }
+    source = TerminalLauncherManagedReceiptSource(
+        FakeStore(), lambda key: associations[key], clock=lambda: NOW
+    )
+
+    current = source.observe(codex_key)
+    historical = source.observe(claude_key)
+
+    assert [reference.pane_id for reference in current.references] == ["pane-codex"]
+    assert current.historical_references == ()
+    assert historical.references == ()
+    assert [reference.pane_id for reference in historical.historical_references] == ["pane-claude"]
+
+
+def test_psutil_time_precision_does_not_turn_filetime_rounding_into_pid_reuse():
+    converter = getattr(runtime_discovery, "process_identity_from_psutil", None)
+    comparer = getattr(runtime_discovery, "compare_process_identities", None)
+
+    assert callable(converter)
+    assert callable(comparer)
+    filetime = 133_000_000_000_000_000
+    exact = runtime_discovery.process_identity_from_windows_filetime(900, filetime)
+    approximate = converter(900, exact.creation_time_ns / 1_000_000_000)
+
+    assert comparer(exact, approximate).value == "ambiguous"
+    reused = ProcessIdentity(900, exact.creation_time_ns + 10_000)
+    assert comparer(exact, reused).value == "different"
 
 
 def test_managed_receipt_pid_reuse_conflicts_with_current_exact_session_process():
@@ -489,6 +712,7 @@ def test_multiple_managed_pane_references_are_ambiguous():
         process_enumerator=FakeProcessEnumerator(inventory()),
         provider_stores={"codex": FakeSessionStore(activity(found=True, at=NOW))},
         managed_receipt_source=FakeManagedReceipts(receipts(*refs)),
+        environment_id="env",
         clock=lambda: NOW,
     )
     observed = discovery.observe(SessionKey("codex", SESSION, "env"))
@@ -504,9 +728,13 @@ def test_registry_only_session_stays_unknown_without_native_or_process_evidence(
     discovery = RuntimeDiscovery(
         process_enumerator=FakeProcessEnumerator(inventory()),
         provider_stores={},
+        runtime_kind="wsl",
+        environment_id="env-wsl",
         clock=lambda: NOW,
     )
-    observed = discovery.observe(SessionKey("agy", SESSION, "env-wsl"), registry_association=True)
+    observed = discovery.observe(
+        SessionKey("agy", SESSION, "env-wsl", runtime_kind="wsl"), registry_association=True
+    )
     assert observed.registry_association is True
     assert observed.provider_session_found is None
     assert observed.process_liveness is ProcessLiveness.NOT_OBSERVED

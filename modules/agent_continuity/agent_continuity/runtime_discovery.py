@@ -6,11 +6,12 @@ are never included in observations, evidence details, reprs, logs, or persistenc
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
@@ -22,6 +23,7 @@ __all__ = [
     "EvidenceAvailability",
     "EvidenceConfidence",
     "ManagedPaneReference",
+    "ManagedAssociationState",
     "ManagedLaunchAssociation",
     "ManagedReceiptSnapshot",
     "ManagedReceiptSource",
@@ -31,7 +33,9 @@ __all__ = [
     "ProcessAncestry",
     "ProcessEnumerator",
     "ProcessIdentity",
+    "IdentityComparison",
     "ProcessInventory",
+    "ProcessSnapshot",
     "ProcessLiveness",
     "ProcessRecord",
     "ProcessSessionMatcher",
@@ -40,6 +44,7 @@ __all__ = [
     "RuntimeDiscovery",
     "RuntimeEvidence",
     "SessionKey",
+    "SessionIdentityState",
     "SessionRuntimeObservation",
     "TerminalLauncherManagedReceiptSource",
     "TerminalLauncherStore",
@@ -48,6 +53,8 @@ __all__ = [
     "match_claude_invocation",
     "match_codex_invocation",
     "process_identity_from_windows_filetime",
+    "process_identity_from_psutil",
+    "compare_process_identities",
 ]
 
 
@@ -81,6 +88,7 @@ class AttachmentState(StrEnum):
 
 class ManagementState(StrEnum):
     MANAGED = "managed"
+    HISTORICAL = "historical"
     UNMANAGED = "unmanaged"
     UNKNOWN = "unknown"
     CONFLICT = "conflict"
@@ -91,6 +99,18 @@ class MatchStatus(StrEnum):
     NOT_OBSERVED = "not_observed"
     UNKNOWN = "unknown"
     AMBIGUOUS = "ambiguous"
+
+
+class IdentityComparison(StrEnum):
+    SAME = "same"
+    DIFFERENT = "different"
+    AMBIGUOUS = "ambiguous"
+
+
+class SessionIdentityState(StrEnum):
+    UNKNOWN = "unknown"
+    EXACT = "exact"
+    RESERVED = "reserved"
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,9 +129,10 @@ class SessionKey:
 class ProcessIdentity:
     pid: int
     creation_time_ns: int
+    precision_ns: int = 0
 
     def __post_init__(self) -> None:
-        if self.pid <= 0 or self.creation_time_ns <= 0:
+        if self.pid <= 0 or self.creation_time_ns <= 0 or self.precision_ns < 0:
             raise ValueError("process identity requires positive PID and creation time")
 
 
@@ -147,6 +168,19 @@ class ProcessInventory:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ProcessSnapshot:
+    """Transient process inventory bound to one exact runtime environment."""
+
+    runtime_kind: str
+    environment_id: str | None
+    inventory: ProcessInventory
+
+    @property
+    def captured_at(self) -> datetime:
+        return self.inventory.captured_at
+
+
 class ProcessEnumerator(Protocol):
     def enumerate_processes(self) -> ProcessInventory:
         """Return a read-only point-in-time inventory."""
@@ -172,7 +206,7 @@ class PsutilProcessEnumerator:
                     info = process.info
                     pid, created, argv_value = info.get("pid"), info.get("create_time"), info.get("cmdline")
                     identity = (
-                        ProcessIdentity(int(pid), int(round(float(created) * 1_000_000_000)))
+                        process_identity_from_psutil(int(pid), float(created))
                         if pid and created else None
                     )
                     rows.append(ProcessRecord(
@@ -320,39 +354,125 @@ def _unavailable_store(source: str, code: str, captured: datetime | None = None)
 
 
 def match_codex_invocation(argv: Sequence[str] | None, native_session_id: str) -> bool:
-    """Match only codex resume with the exact next positional ID."""
-    if not argv or not _has_provider_executable(argv, "codex"):
+    """Match a supported Codex resume form with one unambiguous exact ID."""
+    args = _provider_arguments(argv, "codex")
+    if args is None:
         return False
-    for index, token in enumerate(argv):
-        if str(token).casefold() == "resume":
-            candidate = next(
-                (str(part) for part in argv[index + 1 :] if not str(part).startswith("-")), None
-            )
-            return candidate == native_session_id
-    return False
+    if not args or args[0].casefold() != "resume":
+        return False
+    positionals: list[str] = []
+    value_options = {
+        "-c", "--cd", "--model", "-m", "--sandbox", "-s", "--ask-for-approval", "-a",
+        "--profile", "--enable", "--disable",
+    }
+    flags = {
+        "--full-auto", "--yolo", "--no-alt-screen", "--oss", "--search", "--no-daemon",
+    }
+    index = 1
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            return False
+        option = token.casefold()
+        option_name, separator, _ = option.partition("=")
+        if separator and option_name in value_options:
+            index += 1
+            continue
+        if option in value_options:
+            if index + 1 >= len(args) or args[index + 1].startswith("-"):
+                return False
+            index += 2
+            continue
+        if option in flags:
+            index += 1
+            continue
+        if token.startswith("-"):
+            return False
+        positionals.append(token)
+        index += 1
+    return positionals == [native_session_id]
 
 
 def match_agy_invocation(argv: Sequence[str] | None, native_session_id: str) -> bool:
     """Match AGY's exact --conversation ID form."""
-    if not argv or not _has_provider_executable(argv, "agy"):
+    args = _provider_arguments(argv, "agy")
+    if args is None:
         return False
-    for index, token in enumerate(argv):
-        text = str(token)
-        if text == "--conversation" and index + 1 < len(argv):
-            return str(argv[index + 1]) == native_session_id
-        if text.startswith("--conversation="):
-            return text.partition("=")[2] == native_session_id
-    return False
+    selectors: list[str] = []
+    index = 0
+    value_options = {"--profile", "--model", "--effort", "--cwd", "-c"}
+    flags = {"--verbose", "--debug", "--help", "--version", "--yolo", "--no-color", "--sandbox"}
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            return False
+        option, separator, _ = token.casefold().partition("=")
+        if option == "--conversation" and separator:
+            selectors.append(token.partition("=")[2])
+            index += 1
+        elif token == "--conversation":
+            if index + 1 >= len(args) or args[index + 1].startswith("-"):
+                return False
+            selectors.append(args[index + 1])
+            index += 2
+        elif option in value_options and separator:
+            index += 1
+        elif option in value_options:
+            if index + 1 >= len(args):
+                return False
+            index += 2
+        elif option in flags:
+            index += 1
+        elif token.startswith("-"):
+            return False
+        else:
+            index += 1
+    return len(selectors) == 1 and selectors[0] == native_session_id
 
 
 def match_claude_invocation(argv: Sequence[str] | None, native_session_id: str) -> bool:
-    """Match Claude Code's exact ``--resume <session-id>`` invocation."""
-    if not argv or not _has_provider_executable(argv, "claude"):
-        return False
-    for index, token in enumerate(argv):
-        if str(token).casefold() == "--resume" and index + 1 < len(argv):
-            return str(argv[index + 1]) == native_session_id
-    return False
+    """Match one exact Claude ``--resume`` or reserved ``--session-id`` selector."""
+    selector = _claude_session_selector(argv)
+    return selector is not None and selector[1] == native_session_id
+
+
+def _claude_session_selector(argv: Sequence[str] | None) -> tuple[str, str] | None:
+    args = _provider_arguments(argv, "claude")
+    if args is None:
+        return None
+    selectors: list[tuple[str, str]] = []
+    value_options = {
+        "--model", "--add-dir", "--permission-mode", "--output-format", "--permission-prompt-tool",
+        "--settings", "--mcp-config", "--betas", "--fallback-model", "--max-budget-usd", "--agent",
+        "--append-system-prompt", "-p",
+    }
+    flags = {
+        "--verbose", "--debug", "--dangerously-skip-permissions", "--continue", "-c", "--print",
+        "--help", "--version", "--ide", "--no-session-persistence",
+    }
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            return None
+        if token in {"--resume", "--session-id"}:
+            if index + 1 >= len(args) or args[index + 1].startswith("-"):
+                return None
+            selectors.append((token, args[index + 1]))
+            index += 2
+        elif token.casefold().partition("=")[0] in value_options and "=" in token:
+            index += 1
+        elif token.casefold() in value_options:
+            if index + 1 >= len(args):
+                return None
+            index += 2
+        elif token.casefold() in flags:
+            index += 1
+        elif token.startswith("-"):
+            return None
+        else:
+            index += 1
+    return selectors[0] if len(selectors) == 1 else None
 
 
 def _has_provider_executable(argv: Sequence[str], provider: str) -> bool:
@@ -363,7 +483,21 @@ def _has_provider_executable(argv: Sequence[str], provider: str) -> bool:
         names.update({"agy.js", "agy.mjs", "agy-cli.js"})
     elif provider == "claude":
         names.update({"claude.js", "claude.mjs", "claude-cli.js"})
-    return any(Path(str(token).strip('"')).name.casefold() in names for token in argv[:4])
+    first = Path(str(argv[0]).strip('"')).name.casefold() if argv else ""
+    if first in names:
+        return True
+    # npm-installed Node entry points are supported, but only at argv[1].
+    if first in {"node", "node.exe"} and len(argv) > 1:
+        return Path(str(argv[1]).strip('"')).name.casefold() in names
+    return False
+
+
+def _provider_arguments(argv: Sequence[str] | None, provider: str) -> tuple[str, ...] | None:
+    if not argv or not _has_provider_executable(argv, provider):
+        return None
+    executable = Path(str(argv[0]).strip('"')).name.casefold()
+    offset = 2 if executable in {"node", "node.exe"} else 1
+    return tuple(str(token) for token in argv[offset:])
 
 
 _DEFAULT_PROCESS_MATCHERS: Mapping[str, ProcessSessionMatcher] = {
@@ -371,6 +505,11 @@ _DEFAULT_PROCESS_MATCHERS: Mapping[str, ProcessSessionMatcher] = {
     "agy": match_agy_invocation,
     "claude": match_claude_invocation,
 }
+
+
+class ManagedAssociationState(StrEnum):
+    CURRENT = "current"
+    HISTORICAL = "historical"
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,6 +521,10 @@ class ManagedPaneReference:
     launch_id: str
     pane_id: str
     terminal_session_id: str
+    runtime_kind: str = "local"
+    association_state: ManagedAssociationState = ManagedAssociationState.CURRENT
+    receipt_state: str = "unknown"
+    receipt_liveness: ProcessLiveness = ProcessLiveness.UNKNOWN
 
 
 _WINDOWS_FILETIME_UNIX_EPOCH_100NS = 116_444_736_000_000_000
@@ -393,11 +536,33 @@ def process_identity_from_windows_filetime(pid: int, creation_filetime: int) -> 
     return ProcessIdentity(pid=pid, creation_time_ns=created_ns)
 
 
+def process_identity_from_psutil(pid: int, creation_time_seconds: float) -> ProcessIdentity:
+    """Normalize psutil's float seconds with a conservative timestamp uncertainty radius."""
+    seconds = float(creation_time_seconds)
+    created_ns = int(round(seconds * 1_000_000_000))
+    precision_ns = math.ceil(math.ulp(seconds) * 500_000_000 + 50)
+    return ProcessIdentity(pid=int(pid), creation_time_ns=created_ns, precision_ns=precision_ns)
+
+
+def compare_process_identities(left: ProcessIdentity, right: ProcessIdentity) -> IdentityComparison:
+    """Compare PID/creation times without treating rounded timestamps as exact."""
+    if left.pid != right.pid:
+        return IdentityComparison.DIFFERENT
+    left_low, left_high = left.creation_time_ns - left.precision_ns, left.creation_time_ns + left.precision_ns
+    right_low, right_high = right.creation_time_ns - right.precision_ns, right.creation_time_ns + right.precision_ns
+    if left_high < right_low or right_high < left_low:
+        return IdentityComparison.DIFFERENT
+    if left.precision_ns == right.precision_ns == 0 and left.creation_time_ns == right.creation_time_ns:
+        return IdentityComparison.SAME
+    return IdentityComparison.AMBIGUOUS
+
+
 def managed_pane_reference_from_terminal_launcher_record(
     key: SessionKey,
     record: object,
     *,
     terminal_session_id: str,
+    association_state: ManagedAssociationState = ManagedAssociationState.CURRENT,
 ) -> ManagedPaneReference | None:
     """Adapt a 0.2.0 receipt by duck typing, without importing Terminal Launcher."""
     if not bool(getattr(record, "spawn_acknowledged", False)):
@@ -420,6 +585,10 @@ def managed_pane_reference_from_terminal_launcher_record(
         launch_id=str(launch_id),
         pane_id=str(pane_id),
         terminal_session_id=terminal_session_id,
+        runtime_kind=key.runtime_kind,
+        association_state=association_state,
+        receipt_state=_record_value(record, "state", "unknown"),
+        receipt_liveness=_record_liveness(record),
     )
 
 
@@ -429,6 +598,7 @@ class ManagedReceiptSnapshot:
     availability: EvidenceAvailability
     captured_at: datetime
     error_code: str | None = None
+    historical_references: tuple[ManagedPaneReference, ...] = ()
 
 
 class ManagedReceiptSource(Protocol):
@@ -440,6 +610,9 @@ class ManagedReceiptSource(Protocol):
 class ManagedLaunchAssociation:
     launch_id: str
     terminal_session_id: str
+    pane_id: str
+    session_key: SessionKey
+    association_state: ManagedAssociationState = ManagedAssociationState.CURRENT
 
 
 class TerminalLauncherStore(Protocol):
@@ -470,10 +643,22 @@ class TerminalLauncherManagedReceiptSource:
                 (), EvidenceAvailability.PARTIAL, captured, "association_lookup_failed"
             )
         references: list[ManagedPaneReference] = []
+        historical_references: list[ManagedPaneReference] = []
         failed = False
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, str, str, ManagedAssociationState]] = set()
         for association in associations:
-            association_key = (association.launch_id, association.terminal_session_id)
+            if association.session_key != key or not association.pane_id:
+                failed = True
+                continue
+            try:
+                association_state = ManagedAssociationState(association.association_state)
+            except ValueError:
+                failed = True
+                continue
+            association_key = (
+                association.launch_id, association.terminal_session_id,
+                association.pane_id, association_state,
+            )
             if association_key in seen:
                 continue
             seen.add(association_key)
@@ -482,18 +667,52 @@ class TerminalLauncherManagedReceiptSource:
             except Exception:
                 failed = True
                 continue
-            for record in records:
+            pane_records = tuple(
+                record for record in records
+                if getattr(record, "launch_id", None) == association.launch_id
+                and getattr(record, "pane_id", None) == association.pane_id
+            )
+            if len(pane_records) != 1:
+                failed = True
+                continue
+            for record in pane_records:
                 reference = managed_pane_reference_from_terminal_launcher_record(
-                    key, record, terminal_session_id=association.terminal_session_id
+                    key, record, terminal_session_id=association.terminal_session_id,
+                    association_state=association_state,
                 )
                 if reference is not None:
-                    references.append(reference)
+                    if (
+                        association_state is ManagedAssociationState.HISTORICAL
+                        or reference.receipt_state in {"exited", "failed", "stale"}
+                        or reference.receipt_liveness is ProcessLiveness.EXITED
+                    ):
+                        historical_references.append(reference)
+                    else:
+                        references.append(reference)
+                else:
+                    failed = True
         return ManagedReceiptSnapshot(
-            tuple(references),
-            EvidenceAvailability.PARTIAL if failed else EvidenceAvailability.COMPLETE,
-            captured,
-            "receipt_query_failed" if failed else None,
+            references=tuple(references),
+            availability=EvidenceAvailability.PARTIAL if failed else EvidenceAvailability.COMPLETE,
+            captured_at=captured,
+            error_code="receipt_query_incomplete" if failed else None,
+            historical_references=tuple(historical_references),
         )
+
+
+def _record_value(record: object, field_name: str, default: str) -> str:
+    value = getattr(record, field_name, default)
+    return str(getattr(value, "value", value))
+
+
+def _record_liveness(record: object) -> ProcessLiveness:
+    value = _record_value(record, "liveness", ProcessLiveness.UNKNOWN.value).casefold()
+    if value == "alive":
+        value = ProcessLiveness.RUNNING.value
+    try:
+        return ProcessLiveness(value)
+    except ValueError:
+        return ProcessLiveness.UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,6 +750,7 @@ class SessionRuntimeObservation:
     process_liveness: ProcessLiveness
     known_process_liveness: ProcessLiveness
     process_session_match: MatchStatus
+    session_identity_state: SessionIdentityState
     interactive_attachment: AttachmentState
     attachment_confidence: EvidenceConfidence
     management: ManagementState
@@ -546,6 +766,7 @@ class SessionRuntimeObservation:
     processes: tuple[ObservedProcess, ...]
     ancestry: tuple[ProcessAncestry, ...]
     managed_pane: ManagedPaneReference | None
+    historical_managed_panes: tuple[ManagedPaneReference, ...]
     identity_conflict: bool
     evidence_conflict: bool
     evidence: tuple[RuntimeEvidence, ...]
@@ -560,6 +781,7 @@ class SessionRuntimeObservation:
             "process_liveness": self.process_liveness.value,
             "known_process_liveness": self.known_process_liveness.value,
             "process_session_match": self.process_session_match.value,
+            "session_identity_state": self.session_identity_state.value,
             "interactive_attachment": self.interactive_attachment.value,
             "attachment_confidence": self.attachment_confidence.value,
             "management": self.management.value,
@@ -576,6 +798,7 @@ class SessionRuntimeObservation:
                 {
                     "pid": item.identity.pid if item.identity else None,
                     "creation_time_ns": item.identity.creation_time_ns if item.identity else None,
+                    "creation_time_precision_ns": item.identity.precision_ns if item.identity else None,
                     "image_name": item.image_name,
                     "parent_pid": item.parent_pid,
                 }
@@ -584,7 +807,11 @@ class SessionRuntimeObservation:
             "ancestry": [
                 {
                     "identities": [
-                        {"pid": identity.pid, "creation_time_ns": identity.creation_time_ns}
+                        {
+                            "pid": identity.pid,
+                            "creation_time_ns": identity.creation_time_ns,
+                            "creation_time_precision_ns": identity.precision_ns,
+                        }
                         for identity in item.identities
                     ],
                     "image_names": list(item.image_names),
@@ -600,9 +827,27 @@ class SessionRuntimeObservation:
                     "terminal_session_id": self.managed_pane.terminal_session_id,
                     "process_pid": self.managed_pane.process_identity.pid,
                     "process_creation_time_ns": self.managed_pane.process_identity.creation_time_ns,
+                    "process_creation_time_precision_ns": self.managed_pane.process_identity.precision_ns,
                 }
                 if self.managed_pane else None
             ),
+            "historical_managed_panes": [
+                {
+                    "provider": item.provider,
+                    "native_session_id": item.native_session_id,
+                    "environment_id": item.environment_id,
+                    "runtime_kind": item.runtime_kind,
+                    "process_pid": item.process_identity.pid,
+                    "process_creation_time_ns": item.process_identity.creation_time_ns,
+                    "process_creation_time_precision_ns": item.process_identity.precision_ns,
+                    "launch_id": item.launch_id,
+                    "pane_id": item.pane_id,
+                    "terminal_session_id": item.terminal_session_id,
+                    "receipt_state": item.receipt_state,
+                    "receipt_liveness": item.receipt_liveness.value,
+                }
+                for item in self.historical_managed_panes
+            ],
             "identity_conflict": self.identity_conflict,
             "evidence_conflict": self.evidence_conflict,
             "evidence": [
@@ -615,6 +860,9 @@ class SessionRuntimeObservation:
                     "process_pid": item.process_identity.pid if item.process_identity else None,
                     "process_creation_time_ns": (
                         item.process_identity.creation_time_ns if item.process_identity else None
+                    ),
+                    "process_creation_time_precision_ns": (
+                        item.process_identity.precision_ns if item.process_identity else None
                     ),
                     "safe_values": dict(item.safe_values),
                 }
@@ -638,9 +886,15 @@ class RuntimeDiscovery:
         process_matchers: Mapping[str, ProcessSessionMatcher] | None = None,
         managed_receipt_source: ManagedReceiptSource | None = None,
         runtime_kind: str = "local",
+        environment_id: str | None = None,
+        snapshot_max_age: timedelta = timedelta(seconds=2),
         clock: Callable[[], datetime] | None = None,
     ) -> None:
+        if snapshot_max_age <= timedelta(0):
+            raise ValueError("snapshot_max_age must be positive")
         self.runtime_kind = runtime_kind
+        self.environment_id = environment_id
+        self.snapshot_max_age = snapshot_max_age
         self.process_enumerator = process_enumerator or (
             PsutilProcessEnumerator() if runtime_kind == "local" else _UnavailableProcessEnumerator()
         )
@@ -660,6 +914,16 @@ class RuntimeDiscovery:
             self.process_matchers.update(process_matchers)
         self.clock = clock or (lambda: datetime.now(UTC))
 
+    def capture_snapshot(self) -> ProcessSnapshot:
+        """Capture one bounded process inventory for reuse in a single observation batch."""
+        try:
+            inventory = self.process_enumerator.enumerate_processes()
+        except Exception:
+            inventory = ProcessInventory(
+                (), EvidenceAvailability.UNAVAILABLE, self.clock(), error_code="process_source_error"
+            )
+        return ProcessSnapshot(self.runtime_kind, self.environment_id, inventory)
+
     def observe(
         self,
         key: SessionKey,
@@ -667,16 +931,78 @@ class RuntimeDiscovery:
         registry_association: bool | None = None,
         known_process: ProcessIdentity | None = None,
     ) -> SessionRuntimeObservation:
-        captured = self.clock()
-        if key.runtime_kind != self.runtime_kind:
-            inventory = ProcessInventory((), EvidenceAvailability.UNAVAILABLE, captured, error_code="runtime_mismatch")
-            activity = _unavailable_store("provider_store", "runtime_mismatch", captured)
-            receipt_snapshot = ManagedReceiptSnapshot((), EvidenceAvailability.UNAVAILABLE, captured, "runtime_mismatch")
+        return self.observe_many(
+            (key,),
+            registry_associations={key: registry_association} if registry_association is not None else None,
+            known_processes={key: known_process} if known_process is not None else None,
+        )[0]
+
+    def observe_many(
+        self,
+        keys: Sequence[SessionKey],
+        *,
+        snapshot: ProcessSnapshot | None = None,
+        registry_associations: Mapping[SessionKey, bool] | None = None,
+        known_processes: Mapping[SessionKey, ProcessIdentity] | None = None,
+    ) -> tuple[SessionRuntimeObservation, ...]:
+        """Observe up to 256 sessions using one fresh, exactly scoped process snapshot."""
+        requested = tuple(keys)
+        if len(requested) > 256:
+            raise ValueError("observe_many is limited to 256 sessions per batch")
+        needs_snapshot = any(
+            key.runtime_kind == self.runtime_kind and key.environment_id == self.environment_id
+            for key in requested
+        )
+        process_snapshot = snapshot or (
+            self.capture_snapshot() if needs_snapshot else ProcessSnapshot(
+                self.runtime_kind,
+                self.environment_id,
+                ProcessInventory(
+                    (), EvidenceAvailability.UNAVAILABLE, self.clock(), error_code="environment_mismatch"
+                ),
+            )
+        )
+        age = self.clock() - process_snapshot.captured_at
+        scope_matches = (
+            process_snapshot.runtime_kind == self.runtime_kind
+            and process_snapshot.environment_id == self.environment_id
+        )
+        fresh = timedelta(0) <= age <= self.snapshot_max_age
+        if not scope_matches:
+            inventory = ProcessInventory(
+                (), EvidenceAvailability.UNAVAILABLE, self.clock(), error_code="process_snapshot_scope_mismatch"
+            )
+        elif not fresh:
+            inventory = ProcessInventory(
+                (), EvidenceAvailability.UNAVAILABLE, self.clock(), error_code="process_snapshot_stale"
+            )
         else:
-            try:
-                inventory = self.process_enumerator.enumerate_processes()
-            except Exception:
-                inventory = ProcessInventory((), EvidenceAvailability.UNAVAILABLE, self.clock(), error_code="process_source_error")
+            inventory = process_snapshot.inventory
+        return tuple(
+            self._observe_one(
+                key,
+                inventory,
+                registry_association=(registry_associations or {}).get(key),
+                known_process=(known_processes or {}).get(key),
+            )
+            for key in requested
+        )
+
+    def _observe_one(
+        self,
+        key: SessionKey,
+        inventory: ProcessInventory,
+        *,
+        registry_association: bool | None,
+        known_process: ProcessIdentity | None,
+    ) -> SessionRuntimeObservation:
+        captured = self.clock()
+        if key.runtime_kind != self.runtime_kind or key.environment_id != self.environment_id:
+            mismatch = "runtime_mismatch" if key.runtime_kind != self.runtime_kind else "environment_mismatch"
+            inventory = ProcessInventory((), EvidenceAvailability.UNAVAILABLE, captured, error_code=mismatch)
+            activity = _unavailable_store("provider_store", mismatch, captured)
+            receipt_snapshot = ManagedReceiptSnapshot((), EvidenceAvailability.UNAVAILABLE, captured, mismatch)
+        else:
             store = self.provider_stores.get(key.provider)
             if store is None:
                 activity = _unavailable_store("provider_store", "provider_store_unconfigured", self.clock())
@@ -707,6 +1033,9 @@ class RuntimeDiscovery:
             )
         )
         matching_refs = tuple(ref for ref in receipt_snapshot.references if _reference_matches(ref, key))
+        matching_historical_refs = tuple(
+            ref for ref in receipt_snapshot.historical_references if _reference_matches(ref, key)
+        )
         evidence: list[RuntimeEvidence] = [
             RuntimeEvidence(
                 "process_enumeration",
@@ -747,6 +1076,13 @@ class RuntimeDiscovery:
                 EvidenceConfidence.HIGH if matching_refs else EvidenceConfidence.LOW,
                 receipt_snapshot.captured_at,
             ))
+            if matching_historical_refs:
+                evidence.append(RuntimeEvidence(
+                    "managed_receipt", "historical_managed_session_reference",
+                    receipt_snapshot.availability, EvidenceConfidence.MEDIUM,
+                    receipt_snapshot.captured_at,
+                    safe_values=(("reference_count", str(len(matching_historical_refs))),),
+                ))
         if registry_association is not None:
             evidence.append(RuntimeEvidence(
                 "registry_association",
@@ -764,6 +1100,13 @@ class RuntimeDiscovery:
         elif matching_refs:
             process_match = MatchStatus.EXACT
             process_state = _known_process_state(inventory, matching_refs[0].process_identity)
+        elif matching_historical_refs:
+            process_state = _known_process_state(inventory, matching_historical_refs[0].process_identity)
+            process_match = (
+                MatchStatus.EXACT if process_state is ProcessLiveness.RUNNING
+                else MatchStatus.NOT_OBSERVED if process_state is ProcessLiveness.EXITED
+                else MatchStatus.UNKNOWN
+            )
         elif known_process is not None:
             process_state = _known_process_state(inventory, known_process)
             process_match = (
@@ -776,6 +1119,14 @@ class RuntimeDiscovery:
         else:
             process_match, process_state = MatchStatus.UNKNOWN, ProcessLiveness.UNKNOWN
 
+        session_identity_state = SessionIdentityState.UNKNOWN
+        if matching_records:
+            session_identity_state = SessionIdentityState.EXACT
+            if key.provider == "claude" and {
+                _claude_session_selector(row.argv) for row in matching_records
+            } == {("--session-id", key.native_session_id)}:
+                session_identity_state = SessionIdentityState.RESERVED
+
         known_state = _known_process_state(inventory, known_process) if known_process else ProcessLiveness.UNKNOWN
         identity_conflict = False
         evidence_conflict = len(matching_refs) > 1
@@ -786,7 +1137,10 @@ class RuntimeDiscovery:
             ))
         for ref in matching_refs:
             same_pid = [row for row in inventory.records if row.identity and row.identity.pid == ref.process_identity.pid]
-            if same_pid and not any(row.identity == ref.process_identity for row in same_pid):
+            if same_pid and all(
+                compare_process_identities(row.identity, ref.process_identity) is IdentityComparison.DIFFERENT
+                for row in same_pid
+            ):
                 identity_conflict = True
                 evidence_conflict = True
                 evidence.append(RuntimeEvidence(
@@ -795,7 +1149,10 @@ class RuntimeDiscovery:
                 ))
         if known_process:
             same_pid = [row for row in inventory.records if row.identity and row.identity.pid == known_process.pid]
-            if same_pid and not any(row.identity == known_process for row in same_pid):
+            if same_pid and all(
+                compare_process_identities(row.identity, known_process) is IdentityComparison.DIFFERENT
+                for row in same_pid
+            ):
                 identity_conflict = True
                 evidence_conflict = True
             if known_state is ProcessLiveness.RUNNING:
@@ -808,7 +1165,10 @@ class RuntimeDiscovery:
                     "process_identity", "known_process_identity_exited", inventory.availability,
                     EvidenceConfidence.HIGH, inventory.captured_at, known_process,
                 ))
-        if matching_records and activity.found is False:
+        if (
+            matching_records and activity.found is False
+            and session_identity_state is not SessionIdentityState.RESERVED
+        ):
             evidence_conflict = True
             evidence.append(RuntimeEvidence(
                 "cross_source", "process_match_missing_from_provider_store",
@@ -832,7 +1192,11 @@ class RuntimeDiscovery:
                 attachment_confidence = EvidenceConfidence.MEDIUM
         if not matching_records and matching_refs:
             for ref in matching_refs:
-                if any(row.identity == ref.process_identity for row in inventory.records):
+                if any(
+                    row.identity
+                    and compare_process_identities(row.identity, ref.process_identity) is IdentityComparison.SAME
+                    for row in inventory.records
+                ):
                     attachment, attachment_confidence = AttachmentState.ATTACHED, EvidenceConfidence.EXACT
         if process_state is ProcessLiveness.AMBIGUOUS:
             attachment, attachment_confidence = AttachmentState.UNKNOWN, EvidenceConfidence.NONE
@@ -843,6 +1207,8 @@ class RuntimeDiscovery:
             management = ManagementState.MANAGED
         elif matching_refs and (identity_conflict or len(matching_refs) > 1):
             management = ManagementState.CONFLICT
+        elif matching_historical_refs:
+            management = ManagementState.HISTORICAL
         elif self.managed_receipt_source is None or receipt_snapshot.availability is not EvidenceAvailability.COMPLETE:
             management = ManagementState.UNKNOWN
         else:
@@ -854,6 +1220,7 @@ class RuntimeDiscovery:
             else EvidenceConfidence.HIGH
             if process_match is MatchStatus.EXACT and known_state is ProcessLiveness.RUNNING
             else EvidenceConfidence.HIGH if matching_refs
+            else EvidenceConfidence.MEDIUM if matching_historical_refs
             else EvidenceConfidence.MEDIUM if activity.found is True
             else EvidenceConfidence.LOW if registry_association is True
             else EvidenceConfidence.NONE
@@ -863,7 +1230,7 @@ class RuntimeDiscovery:
             receipt_snapshot.availability if self.managed_receipt_source is not None else None,
         )
         return SessionRuntimeObservation(
-            key, captured, process_state, known_state, process_match, attachment,
+            key, captured, process_state, known_state, process_match, session_identity_state, attachment,
             attachment_confidence, management, availability, inventory.availability,
             activity.availability, receipt_snapshot.availability, confidence,
             activity.found, activity.last_activity_at, activity.last_turn_at,
@@ -871,6 +1238,7 @@ class RuntimeDiscovery:
             tuple(ObservedProcess(row.identity, row.parent_pid, row.image_name) for row in matching_records),
             tuple(ancestry),
             matching_refs[0] if len(matching_refs) == 1 else None,
+            matching_historical_refs,
             identity_conflict, evidence_conflict, tuple(evidence),
         )
 
@@ -885,10 +1253,13 @@ class _UnavailableProcessEnumerator:
 
 def _known_process_state(inventory: ProcessInventory, identity: ProcessIdentity) -> ProcessLiveness:
     same_pid = [row for row in inventory.records if row.identity and row.identity.pid == identity.pid]
-    if any(row.identity == identity for row in same_pid):
+    comparisons = [compare_process_identities(row.identity, identity) for row in same_pid]
+    if IdentityComparison.SAME in comparisons:
         return ProcessLiveness.RUNNING
-    if same_pid:
+    if same_pid and all(result is IdentityComparison.DIFFERENT for result in comparisons):
         return ProcessLiveness.EXITED
+    if same_pid:
+        return ProcessLiveness.UNKNOWN
     return (
         ProcessLiveness.EXITED
         if inventory.availability is EvidenceAvailability.COMPLETE else ProcessLiveness.UNKNOWN
@@ -908,7 +1279,7 @@ def _matches_provider_invocation(
 def _reference_matches(ref: ManagedPaneReference, key: SessionKey) -> bool:
     if ref.provider != key.provider or ref.native_session_id != key.native_session_id:
         return False
-    return ref.environment_id == key.environment_id
+    return ref.environment_id == key.environment_id and ref.runtime_kind == key.runtime_kind
 
 
 def _process_ancestry(
@@ -940,7 +1311,8 @@ def _process_ancestry(
         parent = candidates[0]
         if (
             parent.identity is None or current.identity is None
-            or parent.identity.creation_time_ns > current.identity.creation_time_ns
+            or parent.identity.creation_time_ns - parent.identity.precision_ns
+            > current.identity.creation_time_ns + current.identity.precision_ns
         ):
             complete, ambiguous = False, True
             break
