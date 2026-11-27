@@ -199,7 +199,7 @@ def test_continue_preview_is_pure_reports_requested_settings_and_worktree_change
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: process_calls.append((a, k)))
     parser = build_parser()
     args = parser.parse_args([
-        "-H", str(dispatcher.home_dir), "continue", "GUI", "Agent", "-C", str(requested_cwd), "-j", "--",
+        "-H", str(dispatcher.home_dir), "continue", "GUI", "Agent", "-C", str(requested_cwd), "-j", "-d", "--",
         "--sandbox", "workspace-write", "--ask-for-approval", "on-request",
     ])
     output = StringIO()
@@ -787,6 +787,33 @@ def test_concurrent_provider_bootstraps_bind_each_exact_output_to_its_launch(tmp
 
     assert dispatcher.get_slot(gui="GuiA", name="Agent")["current"]["native_session_id"] == "session-from-a"
     assert dispatcher.get_slot(gui="GuiB", name="Agent")["current"]["native_session_id"] == "session-from-b"
+
+
+def test_startup_heartbeat_stops_before_interactive_provider_handoff(tmp_path, monkeypatch, capsys):
+    import time
+
+    from agent_continuity import dispatcher_cli
+
+    dispatcher, slot = _dispatcher_with_session(tmp_path)
+    monkeypatch.setattr(dispatcher_cli, "_native_argv", lambda *args, **kwargs: ["fake-provider"])
+    monkeypatch.setattr(dispatcher_cli, "_run_provider_with_progress",
+                        lambda *args, **kwargs: pytest.fail("interactive handoff must not use startup heartbeat"))
+    monkeypatch.setattr(dispatcher_cli.subprocess, "run",
+                        lambda *args, **kwargs: SimpleNamespace(returncode=17))
+
+    progress_token = dispatcher_cli._STARTUP_PROGRESS.set(True)
+    started_token = dispatcher_cli._STARTUP_STARTED.set(time.monotonic())
+    try:
+        result = _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
+                           input_stream=StringIO(), output_stream=StringIO())
+    finally:
+        dispatcher_cli._STARTUP_STARTED.reset(started_token)
+        dispatcher_cli._STARTUP_PROGRESS.reset(progress_token)
+
+    captured = capsys.readouterr()
+    assert result == 17
+    assert "interactive provider handoff" in captured.err
+    assert "still running" not in captured.err
 
 
 def test_normal_exit_prompts_and_unexpected_nonzero_exit_preserves_active_state(tmp_path, monkeypatch):
