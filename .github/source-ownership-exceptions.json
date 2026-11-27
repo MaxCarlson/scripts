@@ -162,7 +162,7 @@
     "action": "M",
     "before_mode": "100644",
     "after_mode": "100644",
-    "before": "3bd6682f5ce0772e503d2a672d8b90571d58f051",
+    "before": "0814396cf9b094e7e8fc70bf072eea16efb50d4c",
     "after": "66dc86cfdc18ebd0cdeb063f9965a1a52b5f7eae",
     "reason": "Replace Resource Metrics source coupling with the published canonical wheel while preserving H4 archive integrity and historical compatibility"
   },
