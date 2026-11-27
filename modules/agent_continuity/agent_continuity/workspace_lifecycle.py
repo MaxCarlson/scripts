@@ -928,6 +928,7 @@ class TopologyRestorer:
         path_exists: Callable[[str], bool] | None = None,
         allow_reserved_claude: bool = False,
         allow_unknown_runtime: bool = False,
+        has_slot_exclusion: bool = False,
     ) -> RestorePlan:
         """Revalidate a checkpoint and produce a read-only restoration plan."""
         reval = revalidate_checkpoint(
@@ -937,6 +938,7 @@ class TopologyRestorer:
             snapshots=snapshots,
             path_exists=path_exists,
             allow_unknown_runtime=allow_unknown_runtime,
+            has_slot_exclusion=has_slot_exclusion,
         )
         reval_by_slot = {entry.slot_id: entry for entry in reval.entries}
         queue_by_slot: dict[str, QueueEntry] = {}
@@ -1009,6 +1011,7 @@ class TopologyRestorer:
         queue: RestorationQueue | None = None,
         receipt_store: ManagedShutdownStoreProtocol | None = None,
         slot_guard: SlotExecutionGuard | None = None,
+        slot_provider: Callable[[str], WorkspaceSlotInput | None] | None = None,
         authorization_check: Callable[[RestorePlanItem], tuple[bool, str | None]] | None = None,
         recovery_dir: Path | None = None,
         current_slots: Sequence[WorkspaceSlotInput] | None = None,
@@ -1115,13 +1118,22 @@ class TopologyRestorer:
                         continue
 
                 if checkpoint is not None:
+                    # Obtain fresh slot and runtime evidence under the execution guard (never reuse preview snapshots)
+                    if slot_provider is not None:
+                        fresh_slot = slot_provider(item.slot_id)
+                        guard_slots: Sequence[WorkspaceSlotInput] | None = (
+                            [fresh_slot] if fresh_slot is not None else []
+                        )
+                    else:
+                        guard_slots = current_slots
                     fresh_reval = revalidate_checkpoint(
                         checkpoint,
-                        current_slots=current_slots,
+                        current_slots=guard_slots,
                         observers=observers,
-                        snapshots=snapshots,
+                        snapshots=None,
                         path_exists=path_exists,
                         allow_unknown_runtime=allow_unknown_runtime,
+                        has_slot_exclusion=bool(lease is not None and lease.acquired),
                     )
                     fresh_entry = next((e for e in fresh_reval.entries if e.slot_id == item.slot_id), None)
                     if fresh_entry is not None:
@@ -1464,6 +1476,7 @@ class WorkspaceCheckpointCoordinator:
         operator_id: str,
         launcher: SessionLauncher,
         current_slots: Sequence[WorkspaceSlotInput] | None = None,
+        slot_provider: Callable[[str], WorkspaceSlotInput | None] | None = None,
         observers: Mapping[tuple[str, str], RuntimeDiscovery] | RuntimeDiscovery | None = None,
         snapshots: Mapping[tuple[str, str], ProcessSnapshot] | ProcessSnapshot | None = None,
         path_exists: Callable[[str], bool] | None = None,
@@ -1481,6 +1494,7 @@ class WorkspaceCheckpointCoordinator:
             path_exists=path_exists,
             allow_reserved_claude=allow_reserved_claude,
             allow_unknown_runtime=allow_unknown_runtime,
+            has_slot_exclusion=self.slot_guard is not None,
         )
         return self.restorer.execute_restore(
             plan,
@@ -1491,6 +1505,7 @@ class WorkspaceCheckpointCoordinator:
             queue=self.queue,
             receipt_store=self.managed_store,
             slot_guard=self.slot_guard,
+            slot_provider=slot_provider,
             authorization_check=authorization_check,
             recovery_dir=self.root_dir / "restores",
             current_slots=current_slots,

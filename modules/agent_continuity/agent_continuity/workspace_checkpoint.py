@@ -852,6 +852,7 @@ def revalidate_checkpoint(
     snapshots: Mapping[tuple[str, str], ProcessSnapshot] | ProcessSnapshot | None = None,
     path_exists: Callable[[str], bool] | None = None,
     allow_unknown_runtime: bool = False,
+    has_slot_exclusion: bool = False,
 ) -> CheckpointRevalidationReport:
     """Revalidate a checkpoint against current registry slots, worktrees, and fresh observations."""
     exists_fn = path_exists or (lambda raw: Path(raw).exists())
@@ -932,11 +933,36 @@ def revalidate_checkpoint(
         if obs is not None:
             if obs.identity_conflict:
                 reasons.append("identity_conflict")
+            if obs.evidence_conflict:
+                reasons.append("evidence_conflict")
             if obs.process_liveness is ProcessLiveness.RUNNING:
                 already_running = True
                 reasons.append("already_running")
-            elif obs.process_liveness in {ProcessLiveness.UNKNOWN, ProcessLiveness.AMBIGUOUS} or obs.process_availability in {EvidenceAvailability.UNAVAILABLE, EvidenceAvailability.PARTIAL}:
+            elif obs.process_liveness is ProcessLiveness.AMBIGUOUS or (
+                obs.process_availability is EvidenceAvailability.UNAVAILABLE
+            ):
                 reasons.append("unknown_runtime_evidence")
+            elif obs.process_liveness is ProcessLiveness.UNKNOWN or (
+                obs.process_availability is EvidenceAvailability.PARTIAL
+            ):
+                managed_exited = obs.managed_pane is None or (
+                    obs.managed_pane.receipt_liveness in {"exited", "failed", "stale"}
+                    and obs.known_process_liveness is ProcessLiveness.EXITED
+                )
+                exact_identity = (
+                    entry.resumability_state in {"confirmed_resumable", "exact_process_unverified_store"}
+                    or obs.session_identity_state is SessionIdentityState.EXACT
+                )
+                if (
+                    has_slot_exclusion
+                    and not obs.identity_conflict
+                    and not obs.evidence_conflict
+                    and exact_identity
+                    and managed_exited
+                ):
+                    reasons.append("partial_enum_safe_via_guard_and_receipts")
+                else:
+                    reasons.append("unknown_runtime_evidence")
             elif entry.observed_topology.observed_processes and obs.processes:
                 prior = entry.observed_topology.observed_processes[0].to_process_identity()
                 curr = obs.processes[0].identity
@@ -950,8 +976,10 @@ def revalidate_checkpoint(
             "stale_slot_missing",
             "stale_session_superseded",
             "stale_worktree_missing",
+            "stale_worktree_changed",
             "reserved_unconfirmed",
             "identity_conflict",
+            "evidence_conflict",
             "already_running",
         }
         if not allow_unknown_runtime:

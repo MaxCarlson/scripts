@@ -127,6 +127,17 @@ class QueueEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class ClaimRecoveryEvidence:
+    """Explicit guarded evidence required before recovering an abandoned claim."""
+
+    verified_abandoned: bool
+    reason: str
+    expected_claimed_by: str | None = None
+    expected_claim_token: str | None = None
+    min_claim_age_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class EnqueueResult:
     """Result of enqueuing one checkpoint into the shared restoration queue."""
 
@@ -214,7 +225,7 @@ class RestorationQueue:
         self._sync_from_log_locked()
 
     def _read_valid_events(self) -> tuple[list[dict[str, Any]], bool]:
-        """Read complete JSONL events; detect and ignore an interrupted trailing line."""
+        """Read complete JSONL events; validate sequence continuity and reject corrupt complete records."""
         if not self.events_path.exists():
             return [], False
         raw_bytes = self.events_path.read_bytes()
@@ -234,31 +245,43 @@ class RestorationQueue:
                 break
             try:
                 parsed = json.loads(stripped)
-                if not isinstance(parsed, dict) or "event_type" not in parsed or "payload" not in parsed:
-                    if is_last:
-                        had_partial_tail = True
-                        break
-                    continue
-                events.append(parsed)
-            except json.JSONDecodeError:
-                if is_last:
-                    had_partial_tail = True
-                    break
+            except json.JSONDecodeError as exc:
                 raise ContinuityError(
                     ErrorCode.EVENT_SPOOL_UNAVAILABLE,
-                    f"Corrupt non-trailing line {idx + 1} in restoration queue log {self.events_path}.",
-                ) from None
+                    f"Corrupt JSON record at line {idx + 1} in restoration queue log {self.events_path}: {exc}",
+                ) from exc
+            if not isinstance(parsed, dict) or "event_type" not in parsed or "payload" not in parsed:
+                raise ContinuityError(
+                    ErrorCode.EVENT_SPOOL_UNAVAILABLE,
+                    f"Invalid event envelope at line {idx + 1} in restoration queue log {self.events_path}.",
+                )
+            expected_seq = len(events) + 1
+            raw_seq = parsed.get("event_seq")
+            if raw_seq is None or int(raw_seq) != expected_seq:
+                raise ContinuityError(
+                    ErrorCode.EVENT_SPOOL_UNAVAILABLE,
+                    f"Event sequence discontinuity at line {idx + 1}: expected {expected_seq}, got {raw_seq!r}.",
+                    {"expected_seq": expected_seq, "actual_seq": raw_seq},
+                )
+            events.append(parsed)
         return events, had_partial_tail
 
     def _truncate_partial_tail_locked(self, events: Sequence[dict[str, Any]]) -> None:
         tmp = self.events_path.with_name(f".tmp.{os.getpid()}.events.jsonl")
         content = "".join(json.dumps(ev, sort_keys=True, ensure_ascii=False) + "\n" for ev in events)
-        with tmp.open("w", encoding="utf-8", newline="\n") as fh:
-            fh.write(content)
-            fh.flush()
-            with contextlib.suppress(OSError):
+        try:
+            with tmp.open("w", encoding="utf-8", newline="\n") as fh:
+                fh.write(content)
+                fh.flush()
                 os.fsync(fh.fileno())
-        os.replace(tmp, self.events_path)
+            os.replace(tmp, self.events_path)
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            raise ContinuityError(
+                ErrorCode.EVENT_SPOOL_UNAVAILABLE,
+                f"Failed to fsync/replace truncated restoration queue log {self.events_path}: {exc}",
+            ) from exc
 
     def _sync_from_log_locked(self) -> int:
         """Apply any committed log events not yet reflected in SQLite."""
@@ -305,11 +328,19 @@ class RestorationQueue:
         }
         line = json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n"
         self.events_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.events_path.open("a", encoding="utf-8", newline="\n") as fh:
-            fh.write(line)
-            fh.flush()
-            with contextlib.suppress(OSError):
+        prev_size = self.events_path.stat().st_size if self.events_path.exists() else 0
+        try:
+            with self.events_path.open("a", encoding="utf-8", newline="\n") as fh:
+                fh.write(line)
+                fh.flush()
                 os.fsync(fh.fileno())
+        except OSError as exc:
+            with contextlib.suppress(OSError), self.events_path.open("r+b") as fh_rollback:
+                fh_rollback.truncate(prev_size)
+            raise ContinuityError(
+                ErrorCode.EVENT_SPOOL_UNAVAILABLE,
+                f"Failed to append and fsync restoration queue event {self.events_path}: {exc}",
+            ) from exc
 
         with self._open_conn() as conn:
             conn.executescript(_QUEUE_DDL)
@@ -577,8 +608,15 @@ class RestorationQueue:
         *,
         operator_id: str,
         reason: str,
+        recovery_evidence: ClaimRecoveryEvidence | None = None,
+        live_claim_checker: Any = None,
     ) -> QueueEntry:
-        """Recover an abandoned claim after operator/process crash without blind retry of launches."""
+        """Recover an abandoned claim only with explicit guarded evidence; never release live claims."""
+        if recovery_evidence is None or not recovery_evidence.verified_abandoned:
+            raise ContinuityError(
+                ErrorCode.ASSOCIATION_CONFLICT,
+                "Abandoned-claim recovery requires explicit ClaimRecoveryEvidence(verified_abandoned=True).",
+            )
         with _checkpoint_lock(self.lock_path):
             self._ensure_initialized_locked()
             with self._open_conn() as conn:
@@ -594,6 +632,38 @@ class RestorationQueue:
                         ErrorCode.ASSOCIATION_CONFLICT,
                         f"Queue entry {queue_entry_id!r} is {status}; only claimed or launching entries can be recovered.",
                     )
+                if (
+                    recovery_evidence.expected_claimed_by is not None
+                    and row["claimed_by"] != recovery_evidence.expected_claimed_by
+                ):
+                    raise ContinuityError(
+                        ErrorCode.ASSOCIATION_CONFLICT,
+                        f"Claimed operator mismatch on {queue_entry_id!r}: expected {recovery_evidence.expected_claimed_by!r}, got {row['claimed_by']!r}.",
+                    )
+                if (
+                    recovery_evidence.expected_claim_token is not None
+                    and row["claim_token"] != recovery_evidence.expected_claim_token
+                ):
+                    raise ContinuityError(
+                        ErrorCode.ASSOCIATION_CONFLICT,
+                        f"Claim token mismatch on {queue_entry_id!r}.",
+                    )
+                entry = self._row_to_entry(row)
+                if live_claim_checker is not None and live_claim_checker(entry):
+                    raise ContinuityError(
+                        ErrorCode.ASSOCIATION_CONFLICT,
+                        f"Cannot recover live operator claim on {queue_entry_id!r} (claimed_by={entry.claimed_by!r}).",
+                    )
+                if recovery_evidence.min_claim_age_seconds is not None and entry.claimed_at is not None:
+                    from datetime import UTC, datetime
+
+                    claimed_dt = datetime.fromisoformat(entry.claimed_at.replace("Z", "+00:00"))
+                    age = (datetime.now(UTC) - claimed_dt).total_seconds()
+                    if age < recovery_evidence.min_claim_age_seconds:
+                        raise ContinuityError(
+                            ErrorCode.ASSOCIATION_CONFLICT,
+                            f"Claim on {queue_entry_id!r} is only {age:.2f}s old (< {recovery_evidence.min_claim_age_seconds:.2f}s).",
+                        )
             now = now_utc_iso()
             target_status = (
                 QueueEntryStatus.AMBIGUOUS.value
@@ -607,7 +677,7 @@ class RestorationQueue:
                     "operator_id": operator_id,
                     "target_status": target_status,
                     "updated_at": now,
-                    "recovery_note": f"{operator_id}: {reason}",
+                    "recovery_note": f"{operator_id}: {reason} ({recovery_evidence.reason})",
                 },
             )
             return self._load_entry_locked(queue_entry_id)
@@ -619,13 +689,13 @@ class RestorationQueue:
         claim_token: str,
         launch_id: str | None = None,
         note: str | None = None,
-        spawn_confirmed: bool = True,
+        spawn_confirmed: bool = False,
     ) -> QueueEntry:
-        """Mark a claimed/launching queue entry completed using its matching claim token."""
+        """Mark a claimed/launching queue entry completed only with explicit positive spawn_confirmed=True."""
         if not spawn_confirmed:
             raise ContinuityError(
                 ErrorCode.INVALID_INPUT,
-                "Cannot mark queue entry completed without confirmed spawn; use mark_ambiguous instead.",
+                "Cannot mark queue entry completed without positive spawn_confirmed=True; use mark_ambiguous instead.",
             )
         with _checkpoint_lock(self.lock_path):
             self._ensure_initialized_locked()
@@ -747,12 +817,76 @@ class RestorationQueue:
             )
             return self._load_entry_locked(queue_entry_id)
 
+    def _read_entries_readonly(
+        self,
+        *,
+        status: QueueEntryStatus | str | None = None,
+        checkpoint_id: str | None = None,
+        unresolved_only: bool = False,
+    ) -> tuple[QueueEntry, ...]:
+        """Pure read-only query using in-memory replay of valid log events (no disk mutations)."""
+        if self.events_path.exists():
+            events, _had_partial = self._read_valid_events()
+            if not events:
+                return ()
+            conn = sqlite3.connect(":memory:")
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.executescript(_QUEUE_DDL)
+                for ev in events:
+                    self._apply_event(conn, ev["event_type"], ev["payload"])
+                return self._query_entries_from_conn(
+                    conn,
+                    status=status,
+                    checkpoint_id=checkpoint_id,
+                    unresolved_only=unresolved_only,
+                )
+            finally:
+                conn.close()
+        if not self.db_path.exists():
+            return ()
+        conn = sqlite3.connect(f"file:{self.db_path.as_posix()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            return self._query_entries_from_conn(
+                conn,
+                status=status,
+                checkpoint_id=checkpoint_id,
+                unresolved_only=unresolved_only,
+            )
+        finally:
+            conn.close()
+
+    def _query_entries_from_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        status: QueueEntryStatus | str | None = None,
+        checkpoint_id: str | None = None,
+        unresolved_only: bool = False,
+    ) -> tuple[QueueEntry, ...]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status.value if isinstance(status, QueueEntryStatus) else str(status))
+        if checkpoint_id is not None:
+            clauses.append("checkpoint_id = ?")
+            params.append(checkpoint_id)
+        if unresolved_only:
+            placeholders = ", ".join("?" for _ in UNRESOLVED_QUEUE_STATUSES)
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(sorted(UNRESOLVED_QUEUE_STATUSES))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        query = f"SELECT * FROM queue_entries {where} ORDER BY created_at, queue_entry_id"
+        rows = conn.execute(query, tuple(params)).fetchall()
+        return tuple(self._row_to_entry(row) for row in rows)
+
     def get_entry(self, queue_entry_id: str) -> QueueEntry:
-        if not self.db_path.exists() and not self.events_path.exists():
-            raise ContinuityError(ErrorCode.SESSION_NOT_FOUND, f"Queue entry {queue_entry_id!r} was not found.")
-        with _checkpoint_lock(self.lock_path):
-            self._ensure_initialized_locked()
-            return self._load_entry_locked(queue_entry_id)
+        for entry in self._read_entries_readonly():
+            if entry.queue_entry_id == queue_entry_id:
+                return entry
+        raise ContinuityError(ErrorCode.SESSION_NOT_FOUND, f"Queue entry {queue_entry_id!r} was not found.")
 
     def list_entries(
         self,
@@ -761,27 +895,11 @@ class RestorationQueue:
         checkpoint_id: str | None = None,
         unresolved_only: bool = False,
     ) -> tuple[QueueEntry, ...]:
-        if not self.db_path.exists() and not self.events_path.exists():
-            return ()
-        with _checkpoint_lock(self.lock_path):
-            self._ensure_initialized_locked()
-            clauses: list[str] = []
-            params: list[Any] = []
-            if status is not None:
-                clauses.append("status = ?")
-                params.append(status.value if isinstance(status, QueueEntryStatus) else str(status))
-            if checkpoint_id is not None:
-                clauses.append("checkpoint_id = ?")
-                params.append(checkpoint_id)
-            if unresolved_only:
-                placeholders = ", ".join("?" for _ in UNRESOLVED_QUEUE_STATUSES)
-                clauses.append(f"status IN ({placeholders})")
-                params.extend(sorted(UNRESOLVED_QUEUE_STATUSES))
-            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-            query = f"SELECT * FROM queue_entries {where} ORDER BY created_at, queue_entry_id"
-            with self._open_conn() as conn:
-                rows = conn.execute(query, tuple(params)).fetchall()
-            return tuple(self._row_to_entry(row) for row in rows)
+        return self._read_entries_readonly(
+            status=status,
+            checkpoint_id=checkpoint_id,
+            unresolved_only=unresolved_only,
+        )
 
     def rebuild_index(self) -> int:
         """Rebuild the SQLite projection deterministically from the authoritative log under lock."""

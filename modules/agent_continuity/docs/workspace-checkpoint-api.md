@@ -20,23 +20,31 @@ This document defines the Agent #3-owned workspace checkpoint, shared restoratio
 
 2. **Slot-wide exclusion & authorization contracts (`SlotExecutionGuard`)**:
    - `SlotExecutionGuard.acquire_slot(slot_id, *, operator_id, checkpoint_id, queue_entry_id) -> SlotGuardLease` and `release_slot(lease)` coordinate slot-wide exclusion across checkpoints and ordinary LLMD `start`/`resume`/`switch` operations.
-   - `TopologyRestorer.execute_restore(...)` runs fresh identity, runtime, worktree, and optional `authorization_check` revalidation **after** acquiring both the queue claim and `SlotExecutionGuard` lease. Unknown runtime evidence does not establish inactivity unless `allow_unknown_runtime=True`.
+   - `TopologyRestorer.execute_restore(...)` obtains fresh slot state (`slot_provider`) and fresh runtime observations under the execution guard, rather than reusing caller-supplied preview snapshots.
 
 3. **Session launcher callback (`SessionLauncher`)**:
    - `launch_session(request: RestoreLaunchRequest) -> RestoreLaunchOutcome`
    - `RestoreLaunchOutcome` distinguishes `accepted` from `spawn_confirmed`, `association_confirmed`, and `resumability_confirmed`. Accepted launches without confirmed spawn transition the queue entry to `AMBIGUOUS` (`accepted_unconfirmed`) rather than `COMPLETED` (`restored`), and launcher exceptions transition to `AMBIGUOUS` with a durable `RestoreRecoveryRecord`.
    - Agent #1's dispatcher CLI implements `SessionLauncher` to resume exact sessions (and optionally invoke Terminal Launcher) without `workspace_lifecycle.py` importing `dispatcher.py` or `schema.py`.
-   - When `RestoreLaunchOutcome.launch_id` is returned and `ManagedShutdownStoreProtocol` (`terminal_launcher.managed.ManagedProcessStore`) is provided, `TopologyRestorer` records the LLMD-40 `ObservedLaunchReceipt` separately from `requested_topology`.
 
 4. **Crash-consistent restoration queue (`RestorationQueue`)**:
-   - `restoration_queue.events.jsonl` is the single authoritative durability log (fsynced under lock before SQLite projection updates), with deterministic replay, interrupted-tail truncation, concurrent `rebuild_index()`, slot-wide exclusion across checkpoints, and explicit `recover_abandoned_claim(...)` / `resolve_ambiguous(...)` transitions without blind retries.
+   - `restoration_queue.events.jsonl` is the single authoritative durability log (fsynced under lock before SQLite projection updates; fsync failures are never suppressed). Sequence continuity is enforced and corrupt complete records are rejected.
+   - `list_entries` and `get_entry` are strictly read-only even with populated queues, unapplied log events, and interrupted tails.
+   - `recover_abandoned_claim` requires explicit `ClaimRecoveryEvidence(verified_abandoned=True, ...)` and refuses to release live operator claims; `complete` requires positive `spawn_confirmed=True`.
 
 5. **Bounded owned-session shutdown (`OwnedShutdownCoordinator`) & operator workflow (`WorkspaceCheckpointCoordinator`)**:
    - `preview_shutdown_for_checkpoint(checkpoint, ...)` restricts shutdown targets strictly to the successfully persisted checkpoint's exact identities, revalidates ownership immediately before signaling and during observation, and distinguishes `interrupt_delivered` from `provider_exit_verified` and `provider_metadata_finalized`.
    - `preview_save`, `save`, `preview_restore`, and `restore` on `WorkspaceCheckpointCoordinator` expose the operator workflow (`preview_*` performs zero persistent mutations).
 
-## Remaining Dependencies
+## Remaining Dependencies & Safeguard Matrix
 
-- **Agent #1 CLI & dispatcher integration**: Wire `llmd save` / `llmd restore` (or final chosen command names) to `WorkspaceCheckpointCoordinator`, construct `WorkspaceSlotInput` from dispatcher registry + v2.3.0 metadata, and supply a `SessionLauncher` implementation.
-- **Claude resumability verification**: `RuntimeDiscovery` reports Claude `--session-id` as `session_identity_state="reserved"` (`resumability_state="reserved_unconfirmed"`) until a Claude `SessionStore` confirms durable transcript existence. `TopologyRestorer` blocks `reserved_unconfirmed` entries by default unless `allow_reserved_claude=True`.
-- **Window/pane geometry**: `ObservedTopologyEvidence` never infers window ownership or pane geometry; exact UI pane closure/geometry remains gated on Terminal Launcher managed receipts.
+| Safeguard / Dependency | Classification | Owner & Behavior |
+|---|---|---|
+| `llmd save` / `llmd restore` CLI wiring & `WorkspaceSlotInput` mapping | **Required** | Agent #1 maps dispatcher slots + v2.3.0 metadata into `WorkspaceSlotInput` and wires `WorkspaceCheckpointCoordinator`. |
+| `SessionLauncher.launch_session(RestoreLaunchRequest) -> RestoreLaunchOutcome` | **Required** | Agent #1 implements exact session launch and sets `spawn_confirmed=True` only on positive spawn acknowledgment. |
+| `SlotExecutionGuard` (`acquire_slot` / `release_slot`) | **Required for concurrent/partial-enum restore** | Agent #1 coordinates slot-wide exclusion with ordinary `llmd start`/`resume`/`switch`. Required on Windows when `PsutilProcessEnumerator` is `PARTIAL`. |
+| `slot_provider(slot_id) -> WorkspaceSlotInput \| None` | **Required for race-safe restore** | Agent #1 supplies fresh under-guard slot state so `TopologyRestorer` never relies on stale preview inputs. |
+| `authorization_check(RestorePlanItem) -> (bool, reason)` | **Optional** | Revalidates operator/profile authorization at the execution boundary after acquiring the claim and slot guard. |
+| `ManagedShutdownStoreProtocol` (`terminal_launcher.managed.ManagedProcessStore`) | **Optional (Required for LLMD-45 shutdown & LLMD-40 receipts)** | Supplies exact PID + creation-FILETIME receipts and `request_interrupt(pane_id)` for bounded owned-session shutdown. |
+| Claude `SessionStore` | **Optional (Required for confirmed Claude resumability)** | Until supplied, Claude `--session-id` remains `reserved_unconfirmed` and is blocked on restore unless `allow_reserved_claude=True`. |
+| Window/pane geometry | **Unsupported** | Never inferred; exact UI pane geometry/closure remains gated on Terminal Launcher managed receipts. |

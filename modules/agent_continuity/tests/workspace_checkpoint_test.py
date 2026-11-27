@@ -19,7 +19,11 @@ from terminal_launcher.managed import (
 )
 
 from agent_continuity.errors import ContinuityError
-from agent_continuity.restoration_queue import QueueEntryStatus, RestorationQueue
+from agent_continuity.restoration_queue import (
+    ClaimRecoveryEvidence,
+    QueueEntryStatus,
+    RestorationQueue,
+)
 from agent_continuity.runtime_discovery import (
     EvidenceAvailability,
     ManagedAssociationState,
@@ -294,7 +298,7 @@ def test_restoration_queue_dedup_concurrent_claim_and_rebuild_preserves_unresolv
     second_id = first.enqueued[1].queue_entry_id
     c2 = queue.claim(second_id, operator_id="op_done")
     assert c2.claim_token is not None
-    queue.complete(second_id, claim_token=c2.claim_token, launch_id="tlaunch_9")
+    queue.complete(second_id, claim_token=c2.claim_token, launch_id="tlaunch_9", spawn_confirmed=True)
 
     queue.db_path.unlink()
     replayed = queue.rebuild_index()
@@ -734,7 +738,15 @@ def test_queue_crash_consistency_concurrent_rebuild_slot_exclusion_and_abandoned
 
     # Simulate crash with outstanding CLAIMED entry -> recover to PENDING
     recovered_pending = queue.recover_abandoned_claim(
-        e1.queue_entry_id, operator_id="op_recovery", reason="operator_crashed_before_launch"
+        e1.queue_entry_id,
+        operator_id="op_recovery",
+        reason="operator_crashed_before_launch",
+        recovery_evidence=ClaimRecoveryEvidence(
+            verified_abandoned=True,
+            reason="pid_exited",
+            expected_claimed_by="op_1",
+            expected_claim_token=c1.claim_token,
+        ),
     )
     assert recovered_pending.status is QueueEntryStatus.PENDING
 
@@ -743,7 +755,15 @@ def test_queue_crash_consistency_concurrent_rebuild_slot_exclusion_and_abandoned
     assert c1_again.claim_token is not None
     queue.mark_launching(e1.queue_entry_id, claim_token=c1_again.claim_token)
     recovered_ambig = queue.recover_abandoned_claim(
-        e1.queue_entry_id, operator_id="op_recovery", reason="crashed_during_launch"
+        e1.queue_entry_id,
+        operator_id="op_recovery",
+        reason="crashed_during_launch",
+        recovery_evidence=ClaimRecoveryEvidence(
+            verified_abandoned=True,
+            reason="pid_exited",
+            expected_claimed_by="op_1b",
+            expected_claim_token=c1_again.claim_token,
+        ),
     )
     assert recovered_ambig.status is QueueEntryStatus.AMBIGUOUS
     assert queue.claim(e1.queue_entry_id, operator_id="op_blind_retry").acquired is False
@@ -998,3 +1018,195 @@ def test_shutdown_checkpoint_restriction_and_interrupt_not_provider_exit(tmp_pat
     assert out.interrupt_delivered is True
     assert out.provider_exit_verified is False
     assert out.provider_metadata_finalized is False
+
+
+def test_populated_queue_preview_purity_fsync_failure_sequence_and_live_claim_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    sid = "01a21ca1-528f-7e33-8024-bc784553a2d1"
+    obs_run = RuntimeDiscovery(
+        environment_id="env_win_test",
+        process_enumerator=_CountingEnumerator(
+            (
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(9101, 134000000000000000),
+                    parent_pid=500,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", sid),
+                ),
+            )
+        ),
+    )
+    chk = CheckpointStore(tmp_path).create_checkpoint(
+        [_make_slot(slot_id="s_pure", session_id=sid, cwd=str(repo_dir))],
+        observers=obs_run,
+    )
+    queue = RestorationQueue(tmp_path)
+    entry = queue.enqueue_checkpoint(chk).enqueued[0]
+
+    # Unapplied log event + interrupted partial tail on disk
+    claim_ev = {
+        "schema_version": 2,
+        "event_seq": 2,
+        "event_id": "qev_unapplied",
+        "event_type": "queue.claimed",
+        "recorded_at": "2026-11-27T17:00:00.000000Z",
+        "payload": {
+            "queue_entry_id": entry.queue_entry_id,
+            "claimed_by": "op_live",
+            "claim_token": "clm_live",
+            "claimed_at": "2026-11-27T17:00:00.000000Z",
+            "attempts": 1,
+        },
+    }
+    with queue.events_path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(claim_ev) + "\n")
+        fh.write('{"event_seq": 3, "partial_tail": ')
+
+    events_before = queue.events_path.read_bytes()
+    db_stat_before = queue.db_path.stat()
+
+    # Populated-queue preview must be 100% read-only (sees unapplied claim, ignores partial tail, writes nothing)
+    obs_stopped = RuntimeDiscovery(environment_id="env_win_test", process_enumerator=_CountingEnumerator(()))
+    coordinator = WorkspaceCheckpointCoordinator(tmp_path)
+    plan = coordinator.preview_restore(chk.checkpoint_id, observers=obs_stopped)
+    assert plan.items[0].action == "skip_claimed"
+    assert queue.events_path.read_bytes() == events_before
+    db_stat_after = queue.db_path.stat()
+    assert db_stat_after.st_mtime_ns == db_stat_before.st_mtime_ns
+    assert db_stat_after.st_size == db_stat_before.st_size
+
+    # Live operator claim cannot be recovered
+    with pytest.raises(ContinuityError):
+        queue.recover_abandoned_claim(
+            entry.queue_entry_id,
+            operator_id="op_other",
+            reason="steal",
+            recovery_evidence=ClaimRecoveryEvidence(verified_abandoned=True, reason="check"),
+            live_claim_checker=lambda _e: True,
+        )
+
+    # Queue complete requires explicit positive spawn_confirmed=True
+    with pytest.raises(ContinuityError):
+        queue.complete(entry.queue_entry_id, claim_token="clm_live", launch_id="tlaunch_x")
+
+    # Fsync failure must NOT be suppressed and must not mutate SQLite
+    def _fail_fsync(_fd: int) -> None:
+        raise OSError("disk_fsync_io_error")
+
+    monkeypatch.setattr(os, "fsync", _fail_fsync)
+    with pytest.raises(ContinuityError, match="fsync"):
+        queue.release(entry.queue_entry_id, claim_token="clm_live", reason="should_fail")
+    monkeypatch.undo()
+    assert queue.get_entry(entry.queue_entry_id).status is QueueEntryStatus.CLAIMED
+
+    # Corrupt complete record in log must raise rather than silently skip
+    bad_log_dir = tmp_path / "bad_log"
+    q_bad = RestorationQueue(bad_log_dir)
+    q_bad.enqueue_checkpoint(chk)
+    with q_bad.events_path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write("{corrupt-complete-line}\n")
+    with pytest.raises(ContinuityError):
+        q_bad.list_entries()
+
+
+def test_under_guard_stale_input_race_and_windows_partial_enumeration(tmp_path: Path) -> None:
+    from agent_continuity.workspace_lifecycle import SlotGuardLease
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    sid1 = "01a21ca1-528f-7e33-8024-bc784553a2e1"
+    sid2 = "01a21ca1-528f-7e33-8024-bc784553a2e2"
+    ft = 134000000000000000
+
+    obs_run = RuntimeDiscovery(
+        environment_id="env_win_test",
+        process_enumerator=_CountingEnumerator(
+            (
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(9201, ft),
+                    parent_pid=500,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", sid1),
+                ),
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(9202, ft),
+                    parent_pid=500,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", sid2),
+                ),
+            )
+        ),
+    )
+    slot1 = _make_slot(slot_id="s_race_stale", session_id=sid1, cwd=str(repo_dir))
+    slot2 = _make_slot(slot_id="s_partial_win", session_id=sid2, cwd=str(repo_dir))
+    chk = CheckpointStore(tmp_path).create_checkpoint([slot1, slot2], observers=obs_run)
+
+    # Partial Windows process enumeration (access denied on unrelated elevated processes)
+    class _PartialWinEnum:
+        def enumerate_processes(self) -> ProcessInventory:
+            return ProcessInventory(
+                records=(),
+                availability=EvidenceAvailability.PARTIAL,
+                captured_at=datetime.now(UTC),
+                inaccessible_count=172,
+                error_code="partial_access_denied",
+            )
+
+    obs_partial = RuntimeDiscovery(environment_id="env_win_test", process_enumerator=_PartialWinEnum())
+    restorer = TopologyRestorer()
+
+    # Without slot_guard, partial enumeration is blocked
+    no_guard_plan = restorer.preview_restore(chk, current_slots=[slot1, slot2], observers=obs_partial)
+    assert all(item.action == "blocked_unknown_runtime" for item in no_guard_plan.items)
+
+    # With slot_guard + confirmed session identity + no live managed pane, partial enum is safe
+    class _Guard:
+        def acquire_slot(self, slot_id: str, *, operator_id: str, checkpoint_id: str, queue_entry_id: str | None):
+            return SlotGuardLease(slot_id=slot_id, lease_token=f"l_{slot_id}", acquired=True)
+
+        def release_slot(self, lease: SlotGuardLease) -> None:
+            return None
+
+    class _Launcher:
+        def __init__(self) -> None:
+            self.launched: list[str] = []
+
+        def launch_session(self, request: RestoreLaunchRequest) -> RestoreLaunchOutcome:
+            self.launched.append(request.slot_id)
+            return RestoreLaunchOutcome(accepted=True, launch_id="tl_1", pane_id="p_1", spawn_confirmed=True)
+
+    plan_with_guard = restorer.preview_restore(
+        chk,
+        current_slots=[slot1, slot2],
+        observers=obs_partial,
+        has_slot_exclusion=True,
+    )
+    assert len(plan_with_guard.ready_items) == 2
+
+    # Under the guard, slot_provider returns a superseded session for s_race_stale!
+    superseded_slot1 = _make_slot(
+        slot_id="s_race_stale",
+        session_id="01a21ca1-528f-7e33-8024-bc784553ffff",
+        cwd=str(repo_dir),
+    )
+    launcher = _Launcher()
+    report = restorer.execute_restore(
+        plan_with_guard,
+        authorized=True,
+        operator_id="op_win",
+        launcher=launcher,
+        checkpoint=chk,
+        queue=RestorationQueue(tmp_path),
+        slot_guard=_Guard(),
+        slot_provider=lambda sid: superseded_slot1 if sid == "s_race_stale" else slot2,
+        observers=obs_partial,
+        recovery_dir=tmp_path / "restores",
+    )
+    assert launcher.launched == ["s_partial_win"]
+    by_slot = {o.slot_id: o for o in report.outcomes}
+    assert by_slot["s_race_stale"].status == "failed"
+    assert "stale_session_superseded" in (by_slot["s_race_stale"].reason or "")
+    assert by_slot["s_partial_win"].status == "restored"
