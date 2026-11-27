@@ -2869,13 +2869,41 @@ def _listing(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[st
                 'shown': len(selected), 'omitted': total - len(selected), 'limit': limit}
     guis = dispatcher.list_guis()
     total = len(guis)
-    selected = guis if limit is None else guis[:limit]
-    conversations = []
-    all_shown: list[dict[str, Any]] = []
-    for item in selected:
+    all_conversations: list[dict[str, Any]] = []
+    for item in guis:
         slots = dispatcher.list_slots(gui=item['gui_id'], active_only=False)
         slots = [row for row in slots if args.all or row['state'] != 'completed']
         slots = _sort_slot_rows(slots)
+        latest_agent_activity = max((row.get("last_activity_at") or "" for row in slots), default="")
+        all_conversations.append({
+            **item,
+            "_has_agents": bool(slots),
+            "_latest_agent_activity": latest_agent_activity,
+            "_all_slots": slots,
+        })
+    # Order GUI groups by most recent actual agent activity, empty groups last, deterministic ties, before limits.
+    all_conversations.sort(
+        key=lambda item: (
+            0 if item["_has_agents"] else 1,
+            0 if item["_latest_agent_activity"] else 1,
+            item["alias"].casefold(),
+            item["gui_id"],
+        )
+    )
+    # Sort non-empty groups with activity by descending timestamp while preserving deterministic ties.
+    with_activity = [c for c in all_conversations if c["_has_agents"] and c["_latest_agent_activity"]]
+    without_activity = [c for c in all_conversations if c["_has_agents"] and not c["_latest_agent_activity"]]
+    empty_groups = [c for c in all_conversations if not c["_has_agents"]]
+    with_activity.sort(key=lambda c: (c["alias"].casefold(), c["gui_id"]))
+    with_activity.sort(key=lambda c: c["_latest_agent_activity"], reverse=True)
+    ordered_conversations = with_activity + without_activity + empty_groups
+    selected = ordered_conversations if limit is None else ordered_conversations[:limit]
+    conversations = []
+    all_shown: list[dict[str, Any]] = []
+    for item in selected:
+        slots = item.pop("_all_slots")
+        item.pop("_has_agents", None)
+        item.pop("_latest_agent_activity", None)
         shown = slots if args.all else slots[:10]
         include_history(shown, item['gui_id'])
         all_shown.extend(shown)
@@ -2887,13 +2915,19 @@ def _listing(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[st
 
 
 def _sort_slot_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped = []
-    for state in ("active", "inactive", "completed"):
-        group = [row for row in rows if row["state"] == state]
-        group.sort(key=lambda row: (row.get("last_activity_at") is not None, row.get("last_activity_at") or ""),
-                   reverse=True)
-        grouped.extend(group)
-    return grouped
+    ordered = sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("name") or "").casefold(),
+            row.get("agent_number") or 0,
+            str(row.get("slot_id") or ""),
+        ),
+    )
+    ordered.sort(
+        key=lambda row: (row.get("last_activity_at") is not None, row.get("last_activity_at") or ""),
+        reverse=True,
+    )
+    return ordered
 
 
 def _render_listing(

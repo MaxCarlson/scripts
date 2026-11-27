@@ -1009,6 +1009,64 @@ class DispatcherService:
             )
         return rows
 
+    def slot_lock_path(self, slot_id: str) -> Path:
+        """Canonical slot ownership lock path shared with workspace restoration."""
+        return self.home_dir / _slot_lock_name(slot_id)
+
+    def accept_managed_restoration(
+        self,
+        *,
+        slot_id: str,
+        provider: str,
+        environment_id: str,
+        session_id: str,
+        stage: str,
+        relay_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Record distinct relay_spawned / dispatcher_accepted / provider_associated handoff stages."""
+        valid_stages = {"relay_spawned", "dispatcher_accepted", "provider_associated"}
+        if stage not in valid_stages:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, f"Invalid restoration handoff stage {stage!r}.")
+        with _mutation_lock(self.home_dir):
+            self._sync()
+            slot = self.get_slot_by_id(slot_id)
+            if slot["state"] == "completed":
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Completed slots cannot accept restoration handoffs.")
+            if self._row(
+                "SELECT 1 FROM dispatcher_pending_launches WHERE slot_id = ? AND status = 'pending' LIMIT 1",
+                (slot_id,),
+            ):
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    "Slot has an unresolved pending launch; fail closed before restoration handoff.",
+                )
+            current = slot["current"]
+            if not current or (
+                current["provider"], current["environment_id"], current["native_session_id"]
+            ) != (provider, environment_id, session_id):
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    "Slot selection is stale or ambiguous; restoration handoff refused.",
+                )
+            event = self._event(
+                EventType.DISPATCHER_PROCESS_OBSERVED,
+                environment_id=environment_id,
+                provider=provider,
+                session_id=session_id,
+                payload={
+                    "slot_id": slot_id,
+                    "launch_id": relay_id,
+                    "return_code": 0,
+                    "outcome": f"restoration_{stage}",
+                    "detail": f"Managed restoration stage: {stage}",
+                    "native_session_id": session_id,
+                    "restoration_stage": stage,
+                },
+            )
+            self.continuity._emit_and_materialize([event])
+        return {"slot_id": slot_id, "stage": stage, "provider": provider,
+                "environment_id": environment_id, "native_session_id": session_id}
+
     def _hold_slot_lock(self, slot_id: str):
         if (str(self.home_dir.resolve()), slot_id) in _HELD_SLOT_LOCKS.get():
             return contextlib.nullcontext()

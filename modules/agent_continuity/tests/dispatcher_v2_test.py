@@ -58,7 +58,7 @@ def test_empty_and_scoped_listing(tmp_path):
     assert data['slots'][0]['name'] == 'Active'
     assert (data['total'], data['omitted']) == (2, 1)
     data = json.loads(run(home, 'list', '-g', 'P', '-j', '-A')[1])
-    assert [x['state'] for x in data['slots']] == ['active', 'inactive', 'completed']
+    assert [x['state'] for x in data['slots']] == ['active', 'completed', 'inactive']
 
 
 def test_registration_dry_run_and_invalid_arguments(tmp_path):
