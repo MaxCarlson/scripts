@@ -127,3 +127,11 @@ LLMD-25 persistent launch profiles remain the next planned batch; LLMD-26 native
 ### v1.5.2 correctness follow-up
 
 New-session `start` and `switch` resolve one concrete environment for preview and launch reservation; an omitted `-e` keeps the selected slot's environment when creating a new provider session. Post-exit options 4–6 do not automatically carry the departing session's `-C` or native argv. The destination's recorded environment/cwd and provider defaults are used unless compatible overrides are explicitly authorized in the prompt; incompatible options can proceed with destination defaults or cancel. Option 6 uses its separately chosen new working directory. `continue` picker validates cwd before reactivation, and historical `continue`/`switch -r` use the captured current activation as a compare-and-swap guard. `switch -r` requires `-R` to reactivate inactive slots and rejects completed slots. Existing-session `start -j` emits a single JSON document.
+
+### LLMD-39 semantic presentation update
+
+The LLMD 1.7.0 feature branch centralizes semantic styles in `terminal_format.py`. GUI headings and agent names are bold and distinct; Codex and AGY have separate colors; timestamps, IDs, labels, lifecycle, runtime and launch outcome have their own semantics. `active` remains a lifecycle state; `IN USE`/`NOT OBSERVED` remain runtime observations; an unverified or interrupted launch is not reported as a verified running process.
+
+`list`, scoped list, selectors, continue picker, post-exit menu, history, `last`/`recent`, doctor, launch previews and related diagnostics use semantic presentation. Tables use terminal-cell widths and switch to stacked rows when needed. Empty groups, pending identities, selected history, and known unresolved IDs are labeled. Full session IDs are shown when the terminal can fit them.
+
+`-c/--color auto|always|never` is available on supported subcommands. `auto` requires an interactive color-capable terminal; `NO_COLOR` disables ANSI regardless of mode. JSON data and schema are unchanged and contain no escape sequences. Unit capture verifies ANSI sequences and cell widths, while actual PowerShell/Windows Terminal rendering is reported as a separate smoke check.

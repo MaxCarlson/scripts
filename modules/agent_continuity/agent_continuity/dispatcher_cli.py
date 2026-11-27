@@ -9,10 +9,12 @@ import hashlib
 import json
 import ntpath
 import os
+import re
 import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
+from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
 from typing import Any, TextIO
 from uuid import uuid4
@@ -30,15 +32,24 @@ from .identifiers import generate_id, now_utc_iso
 from .terminal_format import (
     clip_display,
     color_enabled,
+    display_width,
     format_timestamp,
-    pad_display,
-    provider_color,
+    outcome_semantic,
+    pad_semantic,
+    provider_semantic,
+    runtime_semantic,
+    semantic_color,
     state_color,
 )
 
 _BOOTSTRAP_PROMPT = "Session initialization only. Reply READY and await further instructions."
 _BOOTSTRAP_TIMEOUT_SECONDS = 180
 _NATIVE_ARG_COMMANDS = {"continue", "start", "switch", "review", "return", "last", "open"}
+_COLOR_MODE: ContextVar[str] = ContextVar("llmd_color_mode", default="auto")
+
+
+def _current_color_mode() -> str:
+    return _COLOR_MODE.get()
 
 
 class _LLMDArgumentParser(argparse.ArgumentParser):
@@ -70,6 +81,8 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-H", "--home", default=argparse.SUPPRESS, help="Override the shared registry directory.")
     parser.add_argument("-j", "--json", dest="json_output", action="store_true", default=argparse.SUPPRESS,
                         help="Output JSON.")
+    parser.add_argument("-c", "--color", choices=("auto", "always", "never"), default=argparse.SUPPRESS,
+                        help="Color human-readable output (default: auto).")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,6 +99,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("-H", "--home", help="Override the shared agent_continuity registry directory.")
     parser.add_argument("-j", "--json", dest="json_output", action="store_true", help="Output JSON.")
+    parser.add_argument("-c", "--color", choices=("auto", "always", "never"), default="auto",
+                        help="Color human-readable output (default: auto).")
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
@@ -125,7 +140,6 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument("-g", "--gui")
     listing.add_argument("-l", "--limit", type=int, help="Maximum records (default 10, or unlimited with --all).")
     listing.add_argument("-A", "--all", action="store_true")
-    listing.add_argument("-c", "--color", choices=("auto", "always", "never"), default="auto")
     listing.add_argument("-N", "--history-count", type=int, default=0,
                          help="Show the N newest activation-history entries under each agent.")
 
@@ -915,9 +929,25 @@ def _current_native_cwd(dispatcher: DispatcherService, current: dict[str, Any] |
     return native.cwd_native if native else None
 
 
-def _render_launch_preview(preview: dict[str, Any], stream: TextIO) -> None:
-    print("Launch preview (requested permissions are not verified as effective):", file=stream)
-    print(json.dumps(preview, indent=2, ensure_ascii=False, sort_keys=True), file=stream)
+def _render_launch_preview(preview: dict[str, Any], stream: TextIO, color: str | None = None) -> None:
+    enabled = color_enabled(color or _current_color_mode(), is_tty=stream.isatty())
+    print(semantic_color("Launch preview", "gui", enabled=enabled) +
+          semantic_color(" (requested permissions are not verified as effective):", "warning", enabled=enabled),
+          file=stream)
+    for line in json.dumps(preview, indent=2, ensure_ascii=False, sort_keys=True).splitlines():
+        match = re.match(r'^(\s*)("([^"]+)"\s*:\s*)(.*)$', line)
+        if match:
+            indent, key_text, key, value = match.groups()
+            semantic = "warning" if any(term in key.casefold() for term in ("permission", "sandbox", "approval")) else "label"
+            value_semantic = {
+                "provider": {"codex": "provider_codex", "agy": "provider_agy"}.get(
+                    value.split('"', 2)[1].casefold() if value.startswith('"') and '"' in value[1:] else "", ""),
+                "native_session_id": "session",
+                "session_id": "session",
+            }.get(key, "")
+            rendered_value = semantic_color(value, value_semantic, enabled=enabled) if value_semantic else value
+            line = indent + semantic_color(key_text, semantic, enabled=enabled) + rendered_value
+        print(line, file=stream)
 
 
 def _new_launch_preview(dispatcher: DispatcherService, provider: str, environment_id: str, cwd: str | None,
@@ -1292,12 +1322,19 @@ def _run_pane(
     if result.returncode != 0:
         if launch_id:
             dispatcher.mark_launch_failed(launch_id=launch_id, detail=f"provider exited with {result.returncode}", apply=True)
-        print(f"{slot['name']} exited with code {result.returncode}; slot and current session remain unchanged.", file=output_stream)
+        print(semantic_color(f"{slot['name']} exited with code {result.returncode}; slot and current session remain unchanged.",
+                             "error", enabled=color_enabled("auto", is_tty=output_stream.isatty())), file=output_stream)
         return result.returncode
     opposite_provider = "agy" if provider == "codex" else "codex"
+    use_color = color_enabled(_current_color_mode(), is_tty=output_stream.isatty())
     while True:
-        print(f"\n{slot['name']} has exited.\n[1] Keep active (default)\n[2] Mark completed\n[3] Mark inactive\n"
-              f"[4] Switch to {opposite_provider.upper()}\n[5] Switch to an existing agent\n[6] Create a new agent", file=output_stream)
+        print(f"\n{semantic_color(slot['name'], 'agent', enabled=use_color)} "
+              f"{outcome_semantic('has exited successfully', enabled=use_color)}\n"
+              f"[1] Keep {state_color('active', enabled=use_color)} (default)\n"
+              f"[2] Mark {state_color('completed', enabled=use_color)}\n"
+              f"[3] Mark {state_color('inactive', enabled=use_color)}\n"
+              f"[4] Switch to {provider_semantic(opposite_provider, enabled=use_color)}\n"
+              f"[5] Switch to an existing agent\n[6] Create a new agent", file=output_stream)
         try:
             choice = input_stream.readline().strip()
         except (EOFError, OSError):
@@ -1340,7 +1377,7 @@ def _run_pane(
 def _render_scoped_summary(dispatcher: DispatcherService, slot: dict[str, Any], stream: TextIO) -> None:
     args = argparse.Namespace(gui_pos=None, gui=slot["gui_alias"], limit=None, all=True,
                               history_count=0)
-    _render_listing(_listing(dispatcher, args), stream, "auto", dispatcher=dispatcher)
+    _render_listing(_listing(dispatcher, args), stream, _current_color_mode(), dispatcher=dispatcher)
 
 
 def _switch_after_exit(
@@ -1558,11 +1595,17 @@ def _switch_to_existing_agent(
     for row in rows:
         row["search_text"] = " ".join(str(row.get(key) or "") for key in
                                       ("name", "current_provider", "current_session_id", "state")).casefold()
+        row["runtime_status"] = _runtime_label(dispatcher, str(row.get("current_provider") or "UNKNOWN"),
+                                               row.get("current_environment_id"), row.get("current_session_id"))
+    selector_color = color_enabled(_current_color_mode(), is_tty=output_stream.isatty())
     action, selected = select_item(
         rows, title=f"LLMD — Switch agent in {source['gui_alias']}",
-        render_line=lambda row: _agent_selector_line(row, shutil.get_terminal_size((100, 24)).columns),
-        header=lambda: _agent_selector_line({}, shutil.get_terminal_size((100, 24)).columns, header=True),
+        render_line=lambda row: _agent_selector_line(row, shutil.get_terminal_size((100, 24)).columns,
+                                                     enabled=selector_color),
+        header=lambda: _agent_selector_line({}, shutil.get_terminal_size((100, 24)).columns, header=True,
+                                             enabled=selector_color),
         input_stream=input_stream, output_stream=output_stream, filter_key="search_text",
+        color_mode=_current_color_mode(),
     )
     if action != "selected" or selected is None:
         return 0
@@ -1930,6 +1973,25 @@ def _runtime_label(dispatcher: DispatcherService, provider: str, environment: st
     return "IN USE" if _session_in_use(dispatcher, provider, environment, session) else "NOT OBSERVED"
 
 
+def _continue_picker_line(row: dict[str, Any], width: int, *, enabled: bool) -> str:
+    gui = semantic_color(clip_display(str(row.get("gui_alias") or "(unknown GUI)"), max(4, width // 4)),
+                         "gui", enabled=enabled)
+    name = semantic_color(clip_display(str(row.get("name") or "(unnamed)"), max(8, width // 3)),
+                          "agent", enabled=enabled)
+    provider = provider_semantic(str(row.get("provider") or "UNKNOWN"), enabled=enabled)
+    lifecycle = state_color(str(row.get("state") or "unknown"), enabled=enabled)
+    runtime = runtime_semantic(str(row.get("runtime_status") or "UNKNOWN"), enabled=enabled)
+    session = str(row.get("current_session_id") or ("<pending>" if row.get("pending_launch_id") else "<unresolved>"))
+    prefix = f"{gui} / {name}  {provider}  {lifecycle}"
+    if width >= 92:
+        used = display_width(prefix) + 2 + display_width(runtime) + 2
+        return f"{prefix}  {runtime}  {semantic_color(clip_display(session, max(1, width - used)), 'session', enabled=enabled)}"
+    return (f"{clip_display(str(row.get('gui_alias') or '(unknown GUI)'), max(4, width // 4))} / "
+            f"{clip_display(str(row.get('name') or '(unnamed)'), max(8, width // 3))}\n"
+            f"    {provider}  {lifecycle}  {runtime}\n"
+            f"    {semantic_color(clip_display(session, max(1, width - 6)), 'session', enabled=enabled)}")
+
+
 def _run_picker(dispatcher: DispatcherService, args: argparse.Namespace, input_stream: TextIO, output_stream: TextIO,
                 *, native_args: Sequence[str] = (), allow_native_unknown: bool = False) -> int:
     if not (input_stream.isatty() and output_stream.isatty()):
@@ -1939,9 +2001,12 @@ def _run_picker(dispatcher: DispatcherService, args: argparse.Namespace, input_s
     if not items:
         print("No eligible agents have a resumable session.", file=output_stream)
         return 0
+    picker_color = color_enabled(getattr(args, "color", "auto"), is_tty=output_stream.isatty())
     action, item = select_item(items, title="LLMD — Resume Agent",
-        render_line=lambda row: f"{row['gui_alias']:<20} {row['name']:<28} {(row.get('provider') or '—').upper():<8} {row['state']} / {row['runtime_status']}",
-        input_stream=input_stream, output_stream=output_stream, filter_key="search_text")
+        render_line=lambda row: _continue_picker_line(row, shutil.get_terminal_size((100, 24)).columns,
+                                                     enabled=picker_color),
+        input_stream=input_stream, output_stream=output_stream, filter_key="search_text",
+        color_mode=getattr(args, "color", "auto"))
     if action != "selected" or item is None:
         return 0
     if not item.get("current_session_id"):
@@ -2131,35 +2196,43 @@ def _doctor_report(dispatcher: DispatcherService, gui: str | None = None, agent:
     return report
 
 
-def _render_doctor_report(report: dict[str, Any], stream: TextIO) -> None:
+def _render_doctor_report(report: dict[str, Any], stream: TextIO, color: str = "auto") -> None:
+    enabled = color_enabled(color, is_tty=stream.isatty())
     registry = report["registry"]
     database = registry["database"]
-    print("LLMD Doctor", file=stream)
-    print(f"Registry: {'accessible' if registry['accessible'] else 'unavailable'} ({registry['home']})", file=stream)
-    print(f"Registry integrity: {database.get('integrity') or 'unknown'}", file=stream)
+    print(semantic_color("LLMD Doctor", "gui", enabled=enabled), file=stream)
+    registry_state = "accessible" if registry["accessible"] else "unavailable"
+    print(f"{semantic_color('Registry:', 'label', enabled=enabled)} "
+          f"{semantic_color(registry_state, 'success' if registry['accessible'] else 'error', enabled=enabled)} ({registry['home']})", file=stream)
+    print(f"{semantic_color('Registry integrity:', 'label', enabled=enabled)} "
+          f"{outcome_semantic(database.get('integrity') or 'unknown', enabled=enabled)}", file=stream)
     if database.get("diagnostic_error"):
-        print(f"  Diagnostic error: {database['diagnostic_error']}", file=stream)
-    print(f"Registry lock: {registry['mutation_lock']}", file=stream)
-    print("Agents:", file=stream)
+        print(f"  {semantic_color('Diagnostic error:', 'error', enabled=enabled)} {database['diagnostic_error']}", file=stream)
+    print(f"{semantic_color('Registry lock:', 'label', enabled=enabled)} {registry['mutation_lock']}", file=stream)
+    print(semantic_color("Agents:", "label", enabled=enabled), file=stream)
     if not report["agents"]:
         print("  No matching agents.", file=stream)
     for agent in report["agents"]:
         provider = (agent.get("provider") or "unassigned").upper()
         session = agent.get("session_id") or "no selected session"
-        print(f"  {agent['gui']} / {agent['name']}  {provider}  {agent['lifecycle']}  {agent['runtime']}", file=stream)
-        print(f"    Session: {session}; duplicate resume: {agent['duplicate_resume']}", file=stream)
-    print("Pending launches:", file=stream)
+        print(f"  {semantic_color(agent['gui'], 'gui', enabled=enabled)} / {semantic_color(agent['name'], 'agent', enabled=enabled)}  "
+              f"{provider_semantic(provider, enabled=enabled)}  {state_color(str(agent['lifecycle']), enabled=enabled)}  "
+              f"{runtime_semantic(str(agent['runtime']), enabled=enabled)}", file=stream)
+        print(f"    {semantic_color('Session:', 'label', enabled=enabled)} {semantic_color(session, 'session', enabled=enabled)}; "
+              f"duplicate resume: {outcome_semantic(str(agent['duplicate_resume']), enabled=enabled)}", file=stream)
+    print(semantic_color("Pending launches:", "label", enabled=enabled), file=stream)
     if not report["pending_launches"]:
         print("  None.", file=stream)
     for pending in report["pending_launches"]:
         captured = pending.get("captured_session_id") or "no captured session ID"
-        print(f"  {pending['launch_id']}  {pending.get('provider', 'unknown')}  {captured}", file=stream)
-    print("Inconsistencies:", file=stream)
+        print(f"  {pending['launch_id']}  {provider_semantic(str(pending.get('provider', 'unknown')), enabled=enabled)}  "
+              f"{semantic_color(captured, 'session', enabled=enabled)}", file=stream)
+    print(semantic_color("Inconsistencies:", "label", enabled=enabled), file=stream)
     if not report["inconsistencies"]:
         print("  None positively established.", file=stream)
     for issue in report["inconsistencies"]:
-        print(f"  {issue['kind']}: {issue['detail']}", file=stream)
-    print("Limitations:", file=stream)
+        print(f"  {semantic_color(issue['kind'], 'error', enabled=enabled)}: {issue['detail']}", file=stream)
+    print(semantic_color("Limitations:", "label", enabled=enabled), file=stream)
     for limitation in report["limitations"]:
         print(f"  - {limitation}", file=stream)
 
@@ -2255,53 +2328,113 @@ def _render_listing(
 ) -> None:
     use_color = color_enabled(color, is_tty=stream.isatty())
     width = shutil.get_terminal_size((100, 24)).columns
+    name_width = max(12, min(32, width - 78))
+    session_width = max(8, width - name_width - 57)
+
+    def print_header() -> None:
+        if width < 104:
+            return
+        print("  " + pad_semantic("Agent", name_width, "label", enabled=use_color) + "  " +
+              pad_semantic("Provider", 8, "label", enabled=use_color) + "  " +
+              pad_semantic("Last activity", 16, "label", enabled=use_color) + "  " +
+              pad_semantic("Lifecycle", 9, "label", enabled=use_color) + "  " +
+              pad_semantic("Runtime", 12, "label", enabled=use_color) + "  " +
+              pad_semantic("Session", session_width, "label", enabled=use_color), file=stream)
 
     def rows(items: list[dict[str, Any]]) -> None:
-        name_width = max(12, min(28, (width - 64) // 2))
-        session_width = max(8, width - name_width - 68)
         for row in items:
             provider = row.get('current_provider') or row.get('pending_provider') or '—'
-            provider_text = provider_color(pad_display(provider, 7), enabled=use_color)
-            state_text = state_color(pad_display(row['state'], 9), enabled=use_color)
-            session = row.get('current_session_id') or '—'
+            provider_text = pad_semantic(str(provider).upper(), 7,
+                                         {"CODEX": "provider_codex", "AGY": "provider_agy"}.get(str(provider).upper(), ""),
+                                         enabled=use_color)
+            lifecycle = str(row.get('state') or 'unknown')
+            state_text = pad_semantic(lifecycle, 9,
+                                      lifecycle.casefold() if lifecycle.casefold() in {"active", "inactive", "completed"} else "",
+                                      enabled=use_color)
+            stored_session = row.get('current_session_id')
+            session = stored_session or (
+                "<pending>" if row.get("pending_launch_id") else "<unresolved>"
+            )
             activity = format_timestamp(row.get('last_activity_at'))
             runtime = (_runtime_label(dispatcher, provider, row.get('current_environment_id'),
                                       row.get('current_session_id'), pending=bool(row.get('pending_launch_id')))
                        if dispatcher else 'UNKNOWN')
-            if width < 96:
-                print(f"  {clip_display(row['name'], max(8, width - 31))}  {provider_text}  {state_text}", file=stream)
-                print(f"    {activity}  {runtime}  {clip_display(session, max(8, width - 6))}", file=stream)
-            else:
-                line = (f"  {pad_display(row['name'], name_width)}  {provider_text}  {activity}  "
-                        f"{state_text}  {runtime:<12}  {clip_display(session, session_width)}")
+            agent_text = pad_semantic(str(row['name']), name_width, "agent", enabled=use_color)
+            runtime_text = runtime_semantic(runtime, enabled=use_color)
+            session_semantic = ("unresolved" if not _valid_existing_session(row) else "session") if stored_session else (
+                "pending" if session == "<pending>" else "unresolved"
+            )
+            session_display = f"UNRESOLVED: {session}" if stored_session and session_semantic == "unresolved" else str(session)
+            if width >= 104:
+                activity_field = pad_semantic(activity, 16, "timestamp", enabled=use_color)
+                runtime_field = pad_semantic(runtime, 12,
+                                             {"IN USE": "runtime_in_use", "NOT OBSERVED": "runtime_not_observed",
+                                              "PENDING": "pending", "UNKNOWN": "unknown"}.get(runtime.upper(), ""),
+                                             enabled=use_color)
+                line = (f"  {agent_text}  {pad_semantic(str(provider).upper(), 8, {'CODEX': 'provider_codex', 'AGY': 'provider_agy'}.get(str(provider).upper(), ''), enabled=use_color)}  {activity_field}  {state_text}  "
+                        f"{runtime_field}  {semantic_color(clip_display(session_display, session_width), session_semantic, enabled=use_color)}")
                 print(line, file=stream)
+            elif width >= 58:
+                first_width = max(10, width - 23)
+                print(f"  {pad_semantic(str(row['name']), first_width, 'agent', enabled=use_color)}  "
+                      f"{provider_text}  {state_text}", file=stream)
+                suffix_width = display_width(runtime) + 2 + min(display_width(session_display), max(8, width - 6))
+                date_width = min(16, max(8, width - suffix_width - 8))
+                print(f"    {pad_semantic(activity, date_width, 'timestamp', enabled=use_color)}  "
+                      f"{runtime_text}  {semantic_color(clip_display(session_display, max(8, width - date_width - display_width(runtime) - 8)), session_semantic, enabled=use_color)}",
+                      file=stream)
+            else:
+                print("  " + semantic_color(clip_display(str(row['name']), width - 2), "agent", enabled=use_color), file=stream)
+                print(f"    {provider_text.strip()}  {state_text.strip()}  "
+                      f"{semantic_color(activity, 'timestamp', enabled=use_color)}", file=stream)
+                session_cells = max(1, width - 8 - display_width(runtime))
+                print(f"    {runtime_text}  {semantic_color(clip_display(session_display, session_cells), session_semantic, enabled=use_color)}", file=stream)
             for entry in row.get("activation_history", []):
                 entry_date = format_timestamp(entry.get("activated_at"))
-                entry_provider = provider_color(pad_display(entry.get("provider") or "—", 7), enabled=use_color)
+                entry_provider_value = str(entry.get("provider") or "—").upper()
+                entry_provider = provider_semantic(entry_provider_value, enabled=use_color)
                 entry_id = "<unresolved>" if entry.get("unresolved") else entry["native_session_id"]
-                marker = " *" if entry.get("selected") else ""
-                history_line = (f"    {pad_display(entry_date, 16)}  {entry_provider}  "
-                                f"{clip_display(entry_id, max(8, width - 32))}{marker}")
-                print(history_line, file=stream)
+                marker_value = " * selected" if entry.get("selected") else ""
+                marker = semantic_color(marker_value, "success", enabled=use_color)
+                if width < 48:
+                    print(f"    {pad_semantic(entry_date, 16, 'timestamp', enabled=use_color)}  {entry_provider}", file=stream)
+                    id_cells = max(1, width - 6 - display_width(marker_value))
+                    print(f"      {semantic_color(clip_display(entry_id, id_cells), 'unresolved' if entry.get('unresolved') else 'session', enabled=use_color)}{marker}", file=stream)
+                else:
+                    id_cells = max(1, width - 31 - display_width(marker_value))
+                    history_line = (f"    {pad_semantic(entry_date, 16, 'timestamp', enabled=use_color)}  {entry_provider}  "
+                                    f"{semantic_color(clip_display(entry_id, id_cells), 'unresolved' if entry.get('unresolved') else 'session', enabled=use_color)}{marker}")
+                    print(history_line, file=stream)
 
     if 'conversations' in result:
         for index, conversation in enumerate(result['conversations']):
             if index:
                 print(file=stream)
+                if use_color:
+                    print(semantic_color("─" * max(8, width - 1), "label", enabled=use_color), file=stream)
+                print(file=stream)
             activity = format_timestamp(conversation.get('last_activity_at'))
-            print(f"{conversation['alias']}  Last activity: {activity}", file=stream)
-            if width >= 96:
-                print("  Agent                         Provider  Last activity     Lifecycle  Runtime       Session", file=stream)
+            gui_alias = clip_display(str(conversation['alias']), max(0, width - 33))
+            print(f"{semantic_color(gui_alias, 'gui', enabled=use_color)}  "
+                  f"{semantic_color('Last activity:', 'label', enabled=use_color)} "
+                  f"{semantic_color(activity, 'timestamp', enabled=use_color)}", file=stream)
+            print_header()
+            if not conversation['slots']:
+                print("  (no agents)", file=stream)
             rows(conversation['slots'])
             if conversation['omitted']:
-                print(f"  {conversation['omitted']} agents omitted.", file=stream)
-        print(f"Showing {result['shown']} of {result['total']} conversations ({result['omitted']} omitted).", file=stream)
+                print(clip_display(f"  {conversation['omitted']} agents omitted.", width), file=stream)
+        print(clip_display(f"Showing {result['shown']} of {result['total']} conversations ({result['omitted']} omitted).", width), file=stream)
     else:
-        print(f"{result['gui']}  Last activity: {format_timestamp(result.get('last_activity_at'))}", file=stream)
-        if width >= 96:
-            print("  Agent                         Provider  Last activity     Lifecycle  Runtime       Session", file=stream)
+        gui_alias = clip_display(str(result['gui']), max(0, width - 33))
+        print(f"{semantic_color(gui_alias, 'gui', enabled=use_color)}  "
+              f"{semantic_color('Last activity:', 'label', enabled=use_color)} "
+              f"{semantic_color(format_timestamp(result.get('last_activity_at')), 'timestamp', enabled=use_color)}", file=stream)
+        print_header()
+        if not result['slots']:
+            print("  (no agents)", file=stream)
         rows(result['slots'])
-        print(f"Showing {result['shown']} of {result['total']} agents ({result['omitted']} omitted).", file=stream)
+        print(clip_display(f"Showing {result['shown']} of {result['total']} agents ({result['omitted']} omitted).", width), file=stream)
 
 
 def _last_terminal_history(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[str, Any]:
@@ -2329,9 +2462,11 @@ def _last_terminal_history(dispatcher: DispatcherService, args: argparse.Namespa
     return {"action": "last", "launches": launches}
 
 
-def _render_terminal_launches(launches: list[dict[str, Any]], stream: TextIO, *, show_terminal_id: bool) -> None:
+def _render_terminal_launches(launches: list[dict[str, Any]], stream: TextIO, *, show_terminal_id: bool,
+                              color: str = "auto") -> None:
+    enabled = color_enabled(color, is_tty=stream.isatty())
     if not launches:
-        print("No matching terminal launch history.", file=stream)
+        print(semantic_color("No matching terminal launch history.", "unknown", enabled=enabled), file=stream)
         return
     for index, launch in enumerate(launches):
         if index:
@@ -2345,22 +2480,30 @@ def _render_terminal_launches(launches: list[dict[str, Any]], stream: TextIO, *,
         status = launch.get("status") or "unknown status"
         if status in {"launching", "running"}:
             status = f"{status} (outcome unverified; process may have been terminated)"
-        print(f"{launch.get('launch_started_at')}  {status}{scope}", file=stream)
-        print(f"  Requested GUI: {display_value('gui_alias')}", file=stream)
-        print(f"  Agent: {display_value('slot_name')}", file=stream)
-        print(f"  Provider: {display_value('provider').upper()}", file=stream)
+        print(f"{semantic_color(format_timestamp(launch.get('launch_started_at')), 'timestamp', enabled=enabled)}  "
+              f"{outcome_semantic(status, enabled=enabled)}{scope}", file=stream)
+        print(f"  {semantic_color('Requested GUI:', 'label', enabled=enabled)} "
+              f"{semantic_color(display_value('gui_alias'), 'gui', enabled=enabled)}", file=stream)
+        print(f"  {semantic_color('Agent:', 'label', enabled=enabled)} "
+              f"{semantic_color(display_value('slot_name'), 'agent', enabled=enabled)}", file=stream)
+        print(f"  {semantic_color('Provider:', 'label', enabled=enabled)} "
+              f"{provider_semantic(display_value('provider'), enabled=enabled)}", file=stream)
         session = launch.get("native_session_id")
-        print(f"  Native session ID: {session if session else '(unavailable; not captured)'}", file=stream)
-        print(f"  Environment: {display_value('environment_id')}", file=stream)
-        print(f"  Requested cwd: {display_value('requested_cwd')}", file=stream)
-        print(f"  Effective launch cwd: {display_value('effective_cwd')}", file=stream)
-        print(f"  Recorded native cwd: {display_value('native_cwd')}", file=stream)
-        print(f"  Git repository: {display_value('git_repository')}", file=stream)
-        print(f"  Git worktree: {display_value('git_worktree')}", file=stream)
-        print(f"  Git branch: {display_value('git_branch')}", file=stream)
-        print(f"  Git commit: {display_value('git_commit')}", file=stream)
+        print(f"  {semantic_color('Native session ID:', 'label', enabled=enabled)} "
+              f"{semantic_color(session if session else '(unavailable; not captured)', 'session' if session else 'unresolved', enabled=enabled)}", file=stream)
+        for label, key in (("Environment:", "environment_id"), ("Requested cwd:", "requested_cwd"),
+                           ("Effective launch cwd:", "effective_cwd"), ("Recorded native cwd:", "native_cwd"),
+                           ("Git repository:", "git_repository"), ("Git worktree:", "git_worktree"),
+                           ("Git branch:", "git_branch"), ("Git commit:", "git_commit")):
+            print(f"  {semantic_color(label, 'label', enabled=enabled)} {display_value(key)}", file=stream)
         if launch.get("launch_exited_at"):
-            print(f"  Exit: {launch['launch_exited_at']} (code {launch.get('exit_code')})", file=stream)
+            exit_code = launch.get("exit_code")
+            status_text = str(launch.get("status") or "")
+            exit_semantic = "failed" if exit_code not in (None, 0) or "abnormal" in status_text else (
+                "success" if status_text == "exited" and exit_code == 0 else "warning")
+            print(f"  {semantic_color('Exit:', 'label', enabled=enabled)} "
+                  f"{semantic_color(format_timestamp(launch['launch_exited_at']), 'timestamp', enabled=enabled)} "
+                  f"{semantic_color(f'(code {exit_code})', exit_semantic, enabled=enabled)}", file=stream)
 
 
 def _resume_terminal_launch(
@@ -2423,6 +2566,14 @@ def _resume_terminal_launch(
 
 
 def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input_stream: TextIO, output_stream: TextIO) -> int:
+    token = _COLOR_MODE.set(getattr(args, "color", "auto"))
+    try:
+        return _dispatch_impl(args, parser, input_stream=input_stream, output_stream=output_stream)
+    finally:
+        _COLOR_MODE.reset(token)
+
+
+def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input_stream: TextIO, output_stream: TextIO) -> int:
     if args.command is None:
         if not (input_stream.isatty() and output_stream.isatty()):
             parser.print_help(file=output_stream)
@@ -2477,7 +2628,8 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
                                           cwd_override=args.cwd, native_args=native_args,
                                           allow_native_unknown=allow_native_unknown,
                                           input_stream=input_stream, output_stream=output_stream)
-        _render_terminal_launches(result["launches"], output_stream, show_terminal_id=False)
+        _render_terminal_launches(result["launches"], output_stream, show_terminal_id=False,
+                                  color=getattr(args, "color", "auto"))
         return 0
     elif args.command == "recent":
         if args.count < 1 or args.count > 1000:
@@ -2486,7 +2638,8 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
         if args.json_output:
             print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True), file=output_stream)
         else:
-            _render_terminal_launches(result["launches"], output_stream, show_terminal_id=True)
+            _render_terminal_launches(result["launches"], output_stream, show_terminal_id=True,
+                                      color=getattr(args, "color", "auto"))
         return 0
     elif args.command == "register":
         gui = _resolve_name(args.gui_pos, args.gui, "GUI")
@@ -2674,11 +2827,12 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
     if json_mode:
         print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True, default=_json_default), file=output_stream)
     else:
+        output_color = color_enabled(getattr(args, "color", "auto"), is_tty=output_stream.isatty())
         if result.get("action") == "list":
             _render_listing(result, output_stream, args.color, dispatcher=dispatcher)
             return 0
         if result.get("schema_version") == 1 and "registry" in result and "agents" in result:
-            _render_doctor_report(result, output_stream)
+            _render_doctor_report(result, output_stream, getattr(args, "color", "auto"))
             return 0
         if result.get("action") == "gui-list":
             for conversation in result["conversations"]:
@@ -2686,27 +2840,37 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
         if "summary" in result:
             print(result["summary"], file=output_stream)
         if result.get("launch_preview"):
-            _render_launch_preview(result["launch_preview"], output_stream)
+            _render_launch_preview(result["launch_preview"], output_stream, getattr(args, "color", "auto"))
         for slot_row in result.get("slots", []):
             provider = slot_row.get("current_provider") or slot_row.get("pending_provider") or "unresolved"
             session = slot_row.get("current_session_id") or ("pending" if slot_row.get("pending_launch_id") else "unresolved")
-            print(f"{slot_row['name']}\t{provider}\t{session}", file=output_stream)
+            session_semantic = "pending" if session == "pending" else "unresolved" if session == "unresolved" else "session"
+            print(f"{semantic_color(slot_row['name'], 'agent', enabled=output_color)}\t"
+                  f"{provider_semantic(provider, enabled=output_color)}\t"
+                  f"{semantic_color(session, session_semantic, enabled=output_color)}", file=output_stream)
         if result.get("unresolved"):
             for item in result["unresolved"]:
-                print(f"Unresolved: {item['agent_name']}: {item['reason']}", file=output_stream)
+                print(f"{semantic_color('Unresolved:', 'unresolved', enabled=output_color)} "
+                      f"{semantic_color(item['agent_name'], 'agent', enabled=output_color)}: {item['reason']}", file=output_stream)
         if result.get("action") == "history":
             for index, item in enumerate(result["slot"]["history"], 1):
-                print(f"{index}. {item['provider']} {item['native_session_id']} [{item['environment_id']}] ({item['provenance']})", file=output_stream)
+                marker = semantic_color(" * selected", "success", enabled=output_color) if item.get("selected") else ""
+                session_semantic = "unresolved" if item.get("unresolved") else "session"
+                print(f"{index}. {provider_semantic(item['provider'], enabled=output_color)} "
+                      f"{semantic_color(item['native_session_id'], session_semantic, enabled=output_color)} "
+                      f"[{item['environment_id']}] ({item['provenance']}){marker}", file=output_stream)
         if result.get("action") == "pending":
             for launch in result["launches"]:
                 captured_id = launch.get("captured_session_id") or "unresolved"
                 print(
                     f"{launch['launch_id']}\t{launch.get('gui_alias', '')}\t{launch.get('agent_name', '')}\t"
-                    f"{launch['provider']}\t{launch['environment_id']}\t{captured_id}",
+                    f"{provider_semantic(launch['provider'], enabled=output_color)}\t{launch['environment_id']}\t"
+                    f"{semantic_color(captured_id, 'unresolved' if captured_id == 'unresolved' else 'session', enabled=output_color)}",
                     file=output_stream,
                 )
                 if launch.get("failure_detail"):
-                    print(f"  Recovery: {launch['failure_detail']}", file=output_stream)
+                    print(f"  {semantic_color('Recovery:', 'label', enabled=output_color)} "
+                          f"{semantic_color(launch['failure_detail'], 'error', enabled=output_color)}", file=output_stream)
         if result.get("action") == "open":
             print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True, default=_json_default), file=output_stream)
         if result.get("action") != "register" and not result.get("applied", True) and result.get("events"):

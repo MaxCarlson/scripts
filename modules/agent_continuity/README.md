@@ -8,6 +8,14 @@ See [docs/agent-session-continuity-master-plan.md](./docs/agent-session-continui
 
 `llmd list` shows the ten most recently active registered conversations and their active and inactive agents; `-A` also includes completed agents and removes default limits. An explicit `-l` limits results even with `-A`. Output reports omitted counts, local activity times, lifecycle, and observed runtime separately. Use `-N 3` to include three recent activation-history entries under each shown agent, `-j` for JSON, and `-c never` to disable color. Global JSON keeps schema version 1; scoped JSON retains `action`, `gui`, and `slots`. History adds an optional per-agent `activation_history` array only when `-N` is positive.
 
+### Semantic terminal presentation (LLMD-39)
+
+Human-readable output uses semantic colors for GUI names, agents, providers, timestamps, native session IDs, lifecycle states, runtime observations, and launch outcomes. Labels remain meaningful without color. Lifecycle and runtime are separate: `active` means the slot lifecycle is active, while `IN USE` is an LLMD-managed process-lock observation; `NOT OBSERVED` does not prove a provider is stopped. Pending, unknown, failed, interrupted, and unresolved records keep distinct text and styles.
+
+Listings and selectors adapt to the available terminal width using terminal-cell measurements. Wide terminals use aligned rows; narrower terminals stack fields and clip only when required to fit. Full native IDs are kept when space permits. GUI groups have visible headings and separators, and empty groups are labeled. The same style palette is used by human-readable selectors, post-exit choices, `history`, `last`/`recent`, `doctor`, launch previews, and diagnostics.
+
+`-c/--color auto|always|never` controls human-readable output on supported subcommands. `auto` enables ANSI only for interactive terminals with color support; `NO_COLOR` disables color in all modes, including `always`. Redirected output defaults to plain text. JSON schemas and values are unchanged and ANSI-free. Captured ANSI output demonstrates emitted control codes; it does not by itself prove how a particular terminal renders them.
+
 ```powershell
 llmd list
 llmd list "Project" -l 25

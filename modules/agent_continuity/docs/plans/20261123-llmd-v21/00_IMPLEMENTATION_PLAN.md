@@ -11,7 +11,7 @@ Improve LLMD daily operation while keeping its durable GUI/slot/session model, r
 
 A GUI alias refers to an existing ChatGPT GUI conversation; LLMD does not create a ChatGPT chat. An agent *slot* may retain several native Codex/AGY sessions over time. The selected session is the latest activation; lifecycle `active`/`inactive`/`completed` is separate from observed runtime state.
 
-## 2. Complete feature backlog — LLMD-01 through LLMD-24
+## 2. Complete feature backlog — LLMD-01 through LLMD-24 plus LLMD-39
 
 | ID | Priority | Feature | Deliverable / acceptance |
 |---|---|---|---|
@@ -39,6 +39,7 @@ A GUI alias refers to an existing ChatGPT GUI conversation; LLMD does not create
 | **LLMD-22** | P0 | Provider-native argv passthrough | `start`, `continue`, `switch`, `review`, and `return` accept structured tokens only after `--`; exact session identity and LLMD-owned bootstrap/directory/session flags remain protected. Unsupported `open` passthrough is rejected explicitly |
 | **LLMD-23** | P0 | Invocation-scoped working directory | `-C/--cwd` applies to supported resume paths, validates local or recorded-WSL runtime directories, flags detected repository/worktree context changes, and never rewrites existing native-session cwd provenance |
 | **LLMD-24** | P0 | Launch preview and permission diagnostics | Before provider execution, show resolved executable/argv, cwd, recorded runtime/environment, exact session (or captured-ID placeholder), and requested permission flags. Effective permissions are always marked unverified |
+| **LLMD-39** | P0 | Semantic terminal presentation | Central semantic palette, ANSI-safe aligned/stacked output across LLMD human views, clear lifecycle/runtime/outcome distinctions, no-color and JSON compatibility, Windows/Unicode terminal coverage |
 
 ## v1.5.2 correctness follow-up
 
@@ -200,7 +201,7 @@ The implementation handoff carries the following reviewer constraints into the p
 
 Each implementation batch uses its own isolated worktree/feature branch, or a single sequential feature branch if one agent owns every modified file. No simultaneous writers to `dispatcher_cli.py` or `interactive.py`. Commit and push authorized feature changes for review, **do not merge**. Do not change other tools/modules without a demonstrated interface dependency. Do not start public publishing, background inference or local model loading.
 
-The v2.1 documentation began as a design proposal. This implementation handoff authorizes the sequential A–E implementation described here; compatibility changes outside that scope still require an approval gate. Remaining evaluation criteria are listed in [02_PROPOSED_CHANGES_EVALUATION.md](02_PROPOSED_CHANGES_EVALUATION.md).
+The v2.1 documentation began as a design proposal. This implementation handoff authorizes the sequential A–E implementation described here; compatibility changes outside that scope still require an approval gate. LLMD-39 is authorized on its own isolated branch and pauses for independent GUI review before integration; after acceptance, standing authorization permits normal reconciliation and GitHub merge workflow. Remaining evaluation criteria are listed in [02_PROPOSED_CHANGES_EVALUATION.md](02_PROPOSED_CHANGES_EVALUATION.md).
 
 ## Batch G — Terminal-specific launch context (LLMD-27–29)
 
@@ -240,3 +241,15 @@ The common interface works on `continue`, `start`, `switch`, `review`, and `retu
 **Acceptance:** exact option placement from installed help without inference; Codex resume and AGY conversation resume; managed aliases/equal forms/repeated flags; config/model/profile/reasoning/add-dir/permission settings; explicitly authorized generic passthrough; unsafe identity, mode, bootstrap, path and executable conflicts; permission preview; no raw setting persistence; WSL/Windows quoting; fixed bootstrap isolation; failure/session-history preservation; fake-provider isolation.
 
 LLMD-25 persistent launch profiles remain the next planned batch. LLMD-26 native lock diagnostics remain deferred.
+
+## Batch I — Semantic terminal presentation (LLMD-39)
+
+**Release:** LLMD 1.7.0 (new user-visible feature release).
+
+Centralize named semantic colors in `terminal_format.py`. Human-readable list, scoped list, selectors, continuation picker, post-exit menu, history, `last`/`recent`, doctor, launch previews, and related diagnostic messages use the same semantic palette. Keep text labels meaningful when color is disabled. Lifecycle (`active`/`inactive`/`completed`), runtime observation (`IN USE`/`NOT OBSERVED`/`PENDING`/`UNKNOWN`), and launch outcome (success/failure/interruption/unverified) remain independent dimensions.
+
+Use bright blue bold for GUI headings, warm yellow bold for agent names, cyan Codex, magenta AGY, muted gray timestamps/labels, neutral gray native IDs, green active/in-use/success, amber inactive/pending/warnings, dim gray completed/not-observed, blue-gray unknown, red failures/unresolved IDs, and orange interruption. `-c/--color auto|always|never` applies consistently to subcommands that support human output; `NO_COLOR` always disables styles. `auto` requires an interactive terminal and terminal color support; redirected streams are plain. JSON fields/schemas are unchanged and contain no ANSI codes.
+
+Listings compute available columns in terminal cells after accounting for Unicode width, combining characters and ANSI sequences. Use an aligned one-line row when the width permits, two-line rows at moderate widths, and stacked rows in narrow terminals. Prefer complete session IDs; clip deterministically only when the terminal cannot fit them. GUI groups have clear headings and subtle separators, with a blank-line separation retained as the no-color fallback. Empty groups, selected history rows, pending identities, and known unresolved placeholders are labeled explicitly. Rendering must not infer validity from UUID-like appearance or mutate stored IDs.
+
+**Acceptance:** actual ANSI code/reset assertions for semantic fields and padded provider/lifecycle regression; auto/always/never and `NO_COLOR`; redirected output; Windows VT capability; widths 40/60/80/100/120/200; ANSI-safe cell measurement, CJK and combining marks; long session IDs; empty groups and selected/unresolved history; distinct runtime/lifecycle/outcome; launch, doctor, selector and post-exit output; JSON byte purity and schema compatibility. Capture checks prove emitted text/ANSI only; Windows Terminal and WSL/SSH smoke results are reported separately from actual visual rendering.

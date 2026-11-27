@@ -8,38 +8,72 @@ from collections.abc import Callable
 from typing import Any, TextIO
 
 from .dispatcher import DispatcherService
-from .terminal_format import clip_display, format_timestamp, pad_display
+from .terminal_format import (
+    clip_display,
+    color_enabled,
+    display_width,
+    format_timestamp,
+    pad_semantic,
+    provider_semantic,
+    runtime_semantic,
+    semantic_color,
+)
 
 
-def _gui_selector_line(row: dict[str, Any], width: int, *, header: bool = False) -> str:
+def _gui_selector_line(row: dict[str, Any], width: int, *, header: bool = False, enabled: bool = False) -> str:
     if width < 62:
-        name_width = max(10, width - 24)
-        return f"{pad_display('GUI Conversation' if header else row['alias'], name_width)}  " \
-               f"{('Last Activity' if header else format_timestamp(row.get('last_activity_at')))}"
+        name_width = max(0, width - 40)
+        gui = 'GUI Conversation' if header else row['alias']
+        date = 'Last Activity' if header else format_timestamp(row.get('last_activity_at'))
+        return f"{pad_semantic(gui, name_width, 'label' if header else 'gui', enabled=enabled)}  " \
+               f"{pad_semantic(date, 16, 'label' if header else 'timestamp', enabled=enabled)}"
     name_width = max(12, min(36, width - 25))
-    return f"{pad_display('Last Activity' if header else format_timestamp(row.get('last_activity_at')), 16)}  " \
-           f"{pad_display('GUI Conversation' if header else row['alias'], name_width)}"
+    date = 'Last Activity' if header else format_timestamp(row.get('last_activity_at'))
+    gui = 'GUI Conversation' if header else row['alias']
+    return f"{pad_semantic(date, 16, 'label' if header else 'timestamp', enabled=enabled)}  " \
+           f"{pad_semantic(gui, name_width, 'label' if header else 'gui', enabled=enabled)}"
 
 
-def _agent_selector_line(row: dict[str, Any], width: int, *, header: bool = False) -> str:
+def _agent_selector_line(row: dict[str, Any], width: int, *, header: bool = False, enabled: bool = False) -> str:
     provider = "Provider" if header else str(row.get("current_provider") or row.get("pending_provider") or "—").upper()
+    provider_semantic_name = {"CODEX": "provider_codex", "AGY": "provider_agy"}.get(provider, "label" if header else "")
+    lifecycle = "Lifecycle" if header else str(row.get("state") or "unknown")
+    lifecycle_style = "label" if header else lifecycle.casefold() if lifecycle.casefold() in {"active", "inactive", "completed"} else "unknown"
+    runtime = "Runtime" if header else row.get("runtime_status")
+    runtime_text = runtime_semantic(str(runtime), enabled=enabled) if runtime else ""
     if width < 70:
-        name_width = max(10, min(24, width - 22))
+        name_width = max(8, min(24, width - 22))
         session = "Current Session" if header else row.get("current_session_id") or (
             "pending" if row.get("pending_launch_id") else "unresolved"
         )
-        session_width = max(8, width - name_width - 14)
-        return f"{pad_display('Agent' if header else row['name'], name_width)}  {provider:<5}  " \
-               f"{clip_display(session, session_width)}"
-    name_width = max(12, min(32, (width - 58) // 2))
-    session_width = max(8, width - name_width - 50)
+        date = "Last Activity" if header else format_timestamp(row.get("last_activity_at"))
+        name = pad_semantic('Agent' if header else row['name'], name_width,
+                            'label' if header else 'agent', enabled=enabled)
+        first = f"{name}  {pad_semantic(provider, 7, provider_semantic_name, enabled=enabled)}  " \
+                f"{pad_semantic(lifecycle, 9, lifecycle_style, enabled=enabled)}"
+        runtime_cells = display_width(str(runtime or "")) + (2 if runtime else 0)
+        session_text = semantic_color(clip_display(session, max(1, width - 22 - runtime_cells)),
+                                      'session' if session not in {'pending', 'unresolved'} else session,
+                                      enabled=enabled)
+        details = (f"    {pad_semantic(date, 16, 'label' if header else 'timestamp', enabled=enabled)}  "
+                   f"{runtime_text + '  ' if runtime else ''}{session_text}")
+        return first + "\n" + details
+    name_width = max(12, min(32, (width - 72) // 2))
+    session_width = max(1, width - name_width - 41 - (14 if runtime else 0))
     date = "Last Activity" if header else format_timestamp(row.get("last_activity_at"))
     name = "Agent" if header else row["name"]
     session = "Current Session" if header else row.get("current_session_id") or (
         "pending" if row.get("pending_launch_id") else "unresolved"
     )
-    return f"{pad_display(date, 16)}  {pad_display(name, name_width)}  {provider:<8}  " \
-           f"{clip_display(session, session_width)}"
+    session_text = semantic_color(clip_display(session, session_width),
+                                  'session' if session not in {'pending', 'unresolved'} else session,
+                                  enabled=enabled)
+    return f"{pad_semantic(date, 16, 'label' if header else 'timestamp', enabled=enabled)}  " \
+           f"{pad_semantic(name, name_width, 'label' if header else 'agent', enabled=enabled)}  " \
+           f"{pad_semantic(provider, 8, provider_semantic_name, enabled=enabled)}  " \
+           f"{pad_semantic(lifecycle, 9, lifecycle_style, enabled=enabled)}  " \
+           f"{pad_semantic(str(runtime), 12, { 'IN USE': 'runtime_in_use', 'NOT OBSERVED': 'runtime_not_observed', 'PENDING': 'pending', 'UNKNOWN': 'unknown'}.get(str(runtime).upper(), ''), enabled=enabled) + '  ' if runtime else ''}" \
+           f"{session_text}"
 
 
 def filter_items(items: list[dict[str, Any]], query: str, *, key: str = "name") -> list[dict[str, Any]]:
@@ -95,6 +129,7 @@ def select_item(
     allow_new: bool = False,
     allow_open_all: bool = False,
     filter_key: str = "name",
+    color_mode: str = "auto",
 ) -> tuple[str, dict[str, Any] | None]:
     """Read arrow keys, enter, incremental text filtering, and explicit Ctrl shortcuts."""
     query = ""
@@ -103,12 +138,14 @@ def select_item(
         matches = filter_items(items, query, key=filter_key)
         selected = min(selected, max(0, len(matches) - 1))
         output_stream.write("\x1b[2J\x1b[H")
-        output_stream.write(f"{title}\n\nSearch: {query}\n\n")
+        enabled = color_enabled(color_mode, is_tty=output_stream.isatty())
+        output_stream.write(f"{semantic_color(title, 'gui', enabled=enabled)}\n\nSearch: {query}\n\n")
         header_text = header() if callable(header) else header
         if header_text:
             output_stream.write(header_text + "\n")
         for index, item in enumerate(matches):
-            output_stream.write(("> " if index == selected else "  ") + render_line(item) + "\n")
+            marker = semantic_color(">", "success", enabled=enabled) if index == selected else " "
+            output_stream.write(marker + " " + render_line(item) + "\n")
         if not matches:
             output_stream.write("  No matching items.\n")
         shortcuts = ["↑/↓ Navigate", "Enter Select", "Esc Back", "Typing Filter", "Backspace Edit", "Ctrl+C Exit"]
@@ -175,11 +212,13 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
     def terminal_width() -> int:
         return shutil.get_terminal_size((100, 24)).columns
 
+    selector_color = color_enabled("auto", is_tty=output_stream.isatty())
+
     while True:
         action, gui = select_item(
             dispatcher.list_guis(), title="LLM Dispatcher — Select GUI Conversation",
-            render_line=lambda row: _gui_selector_line(row, terminal_width()),
-            header=lambda: _gui_selector_line({}, terminal_width(), header=True),
+            render_line=lambda row: _gui_selector_line(row, terminal_width(), enabled=selector_color),
+            header=lambda: _gui_selector_line({}, terminal_width(), header=True, enabled=selector_color),
             input_stream=input_stream, output_stream=output_stream, allow_new=True,
             filter_key="alias",
         )
@@ -198,8 +237,8 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
         while True:
             action, slot = select_item(
                 dispatcher.list_slots(gui=gui_name), title=f"GUI: {gui_name}",
-                render_line=lambda row: _agent_selector_line(row, terminal_width()),
-                header=lambda: _agent_selector_line({}, terminal_width(), header=True),
+                render_line=lambda row: _agent_selector_line(row, terminal_width(), enabled=selector_color),
+                header=lambda: _agent_selector_line({}, terminal_width(), header=True, enabled=selector_color),
                 input_stream=input_stream, output_stream=output_stream,
                 allow_new=True, allow_open_all=True,
             )
@@ -247,8 +286,11 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
                 ])
                 if current["current"]:
                     output_stream.write(
-                        f"\nGUI: {gui_name}\nAgent: {slot['name']}\nCurrent: "
-                        f"{current['current']['provider'].upper()} {current['current']['native_session_id']}\n"
+                        f"\n{semantic_color('GUI:', 'label', enabled=selector_color)} {semantic_color(gui_name, 'gui', enabled=selector_color)}\n"
+                        f"{semantic_color('Agent:', 'label', enabled=selector_color)} {semantic_color(slot['name'], 'agent', enabled=selector_color)}\n"
+                        f"{semantic_color('Current:', 'label', enabled=selector_color)} "
+                        f"{provider_semantic(current['current']['provider'], enabled=selector_color)} "
+                        f"{semantic_color(current['current']['native_session_id'], 'session', enabled=selector_color)}\n"
                     )
                 action, choice = select_item(
                     options, title="Choose Session Action", render_line=lambda row: row["name"],
@@ -260,7 +302,9 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
                     break
                 if choice["action"] == "history":
                     for index, row in enumerate(current["history"], 1):
-                        output_stream.write(f"{index}. {row['provider']} {row['native_session_id']} [{row['environment_id']}] — {row['provenance']}\n")
+                        output_stream.write(f"{index}. {provider_semantic(row['provider'], enabled=selector_color)} "
+                                            f"{semantic_color(row['native_session_id'], 'session', enabled=selector_color)} "
+                                            f"[{row['environment_id']}] — {row['provenance']}\n")
                     _ask(output_stream, input_stream, "Press Enter to return.")
                     continue
                 if choice["action"] == "state":
@@ -280,7 +324,8 @@ def run_interactive(dispatcher: DispatcherService, *, input_stream: TextIO, outp
                         previous_sessions,
                         title=f"Reuse previous {provider.upper()} session",
                         render_line=lambda row: (
-                            f"{row['provider'].upper()}  {row['native_session_id']}  "
+                            f"{provider_semantic(row['provider'], enabled=selector_color)}  "
+                            f"{semantic_color(row['native_session_id'], 'session', enabled=selector_color)}  "
                             f"[{row['environment_id']}]  {format_timestamp(row['activated_at'])}"
                         ),
                         input_stream=input_stream,
