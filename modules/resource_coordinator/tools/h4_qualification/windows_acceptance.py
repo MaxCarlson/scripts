@@ -991,10 +991,25 @@ def main(argv: Optional[Sequence[str]] = None, *, evidence_override: Optional[Di
         if args.profile == "offline"
         else Path(__file__).resolve().parents[2]
     )
-    metrics_root = selected_module_root.parent / "resource_metrics"
     pythonpath_entries = [str(selected_module_root)]
-    if metrics_root.is_dir():
-        pythonpath_entries.append(str(metrics_root))
+    metrics_wheel = (
+        selected_module_root.parents[3] / "dependencies" / "wheelhouse" /
+        "mxc_resource_metrics-0.3.0-py3-none-any.whl"
+    )
+    if not metrics_wheel.is_file():
+        metrics_wheel = Path(__file__).resolve().parent / "wheelhouse" / "mxc_resource_metrics-0.3.0-py3-none-any.whl"
+    if not metrics_wheel.is_file():
+        raise RuntimeError(f"Canonical mxc-resource-metrics wheel is missing: {metrics_wheel}")
+    pythonpath_entries.append(str(metrics_wheel))
+    monitor_wheel = (
+        selected_module_root.parents[3] / "dependencies" / "wheelhouse" /
+        "llm_monitor-0.9.0-py3-none-any.whl"
+    )
+    if not monitor_wheel.is_file():
+        monitor_wheel = Path(__file__).resolve().parent / "wheelhouse" / "llm_monitor-0.9.0-py3-none-any.whl"
+    if not monitor_wheel.is_file():
+        raise RuntimeError(f"Canonical llm-monitor wheel is missing: {monitor_wheel}")
+    pythonpath_entries.append(str(monitor_wheel))
     env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
     if env_name:
         env[env_name] = "1"
