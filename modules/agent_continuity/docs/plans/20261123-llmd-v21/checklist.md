@@ -14,7 +14,8 @@
 - [x] Persist one exact UUID reservation and one-shot spawn claim per pending Claude launch; retain clean-exit/no-transcript launches for exact-ID recovery.
 - [x] Complete Codex/AGY/Claude post-exit provider selection and reject generic native identity, execution-mode, and permission-control bypass options.
 - [x] Reconcile refreshed main including LLMD-40 and validate terminal-launcher dependency compatibility from metadata rather than pinning 0.1.1.
-- [ ] Run integration validation, isolated bridge-free installation checks, task-only diff review, commit and push; wait for GUI acceptance before integration to main.
+- [x] Run integration validation, isolated bridge-free installation checks, task-only diff review, commit and push the refreshed-main candidate.
+- [ ] Await independent GUI acceptance before integrating the feature into main.
 
 ## Batch A — Session safety and lifecycle
 
