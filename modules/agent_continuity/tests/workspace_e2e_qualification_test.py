@@ -11,16 +11,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from terminal_launcher.backend import LaunchResult, LaunchStatus, TerminalLaunchPlan
-from terminal_launcher.managed import (
-    LaunchSubmissionState,
-    ManagedPaneReservation,
-    ManagedProcessStore,
-)
-from terminal_launcher.managed import (
-    ProcessLiveness as TLProcessLiveness,
-)
-
 from agent_continuity.dispatcher import DispatcherService
 from agent_continuity.environment import detect_runtime_kind
 from agent_continuity.errors import ContinuityError
@@ -53,6 +43,15 @@ from agent_continuity.workspace_cli import (
 from agent_continuity.workspace_lifecycle import (
     RestoreLaunchRequest,
     TopologyRestorer,
+)
+from terminal_launcher.backend import LaunchResult, LaunchStatus, TerminalLaunchPlan
+from terminal_launcher.managed import (
+    LaunchSubmissionState,
+    ManagedPaneReservation,
+    ManagedProcessStore,
+)
+from terminal_launcher.managed import (
+    ProcessLiveness as TLProcessLiveness,
 )
 
 
@@ -725,7 +724,7 @@ def test_entrypoint_exact_session_contract_ownership_separation_and_grouped_clea
     work_dir = tmp_path / "repo"
     work_dir.mkdir()
     dispatcher, ids = _seed_dispatcher_with_mixed_sessions(home_dir, work_dir, work_dir)
-    modules_root = str(Path(__file__).resolve().parents[2])
+    modules_root = str(Path(__file__).resolve().parents[1])
     entry_cmd = list(canonical_llmd_dispatcher_entrypoint(prefer_installed=False)) + [
         "-H",
         str(home_dir),
@@ -755,7 +754,7 @@ def test_entrypoint_exact_session_contract_ownership_separation_and_grouped_clea
         environment_id=ids["env_id"],
         runtime_kind=detect_runtime_kind(),
         cwd=str(work_dir),
-        launch_settings={},
+        launch_settings={"model": "checkpoint-model", "reasoning_effort": "high"},
         requested_topology=WorkspaceTopologyRequest(
             target_window="win_1",
             requested_tab_index=0,
@@ -784,7 +783,7 @@ def test_entrypoint_exact_session_contract_ownership_separation_and_grouped_clea
         action="restore",
         reasons=(),
         cwd=str(work_dir),
-        launch_settings={},
+        launch_settings={"model": "checkpoint-model", "reasoning_effort": "high"},
         requested_topology=None,
         metadata=WorkspaceSlotMetadata(),
     )
@@ -799,7 +798,10 @@ def test_entrypoint_exact_session_contract_ownership_separation_and_grouped_clea
         "resume",
         ids["codex_sid"],
     ]
-    assert "--session-id" in build_manual_restore_command(plan_item, exact_llmd_supported=True)
+    exact_manual = build_manual_restore_command(plan_item, exact_llmd_supported=True)
+    assert "--session-id" in exact_manual
+    assert exact_manual[exact_manual.index("-C") + 1] == str(work_dir)
+    assert exact_manual[-5:] == ["--", "--model", "checkpoint-model", "--config", "model_reasoning_effort=high"]
 
     # 3. Relay spawn != dispatcher ownership; require_dispatcher_ownership preserves ambiguity
     ft = 134000000000000000
@@ -910,8 +912,6 @@ def test_durable_ownership_transfer_cross_process_and_competing_launch_blocked(t
     """Exercise real _pane_runner.py + cross-process reservation consumption under canonical slot-<slot_id>.lock."""
     import subprocess
 
-    from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
-
     from agent_continuity.restoration_queue import QueueEntryStatus, RestorationQueue
     from agent_continuity.workspace_checkpoint import CheckpointStore
     from agent_continuity.workspace_lifecycle import TopologyRestorer
@@ -920,6 +920,7 @@ def test_durable_ownership_transfer_cross_process_and_competing_launch_blocked(t
         RestorationReservationStore,
         canonical_slot_lock_path,
     )
+    from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
 
     home_dir = tmp_path / "llmd_home"
     work_dir = tmp_path / "repo"
@@ -1106,13 +1107,12 @@ def test_reservation_crash_recovery_delayed_ack_and_partial_grouped_restoration(
     """Verify partial grouped ownership, ambiguous reservation blocking, and incompatible `llmd` fallback."""
     import shutil
 
-    from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
-
     from agent_continuity.restoration_queue import QueueEntryStatus, RestorationQueue
     from agent_continuity.workspace_adapters import canonical_llmd_dispatcher_entrypoint
     from agent_continuity.workspace_checkpoint import CheckpointStore
     from agent_continuity.workspace_lifecycle import TopologyRestorer
     from agent_continuity.workspace_ownership import ReservationOwnershipVerifier, RestorationReservationStore
+    from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
 
     # 1. Incompatible installed `llmd` binary must NOT be selected over candidate dispatcher_cli
     monkeypatch.setattr(shutil, "which", lambda _name: "C:/fake/llmd.exe")

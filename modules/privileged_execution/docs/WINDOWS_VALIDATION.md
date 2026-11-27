@@ -24,7 +24,7 @@ All non-privileged synthetic unit, adversarial, and local named-pipe IPC tests r
    ```powershell
    pwsh -NoProfile -File .\scripts\Install-PrivExec.ps1 -Mode CrossAccountIsolated `
        -OperatorAccount "XERES\<OPERATOR>" -AgentAccount "XERES\<AGENT>" `
-       -H4SourceDir "C:\Users\mcarls\src\scripts\.worktrees\rc-h4-task-discovery-20261115\modules\resource_coordinator\tools\h4_qualification" `
+       -H4SourceDir "$env:USERPROFILE\src\llm-agent-toolkit\modules\resource_coordinator\tools\h4_qualification" `
        -Json
    ```
 
@@ -33,7 +33,7 @@ All non-privileged synthetic unit, adversarial, and local named-pipe IPC tests r
    ```powershell
    pwsh -NoProfile -File .\scripts\Install-PrivExec.ps1 -Apply -Mode CrossAccountIsolated `
        -OperatorAccount "XERES\<OPERATOR>" -AgentAccount "XERES\<AGENT>" `
-       -H4SourceDir "C:\Users\mcarls\src\scripts\.worktrees\rc-h4-task-discovery-20261115\modules\resource_coordinator\tools\h4_qualification" `
+       -H4SourceDir "$env:USERPROFILE\src\llm-agent-toolkit\modules\resource_coordinator\tools\h4_qualification" `
        -Json
    ```
 

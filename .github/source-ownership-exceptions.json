@@ -269,5 +269,10 @@
     "before": "d2fc19a3513748c7e99daffcc5c3da52b6bb72b3",
     "after": "dfc102d3321f21dddc835daf303240374833e084",
     "reason": "Remove Scripts Monitor source coupling and pin the canonical Toolkit wheel while preserving Metrics and H4 bundle contracts"
+  },
+  {
+    "type": "retirement",
+    "path": "modules/resource_coordinator",
+    "reason": "Retire the Scripts duplicate after canonical Toolkit ownership and H4 tooling transition; retain historical documentation under docs/archive/resource_coordinator."
   }
 ]

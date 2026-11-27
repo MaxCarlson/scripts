@@ -1439,19 +1439,6 @@ def _run_pane_locked(
         else:
             process_cwd = cwd
     _validated_native_args(provider, native_args, allow_unknown=allow_native_unknown)
-    dispatcher.check_or_consume_restoration_reservation(
-        slot_id=slot_id,
-        provider=launch_identity[0] if launch_identity else provider,
-        environment_id=launch_identity[1] if launch_identity else environment_id,
-        session_id=launch_identity[2] if launch_identity else session_id,
-        reservation_id=reservation_id,
-        reservation_token=reservation_token,
-        checkpoint_id=checkpoint_id,
-        queue_entry_id=queue_entry_id,
-        attempt=attempt,
-        launch_id=reservation_launch_id,
-        pane_id=pane_id,
-    )
     bootstrap_cwd = cwd
     if cwd_override is not None:
         _validate_cwd_override(dispatcher, environment_id, cwd_override)
@@ -1681,6 +1668,22 @@ def _run_pane_locked(
                 if _session_identity(latest) != launch_identity:
                     raise ContinuityError(ErrorCode.INVALID_INPUT,
                                           "Agent selection changed before provider launch; retry with the selected session.")
+            # Keep the exact slot and session locks while consuming. All fallible
+            # cwd, argv, selection, and lock checks are complete before ownership
+            # is acknowledged; consumption still precedes provider execution.
+            dispatcher.check_or_consume_restoration_reservation(
+                slot_id=slot_id,
+                provider=launch_identity[0] if launch_identity else provider,
+                environment_id=launch_identity[1] if launch_identity else environment_id,
+                session_id=launch_identity[2] if launch_identity else session_id,
+                reservation_id=reservation_id,
+                reservation_token=reservation_token,
+                checkpoint_id=checkpoint_id,
+                queue_entry_id=queue_entry_id,
+                attempt=attempt,
+                launch_id=reservation_launch_id,
+                pane_id=pane_id,
+            )
             if launch_id and provider == "claude":
                 dispatcher.claim_claude_launch(launch_id=launch_id, slot_id=slot_id, session_id=session_id)
             if terminal_record and not terminal_record_written:
@@ -3617,6 +3620,18 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
             "queue": handle_queue,
         }[args.command]
         kwargs: dict[str, Any] = {"dispatcher": dispatcher, "stream": output_stream}
+        if args.command == "save":
+            try:
+                from terminal_launcher.managed import ManagedProcessStore
+            except ImportError as exc:
+                if getattr(args, "shutdown", False):
+                    raise ContinuityError(
+                        ErrorCode.RESUME_UNSUPPORTED,
+                        "Owned-pane shutdown is unavailable: managed Terminal Launcher support is not installed.",
+                    ) from exc
+            else:
+                state_root = Path(dispatcher.home_dir) / "workspace_state"
+                kwargs["managed_store"] = ManagedProcessStore(state_root / "terminal-launcher.sqlite3")
         if args.command == "restore" and args.apply and not args.manual:
             from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
             from terminal_launcher.managed import ManagedProcessStore
