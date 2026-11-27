@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import json
 import sys
 import tomllib
 import types
@@ -433,3 +434,189 @@ def test_open_does_not_hide_internal_terminal_library_import_errors(tmp_path, mo
     monkeypatch.setattr(builtins, "__import__", import_with_broken_terminal_submodule)
     with pytest.raises(ModuleNotFoundError, match="terminal_launcher.backend"):
         _open(dispatcher, Namespace(gui="Empty", terminal="windows-terminal", panes_per_tab=2, window=None, apply=False))
+
+
+def test_profile_cli_create_assign_and_launch_preview_are_scoped(tmp_path):
+    home = tmp_path / "registry"
+    parser = build_parser()
+
+    def invoke(argv):
+        output = StringIO()
+        result = dispatch(parser.parse_args(["-H", str(home), *argv]), parser,
+                          input_stream=StringIO(), output_stream=output)
+        return result, output.getvalue()
+
+    code, _ = invoke(["gui", "add", "-n", "GUI"])
+    assert code == 0
+    code, output = invoke(["profile", "create", "safe", "-p", "codex", "--runtime", "windows",
+                           "-C", str(tmp_path), "-s", 'sandbox="workspace-write"', "-s", 'model="gpt-test"'])
+    assert code == 0
+    assert "safe" in output
+    code, _ = invoke(["slot", "create", "-g", "GUI", "-n", "Agent"])
+    assert code == 0
+    code, _ = invoke(["profile", "assign", "-g", "GUI", "-n", "Agent", "-P", "safe"])
+    assert code == 0
+
+    code, output = invoke(["start", "GUI", "Agent", "-p", "codex", "-d", "-j"])
+    assert code == 0
+    result = json.loads(output)
+    assert result["launch_preview"]["profile"]["name"] == "safe"
+    assert result["launch_preview"]["cwd"] == str(tmp_path)
+    assert "--sandbox" in result["launch_preview"]["interactive_resume_argv_template"]
+    assert "workspace-write" in result["launch_preview"]["interactive_resume_argv_template"]
+    assert not DispatcherService(home_dir=home).get_slot(gui="GUI", name="Agent")["history"]
+
+
+def test_invocation_settings_override_profile_without_cross_launch_persistence(tmp_path):
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.create_gui("GUI", apply=True)
+    dispatcher.create_profile(name="safe", provider="codex", settings={"sandbox": "workspace-write"})
+    dispatcher.create_slot(gui="GUI", name="Agent", apply=True)
+    dispatcher.assign_profile(gui="GUI", agent="Agent", profile="safe", apply=True)
+    parser = build_parser()
+    output = StringIO()
+    result = dispatch(parser.parse_args(["-H", str(home), "start", "GUI", "Agent", "-p", "codex",
+                                        "-d", "--", "--sandbox", "read-only"]),
+                     parser, input_stream=StringIO(), output_stream=output)
+    assert result == 0
+    assert '"sandbox": "read-only"' in output.getvalue()
+    assert '"profile": {' in output.getvalue()
+    assert dispatcher.get_profile("safe")["settings"]["sandbox"] == "workspace-write"
+
+
+def test_workflow_type_cli_is_default_apply_and_json_lists_identity_metadata(tmp_path):
+    home = tmp_path / "registry"
+    parser = build_parser()
+    output = StringIO()
+    created = dispatch(parser.parse_args(["-H", str(home), "gui", "add", "-n", "GUI"]), parser,
+                       input_stream=StringIO(), output_stream=output)
+    assert created == 0
+    dispatch(parser.parse_args(["-H", str(home), "slot", "create", "-g", "GUI", "-n", "Agent"]), parser,
+             input_stream=StringIO(), output_stream=StringIO())
+    result = dispatch(parser.parse_args(["-H", str(home), "workflow-type", "GUI", "Agent", "handoff"]),
+                      parser, input_stream=StringIO(), output_stream=StringIO())
+    assert result == 0
+
+    output = StringIO()
+    result = dispatch(parser.parse_args(["-H", str(home), "list", "-g", "GUI", "-j"]), parser,
+                      input_stream=StringIO(), output_stream=output)
+    assert result == 0
+    slot = json.loads(output.getvalue())["slots"][0]
+    assert slot["workflow_type"] == "handoff"
+    assert slot["agent_number"] == 1
+
+
+def test_profile_no_profile_bypasses_assignment_and_profile_dry_run_is_pure(tmp_path):
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.create_gui("GUI", apply=True)
+    dispatcher.create_profile(name="safe", provider="codex", settings={"sandbox": "workspace-write"})
+    dispatcher.create_slot(gui="GUI", name="Agent", apply=True)
+    dispatcher.assign_profile(gui="GUI", agent="Agent", profile="safe", apply=True)
+    parser = build_parser()
+    output = StringIO()
+    result = dispatch(parser.parse_args(["-H", str(home), "start", "GUI", "Agent", "-p", "codex",
+                                        "-B", "-d", "-j"]), parser,
+                      input_stream=StringIO(), output_stream=output)
+    preview = json.loads(output.getvalue())["launch_preview"]
+    assert result == 0
+    assert preview["profile"]["source"] == "bypassed"
+    assert "--sandbox" not in preview["interactive_resume_argv_template"]
+
+    before = dispatcher._rows("SELECT event_id FROM activity_events ORDER BY rowid")
+    output = StringIO()
+    result = dispatch(parser.parse_args(["-H", str(home), "profile", "create", "unused", "-p", "codex",
+                                        "-d", "-s", "model=gpt-test", "-j"]), parser,
+                      input_stream=StringIO(), output_stream=output)
+    assert result == 0
+    assert dispatcher.list_profiles() == [{**dispatcher.get_profile("safe")}]
+    assert dispatcher._rows("SELECT event_id FROM activity_events ORDER BY rowid") == before
+
+def test_doctor_json_exposes_stable_identity_without_raw_profile_settings(tmp_path):
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.create_gui("GUI", apply=True)
+    dispatcher.register("GUI", "Agent")
+    dispatcher.set_workflow_type(gui="GUI", agent="Agent", workflow_type="handoff")
+    parser = build_parser()
+    output = StringIO()
+    result = dispatch(parser.parse_args(["-H", str(home), "doctor", "-j"]), parser,
+                      input_stream=StringIO(), output_stream=output)
+    assert result == 0
+    report = json.loads(output.getvalue())
+    agent = report["agents"][0]
+    assert agent["gui_id"]
+    assert agent["slot_id"]
+    assert agent["agent_number"] == 1
+    assert agent["workflow_type"] == "handoff"
+    assert "profile_settings" not in agent
+
+
+def test_continue_uses_assigned_profile_with_exact_session_and_provenance(tmp_path):
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.register("GUI", "Agent", provider="codex", session_id="exact-native-session")
+    dispatcher.create_profile(name="readonly", provider="codex", runtime_kind="windows",
+                             settings={"sandbox": "read-only", "model": "gpt-test"})
+    dispatcher.assign_profile(gui="GUI", agent="Agent", profile="readonly")
+    parser = build_parser()
+    output = StringIO()
+    result = dispatch(parser.parse_args(["-H", str(home), "continue", "GUI", "Agent", "-d", "-j"]),
+                      parser, input_stream=StringIO(), output_stream=output)
+    assert result == 0
+    preview = json.loads(output.getvalue())["launch_preview"]
+    assert preview["selected_session"]["native_session_id"] == "exact-native-session"
+    assert preview["profile"]["source"] == "assigned"
+    assert preview["profile"]["revision"] == 1
+    assert "--sandbox" in preview["argv"]
+    assert preview["requested_settings"]["sandbox"] == "read-only"
+    assert dispatcher.get_slot(gui="GUI", name="Agent")["history"][-1]["native_session_id"] == "exact-native-session"
+
+
+def test_assigned_profile_reaches_fake_exact_session_handoff(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.register("GUI", "Agent", provider="codex", session_id="exact-native-session")
+    dispatcher.create_profile(name="readonly", provider="codex",
+                              settings={"sandbox": "read-only", "model": "gpt-test"})
+    dispatcher.assign_profile(gui="GUI", agent="Agent", profile="readonly", apply=True)
+    handoff = {}
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
+                        lambda *args, **kwargs: handoff.update(kwargs) or 0)
+    parser = build_parser()
+    result = dispatch(parser.parse_args(["-H", str(home), "continue", "GUI", "Agent", "-a"]), parser,
+                      input_stream=StringIO(), output_stream=StringIO())
+
+    assert result == 0
+    assert handoff["native_args"] == ["--sandbox", "read-only", "--model", "gpt-test"]
+    assert handoff["expected_session_identity"][2] == "exact-native-session"
+    assert dispatcher.get_slot(gui="GUI", name="Agent")["history"][-1]["native_session_id"] == "exact-native-session"
+
+
+def test_profile_mismatch_and_stale_cwd_fail_before_launch_or_registry_mutation(tmp_path, monkeypatch):
+    from agent_continuity.errors import ContinuityError
+
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.register("GUI", "Agent", provider="codex", session_id="exact")
+    dispatcher.create_profile(name="agy-profile", provider="agy", settings={})
+    stale_cwd = tmp_path / "profile-cwd"
+    stale_cwd.mkdir()
+    dispatcher.create_profile(name="cwd-profile", provider="codex", runtime_kind="windows", cwd=str(stale_cwd))
+    dispatcher.assign_profile(gui="GUI", agent="Agent", profile="cwd-profile", apply=True)
+    stale_cwd.rmdir()
+    parser = build_parser()
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
+                        lambda *a, **k: pytest.fail("profile validation must precede provider handoff"))
+
+    before = dispatcher._rows("SELECT event_id FROM activity_events ORDER BY rowid")
+    with pytest.raises(ContinuityError, match="profile.*for agy"):
+        dispatch(parser.parse_args(["-H", str(home), "continue", "GUI", "Agent", "-P", "agy-profile"]),
+                 parser, input_stream=StringIO(), output_stream=StringIO())
+    assert dispatcher._rows("SELECT event_id FROM activity_events ORDER BY rowid") == before
+
+    with pytest.raises(ContinuityError, match="does not exist"):
+        dispatch(parser.parse_args(["-H", str(home), "continue", "GUI", "Agent", "-a"]),
+                 parser, input_stream=StringIO(), output_stream=StringIO())
+    assert dispatcher._rows("SELECT event_id FROM activity_events ORDER BY rowid") == before

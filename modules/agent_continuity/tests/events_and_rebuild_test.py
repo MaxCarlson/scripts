@@ -109,6 +109,25 @@ def test_event_ingestion_is_idempotent_across_replays(tmp_path: Path) -> None:
     assert len(mat.list_associations()) == 1
 
 
+def test_sync_with_only_projected_events_does_not_open_a_writer(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "state"
+    svc = ContinuityService(home_dir=home)
+    svc.add_workflow(slug="alpha", title="Alpha", apply=True)
+    mat = SQLiteMaterializer(home)
+
+    first = mat.sync_from_spools()
+    assert first.ingested_count == 0
+    assert first.skipped_duplicates > 0
+
+    def unexpected_writer(*args, **kwargs):
+        raise AssertionError("No-op spool synchronization must not open a write transaction.")
+
+    monkeypatch.setattr(mat, "_connect_rw", unexpected_writer)
+    second = mat.sync_from_spools()
+    assert second.ingested_count == 0
+    assert second.skipped_duplicates == first.skipped_duplicates
+
+
 def test_corrupt_and_partial_spool_files_do_not_break_valid_recovery(tmp_path: Path) -> None:
     home = tmp_path / "state"
     svc = ContinuityService(home_dir=home)

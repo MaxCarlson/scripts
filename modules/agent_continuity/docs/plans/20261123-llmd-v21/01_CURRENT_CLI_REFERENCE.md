@@ -1,7 +1,15 @@
 # LLMD CLI — Current Behavior and Source Reference
 
-**Evidence baseline:** LLMD v1.7.1 integrated main at `ae04cbe08acaef235c9d0b1264fa3fdc3c2a4a57`; the v2.0.0 section below describes the active feature branch.
+**Evidence baseline:** LLMD v2.3.0 candidate on `feature/llmd-25-48-49-20261127`, based on merged v2.1.1 at `7b28b81cad915982ab38961c7538ca1c2ff5f032`. Older sections retain their release-specific source history.
 **Document type:** source reference and migration notes. Windows terminal and provider behavior is not claimed unless separately qualified in the active plan status.
+
+## LLMD v2.3.0 — persistent profiles and identity metadata
+
+`llmd profile list|show|create|update|retire|assign|clear` manages durable named settings profiles. Profiles contain only allowlisted normalized provider settings, optional runtime and cwd, and revisions; they never contain prompts, secrets, raw configuration, arbitrary provider argv, or authorization. A slot assignment applies by default to launch operations. `-P/--profile` selects a profile for one invocation, and `-B/--no-profile` bypasses the slot assignment for one invocation. Invocation settings override matching profile settings; explicit cwd/runtime and the current provider/session must remain compatible. Retired or mismatched profiles fail closed. New-session, reactivation, permission, and unknown-native-option authorization remain invocation-scoped.
+
+Slots may have an explicit nullable workflow type: `standard`, `handoff`, or `goal`. Set it with `llmd workflow-type GUI AGENT TYPE`; clear it with `--clear`. A null type preserves legacy behavior. This field is descriptive and does not alter permissions, provider, handoff, installer, delegation, or native goal behavior.
+
+Each GUI membership exposes a positive monotonic `agent_number`; immutable `gui_id` and `slot_id` remain the identity keys. Slot creation commits its number atomically with the creation event. Previews do not consume numbers; gaps and historical reservations are retained. Existing verified assignments survive migration. Use `llmd agent-number GUI AGENT NUMBER --source EVIDENCE` only to import a number from an independently verified source. Lists, registration results and doctor output show number/workflow metadata; JSON schema version remains unchanged and gains additive fields. The checkpoint interface uses `slot_id` as identity and treats the observed GUI membership, number, workflow type and profile revision/settings digest as snapshot metadata.
 
 ## LLMD v2.1.1 — Claude Code native provider corrections
 
@@ -119,7 +127,7 @@ Unmanaged flags require `-U/--allow-native-unknown` before `--`. This only autho
 
 `llmd last` reads only the history keyed by the valid UUID in `TERMINAL_SESSION_ID`; absent or malformed IDs produce an error, never a global fallback. `TERMINAL_SESSION_OWNER_PID` is read-only diagnostic metadata. Launcher-created panes receive distinct internal UUIDs through `pane-run -T` instead of inheriting the profile-owned terminal key; that same context follows options 4–6, reviewer returns, and repeated transitions. `last -N COUNT` displays terminal-local history; `last -a` resumes the exact recorded provider/environment/native session after current-state validation, while inactive slots require `last -R -a`. Resume does not replay stored cwd or native settings; explicit `-C` and options after `--` apply only to that resume and are validated/previewed before activation. A `launching` record has an unknown outcome after hard termination, not a verified running process. `llmd recent [-N COUNT] [-j]` is cross-terminal and read-only. History uses immutable dispatcher events and a rebuildable SQLite projection.
 
-LLMD-25 persistent launch profiles remain the next planned batch; LLMD-26 native lock diagnostics remain deferred.
+LLMD-25 persistent profiles, LLMD-48 workflow types, and LLMD-49 stable agent numbers are delivered in the v2.3.0 candidate. LLMD-26 native lock diagnostics remain deferred.
 
 ### v1.5.2 correctness follow-up
 

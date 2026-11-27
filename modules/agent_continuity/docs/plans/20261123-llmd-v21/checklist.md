@@ -1,5 +1,19 @@
 # LLMD v2.1 Implementation Checklist
 
+## LLMD-25 / LLMD-48 / LLMD-49 — profiles and identity metadata (v2.3.0 candidate)
+
+- [x] Specify immutable, event-sourced profile definitions, revisions, precedence, compatibility checks, and authorization exclusion.
+- [x] Add schema-v4 profile projection and assignment; preserve legacy untyped slots and existing verified numbers.
+- [x] Add profile CLI, invocation overrides, bypass, provenance previews, and retired/provider/runtime mismatch protections.
+- [x] Add nullable standard/handoff/goal workflow type with explicit mutation and clear; preserve untyped legacy behavior.
+- [x] Allocate and reserve per-GUI monotonic agent numbers atomically with slot creation; preserve reservations and avoid preview consumption.
+- [x] Add explicit sourced reconciliation for independently verified legacy agent numbers.
+- [x] Expose stable IDs, numbers, workflow type, and non-secret profile revision/digest in registration, lists, status, doctor, and additive JSON fields.
+- [x] Define checkpoint-facing identity metadata without modifying Agent #3-owned checkpoint/runtime files.
+- [x] Add focused regressions for rebuild/migration, profile lifecycle/security/precedence, concurrent allocation, legacy reconciliation, JSON metadata, and dry-run purity.
+- [x] Run the full module suite, affected-case rerun, Claude/review regressions, help-registry compatibility, Ruff, version checks, diff checks, and disposable package/CLI smoke. The full run was 397 passed/8 failed in 964.40s; all eight cases passed in a focused 24-test rerun, and the full suite was not repeated after repairs.
+- [ ] Commit/push feature candidate and request independent GUI review; do not merge.
+
 ## LLMD-56 — standalone Claude Code provider (v2.1.1 corrective candidate)
 
 - [x] Add canonical Claude provider adapter and keep installation independent of local_agent_bridge, prepared resources, hooks, delegation infrastructure, and Terminal Launcher 0.2.0.
@@ -112,7 +126,7 @@
 
 ## Deferred
 
-- [ ] LLMD-25 persistent launch profiles (next planned batch).
+- [x] LLMD-25 persistent launch profiles (v2.3.0 candidate; v2.2.0 review boundary).
 - [ ] LLMD-26 native lock diagnostics (deferred).
 
 ## LLMD v1.6.0 integration candidate

@@ -7,7 +7,7 @@ import sqlite3
 from .errors import ContinuityError, ErrorCode
 from .identifiers import now_utc_iso
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _DDL_V1 = """
 CREATE TABLE IF NOT EXISTS schema_metadata (
@@ -184,10 +184,35 @@ CREATE TABLE IF NOT EXISTS agent_slots (
     name TEXT NOT NULL,
     name_key TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'active',
+    workflow_type TEXT,
+    profile_id TEXT,
+    agent_number INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     last_activity_at TEXT,
     UNIQUE(gui_id, name_key)
+);
+
+CREATE TABLE IF NOT EXISTS dispatcher_launch_profiles (
+    profile_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL UNIQUE,
+    provider TEXT NOT NULL,
+    runtime_kind TEXT,
+    cwd TEXT,
+    settings_json TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dispatcher_agent_number_reservations (
+    gui_id TEXT NOT NULL,
+    agent_number INTEGER NOT NULL CHECK (agent_number > 0),
+    slot_id TEXT NOT NULL,
+    reserved_at TEXT NOT NULL,
+    PRIMARY KEY(gui_id, agent_number)
 );
 
 CREATE TABLE IF NOT EXISTS agent_slot_activations (
@@ -259,6 +284,9 @@ CREATE TABLE IF NOT EXISTS dispatcher_terminal_launches (
 
 CREATE INDEX IF NOT EXISTS idx_dispatcher_review_cycle_slots
     ON dispatcher_review_cycles(original_slot_id, reviewer_slot_id, status);
+CREATE INDEX IF NOT EXISTS idx_dispatcher_profiles_status ON dispatcher_launch_profiles(status, name_key);
+CREATE INDEX IF NOT EXISTS idx_dispatcher_agent_reservations_slot
+    ON dispatcher_agent_number_reservations(slot_id, gui_id);
 
 CREATE INDEX IF NOT EXISTS idx_workflows_slug ON workflows(slug);
 CREATE INDEX IF NOT EXISTS idx_gui_workflow ON gui_conversations(workflow_id);
@@ -308,36 +336,30 @@ def ensure_schema(conn: sqlite3.Connection) -> int:
     """Initialize or migrate the SQLite schema to SCHEMA_VERSION."""
     configure_connection(conn, read_only=False)
     current = get_schema_version(conn)
-    if current is None:
-        conn.executescript(_DDL_V1)
-        now = now_utc_iso()
-        with conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('schema_version', ?)",
-                (str(SCHEMA_VERSION),),
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('initialized_at', ?)",
-                (now,),
-            )
-        return SCHEMA_VERSION
-    if current in {1, 2}:
-        conn.executescript(_DDL_V1)
-        now = now_utc_iso()
-        with conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('schema_version', ?)",
-                (str(SCHEMA_VERSION),),
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('migrated_at', ?)",
-                (now,),
-            )
-        return SCHEMA_VERSION
-    if current > SCHEMA_VERSION:
+    if current is not None and current > SCHEMA_VERSION:
         raise ContinuityError(
             ErrorCode.REGISTRY_REBUILD_REQUIRED,
             f"Database schema version {current} is newer than supported version {SCHEMA_VERSION}.",
             {"db_version": current, "supported_version": SCHEMA_VERSION},
         )
-    return current
+    if current == SCHEMA_VERSION:
+        return SCHEMA_VERSION
+
+    conn.executescript(_DDL_V1)
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(agent_slots)").fetchall()}
+    for name, sql_type in (("workflow_type", "TEXT"), ("profile_id", "TEXT"), ("agent_number", "INTEGER")):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE agent_slots ADD COLUMN {name} {sql_type}")
+
+    now = now_utc_iso()
+    with conn:
+        key = "initialized_at" if current is None else "migrated_at"
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('schema_version', ?)",
+            (str(SCHEMA_VERSION),),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_metadata(key, value) VALUES (?, ?)",
+            (key, now),
+        )
+    return SCHEMA_VERSION

@@ -93,6 +93,12 @@ class EventType(StrEnum):
     DISPATCHER_SLOTS_TRANSITIONED = "dispatcher.slots_transitioned"
     DISPATCHER_AGENT_TRANSITION_COMPLETED = "dispatcher.agent_transition_completed"
     DISPATCHER_TERMINAL_LAUNCH_RECORDED = "dispatcher.terminal_launch_recorded"
+    DISPATCHER_LAUNCH_PROFILE_CREATED = "dispatcher.launch_profile_created"
+    DISPATCHER_LAUNCH_PROFILE_UPDATED = "dispatcher.launch_profile_updated"
+    DISPATCHER_LAUNCH_PROFILE_RETIRED = "dispatcher.launch_profile_retired"
+    DISPATCHER_SLOT_PROFILE_ASSIGNED = "dispatcher.slot_profile_assigned"
+    DISPATCHER_SLOT_WORKFLOW_TYPE_CHANGED = "dispatcher.slot_workflow_type_changed"
+    DISPATCHER_AGENT_NUMBER_ASSIGNED = "dispatcher.agent_number_assigned"
 
 
 @dataclass(slots=True)

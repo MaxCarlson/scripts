@@ -30,6 +30,24 @@ llmd list -g "Project" -N 3
 
 Registration applies by default and never launches a provider. `-d` previews it. Existing associations are left unchanged; selecting a different session requires `-s/--select` and preserves history. Runtime use is not observed in this release, so verify the session is not in use before changing a selection. Registration uses existing events and a single mutation lock; interrupted operations can be retried. LLMD operational commands execute by default; use `-d/--dry-run` to preview. `-a/--apply` remains a compatibility alias. `start` and `continue` also accept GUI and agent positional names.
 
+## Persistent profiles and stable agent identity (LLMD v2.3.0)
+
+Launch profiles hold normalized, non-secret provider settings and can be assigned to a slot or selected for one invocation. Settings resolve as invocation options over the chosen profile over provider defaults; `--no-profile` bypasses an assigned profile for that invocation. Profiles are revalidated against the destination provider/runtime and current paths each time. They do not store prompts, credentials, raw configuration, unknown arguments, new-session authorization, or permission-bypass settings, and cannot restore authorization that was not explicitly supplied for the current launch.
+
+```powershell
+llmd profile create safe-codex -p codex -s sandbox=workspace-write -s approval_policy=on-request
+llmd profile assign -g Project -n Agent -P safe-codex
+llmd continue Project Agent -P safe-codex -d
+llmd profile list
+llmd workflow-type Project Agent handoff
+llmd list -g Project -j
+llmd agent-number Project LegacyAgent 12 --source "verified handoff record 2026-11-27"
+```
+
+`standard`, `handoff`, and `goal` are descriptive workflow metadata only; legacy slots remain untyped until explicitly changed. Each slot receives an immutable `slot_id` and each GUI membership a positive, monotonically allocated `#agent_number`. Numbers are allocated atomically with slot creation, never consumed by dry-run, and never reused. Existing numbers are retained; importing independently verified legacy numbers requires the explicit `agent-number --source` command. JSON keeps its existing schema version and adds optional identity/profile metadata fields.
+
+Release review boundaries: persistent profiles are the v2.2.0 slice; workflow types and stable numbering ship together as v2.3.0 because they form checkpoint-ready identity metadata. This branch combines all three for qualification. Checkpoints, runtime discovery, terminal ownership and transfer remain separately owned roadmap work.
+
 ## Named Agent Dispatcher
 
 `llmd` stores local GUI aliases, named agent slots, lifecycle state, pending launches, and ordered session activations in the same durable event spool and rebuildable SQLite index used by `agents`. A local GUI alias does not create a conversation in ChatGPT.
@@ -102,7 +120,7 @@ For wheel deployment, build both packages from the repository root and install b
 
 ```powershell
 python -m pip wheel --no-deps --wheel-dir .\dist .\modules\terminal_launcher .\modules\agent_continuity
-python -m pip install .\dist\terminal_launcher-0.1.1-py3-none-any.whl .\dist\agent_continuity-1.1.0-py3-none-any.whl
+python -m pip install .\dist\terminal_launcher-0.2.0-py3-none-any.whl .\dist\agent_continuity-2.3.0-py3-none-any.whl
 ```
 
 The two packages remain independently installable: `terminal-launcher` has no dependency on `agent-continuity`. Running source directly without installing the dispatcher remains available for non-terminal commands, but `llmd open` requires the declared dependency:

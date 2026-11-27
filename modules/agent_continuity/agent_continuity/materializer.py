@@ -109,6 +109,29 @@ class SQLiteMaterializer:
                 rebuilt=False,
             )
 
+        # Dispatcher reads synchronize frequently. If every durable event is
+        # already projected, avoid a no-op write transaction just to refresh
+        # last_sync_at; scanning the spool above still observes events from
+        # other processes on every call.
+        if self.db_path.exists():
+            conn = self._connect_ro()
+            if conn is not None:
+                try:
+                    version = get_schema_version(conn)
+                    known = ({str(row[0]) for row in conn.execute("SELECT event_id FROM ingested_events")}
+                             if version == SCHEMA_VERSION else None)
+                finally:
+                    conn.close()
+                if known is not None and all(rec.envelope.event_id in known for rec in scan.records):
+                    return SyncResult(
+                        ingested_count=0,
+                        skipped_duplicates=len(scan.records),
+                        total_spool_events=len(scan.records),
+                        issues=scan.issues,
+                        db_path=str(self.db_path),
+                        rebuilt=False,
+                    )
+
         with closing(self._connect_rw()) as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
@@ -231,6 +254,25 @@ class SQLiteMaterializer:
             issues=scan.issues,
             db_path=str(self.db_path),
             rebuilt=True,
+        )
+
+    @staticmethod
+    def _reserve_agent_number_in_tx(
+        conn: sqlite3.Connection, *, gui_id: str, slot_id: str, agent_number: int, reserved_at: str
+    ) -> None:
+        if agent_number < 1:
+            raise ContinuityError(ErrorCode.MATERIALIZER_FAILED, "Agent numbers must be positive integers.")
+        owner = conn.execute(
+            "SELECT slot_id FROM dispatcher_agent_number_reservations WHERE gui_id = ? AND agent_number = ?",
+            (gui_id, agent_number),
+        ).fetchone()
+        if owner is not None and str(owner["slot_id"]) != slot_id:
+            raise ContinuityError(ErrorCode.MATERIALIZER_FAILED,
+                                  f"Agent number {agent_number} is already reserved in GUI {gui_id}.")
+        conn.execute(
+            "INSERT OR IGNORE INTO dispatcher_agent_number_reservations(gui_id, agent_number, slot_id, reserved_at) "
+            "VALUES (?, ?, ?, ?)",
+            (gui_id, agent_number, slot_id, reserved_at),
         )
 
     def _apply_event_in_tx(
@@ -507,11 +549,65 @@ class SQLiteMaterializer:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO agent_slots(
-                    slot_id, gui_id, name, name_key, state, created_at, updated_at, last_activity_at
-                ) VALUES (?, ?, ?, ?, 'active', ?, ?, NULL)
+                    slot_id, gui_id, name, name_key, state, workflow_type, profile_id, agent_number,
+                    created_at, updated_at, last_activity_at
+                ) VALUES (?, ?, ?, ?, 'active', NULL, NULL, ?, ?, ?, NULL)
                 """,
-                (str(p["slot_id"]), str(p["gui_id"]), str(p["name"]), str(p["name_key"]), ts, ts),
+                (str(p["slot_id"]), str(p["gui_id"]), str(p["name"]), str(p["name_key"]),
+                 int(p["agent_number"]) if p.get("agent_number") is not None else None, ts, ts),
             )
+            if p.get("agent_number") is not None:
+                self._reserve_agent_number_in_tx(
+                    conn, gui_id=str(p["gui_id"]), slot_id=str(p["slot_id"]),
+                    agent_number=int(p["agent_number"]), reserved_at=ts,
+                )
+
+        elif etype == EventType.DISPATCHER_AGENT_NUMBER_ASSIGNED.value:
+            slot_id = str(p["slot_id"])
+            gui_id = str(p["gui_id"])
+            agent_number = int(p["agent_number"])
+            row = conn.execute("SELECT gui_id, agent_number FROM agent_slots WHERE slot_id = ?", (slot_id,)).fetchone()
+            if row is None or str(row["gui_id"]) != gui_id:
+                raise ContinuityError(ErrorCode.MATERIALIZER_FAILED, "Agent number assignment references an unknown or moved slot.")
+            if row["agent_number"] is not None and int(row["agent_number"]) != agent_number:
+                raise ContinuityError(ErrorCode.MATERIALIZER_FAILED, "Agent number assignment conflicts with the existing slot identity.")
+            conn.execute("UPDATE agent_slots SET agent_number = ?, updated_at = ? WHERE slot_id = ?",
+                         (agent_number, ts, slot_id))
+            self._reserve_agent_number_in_tx(conn, gui_id=gui_id, slot_id=slot_id,
+                                             agent_number=agent_number, reserved_at=ts)
+
+        elif etype == EventType.DISPATCHER_SLOT_PROFILE_ASSIGNED.value:
+            conn.execute("UPDATE agent_slots SET profile_id = ?, updated_at = ? WHERE slot_id = ?",
+                         (p.get("profile_id"), ts, str(p["slot_id"])))
+
+        elif etype == EventType.DISPATCHER_SLOT_WORKFLOW_TYPE_CHANGED.value:
+            conn.execute("UPDATE agent_slots SET workflow_type = ?, updated_at = ? WHERE slot_id = ?",
+                         (p.get("workflow_type"), ts, str(p["slot_id"])))
+
+        elif etype == EventType.DISPATCHER_LAUNCH_PROFILE_CREATED.value:
+            conn.execute(
+                """INSERT OR IGNORE INTO dispatcher_launch_profiles(
+                       profile_id, name, name_key, provider, runtime_kind, cwd, settings_json,
+                       revision, status, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+                (str(p["profile_id"]), str(p["name"]), str(p["name_key"]), str(p["provider"]),
+                 p.get("runtime_kind"), p.get("cwd"), json.dumps(p.get("settings") or {}, sort_keys=True),
+                 int(p["revision"]), str(p.get("created_at") or ts), ts),
+            )
+
+        elif etype == EventType.DISPATCHER_LAUNCH_PROFILE_UPDATED.value:
+            conn.execute(
+                """UPDATE dispatcher_launch_profiles SET name = ?, name_key = ?, provider = ?,
+                       runtime_kind = ?, cwd = ?, settings_json = ?, revision = ?, updated_at = ?
+                   WHERE profile_id = ?""",
+                (str(p["name"]), str(p["name_key"]), str(p["provider"]), p.get("runtime_kind"),
+                 p.get("cwd"), json.dumps(p.get("settings") or {}, sort_keys=True),
+                 int(p["revision"]), ts, str(p["profile_id"])),
+            )
+
+        elif etype == EventType.DISPATCHER_LAUNCH_PROFILE_RETIRED.value:
+            conn.execute("UPDATE dispatcher_launch_profiles SET status = 'retired', updated_at = ? WHERE profile_id = ?",
+                         (ts, str(p["profile_id"])))
 
         elif etype == EventType.DISPATCHER_SLOT_STATE_CHANGED.value:
             conn.execute(

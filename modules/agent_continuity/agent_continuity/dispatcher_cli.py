@@ -51,6 +51,8 @@ _NATIVE_ARG_COMMANDS = {"continue", "start", "switch", "review", "return", "last
 _COLOR_MODE: ContextVar[str] = ContextVar("llmd_color_mode", default="auto")
 _STARTUP_PROGRESS: ContextVar[bool] = ContextVar("llmd_startup_progress", default=False)
 _STARTUP_STARTED: ContextVar[float | None] = ContextVar("llmd_startup_started", default=None)
+_PROFILE_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar("llmd_profile_context", default=None)
+_PROFILE_ARGV: ContextVar[tuple[str, ...]] = ContextVar("llmd_profile_argv", default=())
 
 
 def _current_color_mode() -> str:
@@ -146,6 +148,66 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Color human-readable output (default: auto).")
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    profile = sub.add_parser("profile", help="Manage persistent, provider-scoped launch profiles.")
+    profile_sub = profile.add_subparsers(dest="profile_command")
+    profile_list = profile_sub.add_parser("list", help="List launch profiles.")
+    _add_common_options(profile_list)
+    profile_list.add_argument("-p", "--provider", choices=("codex", "agy", "claude"))
+    profile_list.add_argument("-A", "--all", action="store_true", help="Include retired profiles.")
+    profile_show = profile_sub.add_parser("show", help="Show a profile's normalized settings.")
+    _add_common_options(profile_show)
+    profile_show.add_argument("name")
+    profile_create = profile_sub.add_parser("create", help="Create a launch profile.")
+    _add_common_options(profile_create)
+    profile_create.add_argument("name")
+    profile_create.add_argument("-p", "--provider", required=True, choices=("codex", "agy", "claude"))
+    profile_create.add_argument("-e", "--runtime", choices=("windows", "wsl", "linux", "macos"))
+    profile_create.add_argument("-C", "--cwd")
+    profile_create.add_argument("-s", "--setting", action="append", default=[] , metavar="KEY=VALUE")
+    _add_execution_options(profile_create)
+    profile_update = profile_sub.add_parser("update", help="Update a profile and advance its revision.")
+    _add_common_options(profile_update)
+    profile_update.add_argument("name")
+    profile_update.add_argument("--rename")
+    profile_update.add_argument("-p", "--provider", choices=("codex", "agy", "claude"))
+    profile_update.add_argument("-e", "--runtime", choices=("windows", "wsl", "linux", "macos"))
+    profile_update.add_argument("-C", "--cwd")
+    profile_update.add_argument("--clear-cwd", action="store_true")
+    profile_update.add_argument("-s", "--setting", action="append", default=[], metavar="KEY=VALUE")
+    profile_update.add_argument("-X", "--clear-setting", action="append", default=[], metavar="KEY")
+    _add_execution_options(profile_update)
+    profile_retire = profile_sub.add_parser("retire", help="Retire a profile without restoring its settings later.")
+    _add_common_options(profile_retire)
+    profile_retire.add_argument("name")
+    _add_execution_options(profile_retire)
+    profile_assign = profile_sub.add_parser("assign", help="Assign a profile to an agent slot.")
+    _add_common_options(profile_assign)
+    profile_assign.add_argument("-g", "--gui", required=True)
+    profile_assign.add_argument("-n", "--agent-name", required=True)
+    profile_assign.add_argument("-P", "--profile", required=True)
+    _add_execution_options(profile_assign)
+    profile_clear = profile_sub.add_parser("clear", help="Clear a slot's assigned profile.")
+    _add_common_options(profile_clear)
+    profile_clear.add_argument("-g", "--gui", required=True)
+    profile_clear.add_argument("-n", "--agent-name", required=True)
+    _add_execution_options(profile_clear)
+
+    number = sub.add_parser("agent-number", help="Import a verified legacy agent number before fallback reconciliation.")
+    _add_common_options(number)
+    number.add_argument("gui")
+    number.add_argument("agent")
+    number.add_argument("number", type=int)
+    number.add_argument("--source", required=True, help="Concise reference for independently verified numbering evidence.")
+    _add_execution_options(number)
+
+    workflow = sub.add_parser("workflow-type", help="Set or clear a slot's workflow type.")
+    _add_common_options(workflow)
+    workflow.add_argument("gui")
+    workflow.add_argument("agent")
+    workflow.add_argument("type", nargs="?", choices=("standard", "handoff", "goal"))
+    workflow.add_argument("--clear", action="store_true", help="Clear the type and retain legacy untyped behavior.")
+    _add_execution_options(workflow)
 
     gui = sub.add_parser("gui", help="Register or list local GUI conversation aliases.")
     gui_sub = gui.add_subparsers(dest="gui_command")
@@ -263,6 +325,8 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("-R", "--reactivate", action="store_true",
                                  help="Explicitly reactivate an inactive agent before switching providers.")
         command.add_argument("-C", "--cwd")
+        command.add_argument("-P", "--profile", help="Use this launch profile for this invocation.")
+        command.add_argument("-B", "--no-profile", action="store_true", help="Ignore the slot profile for this invocation.")
         command.add_argument("-U", "--allow-native-unknown", action="store_true",
                              help="Authorize validated generic provider options after `--`.")
         _add_execution_options(command)
@@ -286,6 +350,8 @@ def build_parser() -> argparse.ArgumentParser:
     cont.add_argument("-i", "--session-id", help="Select this exact session from the agent's existing history.")
     cont.add_argument("-R", "--reactivate", action="store_true", help="Explicitly reactivate an inactive agent before resuming.")
     cont.add_argument("-C", "--cwd", help="Use this working directory for this invocation only.")
+    cont.add_argument("-P", "--profile", help="Use this launch profile for this invocation.")
+    cont.add_argument("-B", "--no-profile", action="store_true", help="Ignore the slot profile for this invocation.")
     cont.add_argument("-U", "--allow-native-unknown", action="store_true",
                       help="Authorize validated generic provider options after `--`.")
 
@@ -300,6 +366,8 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("-p", "--provider", required=True, choices=("agy", "codex", "claude"))
     review.add_argument("-e", "--environment")
     review.add_argument("-C", "--cwd", help="Reviewer working directory.")
+    review.add_argument("-P", "--profile", help="Use this launch profile for this invocation.")
+    review.add_argument("-B", "--no-profile", action="store_true", help="Ignore the slot profile for this invocation.")
     review.add_argument("-U", "--allow-native-unknown", action="store_true",
                         help="Authorize validated generic provider options after `--`.")
     review.add_argument("-N", "--new", action="store_true", help="Start a new reviewer conversation instead of resuming its selected session.")
@@ -314,6 +382,8 @@ def build_parser() -> argparse.ArgumentParser:
     returning.add_argument("-n", "--agent-name", required=True, help="Original implementation agent.")
     _add_execution_options(returning)
     returning.add_argument("-C", "--cwd", help="Use this working directory for this invocation only.")
+    returning.add_argument("-P", "--profile", help="Use this launch profile for this invocation.")
+    returning.add_argument("-B", "--no-profile", action="store_true", help="Ignore the slot profile for this invocation.")
     returning.add_argument("-U", "--allow-native-unknown", action="store_true",
                            help="Authorize validated generic provider options after `--`.")
 
@@ -1002,6 +1072,7 @@ def _launch_preview(dispatcher: DispatcherService, provider: str, session_id: st
         "unknown_native_authorization": {"enabled": allow_native_unknown,
                                          "options": _unknown_native_option_names(provider, native_args)},
         "process_environment": "inherited for this invocation; no environment overrides are persisted",
+        "profile": _PROFILE_CONTEXT.get(),
     }
 
 
@@ -1073,6 +1144,7 @@ def _new_launch_preview(dispatcher: DispatcherService, provider: str, environmen
         "unknown_native_authorization": {"enabled": allow_native_unknown,
                                          "options": _unknown_native_option_names(provider, native_args)},
         "process_environment": "inherited for this invocation; no environment overrides are persisted",
+        "profile": _PROFILE_CONTEXT.get(),
     }
 
 
@@ -1513,6 +1585,11 @@ def _run_pane(
                              "error", enabled=color_enabled(_current_color_mode(), is_tty=output_stream.isatty(),
                                                             stream=output_stream)), file=output_stream)
         return result.returncode
+    injected_profile_argv = _PROFILE_ARGV.get()
+    if injected_profile_argv and tuple(native_args[:len(injected_profile_argv)]) == injected_profile_argv:
+        native_args = native_args[len(injected_profile_argv):]
+    _PROFILE_ARGV.set(())
+    _PROFILE_CONTEXT.set(None)
     opposite_provider = "agy" if provider == "codex" else "codex"
     use_color = color_enabled(_current_color_mode(), is_tty=output_stream.isatty(), stream=output_stream)
     while True:
@@ -1815,6 +1892,13 @@ def _switch_to_existing_agent(
     if overrides is None:
         return 0
     destination_args, destination_cwd_override = overrides
+    destination_profile_args = argparse.Namespace(command="continue", gui=source["gui_alias"],
+        agent_name=destination["name"], provider=current["provider"], profile=None,
+        no_profile=False, cwd=destination_cwd_override, environment=None)
+    destination_args = _resolve_profile_invocation(dispatcher, destination_profile_args, destination_args)
+    destination_cwd_override = destination_profile_args.cwd
+    profile_injected = tuple(destination_args[:len(destination_args) - len(overrides[0])])
+    _PROFILE_ARGV.set(profile_injected)
     if destination_cwd_override:
         _validate_cwd_override(dispatcher, current["environment_id"], destination_cwd_override)
     preview = _launch_preview(dispatcher, current["provider"], current["native_session_id"], current["environment_id"],
@@ -2087,28 +2171,51 @@ def _session_runtime_lock(dispatcher: DispatcherService, name: str, *, blocking:
 
 
 def _try_session_runtime_lock(dispatcher: DispatcherService, name: str) -> bool:
+    from .dispatcher import _HELD_MUTATION_LOCKS, _LOCAL_MUTATION_LOCKS, _LOCAL_MUTATION_LOCKS_GUARD
+
     path = dispatcher.home_dir / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as stream:
-        try:
-            stream.seek(0)
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+    lock_key = str(path.resolve())
+    if lock_key in _HELD_MUTATION_LOCKS.get():
+        return True
+    with _LOCAL_MUTATION_LOCKS_GUARD:
+        local_lock = _LOCAL_MUTATION_LOCKS.setdefault(lock_key, threading.RLock())
+    if not local_lock.acquire(blocking=False):
+        return True
+    try:
+        with path.open("a+b") as stream:
+            try:
                 stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
-            return False
-        except OSError:
-            return True
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                return False
+            except OSError:
+                return True
+    finally:
+        local_lock.release()
 
 
 def _session_in_use(dispatcher: DispatcherService, provider: str, environment_id: str, session_id: str) -> bool:
     key = hashlib.sha256(f"{provider}\0{environment_id}\0{session_id}".encode()).hexdigest()[:24]
     return _try_session_runtime_lock(dispatcher, f"session-{key}.lock")
+
+
+def _guard_current_session_change(
+    dispatcher: DispatcherService,
+    current_identity: tuple[str, str, str] | None,
+    destination_identity: tuple[str, str, str],
+) -> None:
+    if (current_identity and current_identity != destination_identity
+            and _session_in_use(dispatcher, *current_identity)):
+        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                              "The current session is in use; session selection cannot change.")
 
 
 def _continue_items(dispatcher: DispatcherService, gui: str | None = None, *, include_completed: bool = False) -> list[dict[str, Any]]:
@@ -2205,6 +2312,14 @@ def _run_picker(dispatcher: DispatcherService, args: argparse.Namespace, input_s
         print("This session is already in use by an LLMD-managed process.", file=output_stream)
         return 2
     current = item.get("current") or {}
+    explicit_native_args = list(native_args)
+    selected_args = argparse.Namespace(**vars(args))
+    selected_args.gui = item["gui_alias"]
+    selected_args.agent_name = item["name"]
+    selected_args.provider = getattr(args, "provider", None)
+    native_args = _resolve_profile_invocation(dispatcher, selected_args, explicit_native_args)
+    _PROFILE_ARGV.set(tuple(native_args[:len(native_args) - len(explicit_native_args)]))
+    cwd_override = getattr(selected_args, "cwd", None)
     provider = item.get("provider") or current.get("provider")
     environment_id = item.get("current_environment_id") or current.get("environment_id")
     session_id = item.get("current_session_id") or current.get("native_session_id")
@@ -2373,7 +2488,8 @@ def _doctor_report(dispatcher: DispatcherService, gui: str | None = None, agent:
         "limitations": ["Lock observations cover this local runtime only; they do not prove external provider inactivity.",
                         "A lock timeout does not establish a stale lock or identify the blocked operation."],
     }
-    rows = dispatcher._rows("""SELECT s.slot_id, s.name, s.state, g.alias,
+    rows = dispatcher._rows("""SELECT s.slot_id, s.gui_id, s.name, s.state, s.agent_number,
+                   s.workflow_type, s.profile_id, g.alias,
                    a.provider AS current_provider, a.environment_id AS current_environment_id,
                    a.native_session_id AS current_session_id,
                    p.launch_id AS pending_launch_id, p.provider AS pending_provider,
@@ -2406,7 +2522,9 @@ def _doctor_report(dispatcher: DispatcherService, gui: str | None = None, agent:
                 lock_key = hashlib.sha256(f"{provider}\0{env_id}\0{sid}".encode()).hexdigest()[:24]
                 observation = _probe_existing_lock(dispatcher.home_dir / f"session-{lock_key}.lock")
                 runtime = "IN USE" if observation == "contended" else "UNKNOWN" if observation == "inaccessible" else "NOT OBSERVED"
-        report["agents"].append({"gui": row["alias"], "name": row["name"], "slot_id": row["slot_id"],
+        report["agents"].append({"gui": row["alias"], "gui_id": row["gui_id"], "name": row["name"],
+            "slot_id": row["slot_id"], "agent_number": row["agent_number"],
+            "workflow_type": row["workflow_type"], "profile_id": row["profile_id"],
             "lifecycle": row["state"], "provider": provider, "session_id": sid, "runtime": runtime,
             "duplicate_resume": "blocked" if runtime == "IN USE" else "uncertain"})
         if row["pending_launch_id"]:
@@ -2440,7 +2558,10 @@ def _render_doctor_report(report: dict[str, Any], stream: TextIO, color: str = "
     for agent in report["agents"]:
         provider = (agent.get("provider") or "unassigned").upper()
         session = agent.get("session_id") or "no selected session"
-        print(f"  {semantic_color(agent['gui'], 'gui', enabled=enabled)} / {semantic_color(agent['name'], 'agent', enabled=enabled)}  "
+        number = f"#{agent['agent_number']} " if agent.get("agent_number") else ""
+        workflow = f" [{agent['workflow_type']}]" if agent.get("workflow_type") else ""
+        display_name = f"{semantic_color(agent['name'], 'agent', enabled=enabled)}{(' (' + number.strip() + ')') if number else ''}"
+        print(f"  {semantic_color(agent['gui'], 'gui', enabled=enabled)} / {display_name}{workflow}  "
               f"{provider_semantic(provider, enabled=enabled)}  {state_color(str(agent['lifecycle']), enabled=enabled)}  "
               f"{runtime_semantic(str(agent['runtime']), enabled=enabled)}", file=stream)
         print(f"    {semantic_color('Session:', 'label', enabled=enabled)} {semantic_color(session, 'session', enabled=enabled)}; "
@@ -2563,7 +2684,9 @@ def _render_listing(
     # 120 columns without imposing a fixed name/session split on every listing.
     max_table_session = max(8, width - 69)
     session_width = min(longest_session, max_table_session)
-    name_width = max(12, min(32, width - 57 - session_width))
+    identity_prefix = max((display_width(f"#{row.get('agent_number')} ") if row.get("agent_number") else 0
+                           for row in all_rows), default=0)
+    name_width = max(12, min(40, width - 57 - session_width - identity_prefix))
     wide_table = width >= 104 and longest_session <= max_table_session
 
     def print_header() -> None:
@@ -2594,7 +2717,10 @@ def _render_listing(
             runtime = (_runtime_label(dispatcher, provider, row.get('current_environment_id'),
                                       row.get('current_session_id'), pending=bool(row.get('pending_launch_id')))
                        if dispatcher else 'UNKNOWN')
-            agent_text = pad_semantic(str(row['name']), name_width, "agent", enabled=use_color)
+            agent_label = (f"#{row['agent_number']} " if row.get("agent_number") else "") + str(row['name'])
+            if row.get("workflow_type"):
+                agent_label += f" [{row['workflow_type']}]"
+            agent_text = pad_semantic(agent_label, name_width, "agent", enabled=use_color)
             runtime_text = runtime_semantic(runtime, enabled=use_color)
             session_semantic = ("unresolved" if not _valid_existing_session(row) else "session") if stored_session else (
                 "pending" if session == "<pending>" else "unresolved"
@@ -2611,7 +2737,7 @@ def _render_listing(
                 print(line, file=stream)
             elif width >= 58:
                 first_width = max(10, width - 23)
-                print(f"  {pad_semantic(str(row['name']), first_width, 'agent', enabled=use_color)}  "
+                print(f"  {pad_semantic(agent_label, first_width, 'agent', enabled=use_color)}  "
                       f"{provider_text}  {state_text}", file=stream)
                 if longest_session > width - 30:
                     print(f"    {pad_semantic(activity, 16, 'timestamp', enabled=use_color)}  {runtime_text}", file=stream)
@@ -2624,7 +2750,7 @@ def _render_listing(
                           f"{runtime_text}  {semantic_color(clip_display(session_display, max(8, width - date_width - display_width(runtime) - 8)), session_semantic, enabled=use_color)}",
                           file=stream)
             else:
-                print("  " + semantic_color(clip_display(str(row['name']), width - 2), "agent", enabled=use_color), file=stream)
+                print("  " + semantic_color(clip_display(agent_label, width - 2), "agent", enabled=use_color), file=stream)
                 print(f"    {provider_text.strip()}  {state_text.strip()}  "
                       f"{semantic_color(activity, 'timestamp', enabled=use_color)}", file=stream)
                 session_cells = max(1, width - 8 - display_width(runtime))
@@ -2809,6 +2935,8 @@ def _resume_terminal_launch(
 def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input_stream: TextIO, output_stream: TextIO) -> int:
     _resolve_execution_mode(args)
     token = _COLOR_MODE.set(getattr(args, "color", "auto"))
+    profile_token = _PROFILE_CONTEXT.set(None)
+    profile_argv_token = _PROFILE_ARGV.set(())
     started = time.monotonic()
     startup_enabled = bool(args.command in {"start", "continue", "switch", "review", "return", "last"}
                            and getattr(args, "apply", False) and not getattr(args, "json_output", False))
@@ -2820,6 +2948,8 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
     finally:
         _STARTUP_STARTED.reset(started_token)
         _STARTUP_PROGRESS.reset(progress_token)
+        _PROFILE_ARGV.reset(profile_argv_token)
+        _PROFILE_CONTEXT.reset(profile_token)
         _COLOR_MODE.reset(token)
 
 
@@ -2828,7 +2958,13 @@ def _resolve_execution_mode(args: argparse.Namespace) -> None:
     command = getattr(args, "command", None)
     gui_action = command == "gui" and getattr(args, "gui_command", None) in {"add", "rename"}
     slot_action = command == "slot" and getattr(args, "slot_command", None) is not None
-    operational = command in {"start", "continue", "switch", "open", "review", "return", "attach"} or gui_action or slot_action
+    profile_action = command == "profile" and getattr(args, "profile_command", None) in {
+        "create", "update", "retire", "assign", "clear"
+    }
+    workflow_action = command == "workflow-type"
+    number_action = command == "agent-number"
+    operational = (command in {"start", "continue", "switch", "open", "review", "return", "attach"}
+                   or gui_action or slot_action or profile_action or workflow_action or number_action)
     if command == "last":
         args.apply = bool(getattr(args, "apply", False) or getattr(args, "resume", False))
         if getattr(args, "dry_run", False):
@@ -2844,6 +2980,187 @@ def _resolve_execution_mode(args: argparse.Namespace) -> None:
         raise ContinuityError(ErrorCode.INVALID_INPUT, "Choose either --dry-run or --apply.")
     args.apply_explicit = explicit_apply
     args.apply = explicit_apply or not dry_run
+def _parse_profile_settings(items: Sequence[str]) -> dict[str, Any]:
+    settings: dict[str, Any] = {}
+    for item in items:
+        key, separator, raw = str(item).partition("=")
+        if not separator or not key.strip():
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Profile settings require KEY=VALUE.")
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            value = raw
+        normalized = key.strip().casefold().replace("-", "_")
+        if normalized in settings:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, f"Duplicate profile setting {key!r}.")
+        settings[normalized] = value
+    return settings
+
+
+def _profile_setting_argv(provider: str, settings: dict[str, Any]) -> list[str]:
+    argv: list[str] = []
+    if provider == "codex":
+        for key, option in (("sandbox", "--sandbox"), ("approval_policy", "--ask-for-approval"),
+                            ("model", "--model"), ("provider_profile", "--profile")):
+            if key in settings:
+                argv.extend((option, str(settings[key])))
+        if "reasoning_effort" in settings:
+            argv.extend(("--config", f"model_reasoning_effort={settings['reasoning_effort']}"))
+        for key, option in (("additional_directories", "--add-dir"),
+                            ("enabled_features", "--enable"), ("disabled_features", "--disable")):
+            for value in settings.get(key, []):
+                argv.extend((option, str(value)))
+        for key, option in (("search", "--search"), ("no_alt_screen", "--no-alt-screen"),
+                            ("no_daemon", "--no-daemon"), ("strict_config", "--strict-config"),
+                            ("auto_approval", "--approve-for-me")):
+            if settings.get(key):
+                argv.append(option)
+    elif provider == "agy":
+        mapping = {"model": "model", "reasoning_effort": "effort", "sandbox": "sandbox",
+                   "provider_profile": "agent", "additional_directories": "additional_directories"}
+        managed = {target: settings[key] for key, target in mapping.items() if key in settings}
+        if managed:
+            argv.extend(("--settings", json.dumps(managed, ensure_ascii=False, separators=(",", ":"))))
+    elif provider == "claude":
+        for key, option in (("model", "--model"), ("reasoning_effort", "--effort"),
+                            ("permission_mode", "--permission-mode"), ("provider_profile", "--agent")):
+            if key in settings:
+                argv.extend((option, str(settings[key])))
+        for directory in settings.get("additional_directories", []):
+            argv.extend(("--add-dir", str(directory)))
+    return argv
+
+
+def _native_setting_keys(provider: str, native_args: Sequence[str]) -> set[str]:
+    aliases = {"--sandbox": "sandbox", "-s": "sandbox", "--ask-for-approval": "approval_policy", "-a": "approval_policy",
+               "--model": "model", "-m": "model", "--profile": "provider_profile", "-p": "provider_profile",
+               "--effort": "reasoning_effort", "--permission-mode": "permission_mode", "--agent": "provider_profile",
+               "--add-dir": "additional_directories", "--enable": "enabled_features", "--disable": "disabled_features",
+               "--search": "search", "--no-alt-screen": "no_alt_screen", "--no-daemon": "no_daemon",
+               "--strict-config": "strict_config", "--approve-for-me": "auto_approval"}
+    keys: set[str] = set()
+    index = 0
+    while index < len(native_args):
+        token = str(native_args[index])
+        option, equals, inline = token.partition("=")
+        if provider == "codex" and len(token) > 2 and token[:2] in {"-s", "-a", "-m", "-p", "-c"} and token[2] != "=":
+            option, equals, inline = token[:2], "=", token[2:]
+        value = inline if equals else (str(native_args[index + 1]) if index + 1 < len(native_args) else "")
+        if option in aliases:
+            keys.add(aliases[option])
+        elif provider == "codex" and option in {"-c", "--config"} and value:
+            key = value.partition("=")[0].strip().casefold()
+            mapped = {"sandbox_mode": "sandbox", "approval_policy": "approval_policy", "model": "model",
+                      "model_reasoning_effort": "reasoning_effort"}.get(key)
+            if mapped:
+                keys.add(mapped)
+        elif provider == "agy" and option == "--settings" and value:
+            try:
+                supplied = json.loads(value)
+            except json.JSONDecodeError:
+                supplied = {}
+            if isinstance(supplied, dict):
+                keys.update({"effort": "reasoning_effort", "agent": "provider_profile",
+                             "additional_directories": "additional_directories"}.get(key, key) for key in supplied)
+        values, _, _ = _managed_native_spec(provider)
+        if (option in values or option in {"-c", "--config", "--settings"}) and not equals:
+            index += 2
+        else:
+            index += 1
+    return keys
+
+
+def _resolve_profile_invocation(dispatcher: DispatcherService, args: argparse.Namespace,
+                                native_args: Sequence[str]) -> list[str]:
+    command = getattr(args, "command", None)
+    if command not in {"start", "continue", "switch", "review", "return"}:
+        return list(native_args)
+    gui = getattr(args, "gui", None)
+    agent = getattr(args, "reviewer_agent", None) if command == "review" else getattr(args, "agent_name", None)
+    if not gui or not agent:
+        return list(native_args)
+    try:
+        slot = dispatcher.get_slot(gui=gui, name=agent)
+    except ContinuityError:
+        slot = None
+    if getattr(args, "profile", None) and getattr(args, "no_profile", False):
+        raise ContinuityError(ErrorCode.INVALID_INPUT, "Choose either --profile or --no-profile.")
+    if getattr(args, "no_profile", False):
+        _PROFILE_CONTEXT.set({"profile_id": None, "name": None, "revision": None, "source": "bypassed",
+                              "requested_runtime": None, "requested_cwd": None, "overridden_settings": []})
+        return list(native_args)
+    selector = getattr(args, "profile", None)
+    if selector:
+        selected = dispatcher.get_profile(selector)
+        source = "invocation"
+    elif slot and slot.get("profile_id"):
+        selected = dispatcher.get_profile(slot["profile_id"])
+        source = "assigned"
+    else:
+        selected = None
+        source = "none"
+    if selected is None:
+        _PROFILE_CONTEXT.set({"profile_id": None, "name": None, "revision": None, "source": source,
+                              "requested_runtime": None, "requested_cwd": None, "overridden_settings": []})
+        return list(native_args)
+    if selected["status"] != "active":
+        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                              f"Launch profile {selected['name']!r} is retired; select an active profile.")
+    provider = getattr(args, "provider", None)
+    current = slot.get("current") if slot else None
+    if command in {"continue", "return"} and provider is None and current:
+        provider = current["provider"]
+    if provider is None:
+        provider = selected["provider"]
+    if provider != selected["provider"]:
+        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                              f"Profile {selected['name']!r} is for {selected['provider']}; launch provider is {provider}.")
+    if selected["runtime_kind"]:
+        environment_selector = getattr(args, "environment", None)
+        target_session = current
+        if command == "continue" and slot and (getattr(args, "provider", None) or getattr(args, "session_id", None)):
+            target_session = _resolve_historical_session(
+                dispatcher, gui=gui, name=agent, provider=getattr(args, "provider", None),
+                session_id=getattr(args, "session_id", None),
+            )
+        if environment_selector:
+            target = _resolve_environment(dispatcher, environment_selector)
+            if target.runtime_kind != selected["runtime_kind"]:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                      f"Profile runtime {selected['runtime_kind']} does not match requested runtime {target.runtime_kind}.")
+        elif target_session and (
+            command in {"continue", "return", "switch", "review"}
+            or (command == "start" and not getattr(args, "new", False))
+        ):
+            target = dispatcher._row("SELECT runtime_kind FROM environments WHERE environment_id = ?",
+                                     (target_session["environment_id"],))
+            if target and target["runtime_kind"] != selected["runtime_kind"]:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                      f"Profile runtime {selected['runtime_kind']} does not match selected session runtime {target['runtime_kind']}.")
+        else:
+            local = _resolve_environment(dispatcher, "local")
+            candidates = [env for env in dispatcher.materializer.list_environments()
+                          if env.runtime_kind == selected["runtime_kind"]]
+            if local.runtime_kind == selected["runtime_kind"]:
+                candidates.append(local)
+            unique = {env.environment_id: env for env in candidates}
+            if len(unique) != 1:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                      f"Profile runtime {selected['runtime_kind']} needs an explicit -e because its environment is unavailable or ambiguous.")
+            if hasattr(args, "environment"):
+                args.environment = next(iter(unique))
+    if selected["cwd"] and hasattr(args, "cwd") and not args.cwd:
+        args.cwd = selected["cwd"]
+    settings = dict(selected["settings"])
+    invocation_keys = _native_setting_keys(provider, native_args)
+    effective = {key: value for key, value in settings.items() if key not in invocation_keys}
+    _PROFILE_CONTEXT.set({"profile_id": selected["profile_id"], "name": selected["name"],
+                          "revision": selected["revision"], "source": source,
+                          "requested_runtime": selected["runtime_kind"], "requested_cwd": selected["cwd"],
+                          "overridden_settings": sorted(key for key in settings if key in invocation_keys)})
+    return [*_profile_setting_argv(provider, effective), *native_args]
+
+
 def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input_stream: TextIO, output_stream: TextIO) -> int:
     if args.command is None:
         if not (input_stream.isatty() and output_stream.isatty()):
@@ -2861,7 +3178,12 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Both GUI and agent are required.")
         if args.command == "continue" and args.agent_name and not args.gui:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "A GUI is required when an agent is specified.")
+    dispatcher = DispatcherService(home_dir=args.home)
     native_args = getattr(args, "native_args", [])
+    original_native_args = list(native_args)
+    native_args = _resolve_profile_invocation(dispatcher, args, native_args)
+    args.native_args = native_args
+    _PROFILE_ARGV.set(tuple(native_args[:len(native_args) - len(original_native_args)]))
     allow_native_unknown = bool(getattr(args, "allow_native_unknown", False))
     if native_args and args.command not in _NATIVE_ARG_COMMANDS:
         raise ContinuityError(ErrorCode.INVALID_INPUT, f"Provider options are not supported with `llmd {args.command}`.")
@@ -2870,8 +3192,46 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
                               "Provider options are not supported by `llmd open`; use `continue` for one selected session.")
     if getattr(args, "apply", False) and args.command in {"start", "continue", "switch", "review", "return", "last"}:
         _startup_progress("registry synchronization, environment and executable discovery starting")
-    dispatcher = DispatcherService(home_dir=args.home)
-    if args.command == "gui":
+    if args.command == "profile":
+        action = args.profile_command
+        if action == "list":
+            result = {"action": "profile-list", "profiles": dispatcher.list_profiles(provider=args.provider,
+                                                                                       include_retired=args.all)}
+        elif action == "show":
+            result = {"action": "profile-show", "profile": dispatcher.get_profile(args.name),
+                      "summary": f"Launch profile {args.name!r}."}
+        elif action == "create":
+            result = dispatcher.create_profile(name=args.name, provider=args.provider,
+                                               runtime_kind=args.runtime, cwd=args.cwd,
+                                               settings=_parse_profile_settings(args.setting), apply=args.apply)
+        elif action == "update":
+            result = dispatcher.update_profile(args.name, name=args.rename, provider=args.provider,
+                                               runtime_kind=args.runtime, cwd=args.cwd, clear_cwd=args.clear_cwd,
+                                               settings=_parse_profile_settings(args.setting),
+                                               clear_settings=args.clear_setting, apply=args.apply)
+        elif action == "retire":
+            result = dispatcher.retire_profile(args.name, apply=args.apply)
+        elif action == "assign":
+            result = dispatcher.assign_profile(gui=args.gui, agent=args.agent_name,
+                                               profile=args.profile, apply=args.apply)
+        elif action == "clear":
+            result = dispatcher.clear_profile(gui=args.gui, agent=args.agent_name, apply=args.apply)
+        else:
+            parser.parse_args(["profile", "--help"])
+            return 2
+    elif args.command == "agent-number":
+        result = dispatcher.reconcile_agent_number(gui=args.gui, agent=args.agent,
+                                                   agent_number=args.number, source=args.source,
+                                                   apply=args.apply)
+    elif args.command == "workflow-type":
+        if args.clear and args.type:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Choose a workflow type or --clear, not both.")
+        if not args.clear and not args.type:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Choose standard, handoff, goal, or --clear.")
+        result = dispatcher.set_workflow_type(gui=args.gui, agent=args.agent,
+                                              workflow_type=None if args.clear else args.type,
+                                              apply=args.apply)
+    elif args.command == "gui":
         if args.gui_command == "add":
             result = dispatcher.create_gui(args.name, apply=args.apply)
         elif args.gui_command == "rename":
@@ -2931,9 +3291,16 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
     elif args.command == "recover":
         result = dispatcher.recover_captured_launch(gui=args.gui, name=args.agent_name, apply=args.apply)
     elif args.command == "attach":
+        slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
+        expected_current = _session_identity(slot)
+        target_environment = _resolve_environment(dispatcher, args.environment).environment_id
+        target_identity = (args.provider, target_environment, args.session_id.strip())
+        if args.apply:
+            _guard_current_session_change(dispatcher, expected_current, target_identity)
         result = dispatcher.attach_session(gui=args.gui, name=args.agent_name, provider=args.provider,
                                            session_id=args.session_id, environment_selector=args.environment,
-                                           cwd=args.cwd, launch_id=args.launch_id, apply=args.apply)
+                                           cwd=args.cwd, launch_id=args.launch_id,
+                                           expected_current=expected_current, check_current=True, apply=args.apply)
     elif args.command == "start":
         return _start(dispatcher, args, input_stream=input_stream, output_stream=output_stream)
     elif args.command == "review":
@@ -2956,6 +3323,8 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
             old = _resolve_historical_session(dispatcher, gui=args.gui, name=args.agent_name,
                                               provider=args.provider, session_id=None, allow_latest=True)
             target_identity = (old["provider"], old["environment_id"], old["native_session_id"])
+            if args.apply:
+                _guard_current_session_change(dispatcher, expected_current, target_identity)
             target_cwd = args.cwd or _current_native_cwd(dispatcher, old)
             if args.cwd:
                 _validate_cwd_override(dispatcher, old["environment_id"], args.cwd)
@@ -3041,6 +3410,8 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
         if target is None:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "This slot has no selected session; use `llmd start`.")
         target_identity = (target["provider"], target["environment_id"], target["native_session_id"])
+        if args.apply:
+            _guard_current_session_change(dispatcher, expected_current, target_identity)
         if slot["state"] == "completed":
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Completed agents require an explicit lifecycle change before resumption.")
         effective_cwd = args.cwd or target.get("cwd_native") or _current_native_cwd(dispatcher, target)
@@ -3113,6 +3484,12 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
         if result.get("action") == "gui-list":
             for conversation in result["conversations"]:
                 print(conversation["alias"], file=output_stream)
+        if result.get("action") == "profile-list":
+            for item in result["profiles"]:
+                state = "retired" if item["status"] == "retired" else "active"
+                print(f"{item['name']}\t{item['provider']}\t{state}\trevision {item['revision']}", file=output_stream)
+        if result.get("action") == "profile-show":
+            print(json.dumps(result["profile"], indent=2, ensure_ascii=False, sort_keys=True), file=output_stream)
         if "summary" in result:
             print(result["summary"], file=output_stream)
         if result.get("launch_preview"):
@@ -3121,7 +3498,8 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
             provider = slot_row.get("current_provider") or slot_row.get("pending_provider") or "unresolved"
             session = slot_row.get("current_session_id") or ("pending" if slot_row.get("pending_launch_id") else "unresolved")
             session_semantic = "pending" if session == "pending" else "unresolved" if session == "unresolved" else "session"
-            print(f"{semantic_color(slot_row['name'], 'agent', enabled=output_color)}\t"
+            number = f"#{slot_row['agent_number']} " if slot_row.get("agent_number") else ""
+            print(f"{number}{semantic_color(slot_row['name'], 'agent', enabled=output_color)}\t"
                   f"{provider_semantic(provider, enabled=output_color)}\t"
                   f"{semantic_color(session, session_semantic, enabled=output_color)}", file=output_stream)
         if result.get("unresolved"):

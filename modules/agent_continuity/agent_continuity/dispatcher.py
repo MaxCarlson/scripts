@@ -6,12 +6,14 @@ import contextlib
 import hashlib
 import json
 import os
+import threading
 import time
 import uuid
 from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .environment import environment_is_locally_owned, load_or_create_environment, resolve_environment_selector
@@ -21,50 +23,77 @@ from .models import EventEnvelope, EventType
 from .service import ADAPTER_VERSION, SCHEMA_EVENT_VERSION, ContinuityService
 
 _VALID_STATES = {"active", "inactive", "completed"}
+_PROFILE_SETTING_KEYS = {
+    "codex": {"model", "sandbox", "approval_policy", "reasoning_effort", "provider_profile",
+              "additional_directories", "enabled_features", "disabled_features", "search",
+              "no_alt_screen", "no_daemon", "strict_config"},
+    "agy": {"model", "sandbox", "reasoning_effort", "provider_profile", "additional_directories"},
+    "claude": {"model", "reasoning_effort", "permission_mode", "provider_profile", "additional_directories"},
+}
+_PROFILE_RUNTIMES = {"windows", "wsl", "linux", "macos"}
+_HELD_MUTATION_LOCKS: ContextVar[frozenset[str]] = ContextVar("llmd_mutation_locks", default=frozenset())
+_LOCAL_MUTATION_LOCKS: dict[str, threading.RLock] = {}
+_LOCAL_MUTATION_LOCKS_GUARD = threading.Lock()
 
 
 @contextlib.contextmanager
 def _mutation_lock(home_dir: Path, lock_name: str = "dispatcher.lock", *, blocking: bool = True) -> Iterator[None]:
-    """Serialize sequence allocation and spool appends across dispatcher processes."""
+    """Serialize sequence allocation and spool appends across threads and processes."""
     lock_path = home_dir / lock_name
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+b") as stream:
-        stream.seek(0, os.SEEK_END)
-        if stream.tell() == 0:
-            stream.write(b"\0")
-            stream.flush()
-        if os.name == "nt":
-            import msvcrt
+    lock_key = str(lock_path.resolve())
+    with _LOCAL_MUTATION_LOCKS_GUARD:
+        local_lock = _LOCAL_MUTATION_LOCKS.setdefault(lock_key, threading.RLock())
+    if not local_lock.acquire(blocking=blocking):
+        raise ContinuityError(ErrorCode.INVALID_INPUT, "Session is already in use.")
+    try:
+        held = _HELD_MUTATION_LOCKS.get()
+        if lock_key in held:
+            yield
+            return
+        with lock_path.open("a+b") as stream:
+            stream.seek(0, os.SEEK_END)
+            if stream.tell() == 0:
+                stream.write(b"\0")
+                stream.flush()
+            if os.name == "nt":
+                import msvcrt
 
-            deadline = time.monotonic() + (10.0 if blocking else 0.0)
-            while True:
+                deadline = time.monotonic() + (10.0 if blocking else 0.0)
+                while True:
+                    try:
+                        stream.seek(0)
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        if not blocking or time.monotonic() >= deadline:
+                            raise ContinuityError(
+                                ErrorCode.METADATA_INACCESSIBLE,
+                                "Session is already in use." if not blocking else "Timed out waiting for dispatcher registry lock.",
+                            ) from None
+                        time.sleep(0.02)
+                token = _HELD_MUTATION_LOCKS.set(held | {lock_key})
                 try:
+                    yield
+                finally:
+                    _HELD_MUTATION_LOCKS.reset(token)
                     stream.seek(0)
-                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError:
-                    if not blocking or time.monotonic() >= deadline:
-                        raise ContinuityError(
-                            ErrorCode.METADATA_INACCESSIBLE,
-                            "Session is already in use." if not blocking else "Timed out waiting for dispatcher registry lock.",
-                        ) from None
-                    time.sleep(0.02)
-            try:
-                yield
-            finally:
-                stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
 
-            try:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-            except BlockingIOError as exc:
-                raise ContinuityError(ErrorCode.INVALID_INPUT, "Session is already in use.") from exc
-            try:
-                yield
-            finally:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                try:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+                except BlockingIOError as exc:
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, "Session is already in use.") from exc
+                token = _HELD_MUTATION_LOCKS.set(held | {lock_key})
+                try:
+                    yield
+                finally:
+                    _HELD_MUTATION_LOCKS.reset(token)
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    finally:
+        local_lock.release()
 
 
 class DispatcherService:
@@ -79,7 +108,80 @@ class DispatcherService:
 
     def _sync(self) -> None:
         if self.continuity._can_write_sqlite():
+            # The reconciliation helper owns the registry lock and performs
+            # spool synchronization before inspecting or assigning numbers.
+            # Synchronizing here as well doubled every normal read's locked
+            # SQLite work, including the hot continuation path.
+            self._record_legacy_agent_number_assignments()
+
+    def _record_legacy_agent_number_assignments(self) -> None:
+        """Preserve existing numbers, then assign deterministic numbers to legacy slots."""
+        with _mutation_lock(self.home_dir):
             self.materializer.sync_from_spools()
+            duplicate = self._row(
+                "SELECT gui_id, agent_number FROM agent_slots WHERE agent_number IS NOT NULL "
+                "GROUP BY gui_id, agent_number HAVING COUNT(*) > 1 LIMIT 1"
+            )
+            if duplicate:
+                raise ContinuityError(ErrorCode.ASSOCIATION_CONFLICT,
+                                      f"GUI {duplicate['gui_id']} has duplicate existing agent number {duplicate['agent_number']}.")
+            preserved = self._rows(
+                """SELECT s.slot_id, s.gui_id, s.agent_number FROM agent_slots s
+                   LEFT JOIN dispatcher_agent_number_reservations r
+                     ON r.gui_id = s.gui_id AND r.agent_number = s.agent_number
+                   WHERE s.agent_number IS NOT NULL AND r.slot_id IS NULL
+                   ORDER BY s.gui_id, s.agent_number, s.slot_id"""
+            )
+            legacy = self._rows(
+                """SELECT s.slot_id, s.gui_id FROM agent_slots s
+                   LEFT JOIN activity_events e ON e.event_type = ?
+                     AND json_extract(e.payload_json, '$.slot_id') = s.slot_id
+                   WHERE s.agent_number IS NULL
+                   GROUP BY s.slot_id, s.gui_id, s.created_at
+                   ORDER BY s.gui_id, MIN(e.rowid), s.created_at, s.slot_id""",
+                (EventType.DISPATCHER_SLOT_CREATED.value,),
+            )
+            if not preserved and not legacy:
+                return
+            env = load_or_create_environment(self.home_dir, persist=True)
+            events: list[EventEnvelope] = []
+            for row in preserved:
+                conflicting = self._row(
+                    "SELECT slot_id FROM dispatcher_agent_number_reservations WHERE gui_id = ? AND agent_number = ?",
+                    (row["gui_id"], row["agent_number"]),
+                )
+                if conflicting:
+                    raise ContinuityError(ErrorCode.ASSOCIATION_CONFLICT,
+                                          "An existing agent number conflicts with a permanent reservation.")
+                events.append(self._event(
+                    EventType.DISPATCHER_AGENT_NUMBER_ASSIGNED,
+                    environment_id=env.environment_id,
+                    payload={"slot_id": str(row["slot_id"]), "gui_id": str(row["gui_id"]),
+                             "agent_number": int(row["agent_number"]), "source": "preserved_existing_registry_number"},
+                ))
+            next_numbers: dict[str, int] = {}
+            for row in legacy:
+                gui_id = str(row["gui_id"])
+                if gui_id not in next_numbers:
+                    reservation = self._row(
+                        """SELECT MAX(value) + 1 AS value FROM (
+                               SELECT COALESCE(MAX(agent_number), 0) AS value
+                                 FROM dispatcher_agent_number_reservations WHERE gui_id = ?
+                               UNION ALL
+                               SELECT COALESCE(MAX(agent_number), 0) AS value
+                                 FROM agent_slots WHERE gui_id = ?
+                           )""", (gui_id, gui_id),
+                    )
+                    next_numbers[gui_id] = int((reservation or {}).get("value") or 1)
+                number = next_numbers[gui_id]
+                events.append(self._event(
+                    EventType.DISPATCHER_AGENT_NUMBER_ASSIGNED,
+                    environment_id=env.environment_id,
+                    payload={"slot_id": str(row["slot_id"]), "gui_id": gui_id,
+                             "agent_number": number, "source": "legacy_event_ingest_order"},
+                ))
+                next_numbers[gui_id] = number + 1
+            self.continuity._emit_and_materialize(events)
 
     def _rows(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         conn = self.materializer._connect_ro()
@@ -93,6 +195,14 @@ class DispatcherService:
     def _row(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
         rows = self._rows(sql, params)
         return rows[0] if rows else None
+
+    def _next_agent_number(self, gui_id: str) -> int:
+        row = self._row(
+            "SELECT COALESCE(MAX(agent_number), 0) + 1 AS value "
+            "FROM dispatcher_agent_number_reservations WHERE gui_id = ?",
+            (gui_id,),
+        )
+        return int((row or {}).get("value", 1))
 
     def _event(
         self,
@@ -328,9 +438,11 @@ class DispatcherService:
                 events.append(self._event(EventType.DISPATCHER_GUI_REGISTERED, environment_id=env.environment_id,
                     payload={'gui_id': gui_id, 'alias': gui, 'alias_key': gui.casefold()}, timestamp=timestamp))
             if name and not slot:
+                slot_payload = {'slot_id': slot_id, 'gui_id': gui_id, 'name': name, 'name_key': name.casefold()}
+                if apply:
+                    slot_payload['agent_number'] = self._next_agent_number(gui_id)
                 events.append(self._event(EventType.DISPATCHER_SLOT_CREATED, environment_id=env.environment_id,
-                    payload={'slot_id': slot_id, 'gui_id': gui_id, 'name': name, 'name_key': name.casefold()},
-                    timestamp=timestamp))
+                    payload=slot_payload, timestamp=timestamp))
             same = history and provider and (history[-1]['provider'], history[-1]['environment_id'],
                     history[-1]['native_session_id']) == (provider, env.environment_id, session_id)
             if provider and not same:
@@ -357,8 +469,277 @@ class DispatcherService:
                 for event in [*env_events, *events]:
                     self.continuity._emit_and_materialize([event])
         return {'action': 'register', 'applied': bool(apply and events), 'events': [e.to_dict() for e in events],
-                'details': {'gui_id': gui_id, 'slot_id': slot_id},
+                'details': {'gui_id': gui_id, 'slot_id': slot_id, 'agent_number': (self._row('SELECT agent_number FROM agent_slots WHERE slot_id = ?', (slot_id,)) or {}).get('agent_number') if apply and slot_id else None},
                 'summary': ('Registered' if apply and events else 'Dry-run: would register' if events else 'Already registered') + f' {gui!r}' + (f' / {name!r}' if name else '') + '.'}
+
+    @staticmethod
+    def _normalize_profile_settings(provider: str, settings: dict[str, Any] | None) -> dict[str, Any]:
+        if settings is None:
+            settings = {}
+        if not isinstance(settings, dict):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Profile settings must be an object.")
+        normalized: dict[str, Any] = {}
+        for raw_key, value in settings.items():
+            key = str(raw_key).strip().casefold().replace("-", "_")
+            if key == "effort":
+                key = "reasoning_effort"
+            if key not in _PROFILE_SETTING_KEYS[provider]:
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    f"Unsupported profile setting {raw_key!r}; profiles accept only provider-managed non-secret settings.",
+                )
+            if key in normalized:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, f"Duplicate profile setting {key!r}.")
+            if key in {"additional_directories", "enabled_features", "disabled_features"}:
+                if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, f"Profile setting {key!r} must be a list of nonempty strings.")
+                clean = [item.strip() for item in value]
+                if key == "additional_directories" and any(
+                    not (PureWindowsPath(item).is_absolute() if provider == "codex" and "\\" in item
+                         else PurePosixPath(item).is_absolute() if item.startswith("/")
+                         else Path(item).is_absolute())
+                    for item in clean
+                ):
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, "Profile additional directories must be absolute paths.")
+                normalized[key] = clean
+                continue
+            if key in {"search", "no_alt_screen", "no_daemon", "strict_config", "auto_approval"} or (
+                provider == "agy" and key == "sandbox"
+            ):
+                if not isinstance(value, bool):
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, f"Profile setting {key!r} must be boolean.")
+                normalized[key] = value
+                continue
+            if not isinstance(value, str) or not value.strip() or len(value) > 4096:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, f"Profile setting {key!r} must be a nonempty string of at most 4096 characters.")
+            clean = value.strip()
+            if any(marker in clean.casefold() for marker in ("api_key=", "api-key=", "token=", "password=", "sk-ant-")):
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "Profile values cannot contain credentials or secret assignments.")
+            choices = {
+                "sandbox": {"read-only", "workspace-write", "danger-full-access"},
+                "approval_policy": {"on-request", "never"},
+                "reasoning_effort": {"low", "medium", "high", "xhigh", "max"},
+                "permission_mode": {"default", "manual", "acceptEdits", "plan", "auto", "dontAsk"},
+            }
+            if key in choices and clean not in choices[key]:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, f"Invalid profile setting value for {key!r}.")
+            if (key == "approval_policy" and clean == "never") or (
+                key == "permission_mode" and clean in {"auto", "dontAsk"}
+            ):
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                      "Profiles cannot persist approval bypass or unattended authorization settings.")
+            normalized[key] = clean
+        return {key: normalized[key] for key in sorted(normalized)}
+
+    @staticmethod
+    def _profile_path(runtime_kind: str | None, cwd: str | None) -> str | None:
+        clean = str(cwd).strip() if cwd is not None else None
+        if not clean:
+            return None
+        if runtime_kind is None:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "A profile working directory requires an explicit runtime kind.")
+        absolute = PureWindowsPath(clean).is_absolute() if runtime_kind == "windows" else PurePosixPath(clean).is_absolute()
+        if not absolute:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Profile working directory must be absolute for its runtime.")
+        return clean
+
+    def _profile_row(self, identifier: str) -> dict[str, Any] | None:
+        value = identifier.strip()
+        if not value:
+            return None
+        return self._row("SELECT * FROM dispatcher_launch_profiles WHERE profile_id = ?", (value,)) or self._row(
+            "SELECT * FROM dispatcher_launch_profiles WHERE name_key = ?", (value.casefold(),)
+        )
+
+    @staticmethod
+    def _profile_dict(row: dict[str, Any]) -> dict[str, Any]:
+        return {**row, "settings": json.loads(row.pop("settings_json"))}
+
+    def create_profile(
+        self, *, name: str, provider: str, runtime_kind: str | None = None, cwd: str | None = None,
+        settings: dict[str, Any] | None = None, apply: bool = True,
+    ) -> dict[str, Any]:
+        clean = name.strip()
+        if not clean or len(clean) > 120:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Profile name must contain 1 to 120 characters.")
+        provider_name = self.continuity._validate_provider(provider)
+        runtime = runtime_kind.casefold().strip() if runtime_kind else None
+        if runtime is not None and runtime not in _PROFILE_RUNTIMES:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported profile runtime {runtime!r}.")
+        profile_cwd = self._profile_path(runtime, cwd)
+        normalized = self._normalize_profile_settings(provider_name, settings)
+        profile_id = generate_id("profile")
+        env = load_or_create_environment(self.home_dir, persist=apply)
+        timestamp = now_utc_iso()
+        payload = {"profile_id": profile_id, "name": clean, "name_key": clean.casefold(),
+                   "provider": provider_name, "runtime_kind": runtime, "cwd": profile_cwd,
+                   "settings": normalized, "revision": 1, "created_at": timestamp}
+        event = self._event(EventType.DISPATCHER_LAUNCH_PROFILE_CREATED, environment_id=env.environment_id,
+                            payload=payload, timestamp=timestamp)
+        if apply:
+            with _mutation_lock(self.home_dir):
+                self._sync()
+                if self._profile_row(clean):
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, f"Launch profile {clean!r} already exists.")
+                self.continuity._emit_and_materialize([event])
+        return {"action": "profile-create", "applied": apply,
+                "summary": f"{'Created' if apply else 'Dry-run: would create'} launch profile {clean!r}.",
+                "details": {"profile_id": profile_id, "name": clean, "provider": provider_name,
+                            "runtime_kind": runtime, "revision": 1}, "events": [event.to_dict()]}
+
+    def get_profile(self, identifier: str) -> dict[str, Any]:
+        self._sync()
+        row = self._profile_row(identifier)
+        if row is None:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, f"Launch profile not found: {identifier!r}.")
+        return self._profile_dict(row)
+
+    def list_profiles(self, *, provider: str | None = None, include_retired: bool = False) -> list[dict[str, Any]]:
+        self._sync()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if provider:
+            clauses.append("provider = ?")
+            params.append(self.continuity._validate_provider(provider))
+        if not include_retired:
+            clauses.append("status = 'active'")
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        rows = self._rows(f"SELECT * FROM dispatcher_launch_profiles {where} ORDER BY name_key", tuple(params))
+        return [self._profile_dict(row) for row in rows]
+
+    def update_profile(
+        self, identifier: str, *, name: str | None = None, provider: str | None = None,
+        runtime_kind: str | None = None, cwd: str | None = None, clear_cwd: bool = False,
+        settings: dict[str, Any] | None = None, clear_settings: list[str] | None = None,
+        apply: bool = True,
+    ) -> dict[str, Any]:
+        profile = self.get_profile(identifier)
+        if profile["status"] != "active":
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "A retired profile cannot be updated; create a new profile.")
+        clean = name.strip() if name is not None else profile["name"]
+        if not clean or len(clean) > 120:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Profile name must contain 1 to 120 characters.")
+        provider_name = self.continuity._validate_provider(provider or profile["provider"])
+        runtime = runtime_kind.casefold().strip() if runtime_kind else profile["runtime_kind"]
+        if runtime is not None and runtime not in _PROFILE_RUNTIMES:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported profile runtime {runtime!r}.")
+        profile_cwd = None if clear_cwd else self._profile_path(runtime, cwd if cwd is not None else profile["cwd"])
+        merged = dict(profile["settings"])
+        for key in clear_settings or []:
+            normalized_key = str(key).strip().casefold().replace("-", "_")
+            if normalized_key == "effort":
+                normalized_key = "reasoning_effort"
+            merged.pop(normalized_key, None)
+        merged.update(settings or {})
+        normalized = self._normalize_profile_settings(provider_name, merged)
+        timestamp = now_utc_iso()
+        payload = {"profile_id": profile["profile_id"], "name": clean, "name_key": clean.casefold(),
+                   "provider": provider_name, "runtime_kind": runtime, "cwd": profile_cwd,
+                   "settings": normalized, "revision": int(profile["revision"]) + 1}
+        env = load_or_create_environment(self.home_dir, persist=apply)
+        event = self._event(EventType.DISPATCHER_LAUNCH_PROFILE_UPDATED, environment_id=env.environment_id,
+                            payload=payload, timestamp=timestamp)
+        if apply:
+            with _mutation_lock(self.home_dir):
+                self._sync()
+                current = self._profile_row(profile["profile_id"])
+                if current is None or int(current["revision"]) != int(profile["revision"]):
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, "Profile changed concurrently; reload it before updating.")
+                conflict = self._row("SELECT profile_id FROM dispatcher_launch_profiles WHERE name_key = ? AND profile_id != ?",
+                                     (clean.casefold(), profile["profile_id"]))
+                if conflict:
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, f"Launch profile {clean!r} already exists.")
+                self.continuity._emit_and_materialize([event])
+        return {"action": "profile-update", "applied": apply,
+                "summary": f"{'Updated' if apply else 'Dry-run: would update'} launch profile {clean!r}.",
+                "details": {"profile_id": profile["profile_id"], "name": clean, "revision": payload["revision"]},
+                "events": [event.to_dict()]}
+
+    def retire_profile(self, identifier: str, *, apply: bool = True) -> dict[str, Any]:
+        profile = self.get_profile(identifier)
+        if profile["status"] == "retired":
+            return {"action": "profile-retire", "applied": False, "summary": "Launch profile is already retired.",
+                    "details": {"profile_id": profile["profile_id"]}, "events": []}
+        env = load_or_create_environment(self.home_dir, persist=apply)
+        event = self._event(EventType.DISPATCHER_LAUNCH_PROFILE_RETIRED, environment_id=env.environment_id,
+                            payload={"profile_id": profile["profile_id"]})
+        if apply:
+            with _mutation_lock(self.home_dir):
+                self._sync()
+                current = self._profile_row(profile["profile_id"])
+                if current is None or current["status"] != "active":
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, "Profile changed concurrently; reload it before retiring.")
+                self.continuity._emit_and_materialize([event])
+        return {"action": "profile-retire", "applied": apply,
+                "summary": f"{'Retired' if apply else 'Dry-run: would retire'} launch profile {profile['name']!r}.",
+                "details": {"profile_id": profile["profile_id"]}, "events": [event.to_dict()]}
+
+    def assign_profile(self, *, gui: str, agent: str, profile: str, apply: bool = True) -> dict[str, Any]:
+        conversation = self._gui(gui)
+        slot = self._slot(conversation["gui_id"], agent)
+        selected = self.get_profile(profile)
+        if selected["status"] != "active":
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "A retired profile cannot be assigned.")
+        history = self._history(slot["slot_id"])
+        if history and history[-1]["provider"] != selected["provider"]:
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                  f"Profile provider {selected['provider']} is incompatible with selected session provider {history[-1]['provider']}.")
+        if history and selected["runtime_kind"]:
+            env = self._row("SELECT runtime_kind FROM environments WHERE environment_id = ?", (history[-1]["environment_id"],))
+            if env and env["runtime_kind"] not in {"unknown", selected["runtime_kind"]}:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                      f"Profile runtime {selected['runtime_kind']} is incompatible with selected session runtime {env['runtime_kind']}.")
+        if slot.get("profile_id") == selected["profile_id"]:
+            return {"action": "profile-assign", "applied": False, "summary": "Profile is already assigned.",
+                    "details": {"slot_id": slot["slot_id"], "profile_id": selected["profile_id"]}, "events": []}
+        env = load_or_create_environment(self.home_dir, persist=apply)
+        event = self._event(EventType.DISPATCHER_SLOT_PROFILE_ASSIGNED, environment_id=env.environment_id,
+                            payload={"slot_id": slot["slot_id"], "profile_id": selected["profile_id"]})
+        if apply:
+            with _mutation_lock(self.home_dir):
+                self._sync()
+                latest = self._slot(conversation["gui_id"], slot["slot_id"])
+                if latest.get("profile_id") != slot.get("profile_id"):
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, "Slot profile changed concurrently; reload before assigning.")
+                latest_profile = self._profile_row(selected["profile_id"])
+                if (latest_profile is None or latest_profile["status"] != "active"
+                        or int(latest_profile["revision"]) != int(selected["revision"])):
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, "Profile changed or retired concurrently; reload before assigning.")
+                latest_history = self._history(slot["slot_id"])
+                if latest_history and latest_history[-1]["provider"] != selected["provider"]:
+                    raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                          "Profile provider no longer matches the selected session provider.")
+                if latest_history and selected["runtime_kind"]:
+                    latest_environment = self._row("SELECT runtime_kind FROM environments WHERE environment_id = ?",
+                                                   (latest_history[-1]["environment_id"],))
+                    if latest_environment and latest_environment["runtime_kind"] not in {"unknown", selected["runtime_kind"]}:
+                        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                              "Profile runtime no longer matches the selected session runtime.")
+                self.continuity._emit_and_materialize([event])
+        return {"action": "profile-assign", "applied": apply,
+                "summary": f"{'Assigned' if apply else 'Dry-run: would assign'} profile {selected['name']!r} to {slot['name']!r}.",
+                "details": {"slot_id": slot["slot_id"], "profile_id": selected["profile_id"]},
+                "events": [event.to_dict()]}
+
+    def clear_profile(self, *, gui: str, agent: str, apply: bool = True) -> dict[str, Any]:
+        conversation = self._gui(gui)
+        slot = self._slot(conversation["gui_id"], agent)
+        if not slot.get("profile_id"):
+            return {"action": "profile-clear", "applied": False, "summary": "Agent has no assigned profile.",
+                    "details": {"slot_id": slot["slot_id"]}, "events": []}
+        env = load_or_create_environment(self.home_dir, persist=apply)
+        event = self._event(EventType.DISPATCHER_SLOT_PROFILE_ASSIGNED, environment_id=env.environment_id,
+                            payload={"slot_id": slot["slot_id"], "profile_id": None})
+        if apply:
+            with _mutation_lock(self.home_dir):
+                self._sync()
+                latest = self._slot(conversation["gui_id"], slot["slot_id"])
+                if latest.get("profile_id") != slot["profile_id"]:
+                    raise ContinuityError(ErrorCode.INVALID_INPUT, "Slot profile changed concurrently; reload before clearing.")
+                self.continuity._emit_and_materialize([event])
+        return {"action": "profile-clear", "applied": apply,
+                "summary": f"{'Cleared' if apply else 'Dry-run: would clear'} profile from {slot['name']!r}.",
+                "details": {"slot_id": slot["slot_id"]}, "events": [event.to_dict()]}
 
     def list_guis(self, *, active_only: bool = True) -> list[dict[str, Any]]:
         self._sync()
@@ -405,38 +786,132 @@ class DispatcherService:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Agent name must contain 1–120 characters.")
         conversation = self._gui(gui)
         existing = self._row(
-            "SELECT slot_id, name FROM agent_slots WHERE gui_id = ? AND name_key = ?",
+            "SELECT slot_id, name, agent_number FROM agent_slots WHERE gui_id = ? AND name_key = ?",
             (conversation["gui_id"], clean.casefold()),
         )
         if existing:
             return {"action": "slot-create", "applied": False, "summary": "Agent slot already exists.",
-                    "details": {"slot_id": existing["slot_id"], "existing_name": existing["name"]}, "events": []}
+                    "details": {"slot_id": existing["slot_id"], "existing_name": existing["name"],
+                                "agent_number": existing["agent_number"]}, "events": []}
         slot_id = generate_id("slot")
         env = load_or_create_environment(self.home_dir, persist=apply)
-        event = self._event(
-            EventType.DISPATCHER_SLOT_CREATED,
-            environment_id=env.environment_id,
-            payload={"slot_id": slot_id, "gui_id": conversation["gui_id"], "name": clean, "name_key": clean.casefold()},
-        )
+        number = None
         if apply:
             with _mutation_lock(self.home_dir):
                 self._sync()
-                if self._row("SELECT 1 FROM agent_slots WHERE gui_id = ? AND name_key = ?", (conversation["gui_id"], clean.casefold())):
+                if self._row("SELECT 1 FROM agent_slots WHERE gui_id = ? AND name_key = ?",
+                             (conversation["gui_id"], clean.casefold())):
                     raise ContinuityError(ErrorCode.INVALID_INPUT, f"Agent name {clean!r} was registered concurrently.")
+                number = self._next_agent_number(conversation["gui_id"])
+                event = self._event(
+                    EventType.DISPATCHER_SLOT_CREATED, environment_id=env.environment_id,
+                    payload={"slot_id": slot_id, "gui_id": conversation["gui_id"], "name": clean,
+                             "name_key": clean.casefold(), "agent_number": number},
+                )
                 self.continuity._emit_and_materialize([event])
+        else:
+            event = self._event(
+                EventType.DISPATCHER_SLOT_CREATED, environment_id=env.environment_id,
+                payload={"slot_id": slot_id, "gui_id": conversation["gui_id"], "name": clean,
+                         "name_key": clean.casefold()},
+            )
+            number = self._next_agent_number(conversation["gui_id"])
         return {"action": "slot-create", "applied": apply,
-                "summary": f"{'Created' if apply else 'Dry-run: would create'} agent slot {clean!r}.",
-                "details": {"slot_id": slot_id, "gui_id": conversation["gui_id"], "name": clean},
+                "summary": f"{'Created' if apply else 'Dry-run: would create'} agent slot {clean!r}" +
+                           (f" as #{number}." if number else "."),
+                "details": {"slot_id": slot_id, "gui_id": conversation["gui_id"], "name": clean,
+                            "agent_number": number},
+                "events": [event.to_dict()]}
+
+    def set_workflow_type(self, *, gui: str, agent: str, workflow_type: str | None,
+                          apply: bool = True) -> dict[str, Any]:
+        allowed = {"standard", "handoff", "goal"}
+        selected = workflow_type.strip().casefold() if workflow_type is not None else None
+        if selected is not None and selected not in allowed:
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                  "Invalid workflow type; choose standard, handoff, goal, or null to clear it.")
+        conversation = self._gui(gui)
+        slot = self._slot(conversation["gui_id"], agent)
+        if slot.get("workflow_type") == selected:
+            return {"action": "workflow-type", "applied": False,
+                    "summary": "Workflow type is unchanged.",
+                    "details": {"gui_id": conversation["gui_id"], "slot_id": slot["slot_id"],
+                                "workflow_type": selected}, "events": []}
+        env = load_or_create_environment(self.home_dir, persist=apply)
+        event = self._event(EventType.DISPATCHER_SLOT_WORKFLOW_TYPE_CHANGED,
+                            environment_id=env.environment_id,
+                            payload={"gui_id": conversation["gui_id"], "slot_id": slot["slot_id"],
+                                     "workflow_type": selected})
+        if apply:
+            with _mutation_lock(self.home_dir):
+                self._sync()
+                current = self._slot(conversation["gui_id"], slot["slot_id"])
+                if current.get("workflow_type") != slot.get("workflow_type"):
+                    raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                          "Workflow type changed concurrently; reload before updating.")
+                self.continuity._emit_and_materialize([event])
+        return {"action": "workflow-type", "applied": apply,
+                "summary": f"{'Set' if apply and selected else 'Cleared' if apply else 'Dry-run: would set'} "
+                           f"workflow type for {slot['name']!r}" + (f" to {selected}." if selected else "."),
+                "details": {"gui_id": conversation["gui_id"], "slot_id": slot["slot_id"],
+                            "workflow_type": selected}, "events": [event.to_dict()]}
+
+    def reconcile_agent_number(self, *, gui: str, agent: str, agent_number: int,
+                               source: str, apply: bool = True) -> dict[str, Any]:
+        evidence = source.strip()
+        if not evidence or len(evidence) > 500:
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                  "Verified legacy number reconciliation requires a concise source reference.")
+        if not isinstance(agent_number, int) or isinstance(agent_number, bool) or agent_number < 1:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Agent number must be a positive integer.")
+        with _mutation_lock(self.home_dir) if apply else contextlib.nullcontext():
+            # Do not invoke _sync here: the explicit verified import must get the
+            # first chance to assign an old slot before deterministic fallback.
+            self.materializer.sync_from_spools()
+            conversation = self._row(
+                "SELECT * FROM dispatcher_gui_conversations WHERE alias_key = ?", (gui.strip().casefold(),)
+            )
+            if conversation is None:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, f"GUI conversation not found: {gui!r}.")
+            slot = self._row(
+                "SELECT * FROM agent_slots WHERE gui_id = ? AND name_key = ?",
+                (conversation["gui_id"], agent.strip().casefold()),
+            )
+            if slot is None:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, f"Agent slot not found: {agent!r}.")
+            if slot.get("agent_number") is not None:
+                if int(slot["agent_number"]) == agent_number:
+                    return {"action": "agent-number-reconcile", "applied": False,
+                            "summary": "Agent number already matches verified evidence.",
+                            "details": {"slot_id": slot["slot_id"], "agent_number": agent_number}, "events": []}
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                      "An assigned agent number is permanent and cannot be replaced.")
+            if self._row("SELECT 1 FROM dispatcher_agent_number_reservations WHERE gui_id = ? AND agent_number = ?",
+                         (conversation["gui_id"], agent_number)):
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "That agent number is already reserved in this GUI.")
+            env = load_or_create_environment(self.home_dir, persist=apply)
+            event = self._event(EventType.DISPATCHER_AGENT_NUMBER_ASSIGNED,
+                                environment_id=env.environment_id,
+                                payload={"gui_id": conversation["gui_id"], "slot_id": slot["slot_id"],
+                                         "agent_number": agent_number, "source": evidence})
+            if apply:
+                self.continuity._emit_and_materialize([event])
+        return {"action": "agent-number-reconcile", "applied": apply,
+                "summary": f"{'Reconciled' if apply else 'Dry-run: would reconcile'} {slot['name']!r} as #{agent_number}.",
+                "details": {"slot_id": slot["slot_id"], "agent_number": agent_number, "source": evidence},
                 "events": [event.to_dict()]}
 
     def list_slots(self, *, gui: str, active_only: bool = True) -> list[dict[str, Any]]:
         conversation = self._gui(gui)
         state_filter = "AND s.state = 'active'" if active_only else ""
-        return self._rows(
+        rows = self._rows(
             f"""SELECT s.*, a.provider AS current_provider, a.environment_id AS current_environment_id,
                        a.native_session_id AS current_session_id, a.provenance AS current_provenance,
-                       p.launch_id AS pending_launch_id, p.provider AS pending_provider
+                       p.launch_id AS pending_launch_id, p.provider AS pending_provider,
+                       lp.name AS profile_name, lp.revision AS profile_revision,
+                       lp.settings_json AS _profile_settings_json
                 FROM agent_slots s
+                LEFT JOIN dispatcher_launch_profiles lp ON lp.profile_id = s.profile_id
                 LEFT JOIN agent_slot_activations a ON a.activation_id = (
                     SELECT cur.activation_id FROM agent_slot_activations cur
                     WHERE cur.slot_id = s.slot_id ORDER BY cur.sequence DESC LIMIT 1
@@ -450,6 +925,14 @@ class DispatcherService:
                 ORDER BY s.last_activity_at IS NULL, s.last_activity_at DESC, s.name_key""",
             (conversation["gui_id"],),
         )
+        for row in rows:
+            raw_settings = row.pop("_profile_settings_json", None)
+            row["profile_settings_digest"] = (
+                "sha256:" + hashlib.sha256(json.dumps(json.loads(raw_settings or "{}"), sort_keys=True,
+                    ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+                if row.get("profile_id") else None
+            )
+        return rows
 
     def get_slot(self, *, gui: str, name: str) -> dict[str, Any]:
         conversation = self._gui(gui)
@@ -775,6 +1258,10 @@ class DispatcherService:
                 env_now = load_or_create_environment(self.home_dir, persist=True)
                 if env_now.environment_id != local_env.environment_id:
                     raise ContinuityError(ErrorCode.INVALID_INPUT, "Runtime environment changed while start was prepared; retry.")
+                if not latest_slot:
+                    slot_event = next(item for item in events
+                                      if item.event_type == EventType.DISPATCHER_SLOT_CREATED.value)
+                    slot_event.payload["agent_number"] = self._next_agent_number(gui_id)
                 env_events = self.continuity._ensure_environment_event(
                     env, self.materializer.list_environments(), now
                 )
@@ -793,7 +1280,8 @@ class DispatcherService:
             "summary": summary_text,
             "details": {"launch_id": launch_id, "slot_id": slot_id, "provider": provider_name,
                         "environment_id": env.environment_id, "cwd": cwd, "status": "pending",
-                        "gui_created": conversation is None, "slot_created": slot is None},
+                        "gui_created": conversation is None, "slot_created": slot is None,
+                        "agent_number": (self._row("SELECT agent_number FROM agent_slots WHERE slot_id = ?", (slot_id,)) or {}).get("agent_number") if apply else (self._next_agent_number(gui_id) if slot is None else slot.get("agent_number"))},
             "events": [event.to_dict() for event in events],
         }
 
