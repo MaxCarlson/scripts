@@ -19,6 +19,7 @@ from .events import atomic_write_json
 from .identifiers import generate_id, normalize_path_canonical, now_utc_iso
 from .runtime_discovery import (
     AttachmentState,
+    EvidenceAvailability,
     EvidenceConfidence,
     IdentityComparison,
     ManagementState,
@@ -35,23 +36,22 @@ from .runtime_discovery import (
 
 CHECKPOINT_SCHEMA_VERSION = 1
 
-_SECRET_SETTING_KEYS = frozenset(
+_EFFORT_VALUES = frozenset({"low", "medium", "high", "xhigh", "max"})
+_SANDBOX_SAFE_VALUES = frozenset({"read-only", "workspace-write", "default", "true", "false"})
+_APPROVAL_SAFE_VALUES = frozenset({"untrusted", "on-failure", "on-request", "auto-review"})
+_PERMISSION_MODE_SAFE_VALUES = frozenset({"default", "manual", "acceptEdits", "plan", "auto"})
+
+ALLOWED_LAUNCH_SETTINGS: frozenset[str] = frozenset(
     {
-        "api_key",
-        "apikey",
-        "token",
-        "access_token",
-        "refresh_token",
-        "secret",
-        "password",
-        "passwd",
-        "credential",
-        "credentials",
-        "auth",
-        "authorization",
-        "bearer",
-        "prompt",
-        "raw_config",
+        "model",
+        "sandbox",
+        "approval_policy",
+        "permission_mode",
+        "reasoning_effort",
+        "effort",
+        "search",
+        "add_dirs",
+        "profile",
     }
 )
 
@@ -573,27 +573,85 @@ class CorruptCheckpointRecord:
     error: str
 
 
+def _validate_nonempty_str(key: str, value: Any, *, max_len: int = 256) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > max_len or "\0" in value or "\n" in value or "\r" in value:
+        raise ContinuityError(
+            ErrorCode.INVALID_INPUT,
+            f"Launch setting {key!r} must be a non-empty single-line string (<= {max_len} chars).",
+            {"key": key},
+        )
+    return value.strip()
+
+
 def sanitize_launch_settings(settings: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Return a JSON-safe copy of non-secret launch settings."""
+    """Validate and return a JSON-safe copy of explicitly permitted non-secret launch settings."""
     if not settings:
         return {}
     sanitized: dict[str, Any] = {}
-    for key, value in settings.items():
-        key_text = str(key)
-        if key_text.strip().lower() in _SECRET_SETTING_KEYS:
+    for raw_key, value in settings.items():
+        key = str(raw_key).strip()
+        if key not in ALLOWED_LAUNCH_SETTINGS:
             raise ContinuityError(
                 ErrorCode.INVALID_INPUT,
-                f"Launch settings cannot include secret or raw-prompt key {key_text!r}.",
-                {"key": key_text},
+                f"Launch setting {key!r} is not in the permitted non-secret allowlist.",
+                {"key": key, "allowed_keys": sorted(ALLOWED_LAUNCH_SETTINGS)},
             )
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            sanitized[key_text] = value
-        elif isinstance(value, (list, tuple)):
-            sanitized[key_text] = [str(item) if not isinstance(item, (str, int, float, bool)) else item for item in value]
-        elif isinstance(value, Mapping):
-            sanitized[key_text] = sanitize_launch_settings(value)
-        else:
-            sanitized[key_text] = str(value)
+        if value is None:
+            continue
+        if key == "model" or key == "profile":
+            sanitized[key] = _validate_nonempty_str(key, value, max_len=128)
+        elif key == "sandbox":
+            text = _validate_nonempty_str(key, value, max_len=64)
+            if text not in _SANDBOX_SAFE_VALUES:
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    f"Launch setting 'sandbox' value {text!r} is not permitted.",
+                    {"key": key, "value": text},
+                )
+            sanitized[key] = text
+        elif key == "approval_policy":
+            text = _validate_nonempty_str(key, value, max_len=64)
+            if text not in _APPROVAL_SAFE_VALUES:
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    f"Launch setting 'approval_policy' value {text!r} is not permitted.",
+                    {"key": key, "value": text},
+                )
+            sanitized[key] = text
+        elif key == "permission_mode":
+            text = _validate_nonempty_str(key, value, max_len=64)
+            if text not in _PERMISSION_MODE_SAFE_VALUES:
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    f"Launch setting 'permission_mode' value {text!r} is not permitted.",
+                    {"key": key, "value": text},
+                )
+            sanitized[key] = text
+        elif key in {"reasoning_effort", "effort"}:
+            text = _validate_nonempty_str(key, value, max_len=32)
+            if text not in _EFFORT_VALUES:
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    f"Launch setting {key!r} value {text!r} is not permitted.",
+                    {"key": key, "value": text},
+                )
+            sanitized[key] = text
+        elif key == "search":
+            if not isinstance(value, bool):
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    "Launch setting 'search' must be a boolean.",
+                    {"key": key},
+                )
+            sanitized[key] = value
+        elif key == "add_dirs":
+            if not isinstance(value, (list, tuple)):
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    "Launch setting 'add_dirs' must be a sequence of directory strings.",
+                    {"key": key},
+                )
+            sanitized[key] = [_validate_nonempty_str(key, item, max_len=1024) for item in value]
     return sanitized
 
 
@@ -793,6 +851,7 @@ def revalidate_checkpoint(
     observers: Mapping[tuple[str, str], RuntimeDiscovery] | RuntimeDiscovery | None = None,
     snapshots: Mapping[tuple[str, str], ProcessSnapshot] | ProcessSnapshot | None = None,
     path_exists: Callable[[str], bool] | None = None,
+    allow_unknown_runtime: bool = False,
 ) -> CheckpointRevalidationReport:
     """Revalidate a checkpoint against current registry slots, worktrees, and fresh observations."""
     exists_fn = path_exists or (lambda raw: Path(raw).exists())
@@ -876,6 +935,8 @@ def revalidate_checkpoint(
             if obs.process_liveness is ProcessLiveness.RUNNING:
                 already_running = True
                 reasons.append("already_running")
+            elif obs.process_liveness in {ProcessLiveness.UNKNOWN, ProcessLiveness.AMBIGUOUS} or obs.process_availability in {EvidenceAvailability.UNAVAILABLE, EvidenceAvailability.PARTIAL}:
+                reasons.append("unknown_runtime_evidence")
             elif entry.observed_topology.observed_processes and obs.processes:
                 prior = entry.observed_topology.observed_processes[0].to_process_identity()
                 curr = obs.processes[0].identity
@@ -893,6 +954,8 @@ def revalidate_checkpoint(
             "identity_conflict",
             "already_running",
         }
+        if not allow_unknown_runtime:
+            blocking_reasons.add("unknown_runtime_evidence")
         entry_stale = bool(entry.stale or any(r.startswith("stale_") for r in deduped))
         can_restore = not any(r in blocking_reasons for r in deduped)
         if entry_stale:

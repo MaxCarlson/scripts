@@ -32,7 +32,7 @@ from .workspace_checkpoint import (
     revalidate_checkpoint,
 )
 
-RESTORE_RECOVERY_SCHEMA_VERSION = 1
+RESTORE_RECOVERY_SCHEMA_VERSION = 2
 
 
 class ManagedShutdownStoreProtocol(Protocol):
@@ -44,8 +44,33 @@ class ManagedShutdownStoreProtocol(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class SlotGuardLease:
+    """Opaque lease returned by Agent #1's SlotExecutionGuard."""
+
+    slot_id: str
+    lease_token: str
+    acquired: bool
+    reason: str = "acquired"
+
+
+class SlotExecutionGuard(Protocol):
+    """Cross-checkpoint and dispatcher-wide slot exclusion contract owned by Agent #1."""
+
+    def acquire_slot(
+        self,
+        slot_id: str,
+        *,
+        operator_id: str,
+        checkpoint_id: str,
+        queue_entry_id: str | None,
+    ) -> SlotGuardLease: ...
+
+    def release_slot(self, lease: SlotGuardLease) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
 class ShutdownTargetCandidate:
-    """One slot evaluated for bounded owned-session shutdown."""
+    """One persisted-checkpoint slot evaluated for bounded owned-session shutdown."""
 
     slot_id: str
     gui_id: str
@@ -54,6 +79,7 @@ class ShutdownTargetCandidate:
     environment_id: str
     eligible: bool
     refusal_reason: str | None = None
+    checkpoint_id: str | None = None
     launch_id: str | None = None
     pane_id: str | None = None
     terminal_session_id: str | None = None
@@ -69,6 +95,7 @@ class ShutdownTargetCandidate:
             "environment_id": self.environment_id,
             "eligible": self.eligible,
             "refusal_reason": self.refusal_reason,
+            "checkpoint_id": self.checkpoint_id,
             "launch_id": self.launch_id,
             "pane_id": self.pane_id,
             "terminal_session_id": self.terminal_session_id,
@@ -83,6 +110,7 @@ class ShutdownPlan:
 
     created_at: str
     targets: tuple[ShutdownTargetCandidate, ...]
+    checkpoint_id: str | None = None
 
     @property
     def eligible_targets(self) -> tuple[ShutdownTargetCandidate, ...]:
@@ -95,13 +123,14 @@ class ShutdownPlan:
     def to_dict(self) -> dict[str, Any]:
         return {
             "created_at": self.created_at,
+            "checkpoint_id": self.checkpoint_id,
             "targets": [item.to_dict() for item in self.targets],
         }
 
 
 @dataclass(frozen=True, slots=True)
 class ShutdownTargetOutcome:
-    """Distinct requested / sent / observed exit state for one shutdown target."""
+    """Distinct requested / sent / interrupt / observed exit state for one shutdown target."""
 
     slot_id: str
     pane_id: str | None
@@ -112,6 +141,9 @@ class ShutdownTargetOutcome:
     sent_state: str
     observed_state: str
     exit_code: int | None = None
+    interrupt_delivered: bool = False
+    provider_exit_verified: bool = False
+    provider_metadata_finalized: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -124,6 +156,9 @@ class ShutdownTargetOutcome:
             "sent_state": self.sent_state,
             "observed_state": self.observed_state,
             "exit_code": self.exit_code,
+            "interrupt_delivered": self.interrupt_delivered,
+            "provider_exit_verified": self.provider_exit_verified,
+            "provider_metadata_finalized": self.provider_metadata_finalized,
         }
 
 
@@ -168,14 +203,53 @@ class OwnedShutdownCoordinator:
     def __init__(self, store: ManagedShutdownStoreProtocol | None = None) -> None:
         self.store = store
 
+    def preview_shutdown_for_checkpoint(
+        self,
+        checkpoint: WorkspaceCheckpoint,
+        *,
+        observers: Mapping[tuple[str, str], RuntimeDiscovery] | RuntimeDiscovery | None = None,
+        snapshots: Mapping[tuple[str, str], ProcessSnapshot] | ProcessSnapshot | None = None,
+    ) -> ShutdownPlan:
+        """Restrict shutdown candidates strictly to a persisted checkpoint's exact identities."""
+        slots = [
+            WorkspaceSlotInput(
+                slot_id=entry.slot_id,
+                gui_id=entry.gui_id,
+                provider=entry.provider,
+                native_session_id=entry.native_session_id,
+                environment_id=entry.environment_id,
+                runtime_kind=entry.runtime_kind,
+                lifecycle_state=entry.lifecycle_state,
+                known_process_identity=(
+                    entry.observed_topology.managed_pane.to_process_identity()
+                    if entry.observed_topology.managed_pane is not None
+                    else None
+                ),
+            )
+            for entry in checkpoint.sessions
+        ]
+        plan = self.preview_shutdown(
+            slots,
+            observers=observers,
+            snapshots=snapshots,
+            checkpoint=checkpoint,
+        )
+        return ShutdownPlan(
+            created_at=plan.created_at,
+            targets=plan.targets,
+            checkpoint_id=checkpoint.checkpoint_id,
+        )
+
     def preview_shutdown(
         self,
         slots: Sequence[WorkspaceSlotInput],
         *,
         observers: Mapping[tuple[str, str], RuntimeDiscovery] | RuntimeDiscovery | None = None,
         snapshots: Mapping[tuple[str, str], ProcessSnapshot] | ProcessSnapshot | None = None,
+        checkpoint: WorkspaceCheckpoint | None = None,
     ) -> ShutdownPlan:
         """Evaluate which slots have verified managed ownership eligible for shutdown."""
+        checkpoint_by_slot = {entry.slot_id: entry for entry in checkpoint.sessions} if checkpoint is not None else None
         observations = observe_slots_batched(slots, observers=observers, snapshots=snapshots)
         records_by_pane: dict[str, Any] = {}
         if self.store is not None:
@@ -184,6 +258,41 @@ class OwnedShutdownCoordinator:
 
         candidates: list[ShutdownTargetCandidate] = []
         for slot in slots:
+            chk_entry = checkpoint_by_slot.get(slot.slot_id) if checkpoint_by_slot is not None else None
+            if checkpoint_by_slot is not None and chk_entry is None:
+                candidates.append(
+                    ShutdownTargetCandidate(
+                        slot_id=slot.slot_id,
+                        gui_id=slot.gui_id,
+                        provider=slot.provider,
+                        native_session_id=slot.native_session_id,
+                        environment_id=slot.environment_id,
+                        eligible=False,
+                        refusal_reason="not_in_persisted_checkpoint",
+                        checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
+                    )
+                )
+                continue
+            if chk_entry is not None and (
+                chk_entry.gui_id != slot.gui_id
+                or chk_entry.provider != slot.provider
+                or chk_entry.native_session_id != slot.native_session_id
+                or chk_entry.environment_id != slot.environment_id
+            ):
+                candidates.append(
+                    ShutdownTargetCandidate(
+                        slot_id=slot.slot_id,
+                        gui_id=slot.gui_id,
+                        provider=slot.provider,
+                        native_session_id=slot.native_session_id,
+                        environment_id=slot.environment_id,
+                        eligible=False,
+                        refusal_reason="checkpoint_identity_mismatch",
+                        checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
+                    )
+                )
+                continue
+
             obs = observations[slot.slot_id]
             if obs.identity_conflict:
                 candidates.append(
@@ -195,6 +304,7 @@ class OwnedShutdownCoordinator:
                         environment_id=slot.environment_id,
                         eligible=False,
                         refusal_reason="identity_conflict",
+                        checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
                     )
                 )
                 continue
@@ -208,6 +318,28 @@ class OwnedShutdownCoordinator:
                         environment_id=slot.environment_id,
                         eligible=False,
                         refusal_reason=f"unverified_ownership:{obs.management.value}",
+                        checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
+                    )
+                )
+                continue
+            if (
+                chk_entry is not None
+                and chk_entry.observed_topology.managed_pane is not None
+                and (
+                    chk_entry.observed_topology.managed_pane.pane_id != obs.managed_pane.pane_id
+                    or chk_entry.observed_topology.managed_pane.launch_id != obs.managed_pane.launch_id
+                )
+            ):
+                candidates.append(
+                    ShutdownTargetCandidate(
+                        slot_id=slot.slot_id,
+                        gui_id=slot.gui_id,
+                        provider=slot.provider,
+                        native_session_id=slot.native_session_id,
+                        environment_id=slot.environment_id,
+                        eligible=False,
+                        refusal_reason="checkpoint_managed_pane_mismatch",
+                        checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
                     )
                 )
                 continue
@@ -221,6 +353,7 @@ class OwnedShutdownCoordinator:
                         environment_id=slot.environment_id,
                         eligible=False,
                         refusal_reason="managed_store_unavailable",
+                        checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
                         launch_id=obs.managed_pane.launch_id,
                         pane_id=obs.managed_pane.pane_id,
                         terminal_session_id=obs.managed_pane.terminal_session_id,
@@ -240,6 +373,7 @@ class OwnedShutdownCoordinator:
                         environment_id=slot.environment_id,
                         eligible=False,
                         refusal_reason="missing_acknowledged_receipt",
+                        checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
                         launch_id=obs.managed_pane.launch_id,
                         pane_id=pane_id,
                     )
@@ -258,6 +392,7 @@ class OwnedShutdownCoordinator:
                         environment_id=slot.environment_id,
                         eligible=False,
                         refusal_reason="missing_process_creation_identity",
+                        checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
                         launch_id=obs.managed_pane.launch_id,
                         pane_id=pane_id,
                     )
@@ -276,6 +411,7 @@ class OwnedShutdownCoordinator:
                         environment_id=slot.environment_id,
                         eligible=False,
                         refusal_reason=f"process_identity_{cmp_result.value}",
+                        checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
                         launch_id=obs.managed_pane.launch_id,
                         pane_id=pane_id,
                     )
@@ -294,6 +430,7 @@ class OwnedShutdownCoordinator:
                         environment_id=slot.environment_id,
                         eligible=False,
                         refusal_reason="stale_pid_reuse",
+                        checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
                         launch_id=obs.managed_pane.launch_id,
                         pane_id=pane_id,
                     )
@@ -309,6 +446,7 @@ class OwnedShutdownCoordinator:
                         environment_id=slot.environment_id,
                         eligible=False,
                         refusal_reason="already_exited",
+                        checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
                         launch_id=obs.managed_pane.launch_id,
                         pane_id=pane_id,
                     )
@@ -324,6 +462,7 @@ class OwnedShutdownCoordinator:
                         environment_id=slot.environment_id,
                         eligible=False,
                         refusal_reason=f"process_not_confirmed_running:{rec_liveness}",
+                        checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
                         launch_id=obs.managed_pane.launch_id,
                         pane_id=pane_id,
                     )
@@ -338,6 +477,7 @@ class OwnedShutdownCoordinator:
                     native_session_id=slot.native_session_id,
                     environment_id=slot.environment_id,
                     eligible=True,
+                    checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
                     launch_id=obs.managed_pane.launch_id,
                     pane_id=pane_id,
                     terminal_session_id=obs.managed_pane.terminal_session_id,
@@ -346,7 +486,11 @@ class OwnedShutdownCoordinator:
                 )
             )
 
-        return ShutdownPlan(created_at=now_utc_iso(), targets=tuple(candidates))
+        return ShutdownPlan(
+            created_at=now_utc_iso(),
+            targets=tuple(candidates),
+            checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
+        )
 
     def execute_shutdown(
         self,
@@ -356,6 +500,7 @@ class OwnedShutdownCoordinator:
         current_slots: Sequence[WorkspaceSlotInput] | None = None,
         timeout_seconds: float = 5.0,
         poll_interval_seconds: float = 0.05,
+        provider_exit_verifier: Callable[[ShutdownTargetCandidate, int | None], bool] | None = None,
     ) -> ShutdownReport:
         """Request bounded graceful shutdown for verified owned panes only."""
         if not authorized:
@@ -373,11 +518,6 @@ class OwnedShutdownCoordinator:
         current_by_slot = {slot.slot_id: slot for slot in (current_slots or ())}
         outcomes_by_slot: dict[str, ShutdownTargetOutcome] = {}
         active_panes: dict[str, ShutdownTargetCandidate] = {}
-
-        records_by_pane: dict[str, Any] = {}
-        if self.store is not None:
-            for rec in self.store.enumerate_processes():
-                records_by_pane[str(_record_attr(rec, "pane_id"))] = rec
 
         for target in plan.targets:
             if not target.eligible:
@@ -433,12 +573,18 @@ class OwnedShutdownCoordinator:
                 )
                 continue
 
-            rec = records_by_pane.get(target.pane_id)
+            # Revalidate ownership immediately before signaling
+            live_records = {
+                str(_record_attr(rec, "pane_id")): rec
+                for rec in self.store.enumerate_processes(launch_id=target.launch_id)
+            }
+            rec = live_records.get(target.pane_id)
             if (
                 rec is None
                 or _record_attr(rec, "pid") != target.expected_pid
                 or _record_attr(rec, "process_created") != target.expected_process_created
                 or _enum_text(_record_attr(rec, "state", "unknown")).lower() == "stale"
+                or _enum_text(_record_attr(rec, "liveness", "unknown")).lower() == "exited"
             ):
                 outcomes_by_slot[target.slot_id] = ShutdownTargetOutcome(
                     slot_id=target.slot_id,
@@ -497,9 +643,37 @@ class OwnedShutdownCoordinator:
                     sent_state = "delivered" if sent else interruption_state
                     rec_state = _enum_text(_record_attr(rec, "state", "unknown")).lower()
                     rec_liveness = _enum_text(_record_attr(rec, "liveness", "unknown")).lower()
+
+                    if (
+                        _record_attr(rec, "pid") != target.expected_pid
+                        or _record_attr(rec, "process_created") != target.expected_process_created
+                        or rec_state == "stale"
+                    ):
+                        outcomes_by_slot[target.slot_id] = ShutdownTargetOutcome(
+                            slot_id=target.slot_id,
+                            pane_id=pane_id,
+                            launch_id=target.launch_id,
+                            requested=True,
+                            request_reason=outcomes_by_slot[target.slot_id].request_reason,
+                            sent=sent,
+                            sent_state=sent_state,
+                            observed_state="identity_changed",
+                            interrupt_delivered=sent,
+                            provider_exit_verified=False,
+                            provider_metadata_finalized=False,
+                        )
+                        pending_pane_ids.remove(pane_id)
+                        continue
+
                     exited_at = _record_attr(rec, "exited_at")
                     exit_code = _record_attr(rec, "exit_code")
                     if exited_at is not None or rec_state == "exited" or rec_liveness == "exited":
+                        parsed_code = int(exit_code) if exit_code is not None else None
+                        provider_verified = (
+                            bool(provider_exit_verifier(target, parsed_code))
+                            if provider_exit_verifier is not None
+                            else False
+                        )
                         outcomes_by_slot[target.slot_id] = ShutdownTargetOutcome(
                             slot_id=target.slot_id,
                             pane_id=pane_id,
@@ -509,7 +683,10 @@ class OwnedShutdownCoordinator:
                             sent=sent,
                             sent_state=sent_state,
                             observed_state="exited",
-                            exit_code=int(exit_code) if exit_code is not None else None,
+                            exit_code=parsed_code,
+                            interrupt_delivered=sent,
+                            provider_exit_verified=provider_verified,
+                            provider_metadata_finalized=False,
                         )
                         pending_pane_ids.remove(pane_id)
                     else:
@@ -522,6 +699,9 @@ class OwnedShutdownCoordinator:
                             sent=sent,
                             sent_state=sent_state,
                             observed_state="still_running",
+                            interrupt_delivered=sent,
+                            provider_exit_verified=False,
+                            provider_metadata_finalized=False,
                         )
                 if not pending_pane_ids or time.monotonic() >= deadline:
                     break
@@ -540,6 +720,9 @@ class OwnedShutdownCoordinator:
                     sent_state=prev.sent_state,
                     observed_state="timed_out",
                     exit_code=prev.exit_code,
+                    interrupt_delivered=prev.interrupt_delivered,
+                    provider_exit_verified=False,
+                    provider_metadata_finalized=False,
                 )
 
         ordered = tuple(outcomes_by_slot[target.slot_id] for target in plan.targets)
@@ -570,13 +753,16 @@ class RestoreLaunchRequest:
 
 @dataclass(frozen=True, slots=True)
 class RestoreLaunchOutcome:
-    """Outcome returned by an injected SessionLauncher."""
+    """Outcome returned by an injected SessionLauncher distinguishing acceptance vs spawn."""
 
     accepted: bool
     launch_id: str | None = None
     pane_id: str | None = None
     terminal_session_id: str | None = None
     failure_reason: str | None = None
+    spawn_confirmed: bool | None = None
+    association_confirmed: bool = False
+    resumability_confirmed: bool = False
 
 
 class SessionLauncher(Protocol):
@@ -681,6 +867,10 @@ class RestoreItemOutcome:
     queue_entry_id: str | None
     status: str
     reason: str | None = None
+    launch_accepted: bool = False
+    spawn_confirmed: bool = False
+    association_confirmed: bool = False
+    resumability_confirmed: bool = False
     requested_topology: WorkspaceTopologyRequest | None = None
     observed_receipt: ObservedLaunchReceipt | None = None
 
@@ -690,6 +880,10 @@ class RestoreItemOutcome:
             "queue_entry_id": self.queue_entry_id,
             "status": self.status,
             "reason": self.reason,
+            "launch_accepted": self.launch_accepted,
+            "spawn_confirmed": self.spawn_confirmed,
+            "association_confirmed": self.association_confirmed,
+            "resumability_confirmed": self.resumability_confirmed,
             "requested_topology": self.requested_topology.to_dict() if self.requested_topology else None,
             "observed_receipt": self.observed_receipt.to_dict() if self.observed_receipt else None,
         }
@@ -733,6 +927,7 @@ class TopologyRestorer:
         snapshots: Mapping[tuple[str, str], ProcessSnapshot] | ProcessSnapshot | None = None,
         path_exists: Callable[[str], bool] | None = None,
         allow_reserved_claude: bool = False,
+        allow_unknown_runtime: bool = False,
     ) -> RestorePlan:
         """Revalidate a checkpoint and produce a read-only restoration plan."""
         reval = revalidate_checkpoint(
@@ -741,6 +936,7 @@ class TopologyRestorer:
             observers=observers,
             snapshots=snapshots,
             path_exists=path_exists,
+            allow_unknown_runtime=allow_unknown_runtime,
         )
         reval_by_slot = {entry.slot_id: entry for entry in reval.entries}
         queue_by_slot: dict[str, QueueEntry] = {}
@@ -757,11 +953,16 @@ class TopologyRestorer:
             if q_entry is not None and q_entry.status in {QueueEntryStatus.COMPLETED, QueueEntryStatus.CANCELLED}:
                 action = f"skip_{q_entry.status.value}"
                 reasons.append(f"queue_{q_entry.status.value}")
-            elif q_entry is not None and q_entry.status is QueueEntryStatus.CLAIMED:
+            elif q_entry is not None and q_entry.status in {QueueEntryStatus.CLAIMED, QueueEntryStatus.LAUNCHING}:
                 action = "skip_claimed"
                 reasons.append("queue_claimed_by_operator")
+            elif q_entry is not None and q_entry.status is QueueEntryStatus.AMBIGUOUS:
+                action = "blocked_ambiguous_launch"
+                reasons.append("ambiguous_launch_requires_resolution")
             elif rev.already_running:
                 action = "skip_already_running"
+            elif "unknown_runtime_evidence" in rev.reasons and not allow_unknown_runtime:
+                action = "blocked_unknown_runtime"
             elif "reserved_unconfirmed" in rev.reasons and not allow_reserved_claude:
                 action = "blocked_reserved_unconfirmed"
             elif not rev.can_restore and not (
@@ -807,13 +1008,17 @@ class TopologyRestorer:
         checkpoint: WorkspaceCheckpoint | None = None,
         queue: RestorationQueue | None = None,
         receipt_store: ManagedShutdownStoreProtocol | None = None,
+        slot_guard: SlotExecutionGuard | None = None,
+        authorization_check: Callable[[RestorePlanItem], tuple[bool, str | None]] | None = None,
         recovery_dir: Path | None = None,
         current_slots: Sequence[WorkspaceSlotInput] | None = None,
         observers: Mapping[tuple[str, str], RuntimeDiscovery] | RuntimeDiscovery | None = None,
         snapshots: Mapping[tuple[str, str], ProcessSnapshot] | ProcessSnapshot | None = None,
         path_exists: Callable[[str], bool] | None = None,
+        allow_unknown_runtime: bool = False,
+        allow_reserved_claude: bool = False,
     ) -> RestoreReport:
-        """Execute an authorized restore plan with queue claims and durable failure recovery."""
+        """Execute an authorized restore plan with execution-boundary revalidation and durable recovery."""
         if not authorized:
             raise ContinuityError(
                 ErrorCode.INVALID_INPUT,
@@ -830,21 +1035,8 @@ class TopologyRestorer:
             for q_entry in queue.list_entries(checkpoint_id=plan.checkpoint_id):
                 queue_by_slot[q_entry.slot_id] = q_entry
 
-        live_reval_by_slot: dict[str, Any] = {}
-        if checkpoint is not None and (
-            current_slots is not None or observers is not None or snapshots is not None or path_exists is not None
-        ):
-            live_reval = revalidate_checkpoint(
-                checkpoint,
-                current_slots=current_slots,
-                observers=observers,
-                snapshots=snapshots,
-                path_exists=path_exists,
-            )
-            live_reval_by_slot = {entry.slot_id: entry for entry in live_reval.entries}
-
         outcomes: list[RestoreItemOutcome] = []
-        any_failed = False
+        any_uncertain_or_failed = False
         any_succeeded = False
 
         for item in plan.items:
@@ -879,76 +1071,205 @@ class TopologyRestorer:
                     continue
                 claim_token = claim_res.claim_token
 
-            live_rev = live_reval_by_slot.get(item.slot_id)
-            if live_rev is not None and not live_rev.can_restore:
-                fail_reason = f"prelaunch_revalidation_failed:{','.join(live_rev.reasons)}"
-                if queue is not None and q_id is not None and claim_token is not None:
-                    queue.record_failure(q_id, claim_token=claim_token, reason=fail_reason, partial=False)
-                any_failed = True
-                outcomes.append(
-                    RestoreItemOutcome(
-                        slot_id=item.slot_id,
+            lease: SlotGuardLease | None = None
+            try:
+                if slot_guard is not None:
+                    lease = slot_guard.acquire_slot(
+                        item.slot_id,
+                        operator_id=operator_id,
+                        checkpoint_id=plan.checkpoint_id,
                         queue_entry_id=q_id,
-                        status="failed",
-                        reason=fail_reason,
-                        requested_topology=item.requested_topology,
                     )
-                )
-                continue
+                    if not lease.acquired:
+                        fail_reason = f"slot_guard_busy:{lease.reason}"
+                        if queue is not None and q_id is not None and claim_token is not None:
+                            queue.release(q_id, claim_token=claim_token, reason=fail_reason)
+                        outcomes.append(
+                            RestoreItemOutcome(
+                                slot_id=item.slot_id,
+                                queue_entry_id=q_id,
+                                status="skipped",
+                                reason=fail_reason,
+                                requested_topology=item.requested_topology,
+                            )
+                        )
+                        continue
 
-            launch_req = RestoreLaunchRequest(
-                checkpoint_id=plan.checkpoint_id,
-                queue_entry_id=q_id,
-                slot_id=item.slot_id,
-                gui_id=item.gui_id,
-                provider=item.provider,
-                native_session_id=item.native_session_id,
-                environment_id=item.environment_id,
-                runtime_kind=item.runtime_kind,
-                cwd=item.cwd,
-                launch_settings=dict(item.launch_settings),
-                requested_topology=item.requested_topology,
-                metadata=item.metadata,
-            )
-            launch_res = launcher.launch_session(launch_req)
-            if not launch_res.accepted:
-                fail_reason = launch_res.failure_reason or "launch_rejected"
+                # Fresh execution-boundary revalidation AFTER acquiring claim & slot guard
+                if authorization_check is not None:
+                    auth_ok, auth_reason = authorization_check(item)
+                    if not auth_ok:
+                        fail_reason = f"authorization_revoked:{auth_reason or 'denied'}"
+                        if queue is not None and q_id is not None and claim_token is not None:
+                            queue.record_failure(q_id, claim_token=claim_token, reason=fail_reason, partial=False)
+                        any_uncertain_or_failed = True
+                        outcomes.append(
+                            RestoreItemOutcome(
+                                slot_id=item.slot_id,
+                                queue_entry_id=q_id,
+                                status="failed",
+                                reason=fail_reason,
+                                requested_topology=item.requested_topology,
+                            )
+                        )
+                        continue
+
+                if checkpoint is not None:
+                    fresh_reval = revalidate_checkpoint(
+                        checkpoint,
+                        current_slots=current_slots,
+                        observers=observers,
+                        snapshots=snapshots,
+                        path_exists=path_exists,
+                        allow_unknown_runtime=allow_unknown_runtime,
+                    )
+                    fresh_entry = next((e for e in fresh_reval.entries if e.slot_id == item.slot_id), None)
+                    if fresh_entry is not None:
+                        allowed_reserved_only = (
+                            allow_reserved_claude and set(fresh_entry.reasons) == {"reserved_unconfirmed"}
+                        )
+                        if not fresh_entry.can_restore and not allowed_reserved_only:
+                            fail_reason = f"execution_revalidation_failed:{','.join(fresh_entry.reasons)}"
+                            if queue is not None and q_id is not None and claim_token is not None:
+                                queue.record_failure(
+                                    q_id, claim_token=claim_token, reason=fail_reason, partial=False
+                                )
+                            any_uncertain_or_failed = True
+                            outcomes.append(
+                                RestoreItemOutcome(
+                                    slot_id=item.slot_id,
+                                    queue_entry_id=q_id,
+                                    status="failed",
+                                    reason=fail_reason,
+                                    requested_topology=item.requested_topology,
+                                )
+                            )
+                            continue
+
                 if queue is not None and q_id is not None and claim_token is not None:
-                    queue.record_failure(q_id, claim_token=claim_token, reason=fail_reason, partial=True)
-                any_failed = True
-                outcomes.append(
-                    RestoreItemOutcome(
-                        slot_id=item.slot_id,
-                        queue_entry_id=q_id,
-                        status="failed",
-                        reason=fail_reason,
-                        requested_topology=item.requested_topology,
-                    )
-                )
-                continue
+                    queue.mark_launching(q_id, claim_token=claim_token)
 
-            observed_receipt = self._lookup_receipt(
-                receipt_store,
-                launch_id=launch_res.launch_id,
-                pane_id=launch_res.pane_id,
-            )
-            if queue is not None and q_id is not None and claim_token is not None:
-                queue.complete(q_id, claim_token=claim_token, launch_id=launch_res.launch_id)
-            any_succeeded = True
-            outcomes.append(
-                RestoreItemOutcome(
-                    slot_id=item.slot_id,
+                launch_req = RestoreLaunchRequest(
+                    checkpoint_id=plan.checkpoint_id,
                     queue_entry_id=q_id,
-                    status="restored",
+                    slot_id=item.slot_id,
+                    gui_id=item.gui_id,
+                    provider=item.provider,
+                    native_session_id=item.native_session_id,
+                    environment_id=item.environment_id,
+                    runtime_kind=item.runtime_kind,
+                    cwd=item.cwd,
+                    launch_settings=dict(item.launch_settings),
                     requested_topology=item.requested_topology,
-                    observed_receipt=observed_receipt,
+                    metadata=item.metadata,
                 )
-            )
+
+                try:
+                    launch_res = launcher.launch_session(launch_req)
+                except Exception as exc:
+                    fail_reason = f"launcher_exception:{type(exc).__name__}:{exc}"
+                    if queue is not None and q_id is not None and claim_token is not None:
+                        queue.mark_ambiguous(
+                            q_id,
+                            claim_token=claim_token,
+                            reason=fail_reason,
+                            launch_submission_state="ambiguous",
+                        )
+                    any_uncertain_or_failed = True
+                    outcomes.append(
+                        RestoreItemOutcome(
+                            slot_id=item.slot_id,
+                            queue_entry_id=q_id,
+                            status="ambiguous",
+                            reason=fail_reason,
+                            requested_topology=item.requested_topology,
+                        )
+                    )
+                    continue
+
+                if not launch_res.accepted:
+                    fail_reason = launch_res.failure_reason or "launch_rejected"
+                    if queue is not None and q_id is not None and claim_token is not None:
+                        queue.record_failure(q_id, claim_token=claim_token, reason=fail_reason, partial=True)
+                    any_uncertain_or_failed = True
+                    outcomes.append(
+                        RestoreItemOutcome(
+                            slot_id=item.slot_id,
+                            queue_entry_id=q_id,
+                            status="failed",
+                            reason=fail_reason,
+                            launch_accepted=False,
+                            spawn_confirmed=False,
+                            requested_topology=item.requested_topology,
+                        )
+                    )
+                    continue
+
+                observed_receipt = self._lookup_receipt(
+                    receipt_store,
+                    launch_id=launch_res.launch_id,
+                    pane_id=launch_res.pane_id,
+                )
+                spawn_confirmed = bool(
+                    launch_res.spawn_confirmed is True
+                    or (observed_receipt is not None and observed_receipt.spawn_acknowledged)
+                )
+                if not spawn_confirmed:
+                    uncertain_reason = "launch_accepted_spawn_unconfirmed"
+                    if queue is not None and q_id is not None and claim_token is not None:
+                        queue.mark_ambiguous(
+                            q_id,
+                            claim_token=claim_token,
+                            reason=uncertain_reason,
+                            launch_id=launch_res.launch_id,
+                            launch_submission_state="accepted",
+                        )
+                    any_uncertain_or_failed = True
+                    outcomes.append(
+                        RestoreItemOutcome(
+                            slot_id=item.slot_id,
+                            queue_entry_id=q_id,
+                            status="accepted_unconfirmed",
+                            reason=uncertain_reason,
+                            launch_accepted=True,
+                            spawn_confirmed=False,
+                            association_confirmed=launch_res.association_confirmed,
+                            resumability_confirmed=launch_res.resumability_confirmed,
+                            requested_topology=item.requested_topology,
+                            observed_receipt=observed_receipt,
+                        )
+                    )
+                    continue
+
+                if queue is not None and q_id is not None and claim_token is not None:
+                    queue.complete(
+                        q_id,
+                        claim_token=claim_token,
+                        launch_id=launch_res.launch_id,
+                        spawn_confirmed=True,
+                    )
+                any_succeeded = True
+                outcomes.append(
+                    RestoreItemOutcome(
+                        slot_id=item.slot_id,
+                        queue_entry_id=q_id,
+                        status="restored",
+                        launch_accepted=True,
+                        spawn_confirmed=True,
+                        association_confirmed=launch_res.association_confirmed,
+                        resumability_confirmed=launch_res.resumability_confirmed,
+                        requested_topology=item.requested_topology,
+                        observed_receipt=observed_receipt,
+                    )
+                )
+            finally:
+                if lease is not None and slot_guard is not None and lease.acquired:
+                    slot_guard.release_slot(lease)
 
         restore_id = generate_id("rst")
-        partial_failure = any_failed and any_succeeded
+        partial_failure = any_uncertain_or_failed and any_succeeded
         recovery_path_str: str | None = None
-        if any_failed and recovery_dir is not None:
+        if any_uncertain_or_failed and recovery_dir is not None:
             recovery_path = Path(recovery_dir) / f"{restore_id}.json"
             recovery_path_str = str(recovery_path)
             report_payload = RestoreReport(
@@ -1043,6 +1364,7 @@ class WorkspaceCheckpointCoordinator:
         root_dir: Path,
         *,
         managed_store: ManagedShutdownStoreProtocol | None = None,
+        slot_guard: SlotExecutionGuard | None = None,
     ) -> None:
         self.root_dir = Path(root_dir)
         self.checkpoints = CheckpointStore(self.root_dir)
@@ -1050,6 +1372,7 @@ class WorkspaceCheckpointCoordinator:
         self.shutdown = OwnedShutdownCoordinator(managed_store)
         self.restorer = TopologyRestorer()
         self.managed_store = managed_store
+        self.slot_guard = slot_guard
 
     def preview_save(
         self,
@@ -1092,7 +1415,12 @@ class WorkspaceCheckpointCoordinator:
         )
         shutdown_report = None
         if authorized_shutdown:
-            plan = self.shutdown.preview_shutdown(slots, observers=observers, snapshots=snapshots)
+            # Restrict shutdown strictly to the successfully persisted checkpoint's exact identities
+            plan = self.shutdown.preview_shutdown_for_checkpoint(
+                checkpoint,
+                observers=observers,
+                snapshots=snapshots,
+            )
             shutdown_report = self.shutdown.execute_shutdown(
                 plan,
                 authorized=True,
@@ -1114,6 +1442,7 @@ class WorkspaceCheckpointCoordinator:
         snapshots: Mapping[tuple[str, str], ProcessSnapshot] | ProcessSnapshot | None = None,
         path_exists: Callable[[str], bool] | None = None,
         allow_reserved_claude: bool = False,
+        allow_unknown_runtime: bool = False,
     ) -> RestorePlan:
         checkpoint = self.checkpoints.get_checkpoint(checkpoint_id)
         return self.restorer.preview_restore(
@@ -1124,6 +1453,7 @@ class WorkspaceCheckpointCoordinator:
             snapshots=snapshots,
             path_exists=path_exists,
             allow_reserved_claude=allow_reserved_claude,
+            allow_unknown_runtime=allow_unknown_runtime,
         )
 
     def restore(
@@ -1138,6 +1468,8 @@ class WorkspaceCheckpointCoordinator:
         snapshots: Mapping[tuple[str, str], ProcessSnapshot] | ProcessSnapshot | None = None,
         path_exists: Callable[[str], bool] | None = None,
         allow_reserved_claude: bool = False,
+        allow_unknown_runtime: bool = False,
+        authorization_check: Callable[[RestorePlanItem], tuple[bool, str | None]] | None = None,
     ) -> RestoreReport:
         checkpoint = self.checkpoints.get_checkpoint(checkpoint_id)
         plan = self.restorer.preview_restore(
@@ -1148,6 +1480,7 @@ class WorkspaceCheckpointCoordinator:
             snapshots=snapshots,
             path_exists=path_exists,
             allow_reserved_claude=allow_reserved_claude,
+            allow_unknown_runtime=allow_unknown_runtime,
         )
         return self.restorer.execute_restore(
             plan,
@@ -1157,9 +1490,13 @@ class WorkspaceCheckpointCoordinator:
             checkpoint=checkpoint,
             queue=self.queue,
             receipt_store=self.managed_store,
+            slot_guard=self.slot_guard,
+            authorization_check=authorization_check,
             recovery_dir=self.root_dir / "restores",
             current_slots=current_slots,
             observers=observers,
             snapshots=snapshots,
             path_exists=path_exists,
+            allow_unknown_runtime=allow_unknown_runtime,
+            allow_reserved_claude=allow_reserved_claude,
         )

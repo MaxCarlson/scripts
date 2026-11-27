@@ -667,3 +667,334 @@ def test_shutdown_refuses_pid_reuse_and_transfer_race_and_restore_blocks_reserve
         chk, current_slots=[claude_slot], observers=obs_empty, allow_reserved_claude=True
     )
     assert allowed_plan.items[0].action == "restore"
+
+
+def test_allowlist_sanitization_and_preview_purity(tmp_path: Path) -> None:
+    for bad_settings in (
+        {"api_key": "secret"},
+        {"raw_prompt": "do something"},
+        {"arbitrary_flag": "--yolo"},
+        {"sandbox": "danger-full-access"},
+        {"permission_mode": "dontAsk"},
+        {"approval_policy": "never"},
+    ):
+        with pytest.raises(ContinuityError):
+            preview_checkpoint([_make_slot(settings=bad_settings)])
+
+    state_root = tmp_path / "pure_preview"
+    coordinator = WorkspaceCheckpointCoordinator(state_root)
+    sid = "01a21ca1-528f-7e33-8024-bc784553a2fd"
+    obs = RuntimeDiscovery(
+        environment_id="env_win_test",
+        process_enumerator=_CountingEnumerator(
+            (
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(8101, 134000000000000000),
+                    parent_pid=500,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", sid),
+                ),
+            )
+        ),
+    )
+    preview = coordinator.preview_save([_make_slot(session_id=sid)], with_shutdown=True, observers=obs)
+    assert len(preview.checkpoint_preview.sessions) == 1
+    assert not state_root.exists()
+
+
+def test_queue_crash_consistency_concurrent_rebuild_slot_exclusion_and_abandoned_claims(tmp_path: Path) -> None:
+    sid = "01a21ca1-528f-7e33-8024-bc784553a2aa"
+    obs = RuntimeDiscovery(
+        environment_id="env_win_test",
+        process_enumerator=_CountingEnumerator(
+            (
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(8201, 134000000000000000),
+                    parent_pid=500,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", sid),
+                ),
+            )
+        ),
+    )
+    store = CheckpointStore(tmp_path)
+    chk1 = store.create_checkpoint([_make_slot(slot_id="slot_shared", session_id=sid)], observers=obs)
+    chk2 = store.create_checkpoint([_make_slot(slot_id="slot_shared", session_id=sid)], observers=obs)
+
+    queue = RestorationQueue(tmp_path)
+    e1 = queue.enqueue_checkpoint(chk1).enqueued[0]
+    e2 = queue.enqueue_checkpoint(chk2).enqueued[0]
+
+    # Claiming slot_shared in chk1 blocks claiming slot_shared in chk2
+    c1 = queue.claim(e1.queue_entry_id, operator_id="op_1")
+    assert c1.acquired is True and c1.claim_token is not None
+    c2_blocked = queue.claim(e2.queue_entry_id, operator_id="op_2")
+    assert c2_blocked.acquired is False
+    assert c2_blocked.reason == "slot_busy_other_checkpoint"
+
+    # Simulate crash with outstanding CLAIMED entry -> recover to PENDING
+    recovered_pending = queue.recover_abandoned_claim(
+        e1.queue_entry_id, operator_id="op_recovery", reason="operator_crashed_before_launch"
+    )
+    assert recovered_pending.status is QueueEntryStatus.PENDING
+
+    # Simulate crash while LAUNCHING -> recover to AMBIGUOUS (never blindly retried)
+    c1_again = queue.claim(e1.queue_entry_id, operator_id="op_1b")
+    assert c1_again.claim_token is not None
+    queue.mark_launching(e1.queue_entry_id, claim_token=c1_again.claim_token)
+    recovered_ambig = queue.recover_abandoned_claim(
+        e1.queue_entry_id, operator_id="op_recovery", reason="crashed_during_launch"
+    )
+    assert recovered_ambig.status is QueueEntryStatus.AMBIGUOUS
+    assert queue.claim(e1.queue_entry_id, operator_id="op_blind_retry").acquired is False
+
+    # Explicit resolution of ambiguous entry unblocks slot_shared
+    resolved = queue.resolve_ambiguous(
+        e1.queue_entry_id, operator_id="op_recovery", outcome="failed", reason="verified_not_running"
+    )
+    assert resolved.status is QueueEntryStatus.FAILED
+
+    # Simulate interrupted trailing write in events.jsonl + missing SQLite commit
+    with queue.events_path.open("a", encoding="utf-8") as fh:
+        fh.write('{"event_type": "queue.claimed", "partial_truncated": ')
+    rebuilt = queue.rebuild_index()
+    assert rebuilt >= 6
+    assert queue.get_entry(e1.queue_entry_id).status is QueueEntryStatus.FAILED
+
+    # Concurrent rebuild_index alongside claim operations
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_rebuild = pool.submit(queue.rebuild_index)
+        f_claim = pool.submit(queue.claim, e2.queue_entry_id, operator_id="op_concurrent")
+        assert f_rebuild.result() >= 6
+        assert f_claim.result().acquired is True
+
+
+def test_execution_boundary_revalidation_unknown_runtime_and_unconfirmed_spawn(tmp_path: Path) -> None:
+    from agent_continuity.workspace_lifecycle import SlotGuardLease
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    sid1 = "01a21ca1-528f-7e33-8024-bc784553a2b1"
+    sid2 = "01a21ca1-528f-7e33-8024-bc784553a2b2"
+    sid3 = "01a21ca1-528f-7e33-8024-bc784553a2b3"
+    ft = 134000000000000000
+
+    obs_running = RuntimeDiscovery(
+        environment_id="env_win_test",
+        process_enumerator=_CountingEnumerator(
+            (
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(8301, ft),
+                    parent_pid=500,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", sid1),
+                ),
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(8302, ft),
+                    parent_pid=500,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", sid2),
+                ),
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(8303, ft),
+                    parent_pid=500,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", sid3),
+                ),
+            )
+        ),
+    )
+    slots = [
+        _make_slot(slot_id="s_accept_no_spawn", session_id=sid1, cwd=str(repo_dir)),
+        _make_slot(slot_id="s_launcher_crash", session_id=sid2, cwd=str(repo_dir)),
+        _make_slot(slot_id="s_post_preview_race", session_id=sid3, cwd=str(repo_dir)),
+    ]
+    chk = CheckpointStore(tmp_path).create_checkpoint(slots, observers=obs_running)
+    queue = RestorationQueue(tmp_path)
+    restorer = TopologyRestorer()
+
+    # Unknown runtime evidence must NOT establish inactivity
+    class _UnavailableEnum:
+        def enumerate_processes(self) -> ProcessInventory:
+            return ProcessInventory(
+                records=(),
+                availability=EvidenceAvailability.UNAVAILABLE,
+                captured_at=datetime.now(UTC),
+                error_code="access_denied",
+            )
+
+    obs_unknown = RuntimeDiscovery(environment_id="env_win_test", process_enumerator=_UnavailableEnum())
+    unknown_plan = restorer.preview_restore(chk, queue=queue, current_slots=slots, observers=obs_unknown)
+    assert all(item.action == "blocked_unknown_runtime" for item in unknown_plan.items)
+
+    # Preview sees all 3 as stopped; then before execute_restore, s_post_preview_race starts running!
+    obs_stopped = RuntimeDiscovery(environment_id="env_win_test", process_enumerator=_CountingEnumerator(()))
+    plan = restorer.preview_restore(chk, queue=queue, current_slots=slots, observers=obs_stopped)
+    assert len(plan.ready_items) == 3
+
+    obs_after_preview = RuntimeDiscovery(
+        environment_id="env_win_test",
+        process_enumerator=_CountingEnumerator(
+            (
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(8399, ft),
+                    parent_pid=500,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", sid3),
+                ),
+            )
+        ),
+    )
+
+    class _TrackingGuard:
+        def __init__(self) -> None:
+            self.acquired: list[str] = []
+            self.released: list[str] = []
+
+        def acquire_slot(self, slot_id: str, *, operator_id: str, checkpoint_id: str, queue_entry_id: str | None):
+            self.acquired.append(slot_id)
+            return SlotGuardLease(slot_id=slot_id, lease_token=f"lease_{slot_id}", acquired=True)
+
+        def release_slot(self, lease: SlotGuardLease) -> None:
+            self.released.append(lease.slot_id)
+
+    class _UncertainLauncher:
+        def launch_session(self, request: RestoreLaunchRequest) -> RestoreLaunchOutcome:
+            if request.slot_id == "s_accept_no_spawn":
+                return RestoreLaunchOutcome(
+                    accepted=True,
+                    launch_id="tlaunch_no_ack",
+                    pane_id="pane_no_ack",
+                    spawn_confirmed=False,
+                )
+            raise RuntimeError("simulated_crash_during_launch")
+
+    guard = _TrackingGuard()
+    report = restorer.execute_restore(
+        plan,
+        authorized=True,
+        operator_id="op_test",
+        launcher=_UncertainLauncher(),
+        checkpoint=chk,
+        queue=queue,
+        slot_guard=guard,
+        recovery_dir=tmp_path / "restores",
+        current_slots=slots,
+        observers=obs_after_preview,
+    )
+    assert guard.acquired == ["s_accept_no_spawn", "s_launcher_crash", "s_post_preview_race"]
+    assert guard.released == ["s_accept_no_spawn", "s_launcher_crash", "s_post_preview_race"]
+    assert report.recovery_record_path is not None
+
+    by_slot = {item.slot_id: item for item in report.outcomes}
+    assert by_slot["s_accept_no_spawn"].status == "accepted_unconfirmed"
+    assert by_slot["s_accept_no_spawn"].launch_accepted is True
+    assert by_slot["s_accept_no_spawn"].spawn_confirmed is False
+    assert by_slot["s_launcher_crash"].status == "ambiguous"
+    assert by_slot["s_post_preview_race"].status == "failed"
+    assert "already_running" in (by_slot["s_post_preview_race"].reason or "")
+
+    q_by_slot = {item.slot_id: item for item in queue.list_entries(checkpoint_id=chk.checkpoint_id)}
+    assert q_by_slot["s_accept_no_spawn"].status is QueueEntryStatus.AMBIGUOUS
+    assert q_by_slot["s_launcher_crash"].status is QueueEntryStatus.AMBIGUOUS
+    assert q_by_slot["s_post_preview_race"].status is QueueEntryStatus.FAILED
+
+
+def test_shutdown_checkpoint_restriction_and_interrupt_not_provider_exit(tmp_path: Path) -> None:
+    ft = 134000000000000000
+    sid_in_chk = "01a21ca1-528f-7e33-8024-bc784553a2c1"
+    sid_not_in_chk = "01a21ca1-528f-7e33-8024-bc784553a2c2"
+    relay_pid = os.getpid()
+
+    tl_store = ManagedProcessStore(
+        tmp_path / "managed_chk.sqlite3",
+        process_identity_lookup=lambda pid: (pid, ft),
+        process_liveness_lookup=lambda _pid: TLProcessLiveness.ALIVE,
+    )
+    tl_store.reserve_launch("tlaunch_chk", "winhash", [ManagedPaneReservation("pane_chk", 0, 0, "single")])
+    tl_store.mark_submission_started("tlaunch_chk")
+    tl_store.mark_submission_outcome("tlaunch_chk", LaunchSubmissionState.ACCEPTED)
+    tok = tl_store.claim_pane("tlaunch_chk", "pane_chk", relay_pid=relay_pid, relay_process_created=ft)
+    assert tok is not None
+    tl_store.record_started(
+        "tlaunch_chk",
+        "pane_chk",
+        claim_token=tok,
+        pid=8401,
+        process_created=ft,
+        relay_pid=relay_pid,
+        relay_process_created=ft,
+    )
+
+    receipt_src = TerminalLauncherManagedReceiptSource(
+        tl_store,
+        lambda key: (
+            (
+                ManagedLaunchAssociation(
+                    launch_id="tlaunch_chk",
+                    terminal_session_id="term_chk",
+                    pane_id="pane_chk",
+                    session_key=key,
+                    association_state=ManagedAssociationState.CURRENT,
+                ),
+            )
+            if key.native_session_id == sid_in_chk
+            else ()
+        ),
+    )
+    obs = RuntimeDiscovery(
+        environment_id="env_win_test",
+        process_enumerator=_CountingEnumerator(
+            (
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(8401, ft),
+                    parent_pid=500,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", sid_in_chk),
+                ),
+            )
+        ),
+        managed_receipt_source=receipt_src,
+    )
+
+    chk = CheckpointStore(tmp_path).create_checkpoint(
+        [_make_slot(slot_id="s_in_chk", session_id=sid_in_chk)],
+        observers=obs,
+    )
+    shutdown = OwnedShutdownCoordinator(tl_store)
+
+    # Extra slot not in persisted checkpoint must be refused
+    plan = shutdown.preview_shutdown(
+        [
+            _make_slot(slot_id="s_in_chk", session_id=sid_in_chk),
+            _make_slot(slot_id="s_extra", session_id=sid_not_in_chk),
+        ],
+        observers=obs,
+        checkpoint=chk,
+    )
+    by_slot = {t.slot_id: t for t in plan.targets}
+    assert by_slot["s_in_chk"].eligible is True
+    assert by_slot["s_extra"].eligible is False
+    assert by_slot["s_extra"].refusal_reason == "not_in_persisted_checkpoint"
+
+    orig_req = tl_store.request_interrupt
+
+    def _deliver_and_exit(pane_id: str):
+        res = orig_req(pane_id)
+        if res.accepted:
+            tl_store.deliver_interruption(
+                pane_id,
+                relay_pid=relay_pid,
+                relay_process_created=ft,
+                signal_process_group=lambda _pid: True,
+            )
+            tl_store.record_exit("tlaunch_chk", pane_id, claim_token=tok, exit_code=0)
+        return res
+
+    tl_store.request_interrupt = _deliver_and_exit  # type: ignore[method-assign]
+    report = shutdown.execute_shutdown(plan, authorized=True, timeout_seconds=0.1, poll_interval_seconds=0.01)
+    out = {o.slot_id: o for o in report.outcomes}["s_in_chk"]
+    assert out.observed_state == "exited"
+    assert out.interrupt_delivered is True
+    assert out.provider_exit_verified is False
+    assert out.provider_metadata_finalized is False
