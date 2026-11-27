@@ -1,7 +1,7 @@
 """Ownership and staging policy for independently distributed shared libraries."""
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from scripts_setup.shared_packages import (
     SHARED_DISTRIBUTION_REQUIREMENTS,
@@ -24,10 +24,32 @@ def test_validation_targets_do_not_install_retired_shared_source_paths() -> None
     import json
 
     manifest = json.loads((REPO_ROOT / "validation-targets.json").read_text(encoding="utf-8"))
-    text = json.dumps(manifest)
-    assert not any(
-        f"modules/{module_dir}" in text
+    retired_roots = {
+        PurePosixPath("modules") / module_dir
         for module_dir in ("script_logging", "termdash", "cross_platform", "web_ui_tools", "resource_metrics")
+    }
+    editable_install_roots = []
+
+    for target in manifest["targets"].values():
+        target_root = PurePosixPath(target["working_directory"])
+        for step in target.get("bootstrap", []):
+            arguments = step.get("arguments", [])
+            if "install" not in arguments:
+                continue
+            for index, argument in enumerate(arguments[:-1]):
+                if argument not in {"-e", "--editable"}:
+                    continue
+                source = arguments[index + 1]
+                if source.startswith("{target_root}"):
+                    suffix = source.removeprefix("{target_root}").split("[", 1)[0].lstrip("/")
+                    source = (target_root / suffix).as_posix()
+                editable_install_roots.append(PurePosixPath(source))
+
+    assert editable_install_roots
+    assert not any(
+        root == retired or retired in root.parents
+        for root in editable_install_roots
+        for retired in retired_roots
     )
 
 
