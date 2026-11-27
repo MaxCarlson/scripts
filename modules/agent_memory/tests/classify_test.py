@@ -1,8 +1,38 @@
-from unittest.mock import patch
+import importlib
+import sys
+from types import ModuleType
+from unittest.mock import Mock, patch
 
 import pytest
 
 from agent_memory.classify import PlacementError, determine_project
+import agent_memory.classify as classify_module
+
+
+def test_optional_llm_local_absence_is_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "llm_local", None)
+    reloaded = importlib.reload(classify_module)
+    globals()["PlacementError"] = reloaded.PlacementError
+    assert reloaded._llm_complete is None
+    assert reloaded.determine_project(
+        kind="decision", project=None, title="offline", auto_classify=True, interactive=False
+    ) == "global"
+    monkeypatch.delitem(sys.modules, "llm_local")
+    globals()["PlacementError"] = importlib.reload(classify_module).PlacementError
+
+
+def test_canonical_llm_local_complete_api_supports_classification(monkeypatch: pytest.MonkeyPatch) -> None:
+    llm_local = ModuleType("llm_local")
+    llm_local.complete = Mock(return_value="project-alpha")
+    monkeypatch.setitem(sys.modules, "llm_local", llm_local)
+    reloaded = importlib.reload(classify_module)
+    globals()["PlacementError"] = reloaded.PlacementError
+    assert reloaded.determine_project(
+        kind="decision", project=None, title="database choice", auto_classify=True, interactive=False
+    ) == "project-alpha"
+    llm_local.complete.assert_called_once()
+    monkeypatch.delitem(sys.modules, "llm_local")
+    globals()["PlacementError"] = importlib.reload(classify_module).PlacementError
 
 
 def test_constraint_always_global() -> None:

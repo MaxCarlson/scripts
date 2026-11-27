@@ -1,34 +1,58 @@
 [
   {
     "type": "retirement",
-    "path": "modules/resource_metrics",
-    "reason": "Retire scripts resource_metrics source copy after H4 canonical bundle and consumer migration to mxc-resource-metrics"
+    "path": "modules/agent_abilities",
+    "reason": "Canonical source and its pinned upstream references are maintained in llm-agent-toolkit/modules/agent_abilities."
   },
   {
-    "path": "modules/llm_monitor/pyproject.toml",
+    "type": "retirement",
+    "path": "modules/agent_skills",
+    "reason": "Canonical source and its pinned upstream references are maintained in llm-agent-toolkit/modules/agent_skills."
+  },
+  {
+    "type": "retirement",
+    "path": "modules/llm_local",
+    "reason": "Agent Memory optional classifier fallback qualified with canonical package absent and present"
+  },
+  {
+    "path": "modules/agent_memory/tests/classify_test.py",
     "action": "M",
     "before_mode": "100644",
     "after_mode": "100644",
-    "before": "3c0908a52cad76cb83bed9aefafae50a5c03d115",
+    "before": "302426ceafddba6f3c7e6ef8e0b9e229a8387bb6",
+    "after": "b9b663209bd559b418d2d00fa339dadf24130cef",
+    "reason": "Add deterministic optional-package compatibility coverage"
+  },
+  {
+    "path": "modules/resource_metrics",
+    "reason": "Retire scripts resource_metrics source copy after H4 canonical bundle and consumer migration to mxc-resource-metrics",
+    "type": "retirement"
+  },
+  {
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "path": "modules/llm_monitor/pyproject.toml",
     "after": "78e131a81a77b6c061b8932e9d3787638442a5fc",
+    "before": "3c0908a52cad76cb83bed9aefafae50a5c03d115",
+    "action": "M",
     "reason": "Align llm_monitor optional dependencies to mxc-web-ui-tools and mxc-resource-metrics at 0.9.0"
   },
   {
-    "path": "modules/llm_monitor/llm_monitor/__init__.py",
-    "action": "M",
     "before_mode": "100644",
     "after_mode": "100644",
-    "before": "b2d48da8412127a9882a8730b35999b490835e5e",
+    "path": "modules/llm_monitor/llm_monitor/__init__.py",
     "after": "1ac8f974b5aac6d4acd900085f3c301c0b151faa",
+    "before": "b2d48da8412127a9882a8730b35999b490835e5e",
+    "action": "M",
     "reason": "Sync llm_monitor __version__ with pyproject.toml 0.9.0"
   },
   {
-    "path": "modules/resource_coordinator/pyproject.toml",
-    "action": "M",
     "before_mode": "100644",
     "after_mode": "100644",
-    "before": "0f5d4ffd932f75bdbc18527b87c22a1d3c330be2",
+    "path": "modules/resource_coordinator/pyproject.toml",
     "after": "ad084ebcf9161f03e30d8c11e870adadd5185064",
+    "before": "0f5d4ffd932f75bdbc18527b87c22a1d3c330be2",
+    "action": "M",
     "reason": "Migrate resource_coordinator dependency from resource-metrics to mxc-resource-metrics>=0.3.0,<0.4"
   }
 ]
