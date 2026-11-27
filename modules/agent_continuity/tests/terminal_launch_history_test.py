@@ -360,6 +360,69 @@ def test_provider_launch_records_launcher_owned_terminal_context(tmp_path: Path,
     assert dispatcher.list_terminal_launches(launcher_terminal_id)[0]["native_session_id"] == "exact-session"
 
 
+def test_launcher_context_survives_provider_switch_and_reviewer_return(tmp_path: Path, monkeypatch) -> None:
+    class TTY(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.create_gui("GUI", apply=True)
+    dispatcher.create_slot(gui="GUI", name="Original", apply=True)
+    dispatcher.create_slot(gui="GUI", name="Reviewer", apply=True)
+    dispatcher.attach_session(gui="GUI", name="Original", provider="agy", session_id="original-agy", apply=True)
+    dispatcher.attach_session(gui="GUI", name="Original", provider="codex", session_id="original-exact", apply=True)
+    dispatcher.attach_session(gui="GUI", name="Reviewer", provider="codex", session_id="reviewer-codex", apply=True)
+    dispatcher.attach_session(gui="GUI", name="Reviewer", provider="agy", session_id="reviewer-agy", apply=True)
+    dispatcher.set_slot_state(gui="GUI", name="Reviewer", state="inactive", apply=True)
+    original = dispatcher.get_slot(gui="GUI", name="Original")
+    reviewer = dispatcher.get_slot(gui="GUI", name="Reviewer")
+    cycle = dispatcher_cli._review_cycle_payload(original, reviewer["slot_id"], reviewer["current"])
+    dispatcher.complete_agent_transition(
+        gui="GUI", source_slot_id=original["slot_id"], destination_slot_id=reviewer["slot_id"],
+        provider="agy", environment_id=reviewer["current"]["environment_id"], session_id="reviewer-agy",
+        source_state="inactive", destination_state="active",
+        expected_source=("codex", original["current"]["environment_id"], "original-exact"),
+        expected_destination=("agy", reviewer["current"]["environment_id"], "reviewer-agy"),
+        review_cycle=cycle, apply=True,
+    )
+
+    shell_terminal_id = str(uuid4())
+    pane_terminal_id = str(uuid4())
+    monkeypatch.setenv("TERMINAL_SESSION_ID", shell_terminal_id)
+    monkeypatch.setattr(
+        dispatcher_cli, "_native_argv",
+        lambda _dispatcher, provider, session_id, **_kwargs: [provider, "resume", session_id],
+    )
+
+    def fake_run(argv, **_kwargs):
+        if Path(str(argv[0])).name.casefold() in {"git", "git.exe"}:
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(dispatcher_cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        "agent_continuity.interactive.select_item",
+        lambda items, **_kwargs: ("selected", next(row for row in items if row["name"] == "Original")),
+    )
+
+    result = dispatcher_cli._run_pane(
+        dispatcher, slot_id=reviewer["slot_id"], launch_id=None,
+        input_stream=TTY("5\n4\nr\n1\n"), output_stream=TTY(), show_summary=False,
+        launcher_terminal_context=pane_terminal_id,
+    )
+
+    assert result == 0
+    assert dispatcher.list_terminal_launches(shell_terminal_id) == []
+    launches = dispatcher.list_terminal_launches(pane_terminal_id, limit=10)
+    assert len(launches) == 3
+    assert {launch["native_session_id"] for launch in launches} == {
+        "original-exact", "original-agy", "reviewer-agy",
+    }
+    assert dispatcher.get_slot(gui="GUI", name="Original")["state"] == "active"
+    assert dispatcher.get_slot(gui="GUI", name="Reviewer")["state"] == "inactive"
+    assert dispatcher._rows("SELECT status FROM dispatcher_review_cycles") == [{"status": "returned"}]
+
+
 def test_failed_command_preflight_does_not_replace_terminal_history(tmp_path: Path, monkeypatch) -> None:
     dispatcher = DispatcherService(home_dir=tmp_path / "registry")
     dispatcher.register(gui="Launch GUI", name="Agent", provider="codex", session_id="exact-session", apply=True)

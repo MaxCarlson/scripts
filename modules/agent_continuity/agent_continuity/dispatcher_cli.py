@@ -1305,7 +1305,8 @@ def _run_pane(
         if choice == "4":
             result = _switch_after_exit(dispatcher, slot, opposite_provider,
                                         input_stream=input_stream, output_stream=output_stream,
-                                        native_args=native_args, cwd_override=cwd_override)
+                                        native_args=native_args, cwd_override=cwd_override,
+                                        launcher_terminal_context=launcher_terminal_context)
             if result is None:
                 continue
             if show_summary:
@@ -1314,14 +1315,16 @@ def _run_pane(
         if choice == "5":
             result = _switch_to_existing_agent(dispatcher, slot, input_stream=input_stream,
                                                output_stream=output_stream, native_args=native_args,
-                                               cwd_override=cwd_override)
+                                               cwd_override=cwd_override,
+                                               launcher_terminal_context=launcher_terminal_context)
             if show_summary:
                 _render_scoped_summary(dispatcher, slot, output_stream)
             return result
         if choice == "6":
             result = _create_agent_after_exit(dispatcher, slot, input_stream=input_stream,
                                               output_stream=output_stream, native_args=native_args,
-                                              cwd_override=cwd_override)
+                                              cwd_override=cwd_override,
+                                              launcher_terminal_context=launcher_terminal_context)
             if show_summary:
                 _render_scoped_summary(dispatcher, slot, output_stream)
             return result
@@ -1349,6 +1352,7 @@ def _switch_after_exit(
     output_stream: TextIO,
     native_args: Sequence[str] = (),
     cwd_override: str | None = None,
+    launcher_terminal_context: str | None = None,
 ) -> int | None:
     """Switch the exited slot to an exact prior provider session or explicitly new one."""
     expected_current = _session_identity(slot)
@@ -1406,7 +1410,8 @@ def _switch_after_exit(
                          input_stream=input_stream, output_stream=output_stream, show_summary=False,
                          native_args=destination_args, cwd_override=destination_cwd,
                          expected_session_identity=(target["provider"], target["environment_id"],
-                                                    target["native_session_id"]))
+                                                    target["native_session_id"]),
+                         launcher_terminal_context=launcher_terminal_context)
 
     environment_id = expected_current[1]
     _provider_environment(dispatcher, environment_id)
@@ -1433,7 +1438,7 @@ def _switch_after_exit(
     )
     return _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=launch["details"]["launch_id"],
                      input_stream=input_stream, output_stream=output_stream, show_summary=False,
-                     native_args=destination_args)
+                     native_args=destination_args, launcher_terminal_context=launcher_terminal_context)
 
 
 def _select_post_exit_overrides(
@@ -1532,6 +1537,7 @@ def _switch_to_existing_agent(
     output_stream: TextIO,
     native_args: Sequence[str] = (),
     cwd_override: str | None = None,
+    launcher_terminal_context: str | None = None,
 ) -> int:
     if not (input_stream.isatty() and output_stream.isatty()):
         print("Agent switching requires an interactive terminal; no slot state changed.", file=output_stream)
@@ -1613,7 +1619,8 @@ def _switch_to_existing_agent(
     return _run_pane(dispatcher, slot_id=refreshed["slot_id"], launch_id=None,
                      input_stream=input_stream, output_stream=output_stream, show_summary=False,
                      native_args=destination_args, cwd_override=destination_cwd_override,
-                     expected_session_identity=destination_identity)
+                     expected_session_identity=destination_identity,
+                     launcher_terminal_context=launcher_terminal_context)
 
 
 def _create_agent_after_exit(
@@ -1624,6 +1631,7 @@ def _create_agent_after_exit(
     output_stream: TextIO,
     native_args: Sequence[str] = (),
     cwd_override: str | None = None,
+    launcher_terminal_context: str | None = None,
 ) -> int:
     if not (input_stream.isatty() and output_stream.isatty()):
         print("Creating and switching agents requires an interactive terminal; no slot state changed.", file=output_stream)
@@ -1681,6 +1689,7 @@ def _create_agent_after_exit(
         transition_source={"slot_id": source["slot_id"], "expected_source": _session_identity(source),
                           "source_state": "inactive", "destination_state": "active",
                           "provenance": "post_exit_new_agent"},
+        launcher_terminal_context=launcher_terminal_context,
     )
 
 

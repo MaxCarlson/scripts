@@ -165,7 +165,7 @@ New-session bootstrap remains the fixed read-only initialization step and captur
 
 ## Terminal-scoped launch history (LLMD-27–29)
 
-LLMD reads `TERMINAL_SESSION_ID` and `TERMINAL_SESSION_OWNER_PID` from the environment without changing either variable. A valid terminal-session UUID scopes `llmd last`; a missing or malformed UUID is an error and never falls back to global activity. Owner PID is diagnostic metadata only. Launch history is stored as immutable events with a rebuildable SQLite projection and separate launch IDs for concurrent invocations and terminal panes. Each launcher-created pane receives a distinct internal `pane-run -T` UUID, so it cannot overwrite the originating shell's history or another pane's context. A launch still marked `launching` has an unknown outcome and is not evidence that its provider process is alive.
+LLMD reads `TERMINAL_SESSION_ID` and `TERMINAL_SESSION_OWNER_PID` from the environment without changing either variable. A valid terminal-session UUID scopes `llmd last`; a missing or malformed UUID is an error and never falls back to global activity. Owner PID is diagnostic metadata only. Launch history is stored as immutable events with a rebuildable SQLite projection and separate launch IDs for concurrent invocations and terminal panes. Each launcher-created pane receives a distinct internal `pane-run -T` UUID, which continues through post-exit provider switches, agent switches, new-agent creation, and reviewer returns. Pane history therefore cannot overwrite the originating shell's history or another pane's context. A launch still marked `launching` has an unknown outcome and is not evidence that its provider process is alive.
 
 ```powershell
 llmd last                 # latest launch from this terminal

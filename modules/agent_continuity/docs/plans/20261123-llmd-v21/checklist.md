@@ -91,6 +91,7 @@
 - [x] Require absolute additional-directory paths validated in the selected provider runtime.
 - [x] Block recognized short/attached identity, help/version, cwd and execution aliases; document that authorized unknown flags cannot be semantically certified.
 - [x] Run corrective focused and full module validation, Ruff, version consistency, and diff checks; commit/push and verify feature remote.
+- [x] Preserve launcher-pane UUID context across post-exit options 4–6, reviewer return, and repeated transitions; verify consecutive launches stay pane-scoped.
 
 ## Deferred
 

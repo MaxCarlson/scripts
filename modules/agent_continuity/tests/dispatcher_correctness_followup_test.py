@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from io import StringIO
+from uuid import uuid4
 
 import pytest
 
@@ -155,6 +156,7 @@ def test_exit_option_four_uses_destination_environment_cwd_and_defaults_for_inco
                               cwd=str(source_cwd), apply=True)
     slot = dispatcher.get_slot(gui="GUI", name="Agent")
     previews, launches = [], []
+    launcher_context = str(uuid4())
     monkeypatch.setattr("agent_continuity.dispatcher_cli._launch_preview",
                         lambda *args, **kwargs: previews.append((args, kwargs)) or {})
     monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
@@ -163,6 +165,7 @@ def test_exit_option_four_uses_destination_environment_cwd_and_defaults_for_inco
     result = _switch_after_exit(
         dispatcher, slot, "agy", input_stream=StringIO(f"r\n{choice}\n"), output_stream=StringIO(),
         native_args=["--ask-for-approval", "never"], cwd_override=str(source_cwd),
+        launcher_terminal_context=launcher_context,
     )
 
     if choice == "":
@@ -176,6 +179,7 @@ def test_exit_option_four_uses_destination_environment_cwd_and_defaults_for_inco
     assert previews[0][0][5] == []
     assert launches[0]["native_args"] == []
     assert launches[0]["cwd_override"] is None
+    assert launches[0]["launcher_terminal_context"] == launcher_context
     assert dispatcher.get_slot(gui="GUI", name="Agent")["current"]["environment_id"] == slot["current"]["environment_id"]
 
 
@@ -199,6 +203,7 @@ def test_exit_option_five_uses_selected_same_provider_worktree_unless_overrides_
     source = dispatcher.get_slot(gui="GUI", name="Source")
     monkeypatch.setattr("agent_continuity.interactive.select_item", lambda items, **kwargs: ("selected", items[0]))
     previews, launches = [], []
+    launcher_context = str(uuid4())
     monkeypatch.setattr("agent_continuity.dispatcher_cli._launch_preview",
                         lambda *args, **kwargs: previews.append((args, kwargs)) or {})
     monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
@@ -207,6 +212,7 @@ def test_exit_option_five_uses_selected_same_provider_worktree_unless_overrides_
     result = _switch_to_existing_agent(
         dispatcher, source, input_stream=TTYInput("d\n"), output_stream=TTYOutput(),
         native_args=["--sandbox", "workspace-write"], cwd_override=str(source_cwd),
+        launcher_terminal_context=launcher_context,
     )
 
     assert result == 0
@@ -214,6 +220,7 @@ def test_exit_option_five_uses_selected_same_provider_worktree_unless_overrides_
     assert previews[0][0][5] == []
     assert launches[0]["native_args"] == []
     assert launches[0]["cwd_override"] is None
+    assert launches[0]["launcher_terminal_context"] == launcher_context
     assert dispatcher.get_slot(gui="GUI", name="Target")["state"] == "active"
 
 
@@ -253,6 +260,7 @@ def test_exit_option_six_never_inherits_provider_options_without_authorization(
     dispatcher.register("GUI", "Source", provider="codex", session_id="source-exact")
     source = dispatcher.get_slot(gui="GUI", name="Source")
     previews, launches = [], []
+    launcher_context = str(uuid4())
     monkeypatch.setattr("agent_continuity.dispatcher_cli._new_launch_preview",
                         lambda *args, **kwargs: previews.append((args, kwargs)) or {})
     monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
@@ -264,6 +272,7 @@ def test_exit_option_six_never_inherits_provider_options_without_authorization(
     result = _create_agent_after_exit(
         dispatcher, source, input_stream=TTYInput(response), output_stream=output,
         native_args=supplied, cwd_override=str(tmp_path / "departing override"),
+        launcher_terminal_context=launcher_context,
     )
     target = dispatcher.get_slot(gui="GUI", name="New")
     pending = dispatcher.list_pending_launches(gui="GUI")
@@ -273,6 +282,7 @@ def test_exit_option_six_never_inherits_provider_options_without_authorization(
     assert pending[0]["cwd"] == str(cwd)
     assert previews[0][0][3] == str(cwd)
     assert launches[0]["native_args"] == expected_args
+    assert launches[0]["launcher_terminal_context"] == launcher_context
     assert "departing override" in output.getvalue()
 
 
