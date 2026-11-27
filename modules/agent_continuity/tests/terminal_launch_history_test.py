@@ -504,6 +504,29 @@ def test_provider_failure_outcomes_are_recorded_distinctly(tmp_path: Path, monke
     assert record["exit_code"] == expected_code
 
 
+def test_abnormal_exit_diagnostic_uses_selected_color_mode(tmp_path: Path, monkeypatch) -> None:
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register(gui="GUI", name="Agent", provider="codex", session_id="exact-session", apply=True)
+    slot = dispatcher.get_slot(gui="GUI", name="Agent")
+    monkeypatch.setenv("TERMINAL_SESSION_ID", str(uuid4()))
+    monkeypatch.setattr(dispatcher_cli, "_native_argv", lambda *_args, **_kwargs: ["fake-codex", "resume"])
+    monkeypatch.setattr(dispatcher_cli.subprocess, "run",
+                        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 7))
+    requested_modes = []
+    monkeypatch.setattr(dispatcher_cli, "color_enabled",
+                        lambda mode, **_kwargs: requested_modes.append(mode) or False)
+    token = dispatcher_cli._COLOR_MODE.set("never")
+    try:
+        assert dispatcher_cli._run_pane(
+            dispatcher, slot_id=slot["slot_id"], launch_id=None,
+            input_stream=io.StringIO(), output_stream=io.StringIO(), show_summary=False,
+        ) == 7
+    finally:
+        dispatcher_cli._COLOR_MODE.reset(token)
+
+    assert requested_modes == ["never"]
+
+
 def test_interrupted_interactive_provider_is_recorded_as_interrupted(tmp_path: Path, monkeypatch) -> None:
     dispatcher = DispatcherService(home_dir=tmp_path / "registry")
     dispatcher.register(gui="GUI", name="Agent", provider="codex", session_id="exact-session", apply=True)
