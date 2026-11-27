@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
 from typing import Any, TextIO
@@ -64,6 +64,11 @@ def _startup_progress(message: str) -> None:
     print(f"LLMD startup +{time.monotonic() - started:.2f}s: {message}", file=sys.stderr, flush=True)
 
 
+def _run_provider_process(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    """Run only a provider command; tests can replace this without intercepting Git probes."""
+    return subprocess.run(argv, **kwargs)
+
+
 def _run_provider_with_progress(
     argv: Sequence[str], *, label: str, progress_interval: float = 4.0, **kwargs: Any
 ) -> subprocess.CompletedProcess:
@@ -83,7 +88,7 @@ def _run_provider_with_progress(
         reporter = threading.Thread(target=report_wait, name="llmd-startup-progress", daemon=True)
         reporter.start()
     try:
-        return subprocess.run(argv, **kwargs)
+        return _run_provider_process(argv, **kwargs)
     finally:
         done.set()
         if reporter is not None:
@@ -1150,8 +1155,61 @@ def _run_pane(
     allow_native_unknown: bool = False,
     launcher_terminal_context: str | None = None,
 ) -> int:
+    from .dispatcher import _slot_runtime_lock
+
     _startup_progress("provider handoff preparation and exact-session validation")
+    with _slot_runtime_lock(dispatcher.home_dir, slot_id, blocking=False):
+        status_or_menu = _run_pane_locked(
+            dispatcher,
+            slot_id=slot_id,
+            launch_id=launch_id,
+            input_stream=input_stream,
+            output_stream=output_stream,
+            transition_source=transition_source,
+            native_args=native_args,
+            cwd_override=cwd_override,
+            expected_session_identity=expected_session_identity,
+            allow_native_unknown=allow_native_unknown,
+            launcher_terminal_context=launcher_terminal_context,
+        )
+    if isinstance(status_or_menu, int):
+        return status_or_menu
+    return _run_post_exit_menu(
+        dispatcher,
+        slot=status_or_menu["slot"],
+        provider=status_or_menu["provider"],
+        opposite_provider=status_or_menu["opposite_provider"],
+        use_color=status_or_menu["use_color"],
+        show_summary=show_summary,
+        input_stream=input_stream,
+        output_stream=output_stream,
+        native_args=native_args,
+        cwd_override=cwd_override,
+        launcher_terminal_context=launcher_terminal_context,
+    )
+
+
+def _run_pane_locked(
+    dispatcher: DispatcherService,
+    *,
+    slot_id: str,
+    launch_id: str | None,
+    input_stream: TextIO,
+    output_stream: TextIO,
+    transition_source: dict[str, Any] | None = None,
+    native_args: Sequence[str] = (),
+    cwd_override: str | None = None,
+    expected_session_identity: tuple[str, str, str] | None = None,
+    allow_native_unknown: bool = False,
+    launcher_terminal_context: str | None = None,
+) -> int | dict[str, Any]:
+    dispatcher._sync()
     slot = dispatcher.get_slot_by_id(slot_id)
+    if not launch_id and dispatcher._row(
+        "SELECT 1 FROM dispatcher_pending_launches WHERE slot_id = ? AND status = 'pending' LIMIT 1", (slot_id,)
+    ):
+        raise ContinuityError(ErrorCode.INVALID_INPUT,
+            "This agent has an unresolved destination launch; recover or resolve it before resuming another session.")
     if launch_id:
         pending = dispatcher.get_pending_launch(launch_id)
         if pending["slot_id"] != slot_id:
@@ -1410,7 +1468,7 @@ def _run_pane(
                 terminal_record_written = True
             _startup_progress("interactive provider handoff")
             _STARTUP_PROGRESS.set(False)
-            result = subprocess.run(argv, cwd=process_cwd, check=False)
+            result = _run_provider_process(argv, cwd=process_cwd, check=False)
     except KeyboardInterrupt:
         if launch_id:
             if provider == "claude":
@@ -1443,6 +1501,7 @@ def _run_pane(
     _finish_terminal_launch(dispatcher, terminal_record, exit_code=result.returncode,
                             status="exited" if result.returncode == 0 else "abnormal_exit")
     claude_launch_outcome_recorded = False
+    claude_reconcile: dict[str, Any] | None = None
     if provider == "claude" and launch_id and result.returncode == 0:
         dispatcher.record_process_observation(
             slot_id=slot_id, launch_id=launch_id, return_code=0, outcome="normal_exit",
@@ -1450,49 +1509,34 @@ def _run_pane(
             native_session_id=session_id,
         )
         claude_launch_outcome_recorded = True
-    if provider == "claude" and launch_id and result.returncode == 0:
-        adapter = dispatcher.continuity.adapters[provider]
-        evidence = adapter.get_session_metadata(session_id) if session_id else None
-        if not evidence:
+    if provider == "claude" and launch_id:
+        claude_reconcile = dispatcher.reconcile_claude_launch_exit(
+            slot_id=slot_id,
+            launch_id=launch_id,
+            environment_id=environment_id,
+            session_id=session_id,
+            return_code=result.returncode,
+            cwd=cwd,
+            transition_source=transition_source,
+        )
+        if claude_reconcile["status"] in {"resolved", "already_resolved"}:
+            if result.returncode == 0 and not claude_reconcile.get("transcript_observed"):
+                print(
+                    f"No exact Claude transcript was observed for {session_id} at exit; "
+                    "association remains unverified for resume.",
+                    file=output_stream,
+                )
+                return 1
+            if result.returncode == 0:
+                launch_identity = (provider, environment_id, session_id)
+                launch_id = None
+        elif claude_reconcile["status"] == "pending_no_transcript":
             print(
                 f"No exact Claude transcript was present for reserved UUID {session_id} at exit; "
                 "the launch remains pending for exact-ID recovery and will not be relaunched.",
                 file=output_stream,
             )
             return 1
-        try:
-            if transition_source:
-                if transition_source.get("review_cycle"):
-                    transition_source["review_cycle"].update({
-                        "reviewer_provider": provider,
-                        "reviewer_environment_id": environment_id,
-                        "reviewer_session_id": session_id,
-                    })
-                dispatcher.complete_agent_transition(
-                    gui=slot["gui_alias"], source_slot_id=transition_source["slot_id"],
-                    destination_slot_id=slot_id, provider=provider, environment_id=environment_id,
-                    session_id=session_id,
-                    source_state=transition_source.get("source_state", "inactive"),
-                    destination_state=transition_source.get("destination_state", "active"),
-                    expected_source=transition_source["expected_source"], expected_destination=None,
-                    cwd=cwd, launch_id=launch_id,
-                    provenance=transition_source.get("provenance", "agent_transition"),
-                    allow_inactive_source=transition_source.get("allow_inactive_source", False),
-                    review_cycle=transition_source.get("review_cycle"), apply=True,
-                )
-            else:
-                dispatcher.attach_session(
-                    gui=slot["gui_alias"], name=slot["name"], provider=provider, session_id=session_id,
-                    environment_selector=environment_id, cwd=cwd, launch_id=launch_id, apply=True,
-                    provenance="claude_transcript_verified",
-                )
-        except ContinuityError as exc:
-            dispatcher.mark_launch_failed(launch_id=launch_id,
-                                          detail=f"Claude transcript exists for {session_id}, but association failed: {exc}",
-                                          apply=True)
-            raise
-        launch_identity = (provider, environment_id, session_id)
-        launch_id = None
     if not claude_launch_outcome_recorded:
         try:
             dispatcher.record_process_observation(
@@ -1506,15 +1550,40 @@ def _run_pane(
     if result.returncode != 0:
         if launch_id and provider != "claude":
             dispatcher.mark_launch_failed(launch_id=launch_id, detail=f"provider exited with {result.returncode}", apply=True)
-        detail = (f"{slot['name']} exited with code {result.returncode}; slot and current session remain unchanged."
-                  if provider != "claude" or not launch_id else
-                  f"{slot['name']} exited with code {result.returncode}; Claude's reserved UUID remains pending for exact transcript recovery.")
+        if claude_reconcile and claude_reconcile["status"] == "already_resolved":
+            detail = f"{slot['name']} exited with code {result.returncode}; association was already resolved."
+        elif provider == "claude" and launch_id:
+            detail = f"{slot['name']} exited with code {result.returncode}; Claude's reserved UUID remains pending for exact transcript recovery."
+        else:
+            detail = f"{slot['name']} exited with code {result.returncode}; slot and current session remain unchanged."
         print(semantic_color(detail,
                              "error", enabled=color_enabled(_current_color_mode(), is_tty=output_stream.isatty(),
                                                             stream=output_stream)), file=output_stream)
         return result.returncode
     opposite_provider = "agy" if provider == "codex" else "codex"
     use_color = color_enabled(_current_color_mode(), is_tty=output_stream.isatty(), stream=output_stream)
+    return {
+        "slot": slot,
+        "provider": provider,
+        "opposite_provider": opposite_provider,
+        "use_color": use_color,
+    }
+
+
+def _run_post_exit_menu(
+    dispatcher: DispatcherService,
+    *,
+    slot: dict[str, Any],
+    provider: str,
+    opposite_provider: str,
+    use_color: bool,
+    show_summary: bool,
+    input_stream: TextIO,
+    output_stream: TextIO,
+    native_args: Sequence[str],
+    cwd_override: str | None,
+    launcher_terminal_context: str | None,
+) -> int:
     while True:
         print(f"\n{semantic_color(slot['name'], 'agent', enabled=use_color)} "
               f"{outcome_semantic('has exited successfully', enabled=use_color)}\n"
@@ -2080,58 +2149,71 @@ def _return(dispatcher: DispatcherService, args: argparse.Namespace,
                      allow_native_unknown=allow_native_unknown)
 
 
+@contextlib.contextmanager
 def _session_runtime_lock(dispatcher: DispatcherService, name: str, *, blocking: bool = True):
-    from .dispatcher import _mutation_lock
+    from .dispatcher import _HELD_SESSION_LOCKS, _mutation_lock
 
-    return _mutation_lock(dispatcher.home_dir, lock_name=name, blocking=blocking)
+    with _mutation_lock(dispatcher.home_dir, lock_name=name, blocking=blocking):
+        key = (str(dispatcher.home_dir.resolve()), name)
+        token = _HELD_SESSION_LOCKS.set(_HELD_SESSION_LOCKS.get() | {key})
+        try:
+            yield
+        finally:
+            _HELD_SESSION_LOCKS.reset(token)
 
 
 def _try_session_runtime_lock(dispatcher: DispatcherService, name: str) -> bool:
-    path = dispatcher.home_dir / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as stream:
-        try:
-            stream.seek(0)
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-                stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
-            return False
-        except OSError:
-            return True
+    return _probe_existing_lock(dispatcher.home_dir / name) == "contended"
 
 
 def _session_in_use(dispatcher: DispatcherService, provider: str, environment_id: str, session_id: str) -> bool:
-    key = hashlib.sha256(f"{provider}\0{environment_id}\0{session_id}".encode()).hexdigest()[:24]
-    return _try_session_runtime_lock(dispatcher, f"session-{key}.lock")
+    from .dispatcher import _session_lock_name
+
+    return _try_session_runtime_lock(dispatcher, _session_lock_name(provider, environment_id, session_id))
+
+
+def _collect_runtime_observations(
+    dispatcher: DispatcherService,
+    keys: Sequence[tuple[str | None, str | None, str | None]],
+) -> dict[tuple[str, str, str], Any]:
+    valid = [(p, e, s) for p, e, s in keys if p and e and s]
+    if not valid:
+        return {}
+    try:
+        return dispatcher.observe_runtime_sessions(valid)
+    except Exception:
+        return {}
 
 
 def _continue_items(dispatcher: DispatcherService, gui: str | None = None, *, include_completed: bool = False) -> list[dict[str, Any]]:
     conversations = dispatcher.list_guis()
     if gui:
         conversations = [item for item in conversations if item["alias"].casefold() == gui.casefold()]
-    items = []
+    raw_items: list[tuple[dict[str, Any], str]] = []
+    keys: list[tuple[str | None, str | None, str | None]] = []
     for conversation in conversations:
         for slot in dispatcher.list_slots(gui=conversation["gui_id"], active_only=False):
             if slot["state"] == "completed" and not include_completed:
                 continue
-            provider = slot.get("current_provider") or slot.get("pending_provider")
-            session = slot.get("current_session_id")
             if slot.get("pending_launch_id"):
-                pending = dispatcher._row("SELECT environment_id FROM dispatcher_pending_launches WHERE launch_id = ?",
-                                          (slot["pending_launch_id"],))
-                runtime = _runtime_label(dispatcher, provider, pending["environment_id"], None, pending=True) if pending else "UNKNOWN"
-            else:
-                runtime = (_runtime_label(dispatcher, provider, slot.get("current_environment_id"), session)
-                           if provider and session else "NOT OBSERVED")
-            items.append({**slot, "gui_alias": conversation["alias"], "provider": provider,
-                          "runtime_status": runtime,
-                          "search_text": " ".join(str(v) for v in (conversation["alias"], slot["name"], provider or "", session or "")).casefold()})
+                continue
+            provider = slot.get("current_provider")
+            session = slot.get("current_session_id")
+            if provider and session:
+                keys.append((provider, slot.get("current_environment_id"), session))
+            raw_items.append((slot, conversation["alias"]))
+    observations = _collect_runtime_observations(dispatcher, keys)
+    items = []
+    for slot, gui_alias in raw_items:
+        provider = slot.get("current_provider")
+        session = slot.get("current_session_id")
+        runtime = (
+            _runtime_label(dispatcher, provider, slot.get("current_environment_id"), session, observations=observations)
+            if provider and session else "NOT OBSERVED"
+        )
+        items.append({**slot, "gui_alias": gui_alias, "provider": provider,
+                      "runtime_status": runtime,
+                      "search_text": " ".join(str(v) for v in (gui_alias, slot["name"], provider or "", session or "")).casefold()})
     items.sort(key=lambda row: (row["state"] != "active", row.get("last_activity_at") is None,
                                 row["last_activity_at"] or "", row["gui_alias"].casefold(), row["name"].casefold()), reverse=False)
     active = [row for row in items if row["state"] == "active"]
@@ -2144,18 +2226,105 @@ def _continue_items(dispatcher: DispatcherService, gui: str | None = None, *, in
     return items
 
 
-def _runtime_label(dispatcher: DispatcherService, provider: str, environment: str | None,
-                   session: str | None, *, pending: bool = False) -> str:
-    if not environment or (not session and not pending):
-        return "UNKNOWN"
+def _runtime_assessment(
+    dispatcher: DispatcherService,
+    provider: str | None,
+    environment: str | None,
+    session: str | None,
+    *,
+    pending: bool = False,
+    observations: Mapping[tuple[str, str, str], Any] | None = None,
+) -> tuple[str, str | None]:
+    if not provider or not environment or (not session and not pending):
+        return "UNKNOWN", None
     env = next((item for item in dispatcher.materializer.list_environments() if item.environment_id == environment), None)
     if env is None or not environment_is_locally_owned(dispatcher.home_dir, env):
-        return "UNKNOWN"
-    if pending:
-        return "PENDING"
+        return "UNKNOWN", None
     if not session:
-        return "UNKNOWN"
-    return "IN USE" if _session_in_use(dispatcher, provider, environment, session) else "NOT OBSERVED"
+        return ("PENDING", "pending launch has no safely captured native identity") if pending else ("UNKNOWN", None)
+    from .dispatcher import _session_lock_name
+
+    lock_state = _probe_existing_lock(dispatcher.home_dir / _session_lock_name(provider, environment, session))
+    if observations is not None and (provider, environment, session) in observations:
+        observation = observations[(provider, environment, session)]
+    else:
+        try:
+            observation = dispatcher.observe_runtime_session(provider, environment, session)
+        except Exception:
+            observation = None
+    if (observation is not None
+            and observation.process_session_match.value == "exact"
+            and observation.process_liveness.value == "running"
+            and not observation.identity_conflict and not observation.evidence_conflict):
+        note = "exact provider process observed; native resumability unverified" if pending else "exact provider process observed"
+        return "IN USE", note
+    if lock_state == "contended" or _session_in_use(dispatcher, provider, environment, session):
+        return "IN USE", "LLMD session lock contended; exact provider process not observed"
+    if lock_state == "inaccessible":
+        return "UNKNOWN", "LLMD session lock is inaccessible"
+    if observation is None:
+        return ("PENDING", "reserved identity; runtime observation unavailable") if pending else ("UNKNOWN", None)
+    if observation.process_session_match.value == "ambiguous" or observation.identity_conflict or observation.evidence_conflict:
+        return "UNKNOWN", "conflicting or ambiguous runtime evidence"
+    if observation.process_availability.value == "complete":
+        return ("PENDING", "reserved identity; no exact live process observed") if pending else ("NOT OBSERVED", None)
+    return "UNKNOWN", ("reserved identity; process enumeration partial or unavailable" if pending else None)
+
+
+def _runtime_label(
+    dispatcher: DispatcherService,
+    provider: str | None,
+    environment: str | None,
+    session: str | None,
+    *,
+    pending: bool = False,
+    observations: Mapping[tuple[str, str, str], Any] | None = None,
+) -> str:
+    status, _ = _runtime_assessment(
+        dispatcher, provider, environment, session, pending=pending, observations=observations
+    )
+    return status
+
+
+def _enrich_pending_rows(
+    dispatcher: DispatcherService,
+    rows: list[dict[str, Any]],
+    *,
+    observations: Mapping[tuple[str, str, str], Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    pending_by_launch: dict[str, dict[str, Any]] = {}
+    pending_keys: list[tuple[str | None, str | None, str | None]] = []
+    for row in rows:
+        launch_id = row.get("pending_launch_id")
+        if not launch_id:
+            continue
+        pending = dispatcher._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?", (launch_id,))
+        if not pending:
+            row["pending_native_session_id"] = None
+            row["pending_runtime_status"] = "UNKNOWN"
+            row["pending_runtime_evidence"] = "pending launch record unavailable"
+            continue
+        pending = dispatcher._with_captured_bootstrap_id(pending)
+        pending_by_launch[launch_id] = pending
+        session = pending.get("captured_session_id") or pending.get("reserved_session_id")
+        if pending.get("provider") and pending.get("environment_id") and session:
+            pending_keys.append((pending["provider"], pending["environment_id"], session))
+    if observations is None and pending_keys:
+        observations = _collect_runtime_observations(dispatcher, pending_keys)
+    for row in rows:
+        launch_id = row.get("pending_launch_id")
+        if not launch_id or launch_id not in pending_by_launch:
+            continue
+        pending = pending_by_launch[launch_id]
+        session = pending.get("captured_session_id") or pending.get("reserved_session_id")
+        row["pending_provider"] = pending.get("provider")
+        row["pending_native_session_id"] = session
+        status, evidence = _runtime_assessment(
+            dispatcher, pending["provider"], pending["environment_id"], session, pending=True, observations=observations
+        )
+        row["pending_runtime_status"] = status
+        row["pending_runtime_evidence"] = evidence or "runtime evidence unavailable"
+    return pending_by_launch
 
 
 def _continue_picker_line(row: dict[str, Any], width: int, *, enabled: bool) -> str:
@@ -2331,29 +2500,23 @@ def _resolve_name(positional: str | None, named: str | None, label: str) -> str 
 
 
 def _probe_existing_lock(path: Path) -> str:
-    if not path.exists():
-        return "not_present"
+    from .dispatcher import _probe_existing_lock_file
+
+    return _probe_existing_lock_file(path)
+
+
+def _session_resumability(dispatcher: DispatcherService, provider: str | None, session_id: str | None) -> str | None:
+    if not provider or not session_id:
+        return None
+    if provider != "claude":
+        return "provider_captured"
+    adapter = dispatcher.continuity.adapters.get("claude")
+    if adapter is None:
+        return "unknown"
     try:
-        stream = path.open("r+b")
-    except OSError:
-        return "inaccessible"
-    try:
-        try:
-            if os.name == "nt":
-                import msvcrt
-                stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-                stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
-            return "available"
-        except OSError:
-            return "contended"
-    finally:
-        stream.close()
+        return "transcript_observed" if adapter.get_session_metadata(session_id) else "unverified"
+    except ContinuityError:
+        return "unknown"
 
 
 def _doctor_report(dispatcher: DispatcherService, gui: str | None = None, agent: str | None = None) -> dict[str, Any]:
@@ -2389,30 +2552,61 @@ def _doctor_report(dispatcher: DispatcherService, gui: str | None = None, agent:
                ORDER BY g.alias_key, s.name_key""",
                (gui.casefold() if gui else None, gui.casefold() if gui else None,
                 agent.casefold() if agent else None, agent.casefold() if agent else None))
-    environments = dispatcher.materializer.list_environments()
+    pending_by_launch: dict[str, dict[str, Any]] = {}
+    keys: list[tuple[str | None, str | None, str | None]] = []
+    for row in rows:
+        if row["current_session_id"] and row["current_provider"]:
+            keys.append((row["current_provider"], row["current_environment_id"], row["current_session_id"]))
+        if row["pending_launch_id"]:
+            pending = dispatcher._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?",
+                                      (row["pending_launch_id"],))
+            if pending:
+                pending = dispatcher._with_captured_bootstrap_id(pending)
+                pending_by_launch[row["pending_launch_id"]] = pending
+                psid = pending.get("captured_session_id") or pending.get("reserved_session_id")
+                if pending.get("provider") and pending.get("environment_id") and psid:
+                    keys.append((pending["provider"], pending["environment_id"], psid))
+    observations = _collect_runtime_observations(dispatcher, keys)
     for row in rows:
         provider = row["current_provider"] or row["pending_provider"]
         sid = row["current_session_id"]
         env_id = row["current_environment_id"]
-        runtime = "NOT OBSERVED"
+        runtime, runtime_evidence = (
+            _runtime_assessment(dispatcher, row["current_provider"], env_id, sid, observations=observations)
+            if sid and row["current_provider"] else ("UNKNOWN", None)
+        )
+        pending_destination = None
         if row["pending_launch_id"]:
-            pending_env = next((value for value in environments if value.environment_id == row["pending_environment_id"]), None)
-            runtime = "PENDING" if pending_env and environment_is_locally_owned(dispatcher.home_dir, pending_env) else "UNKNOWN"
-        elif sid and row["current_provider"]:
-            env = next((value for value in environments if value.environment_id == env_id), None)
-            if env is None or not environment_is_locally_owned(dispatcher.home_dir, env):
-                runtime = "UNKNOWN"
-            else:
-                lock_key = hashlib.sha256(f"{provider}\0{env_id}\0{sid}".encode()).hexdigest()[:24]
-                observation = _probe_existing_lock(dispatcher.home_dir / f"session-{lock_key}.lock")
-                runtime = "IN USE" if observation == "contended" else "UNKNOWN" if observation == "inaccessible" else "NOT OBSERVED"
+            pending = pending_by_launch.get(row["pending_launch_id"])
+            if pending:
+                pending_session = pending.get("captured_session_id") or pending.get("reserved_session_id")
+                pending_runtime, pending_evidence = _runtime_assessment(
+                    dispatcher, pending["provider"], pending["environment_id"],
+                    pending_session, pending=True, observations=observations,
+                )
+                pending_destination = {
+                    "provider": pending["provider"], "environment_id": pending["environment_id"],
+                    "session_id": pending_session, "state": "pending",
+                    "identity_state": "captured" if pending.get("captured_session_id") else (
+                        "reserved" if pending.get("reserved_session_id") else "unresolved"
+                    ),
+                    "runtime": pending_runtime,
+                    "runtime_evidence": pending_evidence or "runtime evidence unavailable",
+                }
+                if not sid:
+                    runtime = pending_runtime
+                    runtime_evidence = pending_destination["runtime_evidence"]
+                report["pending_launches"].append(pending)
+        resumability = _session_resumability(dispatcher, row["current_provider"], sid)
         report["agents"].append({"gui": row["alias"], "name": row["name"], "slot_id": row["slot_id"],
             "lifecycle": row["state"], "provider": provider, "session_id": sid, "runtime": runtime,
+            "runtime_evidence": runtime_evidence,
+            "association_state": "confirmed" if sid and row["current_provider"] else None,
+            "resumability": resumability,
+            "historical_association": ({"provider": row["current_provider"], "environment_id": env_id,
+                                        "session_id": sid} if sid and row["current_provider"] else None),
+            "pending_destination": pending_destination,
             "duplicate_resume": "blocked" if runtime == "IN USE" else "uncertain"})
-        if row["pending_launch_id"]:
-            pending = dispatcher._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?", (row["pending_launch_id"],))
-            if pending:
-                report["pending_launches"].append(dispatcher._with_captured_bootstrap_id(pending))
     report["pending_launches"].sort(key=lambda value: value["launch_id"])
     report["agents"].sort(key=lambda value: (value["gui"].casefold(), value["name"].casefold()))
     if db.get("db_exists") and db.get("integrity") not in ("ok", None):
@@ -2443,8 +2637,18 @@ def _render_doctor_report(report: dict[str, Any], stream: TextIO, color: str = "
         print(f"  {semantic_color(agent['gui'], 'gui', enabled=enabled)} / {semantic_color(agent['name'], 'agent', enabled=enabled)}  "
               f"{provider_semantic(provider, enabled=enabled)}  {state_color(str(agent['lifecycle']), enabled=enabled)}  "
               f"{runtime_semantic(str(agent['runtime']), enabled=enabled)}", file=stream)
+        resumability = f"; resumability: {agent['resumability']}" if agent.get("resumability") == "unverified" else ""
         print(f"    {semantic_color('Session:', 'label', enabled=enabled)} {semantic_color(session, 'session', enabled=enabled)}; "
-              f"duplicate resume: {outcome_semantic(str(agent['duplicate_resume']), enabled=enabled)}", file=stream)
+              f"duplicate resume: {outcome_semantic(str(agent['duplicate_resume']), enabled=enabled)}{resumability}", file=stream)
+        pending_dest = agent.get("pending_destination")
+        if pending_dest:
+            pending_prov = str(pending_dest.get("provider") or "unknown").upper()
+            pending_sid = pending_dest.get("session_id") or "<identity unavailable>"
+            print(f"    Pending destination: {provider_semantic(pending_prov, enabled=enabled)}  "
+                  f"{runtime_semantic(str(pending_dest.get('runtime') or 'PENDING'), enabled=enabled)}  "
+                  f"{semantic_color(str(pending_sid), 'session' if pending_dest.get('session_id') else 'unresolved', enabled=enabled)}",
+                  file=stream)
+            print(f"      {pending_dest.get('runtime_evidence') or 'runtime evidence unavailable'}", file=stream)
     print(semantic_color("Pending launches:", "label", enabled=enabled), file=stream)
     if not report["pending_launches"]:
         print("  None.", file=stream)
@@ -2508,6 +2712,37 @@ def _listing(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[st
                                 "unresolved": unresolved})
             row["activation_history"] = history
 
+    def enrich_rows(rows: list[dict[str, Any]]) -> None:
+        pending_by_launch: dict[str, dict[str, Any]] = {}
+        keys: list[tuple[str | None, str | None, str | None]] = []
+        for row in rows:
+            if row.get("current_session_id") and row.get("current_provider"):
+                keys.append((row["current_provider"], row.get("current_environment_id"), row["current_session_id"]))
+            launch_id = row.get("pending_launch_id")
+            if launch_id:
+                pending = dispatcher._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?", (launch_id,))
+                if pending:
+                    pending = dispatcher._with_captured_bootstrap_id(pending)
+                    pending_by_launch[launch_id] = pending
+                    psid = pending.get("captured_session_id") or pending.get("reserved_session_id")
+                    if pending.get("provider") and pending.get("environment_id") and psid:
+                        keys.append((pending["provider"], pending["environment_id"], psid))
+        observations = _collect_runtime_observations(dispatcher, keys)
+        _enrich_pending_rows(dispatcher, rows, observations=observations)
+        for row in rows:
+            if row.get("current_session_id") and row.get("current_provider"):
+                row["runtime_status"] = _runtime_label(
+                    dispatcher,
+                    row["current_provider"],
+                    row.get("current_environment_id"),
+                    row["current_session_id"],
+                    observations=observations,
+                )
+            elif row.get("pending_launch_id"):
+                row["runtime_status"] = row.get("pending_runtime_status") or "PENDING"
+            else:
+                row["runtime_status"] = "UNKNOWN"
+
     gui = _resolve_name(args.gui_pos, args.gui, "GUI")
     if gui:
         rows = dispatcher.list_slots(gui=gui, active_only=False)
@@ -2515,6 +2750,7 @@ def _listing(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[st
         rows = _sort_slot_rows(rows)
         total = len(rows)
         selected = rows if limit is None else rows[:limit]
+        enrich_rows(selected)
         include_history(selected, gui)
         gui_record = next((item for item in dispatcher.list_guis()
                            if item['alias'].casefold() == gui.casefold()), None)
@@ -2526,14 +2762,17 @@ def _listing(dispatcher: DispatcherService, args: argparse.Namespace) -> dict[st
     total = len(guis)
     selected = guis if limit is None else guis[:limit]
     conversations = []
+    all_shown: list[dict[str, Any]] = []
     for item in selected:
         slots = dispatcher.list_slots(gui=item['gui_id'], active_only=False)
         slots = [row for row in slots if args.all or row['state'] != 'completed']
         slots = _sort_slot_rows(slots)
         shown = slots if args.all else slots[:10]
         include_history(shown, item['gui_id'])
+        all_shown.extend(shown)
         conversations.append({**item, 'slots': shown, 'total': len(slots), 'shown': len(shown),
                               'omitted': len(slots) - len(shown)})
+    enrich_rows(all_shown)
     return {'action': 'list', 'schema_version': 1, 'conversations': conversations, 'total': total,
             'shown': len(conversations), 'omitted': total - len(conversations), 'limit': limit}
 
@@ -2591,9 +2830,15 @@ def _render_listing(
                 "<pending>" if row.get("pending_launch_id") else "<unresolved>"
             )
             activity = format_timestamp(row.get('last_activity_at'))
-            runtime = (_runtime_label(dispatcher, provider, row.get('current_environment_id'),
-                                      row.get('current_session_id'), pending=bool(row.get('pending_launch_id')))
-                       if dispatcher else 'UNKNOWN')
+            if row.get("runtime_status"):
+                runtime = row["runtime_status"]
+            elif dispatcher and row.get('current_session_id') and row.get('current_provider'):
+                runtime = _runtime_label(dispatcher, row['current_provider'], row.get('current_environment_id'),
+                                         row.get('current_session_id'))
+            elif dispatcher and row.get('pending_launch_id'):
+                runtime = row.get("pending_runtime_status") or "PENDING"
+            else:
+                runtime = 'UNKNOWN'
             agent_text = pad_semantic(str(row['name']), name_width, "agent", enabled=use_color)
             runtime_text = runtime_semantic(runtime, enabled=use_color)
             session_semantic = ("unresolved" if not _valid_existing_session(row) else "session") if stored_session else (
@@ -2629,6 +2874,16 @@ def _render_listing(
                       f"{semantic_color(activity, 'timestamp', enabled=use_color)}", file=stream)
                 session_cells = max(1, width - 8 - display_width(runtime))
                 print(f"    {runtime_text}  {semantic_color(clip_display(session_display, session_cells), session_semantic, enabled=use_color)}", file=stream)
+            if row.get("pending_launch_id"):
+                pending_provider = str(row.get("pending_provider") or "unknown").upper()
+                pending_session = row.get("pending_native_session_id") or "<identity unavailable>"
+                pending_runtime = row.get("pending_runtime_status") or "PENDING"
+                pending_evidence = row.get("pending_runtime_evidence") or "runtime evidence unavailable"
+                print(f"    Pending destination: {provider_semantic(pending_provider, enabled=use_color)}  "
+                      f"{runtime_semantic(pending_runtime, enabled=use_color)}  "
+                      f"{semantic_color(str(pending_session), 'session' if row.get('pending_native_session_id') else 'unresolved', enabled=use_color)}",
+                      file=stream)
+                print(f"      {pending_evidence}", file=stream)
             for entry in row.get("activation_history", []):
                 entry_date = format_timestamp(entry.get("activated_at"))
                 entry_provider_value = str(entry.get("provider") or "—").upper()

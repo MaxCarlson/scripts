@@ -103,10 +103,14 @@ class ContinuityService:
         return norm
 
     def _emit_and_materialize(self, events: list[EventEnvelope]) -> None:
+        if not events:
+            return
+        items: list[tuple[EventEnvelope, str | None, str]] = []
         for ev in events:
             spool_path = append_event(self.home_dir, ev)
-            if self._can_write_sqlite():
-                self.materializer.ingest_event(ev, spool_file=str(spool_path))
+            items.append((ev, str(spool_path), ""))
+        if self._can_write_sqlite():
+            self.materializer.ingest_events(items)
 
     def _ensure_environment_event(
         self,

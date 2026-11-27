@@ -113,7 +113,14 @@ def test_unresolved_slot_remains_pending_without_changing_last_session(tmp_path)
     assert slot["current_session_id"] == "agy-1"
     assert slot["pending_provider"] == "codex"
     assert slot["pending_launch_id"] == launch["details"]["launch_id"]
-    assert request["panes"][0]["native_session_id"] == "agy-1"
+    assert request["panes"] == []
+    assert request["unresolved"] == [
+        {
+            "slot_id": slot["slot_id"],
+            "agent_name": "AgentPerf",
+            "reason": "pending codex destination must be recovered before opening this slot",
+        }
+    ]
 
 
 def test_pending_launch_failure_and_explicit_resolution_preserve_current_until_attached(tmp_path):

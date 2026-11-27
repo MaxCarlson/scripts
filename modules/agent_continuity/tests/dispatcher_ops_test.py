@@ -152,7 +152,7 @@ def test_metadata_failure_after_provider_exit_is_actionable(tmp_path, monkeypatc
     dispatcher.register("P", "A", provider="codex", session_id="native")
     slot = dispatcher.get_slot(gui="P", name="A")
     monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", lambda *args, **kwargs: ["fake-provider"])
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", lambda *args, **kwargs: SimpleNamespace(returncode=0))
     monkeypatch.setattr(dispatcher, "record_process_observation", lambda **kwargs: (_ for _ in ()).throw(
         ContinuityError(ErrorCode.METADATA_INACCESSIBLE, "lock timeout")))
     with pytest.raises(ContinuityError, match="process exited with code 0.*Do not relaunch blindly"):
@@ -233,7 +233,7 @@ def test_process_observation_uses_session_that_child_ran(tmp_path, monkeypatch):
 
     monkeypatch.setattr("agent_continuity.dispatcher_cli._session_runtime_lock", release_then_switch)
     monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", lambda *args, **kwargs: ["fake-provider"])
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", lambda *args, **kwargs: SimpleNamespace(returncode=1))
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", lambda *args, **kwargs: SimpleNamespace(returncode=1))
 
     assert _run_pane(dispatcher, slot_id=slot["slot_id"], launch_id=None,
                      input_stream=StringIO(), output_stream=StringIO()) == 1

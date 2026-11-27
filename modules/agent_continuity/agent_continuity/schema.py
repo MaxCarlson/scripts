@@ -283,7 +283,9 @@ def configure_connection(conn: sqlite3.Connection, *, read_only: bool = False) -
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA busy_timeout = 5000;")
     if not read_only:
-        conn.execute("PRAGMA journal_mode = WAL;")
+        mode_row = conn.execute("PRAGMA journal_mode;").fetchone()
+        if not mode_row or str(mode_row[0]).casefold() != "wal":
+            conn.execute("PRAGMA journal_mode = WAL;")
 
 
 def get_schema_version(conn: sqlite3.Connection) -> int | None:
@@ -309,7 +311,7 @@ def ensure_schema(conn: sqlite3.Connection) -> int:
     configure_connection(conn, read_only=False)
     current = get_schema_version(conn)
     if current is None:
-        conn.executescript(_DDL_V1)
+        conn.executescript(f"BEGIN IMMEDIATE;\n{_DDL_V1}\nCOMMIT;")
         now = now_utc_iso()
         with conn:
             conn.execute(

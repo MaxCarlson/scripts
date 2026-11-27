@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-continuity"
-version = "2.1.1"
+version = "2.1.2"
 description = "Local-first GUI-agent session continuity registry for ChatGPT GUI workflows, Codex CLI, Antigravity CLI, and Claude Code."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,6 +34,9 @@ testpaths = ["tests"]
 python_files = ["*_test.py"]
 pythonpath = [".."]
 addopts = "-q --basetemp=.pytest_tmp_root/pytest"
+markers = [
+    "real_runtime_discovery: exercise real host process enumeration rather than synthetic unit-test inventory",
+]
 
 [tool.ruff]
 line-length = 120
