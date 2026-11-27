@@ -173,3 +173,12 @@ PR #34 now uses PyPI release-file preflight and package-index installs in qualif
 ReportLab/Pillow fix `8f770444ae54bf8e9cd9d05ec5b5867b23c47099` remains separate and unmerged; no file from that commit was incorporated into the retirement branches or combined tree. Its web-docs-processor version bump to 0.4.0 and `reportlab>=4.2,<5` cap were reviewed, but that compatibility fix was not qualified as part of this retirement batch.
 
 H4-dependent Resource Metrics and Monitor retirement remains gated on H4 owner reconciliation. H4 bundle commits `8d98af2f` and `89b71be2` remain separate. The protected Phase-D worktree was not opened or changed; Agent #1's local adoption worktree and cleanup responsibilities remain untouched. The primary checkout and unrelated dirty/untracked files were preserved. Toolkit hosted CI remains a pre-runner infrastructure failure (`runner_id=0`, no steps, log endpoint 404); no failed runs were redispatched.
+
+
+## 2026-11-27 final current-main sync and pushed refs
+
+Scripts main advanced during final qualification. The final fetched Scripts base is `a2c09bc5a666961359df8c04303105754f66486d`; Toolkit main remains `c002929e8a83de10d14ba30da83562b5bd0ec1f7`. The prior 2026-11-27 checkpoint above records the first fetch; both retirement branches were replayed again onto this later Scripts base before push.
+
+Final pushed refs: Scripts PR #34 `df546641c3809150a203270fcdff1cd4afb4568c`; stacked Scripts PR #39 `b13f3062629439825659114d8193ce9b6571c46b`; Toolkit PR #5 `4973c76782290776e0002fead128011aad80d42b`. Final disposable integration trees were Scripts `b47b16b734a792b3d7236c87c96e1da542aa7697` and Toolkit `309c47dde51f19e0c33c53aaa994157ea053644e`. On those refs, the combined synthetic qualification passed 110 tests, the production Scripts ownership checker returned 0, and `pip check` reported no broken requirements. The exact PyPI install plan was also re-resolved from the public index; all three installed launchers and all canonical import origins were verified.
+
+The pushed branches remain separate and draft. No PR merge, package publication, primary-checkout change, live-data migration, or protected H4/Phase-D operation occurred. Pause at the ordered approval gate: Toolkit PR #5, Scripts PR #34, then Scripts PR #39.

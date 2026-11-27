@@ -21,3 +21,5 @@
 - [x] Update PR #34 validation and installer contracts to use published distributions and fail rather than falling back to local shared source packages.
 - [x] Reconcile PR #34, stacked PR #39, and Toolkit PR #5 against refreshed main refs; individual and combined synthetic qualification is recorded in the 2026-11-27 checkpoint.
 - [ ] Pause for ordered merge approval: Toolkit PR #5, Scripts PR #34, then Scripts PR #39. Keep the H4 owner gate separate.
+
+- [x] Reconcile and push PR #34, stacked PR #39, and Toolkit PR #5 at final current-main refs; combined tree passed 110 synthetic contracts, ownership CLI, dependency resolution, import provenance, launcher discovery, and pip check.
