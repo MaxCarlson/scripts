@@ -47,5 +47,6 @@
 - [x] Update PrivExec H4 defaults/examples to use the canonical Toolkit tooling path; no live installation or VM action was run.
 - [x] Qualify focused Scripts ownership/setup tests and Toolkit H4 offline/synthetic tests (record exact branch heads and results in STATUS.md).
 - [x] Preserve the six outstanding Phase-D owner documentation paths (including the crash-recovery plan files) as byte-identical archival copies with status/provenance notes; keep the protected owner worktree unchanged.
-- [ ] Reconcile substantive Phase-D owner implementation changes and obtain integration authorization; archival copies do not clear this gate.
+- [x] Reconcile substantive Phase-D T1 telemetry implementation into the isolated canonical Toolkit candidate; preserve owner worktree and keep crash-recovery proposal inactive.
+- [ ] Obtain explicit integration authorization for the Toolkit candidate before integrating the dependent Scripts retirement.
 - [ ] Do not merge or synchronize primary checkouts under this task authorization.
