@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 class LaunchStatus(str, Enum):
     SUBMITTED = "submitted"
+    AMBIGUOUS = "ambiguous"
     FAILED = "failed"
     NOOP = "no_op"
 

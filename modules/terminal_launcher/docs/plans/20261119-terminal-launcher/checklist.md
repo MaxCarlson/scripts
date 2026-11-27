@@ -12,3 +12,9 @@
 - [x] LLMD-40 managed continuation: concurrency, stale PID, partial launch, interrupted launch, spawn failure, and ownership-safe child shutdown regressions.
 - [x] LLMD-40 managed continuation: live named-window PowerShell 7 tab qualification, all four requested pane layouts, UIA tab order inspection, and explicit unsupported geometry findings.
 - [x] LLMD-40 managed continuation: provider-independent lifecycle/checkpoint and ProcWatch correlation contract documented; ProcWatch version bump removed.
+- [x] Transactional correction: full-plan atomic reservation, one-time pre-spawn claims, conditional receipts, late-receipt preservation, and conservative recovery states.
+- [x] Transactional correction: exact relay ownership and idempotent Ctrl+Break delivery, including the interrupted `delivering` state.
+- [x] Transactional correction: pane-specific adaptive relay polling, deterministic regressions, and 1/5/20 native PowerShell child measurements.
+- [x] Transactional correction: lifecycle and ProcWatch intentional-launch contracts updated; compatibility entry points retained.
+- [x] Transactional correction: full validation, task-only review, and feature-branch commit/push.
+- [ ] Independent GUI acceptance of the final correction SHA; then integrate and merge against refreshed `origin/main` under the standing authorization.

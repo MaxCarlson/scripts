@@ -70,3 +70,27 @@ No launch plan was submitted and no pane geometry was observed. No `agent_contin
   `origin/main` (`93c0f29788fe57e56df124f699ebbd4116a7b6a8`) snapshot under the same environment; both full suites
   passed when rerun with temporary `PYTHONUTF8=1`. The focused window guard tests passed. ProcWatch package version
   remains `0.4.0` to match the shared help registry because this task adds no ProcWatch production behavior.
+
+## Managed lifecycle transactional correction (2026-11-27)
+
+- Work remains limited to `modules/terminal_launcher`; ProcWatch production code/configuration and dispatcher code are
+  unchanged. The legacy store entry points remain available as compatibility wrappers; managed launch uses atomic
+  full-plan reservation and per-pane relay claims.
+- Launch state now distinguishes definite rejection from ambiguous submission. Start, spawn-failure, exit, and
+  interruption receipts are conditional updates. Rejection only fails unclaimed panes, so late child receipts cannot be
+  overwritten. A pane claim cannot be acquired twice; ambiguous/claimed panes are never automatically retried.
+- Relays persist an at-most-once `delivering` transition before Ctrl+Break. If delivery is interrupted before its receipt,
+  recovery reports ambiguity and never repeats the event. Ctrl+Break is documented as an interruption request, not
+  guaranteed graceful shutdown. Relay polling is pane-specific with 50 ms to 1 s adaptive intervals.
+- Full Terminal Launcher validation: `76 passed`, Ruff clean, wheel built and installed/imported in an isolated venv.
+  Native PowerShell 7 idle-poll measurements (3-second children): 1 child = 6 queries/8.78 ms query time; 5 =
+  30/37.48 ms; 20 = 120/278.96 ms. All 26 children recorded exit code 0.
+- ProcWatch remained unchanged. Its full suite passed `68/68` with `PYTHONUTF8=1`; default passed `67/68`, with only
+  `test_exec_success_nonzero_unicode_env_and_context` failing. The exact `origin/main` source archive at
+  `ae04cbe08acaef235c9d0b1264fa3fdc3c2a4a57` reproduced the same default Unicode failure (`65/66`) and passed
+  `66/66` with `PYTHONUTF8=1`; window guard tests passed `10/10`; Ruff is clean.
+- `origin/main` later advanced to `a2c09bc5a666961359df8c04303105754f66486d`; `git diff ae04cbe..origin/main --
+  modules/procwatch` is empty, so the ProcWatch baseline comparison covers the current ProcWatch source unchanged.
+- No live Windows Terminal GUI test was added because this correction batch changes managed lifecycle/storage and relay
+  semantics only. The already accepted named-window PowerShell qualification remains the desktop evidence; independent
+  GUI review of this final correction SHA is still required before integration/merge.

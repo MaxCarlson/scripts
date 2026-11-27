@@ -7,13 +7,17 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
-from terminal_launcher.managed import ManagedProcessState, ManagedProcessStore
+from terminal_launcher.managed import ManagedProcessState, ManagedProcessStore, ProcessLiveness
 from terminal_launcher.models import PaneSpec, TabSpec, TerminalLaunchPlan
 
 
 def test_managed_receipts_are_durable_minimal_and_validate_process_creation_time(tmp_path):
     database = tmp_path / "managed.sqlite3"
-    store = ManagedProcessStore(database, process_identity_lookup=lambda pid: (pid, 123456))
+    store = ManagedProcessStore(
+        database,
+        process_identity_lookup=lambda pid: (pid, 123456),
+        process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
+    )
     store.register_submission(
         launch_id="launch-1",
         pane_id="launch-1:0:0",
@@ -46,8 +50,35 @@ def test_managed_store_resolves_relative_path_before_relay_launch(tmp_path, monk
     assert store.path.is_absolute()
 
 
+def test_legacy_keyword_receipt_and_failure_methods_remain_available(tmp_path):
+    store = ManagedProcessStore(
+        tmp_path / "legacy-api.sqlite3",
+        process_identity_lookup=lambda pid: (pid, 123),
+        process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
+    )
+    store.register_submission(
+        launch_id="legacy", pane_id="legacy:0:0", window_id="window", tab_index=0,
+        pane_index=0, requested_layout="single",
+    )
+    store.record_failure(pane_id="legacy:0:0", failure_code="child_spawn_failed")
+    store.register_submission(
+        launch_id="legacy", pane_id="legacy:0:1", window_id="window", tab_index=0,
+        pane_index=1, requested_layout="two-column",
+    )
+    store.record_started(pane_id="legacy:0:1", pid=321, process_created=123)
+    store.record_exit(pane_id="legacy:0:1", exit_code=0)
+
+    records = {record.pane_id: record for record in store.enumerate_processes()}
+    assert records["legacy:0:0"].state is ManagedProcessState.FAILED
+    assert records["legacy:0:1"].state is ManagedProcessState.EXITED
+
+
 def test_stale_pid_is_never_signaled(tmp_path):
-    store = ManagedProcessStore(tmp_path / "managed.sqlite3", process_identity_lookup=lambda pid: (pid, 999))
+    store = ManagedProcessStore(
+        tmp_path / "managed.sqlite3",
+        process_identity_lookup=lambda pid: (pid, 999),
+        process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
+    )
     store.register_submission(
         launch_id="launch-2",
         pane_id="launch-2:0:0",
@@ -65,7 +96,11 @@ def test_stale_pid_is_never_signaled(tmp_path):
 
 
 def test_graceful_shutdown_is_requested_for_exact_owned_process_only(tmp_path):
-    store = ManagedProcessStore(tmp_path / "managed.sqlite3", process_identity_lookup=lambda pid: (pid, 456))
+    store = ManagedProcessStore(
+        tmp_path / "managed.sqlite3",
+        process_identity_lookup=lambda pid: (pid, 456),
+        process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
+    )
     store.register_submission(
         launch_id="launch-3",
         pane_id="launch-3:0:1",
@@ -87,7 +122,11 @@ def test_graceful_shutdown_is_requested_for_exact_owned_process_only(tmp_path):
 
 
 def test_relay_consumes_shutdown_request_with_owned_process_group(tmp_path):
-    store = ManagedProcessStore(tmp_path / "managed.sqlite3", process_identity_lookup=lambda pid: (pid, 456))
+    store = ManagedProcessStore(
+        tmp_path / "managed.sqlite3",
+        process_identity_lookup=lambda pid: (pid, 456),
+        process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
+    )
     store.register_submission(
         launch_id="launch-3b",
         pane_id="launch-3b:0:0",
@@ -109,7 +148,11 @@ def test_relay_consumes_shutdown_request_with_owned_process_group(tmp_path):
 
 
 def test_exit_receipt_and_interrupted_submission_are_distinct(tmp_path):
-    store = ManagedProcessStore(tmp_path / "managed.sqlite3", process_identity_lookup=lambda pid: None)
+    store = ManagedProcessStore(
+        tmp_path / "managed.sqlite3",
+        process_identity_lookup=lambda pid: (pid, 200),
+        process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
+    )
     store.register_submission(
         launch_id="launch-4",
         pane_id="launch-4:0:0",
@@ -133,11 +176,15 @@ def test_exit_receipt_and_interrupted_submission_are_distinct(tmp_path):
 
     assert records["launch-4:0:0"].state is ManagedProcessState.EXITED
     assert records["launch-4:0:0"].exit_code == 7
-    assert records["launch-4:0:1"].state is ManagedProcessState.UNKNOWN
+    assert records["launch-4:0:1"].state is ManagedProcessState.RESERVED
 
 
 def test_concurrent_receipts_remain_queryable(tmp_path):
-    store = ManagedProcessStore(tmp_path / "managed.sqlite3", process_identity_lookup=lambda pid: (pid, pid + 1))
+    store = ManagedProcessStore(
+        tmp_path / "managed.sqlite3",
+        process_identity_lookup=lambda pid: (pid, pid + 1),
+        process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
+    )
 
     def record(index):
         pane_id = f"launch-5:{index}"
@@ -199,7 +246,11 @@ def test_managed_launch_requires_named_window_target(tmp_path):
 
 def test_partial_managed_launch_reports_acknowledged_and_unacknowledged_panes_separately(tmp_path, monkeypatch):
     database = tmp_path / "partial.sqlite3"
-    store = ManagedProcessStore(database, process_identity_lookup=lambda pid: (pid, 111))
+    store = ManagedProcessStore(
+        database,
+        process_identity_lookup=lambda pid: (pid, 111),
+        process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
+    )
 
     class PartialLaunch:
         def __call__(self, command, **kwargs):
@@ -224,7 +275,7 @@ def test_partial_managed_launch_reports_acknowledged_and_unacknowledged_panes_se
     assert result.submission.status.value == "submitted"
     assert result.startup_timed_out
     assert result.spawn_acknowledged_pane_ids == ("launch-8:0:0",)
-    assert [pane.state for pane in result.panes] == [ManagedProcessState.RUNNING, ManagedProcessState.UNKNOWN]
+    assert [pane.state for pane in result.panes] == [ManagedProcessState.RUNNING, ManagedProcessState.RESERVED]
 
 
 def test_managed_submission_failure_records_failure_without_child_ack(tmp_path, monkeypatch):

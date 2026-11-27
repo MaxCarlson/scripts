@@ -56,10 +56,11 @@ For positive child receipts and managed shutdown, use `launch_managed()` with an
 bounded time for each pane relay to acknowledge child creation, and reports unacknowledged panes separately. The
 relay writes process identity and lifecycle receipts to `ManagedProcessStore`; no argv, cwd, tab title, prompts, or
 credentials are stored. Process identity combines PID and Windows process creation FILETIME to reject PID reuse.
-`ManagedProcessStore.request_graceful_shutdown(pane_id)` queues a request only while both the child and its owning
-relay identities still match. The relay shares the pane console and sends Ctrl+Break to that child's process group.
-The request does not terminate Windows Terminal; applications that ignore Ctrl+Break may keep running. Readiness stays
-`unknown` unless an application-specific probe is added.
+`ManagedProcessStore.request_interrupt(pane_id)` queues a one-time request only while both the child and its owning
+relay identities and liveness still match. The relay shares the pane console and sends Ctrl+Break to that child's
+process group. Ctrl+Break is an interruption request, not guaranteed graceful shutdown; applications may keep running.
+The request does not terminate Windows Terminal. `request_graceful_shutdown()` remains as a deprecated compatibility
+alias. Readiness stays `unknown` unless an application-specific probe is added.
 
 ```python
 from terminal_launcher import ManagedProcessStore, WindowsTerminalBackend, powershell_plan

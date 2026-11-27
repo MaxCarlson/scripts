@@ -3,7 +3,16 @@
 from .backend import ManagedLaunchResult
 from .backends.windows_terminal import WindowsTerminalBackend
 from .layouts import group_panes
-from .managed import ManagedProcessRecord, ManagedProcessState, ManagedProcessStore, ShutdownRequestResult
+from .managed import (
+    InterruptionState,
+    LaunchSubmissionState,
+    ManagedPaneReservation,
+    ManagedProcessRecord,
+    ManagedProcessState,
+    ManagedProcessStore,
+    ProcessLiveness,
+    ShutdownRequestResult,
+)
 from .models import PaneSpec, TabSpec, TerminalLaunchPlan
 from .powershell import powershell_plan
 
@@ -12,9 +21,13 @@ __all__ = [
     "TabSpec",
     "TerminalLaunchPlan",
     "ManagedLaunchResult",
+    "LaunchSubmissionState",
+    "ManagedPaneReservation",
     "ManagedProcessRecord",
     "ManagedProcessState",
     "ManagedProcessStore",
+    "ProcessLiveness",
+    "InterruptionState",
     "ShutdownRequestResult",
     "WindowsTerminalBackend",
     "group_panes",

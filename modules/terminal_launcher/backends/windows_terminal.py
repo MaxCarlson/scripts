@@ -6,16 +6,22 @@ import base64
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
 from ..backend import LaunchPreview, LaunchResult, LaunchStatus, ManagedLaunchResult, PlannedOperation, ProcessState
 from ..errors import InvalidPlanError, TerminalNotFoundError, UnsupportedLayoutError, UnsupportedPlatformError
-from ..managed import ManagedProcessStore
+from ..managed import (
+    LaunchSubmissionState,
+    ManagedPaneReservation,
+    ManagedProcessStore,
+)
 from ..models import PaneSpec, TabSpec, TerminalLaunchPlan
 
 _LAYOUTS = frozenset(("single", "two-column", "three-left", "grid"))
@@ -233,14 +239,15 @@ class WindowsTerminalBackend:
         launch_id: str | None = None,
         store: ManagedProcessStore | None = None,
         startup_timeout: float = 2.0,
+        submission_timeout: float = 10.0,
     ) -> ManagedLaunchResult:
         """Submit a named-window plan and wait briefly for relay spawn receipts."""
         self._require_windows()
         identity = launch_id or str(uuid.uuid4())
         if not isinstance(identity, str) or not identity or "\0" in identity:
             raise ValueError("launch_id must be a non-empty string without NUL")
-        if startup_timeout < 0:
-            raise ValueError("startup_timeout must be non-negative")
+        if startup_timeout < 0 or submission_timeout <= 0:
+            raise ValueError("startup_timeout must be non-negative and submission_timeout must be positive")
         if plan.target_window is None:
             failed = LaunchResult(
                 LaunchStatus.FAILED,
@@ -254,62 +261,158 @@ class WindowsTerminalBackend:
             return ManagedLaunchResult(identity, noop)
 
         process_store = store or ManagedProcessStore()
-        for tab_index, (tab, layout) in enumerate(tabs):
-            for pane_index, _pane in enumerate(tab.panes):
-                process_store.register_submission(
-                    launch_id=identity,
-                    pane_id=f"{identity}:{tab_index}:{pane_index}",
-                    window_id=plan.target_window,
-                    tab_index=tab_index,
-                    pane_index=pane_index,
-                    requested_layout=layout,
-                )
+
+        def safe_records():
+            try:
+                return process_store.enumerate_processes(launch_id=identity)
+            except (OSError, sqlite3.Error, ValueError):
+                return ()
+
+        preview = self.preview(plan)
+        command = self.build_command(
+            plan,
+            managed_store_path=os.fspath(process_store.path),
+            launch_id=identity,
+        )
+        reservations = tuple(
+            ManagedPaneReservation(
+                pane_id=f"{identity}:{tab_index}:{pane_index}",
+                tab_index=tab_index,
+                pane_index=pane_index,
+                requested_layout=layout,
+            )
+            for tab_index, (tab, layout) in enumerate(tabs)
+            for pane_index, _pane in enumerate(tab.panes)
+        )
         try:
-            preview = self.preview(plan)
-            command = self.build_command(
-                plan,
-                managed_store_path=os.fspath(process_store.path),
-                launch_id=identity,
-            )
-            completed = self._runner(
-                list(command), check=False, capture_output=True, text=True, shell=False
-            )
-        except (OSError, subprocess.SubprocessError, TerminalNotFoundError) as exc:
-            for pane in process_store.enumerate_processes(launch_id=identity):
-                if not pane.spawn_acknowledged:
-                    process_store.record_failure(pane.pane_id, failure_code="request_submission_failed")
+            process_store.reserve_launch(identity, plan.target_window, reservations)
+            process_store.mark_submission_started(identity)
+        except (ValueError, OSError, sqlite3.Error, subprocess.SubprocessError) as exc:
             failed = LaunchResult(
                 LaunchStatus.FAILED,
                 self.name,
-                diagnostic=f"Could not submit the managed request ({type(exc).__name__}).",
+                diagnostic=f"Could not reserve the managed launch ({type(exc).__name__}).",
+                warnings=preview.warnings,
             )
-            return ManagedLaunchResult(identity, failed, process_store.enumerate_processes(launch_id=identity))
+            return ManagedLaunchResult(identity, failed)
+
+        try:
+            completed = self._runner(
+                list(command),
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+                timeout=submission_timeout,
+            )
+        except OSError as exc:
+            rejected_recorded = False
+            with suppress(OSError, sqlite3.Error, ValueError, subprocess.SubprocessError):
+                process_store.mark_submission_outcome(
+                    identity, LaunchSubmissionState.REJECTED, failure_code="request_not_started"
+                )
+                rejected_recorded = True
+            status = LaunchStatus.FAILED if rejected_recorded else LaunchStatus.AMBIGUOUS
+            failed = LaunchResult(
+                status,
+                self.name,
+                diagnostic=(
+                    f"The managed request could not be started ({type(exc).__name__})."
+                    if rejected_recorded
+                    else "The request was rejected locally, but the rejection receipt could not be persisted."
+                ),
+                warnings=preview.warnings,
+            )
+            return ManagedLaunchResult(identity, failed, safe_records())
+
+        except subprocess.TimeoutExpired:
+            with suppress(OSError, sqlite3.Error, ValueError, subprocess.SubprocessError):
+                process_store.mark_submission_outcome(identity, LaunchSubmissionState.AMBIGUOUS)
+            ambiguous = LaunchResult(
+                LaunchStatus.AMBIGUOUS,
+                self.name,
+                diagnostic="Windows Terminal submission timed out; existing relays may still claim their reserved panes.",
+                warnings=preview.warnings,
+            )
+            return ManagedLaunchResult(identity, ambiguous, safe_records())
+
+        except subprocess.SubprocessError as exc:
+            with suppress(OSError, sqlite3.Error, ValueError, subprocess.SubprocessError):
+                process_store.mark_submission_outcome(identity, LaunchSubmissionState.AMBIGUOUS)
+            ambiguous = LaunchResult(
+                LaunchStatus.AMBIGUOUS,
+                self.name,
+                diagnostic=f"Managed request outcome is ambiguous ({type(exc).__name__}).",
+                warnings=preview.warnings,
+            )
+            return ManagedLaunchResult(identity, ambiguous, safe_records())
+
+        except Exception as exc:
+            with suppress(OSError, sqlite3.Error, ValueError, subprocess.SubprocessError):
+                process_store.mark_submission_outcome(identity, LaunchSubmissionState.AMBIGUOUS)
+            ambiguous = LaunchResult(
+                LaunchStatus.AMBIGUOUS,
+                self.name,
+                diagnostic=f"Managed request outcome is ambiguous ({type(exc).__name__}).",
+                warnings=preview.warnings,
+            )
+            return ManagedLaunchResult(identity, ambiguous, safe_records())
 
         if completed.returncode:
-            for pane in process_store.enumerate_processes(launch_id=identity):
-                if not pane.spawn_acknowledged:
-                    process_store.record_failure(pane.pane_id, failure_code="terminal_rejected_request")
+            try:
+                process_store.mark_submission_outcome(
+                    identity, LaunchSubmissionState.REJECTED, failure_code="terminal_rejected"
+                )
+            except (OSError, sqlite3.Error, ValueError, subprocess.SubprocessError):
+                ambiguous = LaunchResult(
+                    LaunchStatus.AMBIGUOUS,
+                    self.name,
+                    returncode=completed.returncode,
+                    diagnostic="Windows Terminal rejected the request, but the outcome receipt could not be persisted.",
+                    warnings=preview.warnings,
+                )
+                return ManagedLaunchResult(identity, ambiguous)
             failed = LaunchResult(
                 LaunchStatus.FAILED,
                 self.name,
                 returncode=completed.returncode,
-                diagnostic="Windows Terminal rejected the managed launch request.",
+                diagnostic="Windows Terminal rejected the managed launch request; already claimed panes are preserved.",
                 warnings=preview.warnings,
             )
-            return ManagedLaunchResult(identity, failed, process_store.enumerate_processes(launch_id=identity))
+            return ManagedLaunchResult(identity, failed, safe_records())
+
+        try:
+            process_store.mark_submission_outcome(identity, LaunchSubmissionState.ACCEPTED)
+        except (OSError, sqlite3.Error, ValueError, subprocess.SubprocessError):
+            ambiguous = LaunchResult(
+                LaunchStatus.AMBIGUOUS,
+                self.name,
+                diagnostic="Windows Terminal accepted the request, but its outcome receipt could not be persisted.",
+                warnings=preview.warnings,
+            )
+            return ManagedLaunchResult(identity, ambiguous)
 
         deadline = time.monotonic() + startup_timeout
-        records = process_store.enumerate_processes(launch_id=identity)
-        while time.monotonic() < deadline and any(not pane.spawn_acknowledged and pane.state.value != "failed" for pane in records):
+        expected_pane_count = len(reservations)
+        records = safe_records()
+        while time.monotonic() < deadline and any(
+            not pane.spawn_acknowledged and pane.state.value != "failed" for pane in records
+        ):
             time.sleep(min(0.025, max(0.0, deadline - time.monotonic())))
-            records = process_store.enumerate_processes(launch_id=identity)
-        timed_out = any(not pane.spawn_acknowledged and pane.state.value != "failed" for pane in records)
+            records = safe_records()
+        timed_out = len(records) != expected_pane_count or any(
+            not pane.spawn_acknowledged and pane.state.value != "failed" for pane in records
+        )
         submitted = LaunchResult(
             LaunchStatus.SUBMITTED,
             self.name,
             process_state=ProcessState.UNKNOWN,
             returncode=0,
-            diagnostic="Managed request submitted; pane spawn receipts are reported separately.",
+            diagnostic=(
+                "Managed request accepted; pane spawn receipts are reported separately."
+                if len(records) == expected_pane_count
+                else "Managed request accepted; runtime receipts could not all be read."
+            ),
             warnings=preview.warnings,
         )
         return ManagedLaunchResult(identity, submitted, records, timed_out)
