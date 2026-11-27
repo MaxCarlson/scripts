@@ -891,6 +891,10 @@ def patch_editable_finders(verbose: bool = False) -> None:
 # PYTHONPATH configuration
 # ─────────────────────────────────────────────────────────
 def ensure_pythonpath(modules_dir: Path, dotfiles_dir: Path, verbose: bool = False):
+    if os.environ.get("SCRIPTS_REPOSITORY_ONLY") == "1":
+        log_info("Repository-only mode: skipping user PYTHONPATH configuration.")
+        return
+
     modules_dir_abs = str(modules_dir.resolve())
     path_separator = os.pathsep
 

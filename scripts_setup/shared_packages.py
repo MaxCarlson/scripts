@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -26,6 +27,14 @@ SHARED_MODULE_DIRECTORY_TO_DISTRIBUTION: dict[str, str] = {
     "web_ui_tools": "mxc-web-ui-tools",
     "termdash": "mxc-termdash",
     "cross_platform": "mxc-platform-utils",
+}
+
+SHARED_DISTRIBUTION_SOURCE_DIRS: dict[str, str] = {
+    "mxc-resource-metrics": "resource-metrics",
+    "mxc-script-logging": "script-logging",
+    "mxc-web-ui-tools": "web-ui-tools",
+    "mxc-termdash": "termdash",
+    "mxc-platform-utils": "cross-platform",
 }
 
 LEGACY_SHARED_DISTRIBUTIONS: tuple[str, ...] = (
@@ -168,6 +177,63 @@ def _legacy_editable_consumer_paths(
     return sorted(candidates)
 
 
+def _local_shared_package_dir(distribution: str, repository_root: Path) -> Path | None:
+    """Return the local shared-python-modules package directory for fallback installation."""
+    folder = SHARED_DISTRIBUTION_SOURCE_DIRS.get(distribution)
+    if not folder:
+        return None
+    override = os.environ.get("SHARED_PYTHON_MODULES_DIR", "").strip()
+    shared_root = Path(override).expanduser() if override else (repository_root.parent / "shared-python-modules")
+    candidate = shared_root / "packages" / folder
+    if (candidate / "pyproject.toml").is_file():
+        return candidate
+    return None
+
+
+def _orphaned_worktree_legacy_consumers(
+    repository_root: Path,
+    distributions: object | None = None,
+) -> list[str]:
+    """Find editable packages installed from .worktrees that still require legacy shared names."""
+    source_distributions = distributions if distributions is not None else metadata.distributions()
+    legacy_names = {normalize_distribution_name(name) for name in LEGACY_SHARED_DISTRIBUTIONS}
+    worktrees_root = (repository_root / ".worktrees").resolve()
+    orphans: set[str] = set()
+    for installed in source_distributions:
+        requirements = installed.requires or ()
+        has_legacy_requirement = any(
+            match and normalize_distribution_name(match.group(1)) in legacy_names
+            for requirement in requirements
+            if (match := re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", requirement))
+        )
+        if not has_legacy_requirement:
+            continue
+        raw_direct_url = installed.read_text("direct_url.json")
+        if not raw_direct_url:
+            continue
+        try:
+            direct_url = json.loads(raw_direct_url)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(direct_url, Mapping) or not isinstance(direct_url.get("dir_info"), Mapping):
+            continue
+        if direct_url["dir_info"].get("editable") is not True:
+            continue
+        url = direct_url.get("url")
+        if not isinstance(url, str) or urlsplit(url).scheme != "file":
+            continue
+        parsed = urlsplit(url)
+        raw_path = url2pathname(unquote(parsed.path))
+        if parsed.netloc and parsed.netloc.lower() != "localhost":
+            raw_path = f"//{parsed.netloc}{raw_path}"
+        installed_source = Path(raw_path).resolve()
+        if installed_source.is_relative_to(worktrees_root):
+            name = installed.metadata.get("Name")
+            if name:
+                orphans.add(name)
+    return sorted(orphans)
+
+
 def ensure_shared_distributions(
     *,
     python: str | Path | None = None,
@@ -203,7 +269,22 @@ def ensure_shared_distributions(
     if failures:
         return False
 
-    legacy_consumers = [] if dry_run else _legacy_editable_consumer_paths(Path(__file__).resolve().parents[1])
+    repository_root = Path(__file__).resolve().parents[1]
+    legacy_consumers = [] if dry_run else _legacy_editable_consumer_paths(repository_root)
+    orphaned_worktree_consumers = [] if dry_run else _orphaned_worktree_legacy_consumers(repository_root)
+
+    for orphan_name in orphaned_worktree_consumers:
+        uninstall = subprocess.run(
+            [interpreter, "-I", "-m", "pip", "uninstall", "-y", orphan_name],
+            check=False,
+            capture_output=not verbose,
+            text=True,
+        )
+        if uninstall.returncode:
+            print(f"[ERROR] Could not remove orphaned worktree package {orphan_name}", file=sys.stderr)
+            failures.append(orphan_name)
+        else:
+            print(f"[INFO] Removed orphaned worktree package {orphan_name} (requires legacy shared names)")
 
     for distribution, requirement in SHARED_DISTRIBUTION_REQUIREMENTS.items():
         try:
@@ -246,6 +327,17 @@ def ensure_shared_distributions(
             command.append("-q")
         command.append(requirement)
         result = subprocess.run(command, check=False, capture_output=not verbose, text=True)
+        used_local_fallback = False
+        if result.returncode:
+            local_dir = _local_shared_package_dir(distribution, repository_root)
+            if local_dir is not None:
+                print(f"[INFO] {requirement} not available from package index; installing directly from {local_dir}")
+                fallback_cmd = [interpreter, "-I", "-m", "pip", "install", "--no-input", "--disable-pip-version-check"]
+                if not verbose:
+                    fallback_cmd.append("-q")
+                fallback_cmd.append(str(local_dir))
+                result = subprocess.run(fallback_cmd, check=False, capture_output=not verbose, text=True)
+                used_local_fallback = result.returncode == 0
         if result.returncode:
             print(f"[ERROR] Could not install shared distribution {requirement}", file=sys.stderr)
             if result.stderr:
@@ -257,7 +349,7 @@ def ensure_shared_distributions(
             installed = metadata.distribution(distribution)
             raw_direct_url = installed.read_text("direct_url.json")
             direct_url = json.loads(raw_direct_url) if raw_direct_url else None
-            if needs_shared_distribution_replacement(direct_url):
+            if not used_local_fallback and needs_shared_distribution_replacement(direct_url):
                 print(f"[ERROR] {distribution} still resolves to an application checkout after installation", file=sys.stderr)
                 failures.append(distribution)
         except (metadata.PackageNotFoundError, OSError, json.JSONDecodeError) as exc:

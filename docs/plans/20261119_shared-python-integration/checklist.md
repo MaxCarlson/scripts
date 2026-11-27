@@ -244,3 +244,24 @@ Historical checkpoint status above is superseded by the final pscripts and full-
 - [x] Push the latest main reconciliation and status update. Hosted Ubuntu run [45183908047](https://github.com/MaxCarlson/scripts/actions/runs/45183908047) passed on `b18f8879f6bc75c369ee7f66748f3465896a17e3`: 64 packages, 69 launchers, 95 console commands, zero missing; 107 pre-bootstrap tests passed / 1 deselected; Runmux synthetic HTTP step passed; 3 launcher tests; 120 post-bootstrap tests; `pip check` clean.
 - [x] Refresh PR #22 description with the PR #25 reconciliation, current scripts/main, pscripts merge, and successful run [45183908047](https://github.com/MaxCarlson/scripts/actions/runs/45183908047); PR #22 remains open for review and no merge was performed.
 - [ ] Keep the existing publication/clean-index and explicit merge gates. Do not merge PR #22 or retire source in this phase.
+
+
+## Final media and shared-package integration closeout — 2026-11-24
+
+- [x] Verify scripts PRs #22, #30, #29 and #37 are merged; current `main` is `b97e576716df8ba6393c3d298d4b38a8dcfecce5`.
+- [x] Verify public `pscripts` Gitlink `d25e095f1ced76ec9e7904e0bf12db592defc798` is reachable from private main merge `129559e8302fdcb4fe262cbff95d173c41094cce`.
+- [x] Compare PR #31 against merged main: no missing shared-package, bootstrap, procparsers, or private-media migration functionality identified. Recommend owner-approved closure as superseded; PR remains open and untouched.
+- [x] Record hosted Linux run [45302927058](https://github.com/MaxCarlson/scripts/actions/runs/45302927058): full bootstrap/Gitlink checks, 64 packages, 69 script launchers, 95 commands, zero missing; 4 Gitlink tests, 3 Runmux tests, 120 selected consumer regressions, 3 launcher tests, procparsers import, migrated CLI help outside checkout. This predates PR #37.
+- [x] Record PR #37 repository-only Windows qualification on snapshot `c5d579403557fb1b5fef265725c6cd40e01f5e1d`: clean root setup exit 0 (55 public / 8 private packages), incremental success, 164 managed wrappers with no missing/collisions/unmanaged replacements, `pip check`, imports and external CLI help. Focused final-parser tests: 55 passed / 1 skipped and vdedup 1 passed; full installation was not rerun at the parser-only final revision.
+- [x] Preserve the ordinary Windows profile setup limitation (`WinError 1314`); repository-only setup avoids profile/system integration hooks.
+- [x] Check PyPI project status: resource-metrics 0.3.0, script-logging 0.1.1 and platform-utils 0.9.0 exist; web-ui-tools and termdash return 404. Shared release-guide PR #3 is merged.
+- [ ] Publish approved `mxc-web-ui-tools==0.2.0` and `mxc-termdash==0.10.0`; verify metadata, hashes and provenance for all five releases; run clean exact-version public-index installations and consumer checks. No publication was performed.
+- [x] Run local repository-sync utility tests in a disposable environment: 4 passed.
+- [x] Preview primary checkout sync without mutation: 12 commits behind; dirty `pscripts` Gitlink and untracked diagnostics, SQLite sidecars and YTAEDL runtime data; result `would_fast_forward_with_local_changes`.
+- [x] Inventory primary `.venv` editable installs: 65 packages; migrated `mangadl`/`ytaedl` point into an older private migration worktree and `aebndl` into the old public source. Preserve and re-qualify; do not repair blindly.
+- [x] Preview primary launcher ownership without mutation: 162 repo commands / 250 existing wrappers; 161 legacy updates, 78 obsolete managed wrappers, 11 unmanaged preserved, zero collisions. Do not apply until checkout migration and ownership are reviewed.
+- [ ] After Agent #3 completes authorized integrations, repeat sync dry-run and inventory; preserve user data and inspect the Gitlink and editable package origins before any safe fast-forward. Do not run broad launcher regeneration during synchronization.
+- [ ] Ask PR #31 owner to confirm closure as superseded; no PR was closed here.
+- [ ] Review/approve and merge documentation PR #32. No merge was performed.
+
+**Disposition:** PR #32 is ready for documentation review. Migration integration is merged and qualified within the stated Linux and repository-only Windows limits; package publication and primary-checkout adoption remain separate gates.
