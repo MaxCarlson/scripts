@@ -139,4 +139,4 @@
 - [x] Allocate listing columns from actual values; preserve complete UUIDs at 120 columns and stack before avoidable ID/timestamp clipping.
 - [x] Update README, CLI reference, plan, status, checklist, help registry, and package metadata to v2.0.0.
 - [x] Validate focused tests, full agent_continuity and compatibility suites, Ruff, disposable installation/smoke, version consistency, and diff checks with fake-provider isolation.
-- [ ] Commit and push the feature branch for independent GUI review; do not merge before review acceptance.
+- [x] Commit and push the feature branch for independent GUI review; do not merge before review acceptance.
