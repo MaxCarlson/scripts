@@ -4,6 +4,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
+import agent_continuity.runtime_discovery as runtime_discovery
 from agent_continuity.runtime_discovery import (
     AgySessionStore,
     AttachmentState,
@@ -103,6 +104,50 @@ def test_invocation_matchers_require_exact_provider_session_tokens():
     assert match_agy_invocation(("agy.exe", "--conversation", SESSION), SESSION)
     assert not match_agy_invocation(("agy.exe", "--conversation", OTHER_SESSION), SESSION)
     assert not match_agy_invocation(("agy.exe", "--conversation=" + SESSION + "x"), SESSION)
+
+
+def test_claude_resume_matcher_is_available_for_runtime_discovery():
+    matcher = getattr(runtime_discovery, "match_claude_invocation", None)
+
+    assert callable(matcher)
+    assert matcher(("claude.exe", "--resume", SESSION), SESSION)
+    assert not matcher(("claude.exe", "--resume", OTHER_SESSION), SESSION)
+    assert not matcher(("claude.exe", "--resume", SESSION + "x"), SESSION)
+
+
+def test_claude_process_is_exactly_observed_without_provider_store():
+    processes = FakeProcessEnumerator(
+        inventory(record(80, "claude.exe", ("claude.exe", "--resume", SESSION)))
+    )
+    discovery = RuntimeDiscovery(
+        process_enumerator=processes,
+        provider_stores={},
+        clock=lambda: NOW,
+    )
+
+    observed = discovery.observe(SessionKey("claude", SESSION, "env-win"))
+
+    assert observed.process_session_match is MatchStatus.EXACT
+    assert observed.process_liveness is ProcessLiveness.RUNNING
+
+
+def test_custom_provider_process_matcher_extends_runtime_observation():
+    def matcher(argv, native_session_id):
+        return tuple(argv or ()) == ("custom-agent.exe", "--session", native_session_id)
+
+    discovery = RuntimeDiscovery(
+        process_enumerator=FakeProcessEnumerator(
+            inventory(record(81, "custom-agent.exe", ("custom-agent.exe", "--session", SESSION)))
+        ),
+        provider_stores={},
+        process_matchers={"custom": matcher},
+        clock=lambda: NOW,
+    )
+
+    observed = discovery.observe(SessionKey("custom", SESSION, "env-win"))
+
+    assert observed.process_session_match is MatchStatus.EXACT
+    assert observed.process_liveness is ProcessLiveness.RUNNING
 
 
 def test_exact_codex_process_match_is_live_even_when_provider_activity_is_stale():

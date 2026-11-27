@@ -34,6 +34,7 @@ __all__ = [
     "ProcessInventory",
     "ProcessLiveness",
     "ProcessRecord",
+    "ProcessSessionMatcher",
     "ProviderActivity",
     "PsutilProcessEnumerator",
     "RuntimeDiscovery",
@@ -44,6 +45,7 @@ __all__ = [
     "TerminalLauncherStore",
     "managed_pane_reference_from_terminal_launcher_record",
     "match_agy_invocation",
+    "match_claude_invocation",
     "match_codex_invocation",
     "process_identity_from_windows_filetime",
 ]
@@ -208,6 +210,11 @@ class SessionStore(Protocol):
         """Read metadata for this exact ID, never by recency ordering."""
 
 
+class ProcessSessionMatcher(Protocol):
+    def __call__(self, argv: Sequence[str] | None, native_session_id: str) -> bool:
+        """Return whether transient argv identifies this exact provider session."""
+
+
 class CodexSessionStore:
     """Exact-ID, read-only lookup in Codex state_5.sqlite."""
 
@@ -338,13 +345,32 @@ def match_agy_invocation(argv: Sequence[str] | None, native_session_id: str) -> 
     return False
 
 
+def match_claude_invocation(argv: Sequence[str] | None, native_session_id: str) -> bool:
+    """Match Claude Code's exact ``--resume <session-id>`` invocation."""
+    if not argv or not _has_provider_executable(argv, "claude"):
+        return False
+    for index, token in enumerate(argv):
+        if str(token).casefold() == "--resume" and index + 1 < len(argv):
+            return str(argv[index + 1]) == native_session_id
+    return False
+
+
 def _has_provider_executable(argv: Sequence[str], provider: str) -> bool:
     names = {provider, f"{provider}.exe", f"{provider}.cmd", f"{provider}.ps1"}
     if provider == "codex":
         names.update({"codex.js", "codex.mjs", "codex-cli", "codex-cli.js"})
     elif provider == "agy":
         names.update({"agy.js", "agy.mjs", "agy-cli.js"})
+    elif provider == "claude":
+        names.update({"claude.js", "claude.mjs", "claude-cli.js"})
     return any(Path(str(token).strip('"')).name.casefold() in names for token in argv[:4])
+
+
+_DEFAULT_PROCESS_MATCHERS: Mapping[str, ProcessSessionMatcher] = {
+    "codex": match_codex_invocation,
+    "agy": match_agy_invocation,
+    "claude": match_claude_invocation,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -609,6 +635,7 @@ class RuntimeDiscovery:
         *,
         process_enumerator: ProcessEnumerator | None = None,
         provider_stores: Mapping[str, SessionStore] | None = None,
+        process_matchers: Mapping[str, ProcessSessionMatcher] | None = None,
         managed_receipt_source: ManagedReceiptSource | None = None,
         runtime_kind: str = "local",
         clock: Callable[[], datetime] | None = None,
@@ -628,6 +655,9 @@ class RuntimeDiscovery:
         else:
             self.provider_stores = {}
         self.managed_receipt_source = managed_receipt_source
+        self.process_matchers = dict(_DEFAULT_PROCESS_MATCHERS)
+        if process_matchers is not None:
+            self.process_matchers.update(process_matchers)
         self.clock = clock or (lambda: datetime.now(UTC))
 
     def observe(
@@ -672,7 +702,9 @@ class RuntimeDiscovery:
 
         matching_records = tuple(
             row for row in inventory.records
-            if row.argv is not None and _matches_provider_invocation(key.provider, row.argv, key.native_session_id)
+            if row.argv is not None and _matches_provider_invocation(
+                key.provider, row.argv, key.native_session_id, self.process_matchers
+            )
         )
         matching_refs = tuple(ref for ref in receipt_snapshot.references if _reference_matches(ref, key))
         evidence: list[RuntimeEvidence] = [
@@ -863,12 +895,14 @@ def _known_process_state(inventory: ProcessInventory, identity: ProcessIdentity)
     )
 
 
-def _matches_provider_invocation(provider: str, argv: Sequence[str], session_id: str) -> bool:
-    if provider == "codex":
-        return match_codex_invocation(argv, session_id)
-    if provider == "agy":
-        return match_agy_invocation(argv, session_id)
-    return False
+def _matches_provider_invocation(
+    provider: str,
+    argv: Sequence[str],
+    session_id: str,
+    matchers: Mapping[str, ProcessSessionMatcher] | None = None,
+) -> bool:
+    matcher = (matchers or _DEFAULT_PROCESS_MATCHERS).get(provider)
+    return matcher(argv, session_id) if matcher is not None else False
 
 
 def _reference_matches(ref: ManagedPaneReference, key: SessionKey) -> bool:
