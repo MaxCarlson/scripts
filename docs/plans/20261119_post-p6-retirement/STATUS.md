@@ -148,3 +148,28 @@ At the original audit checkpoint, PR #35 was open, PR #34 was draft, and stale P
 - Active source holds remain `llm_monitor`, `resource_coordinator`, and `resource_metrics`. H4 canonical bundle branches `8d98af2f731f6592668c6eaa5e89db87a91de72a` (Metrics) and `89b71be2ec4ca0b7f7a5e04ec8c654a90037b8f5` (Monitor, stacked after Metrics) are based on committed H4 `ea6ad23fe705bc828f06a99ccf1ab3477e621d49`. Focused H4 offline qualification passed 77 tests, skipped 1, and deselected 4 host-dependent checks. The H4 owner must review/integrate these branches before corresponding source-retirement batches. The dirty Phase-D worktree remains unchanged and protected.
 - The primary checkout remains `main` at `628d9ed4aca6e0aa0884bfcf687b03740b3f6d79`, with `diagnostics/`, `modules/ytaedl/`, and Agent Memory `-wal`/`-shm` sidecars untracked. They were preserved.
 - No merge, package publication, primary checkout mutation, live data migration, or local residual cleanup occurred.
+
+
+## 2026-11-27 published-package and branch qualification checkpoint
+
+Current remote main refs were refreshed and verified: Scripts `93c0f29788fe57e56df124f699ebbd4116a7b6a8`; Toolkit `c002929e8a83de10d14ba30da83562b5bd0ec1f7`. The PR #34 and PR #39 branches were replayed onto Scripts current main; PR #39 is stacked on PR #34 so it also removes the Viewer metadata test introduced under the retired directory. Toolkit PR #5 was replayed onto Toolkit current main. No PR was merged.
+
+All five requested PyPI projects now publish the exact requested versions. Downloaded wheel and sdist SHA256 values matched their PyPI JSON release-file records, and artifact metadata matched each project name and version:
+
+| Release | Wheel SHA256 | Sdist SHA256 |
+|---|---|---|
+| `mxc-script-logging==0.1.1` | `a9f0f7fe0f806637d3000374b163bf77ccefa4e00d1241e769387063656e4d92` | `bb409a46954203b7645a718d158f5428c4bd32104b6877bb1058ccc7fd7ec4e7` |
+| `mxc-platform-utils==0.9.0` | `24f9f70f265c9c18db31e59ecb9394b883de88fc7e7626c3713fc7d64828b6aa` | `558b2679ae07b7c811c198984fd6a7482ea845e982bdcfabd88ff3dad45a9206` |
+| `mxc-resource-metrics==0.3.0` | `a1e0e66c5d1b8bed507af26a906d0728b1da65fa14684be4a369da4b60ccac71` | `f385bd1163ca23c410748fa4f320d23835393b77e69b603d6acd68be4bcd09cf` |
+| `mxc-web-ui-tools==0.2.0` | `0171dfa984eb9d521bb340a0d0241056fdea8be685fe0c3a26bc7cc2c7f54341` | `060735a26e105c9eb6db41c855923f2417c3f9e676102ee6412355515fdae0db` |
+| `mxc-termdash==0.10.0` | `b97f31d275c930f90f614cee05e7d8176f3068f8506835f2d9a36c653fdd0f5d` | `adb9034a33ce691dc58399cfb657e63dc8af1bf0b801d58e03574c5514884758` |
+
+PyPI Integrity API provenance requests returned HTTP 404 for all ten files. The source contents were compared with prior qualified artifacts: all wheel entries matched; sdist file entries matched after line-ending normalization, with no source difference observed. PyPI release records establish artifact hashes and identity, but no signed build/source provenance was available, so source-to-release lineage remains unverified.
+
+The disposable `resolved-venv` installed all five published distributions from `https://pypi.org/simple` with dependency resolution; `pip check` passed. A clean `pip install --dry-run --ignore-installed --report` resolved the combined Runmux web, Toolkit Monitor all, canonical Viewer TermDash extra, and five exact published versions from PyPI. Canonical shared imports resolved under that venv's `site-packages`; Monitor and Viewer imports resolved to Toolkit worktrees, and Runmux resolved to the disposable combined Scripts tree. `llm-monitor.exe --help`, `termdash.exe --help`, and `runmux.exe --help` succeeded.
+
+PR #34 now uses PyPI release-file preflight and package-index installs in qualification; its validation targets no longer reference the qualification wheelhouse. The shared installer no longer falls back to local shared-package source directories when index installation fails. A synthetic regression test proves index failure is reported without a direct source install. PR #39 is stacked after #34 so the final source deletion also removes its Viewer metadata test.
+
+ReportLab/Pillow fix `8f770444ae54bf8e9cd9d05ec5b5867b23c47099` remains separate and unmerged; no file from that commit was incorporated into the retirement branches or combined tree. Its web-docs-processor version bump to 0.4.0 and `reportlab>=4.2,<5` cap were reviewed, but that compatibility fix was not qualified as part of this retirement batch.
+
+H4-dependent Resource Metrics and Monitor retirement remains gated on H4 owner reconciliation. H4 bundle commits `8d98af2f` and `89b71be2` remain separate. The protected Phase-D worktree was not opened or changed; Agent #1's local adoption worktree and cleanup responsibilities remain untouched. The primary checkout and unrelated dirty/untracked files were preserved. Toolkit hosted CI remains a pre-runner infrastructure failure (`runner_id=0`, no steps, log endpoint 404); no failed runs were redispatched.

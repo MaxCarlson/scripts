@@ -15,5 +15,9 @@
 - [ ] After PR #35 is integrated, reconcile PRs #38/#39 into incremental replacement branches; their qualified heads are stacked over #35 history and currently contain 710/728 changed files.
 - [ ] Diagnose toolkit PR #5 only if actionable hosted evidence appears. Four runs (`45333414610`, `45334638802`, `45345602914`, `45345628821`) show all eight jobs failing before runner assignment (`runner_id=0`, empty steps); log downloads return 404. Local Runmux compatibility remains 19 passed; do not retry until hosted diagnostics are available.
 - [ ] Coordinate H4 bundle source/metadata and Monitor API contracts with its owner. Preserve active `.worktrees/resource-coordinator-phase-d` and state; only remove `llm_monitor`, `resource_coordinator`, or `resource_metrics` sources after the canonical package contract and immutable bundle qualification pass.
-- [ ] Keep PR #34 gated on ordinary package-index availability and clean-index install qualification. As of 2026-11-25, three packages resolve (`mxc-resource-metrics`, `mxc-script-logging`, `mxc-platform-utils`); `mxc-web-ui-tools` and `mxc-termdash` do not.
+- [x] Verify all five requested releases on PyPI and qualify clean-index dependency resolution; wheel/sdist metadata and SHA256 match PyPI release records. The PyPI Integrity API returned 404 for all ten artifact provenance requests, so source/build lineage remains an open review limitation.
 - [ ] Do not merge, publish, synchronize the primary checkout, or migrate runtime data without the existing separate authorization.
+
+- [x] Update PR #34 validation and installer contracts to use published distributions and fail rather than falling back to local shared source packages.
+- [x] Reconcile PR #34, stacked PR #39, and Toolkit PR #5 against refreshed main refs; individual and combined synthetic qualification is recorded in the 2026-11-27 checkpoint.
+- [ ] Pause for ordered merge approval: Toolkit PR #5, Scripts PR #34, then Scripts PR #39. Keep the H4 owner gate separate.
