@@ -24,7 +24,7 @@ def test_coordinator_task_dry_run_default():
     assert preview["dry_run"] is True
     assert preview["task_name"] == COORDINATOR_TASK_NAME
     assert preview["working_directory"] == str(Path.home().resolve())
-    assert "notifications.cli" in preview["arguments"]
+    assert "notifications.headless_task" in preview["arguments"] if sys.platform == "win32" and Path(sys.executable).with_name("pythonw.exe").is_file() else "notifications.cli" in preview["arguments"]
     assert "coordinator poll" in preview["arguments"]
 
 
