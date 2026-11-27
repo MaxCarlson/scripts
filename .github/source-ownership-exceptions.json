@@ -1,1 +1,7 @@
-[]
+[
+  {
+    "type": "retirement",
+    "path": "modules/llm_monitor",
+    "reason": "Retire scripts llm_monitor source copy after canonical H4 bundle qualification and Toolkit PR #5 dependency alignment"
+  }
+]
