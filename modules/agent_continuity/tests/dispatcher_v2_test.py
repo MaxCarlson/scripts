@@ -342,7 +342,7 @@ def test_option_four_cancel_returns_to_post_exit_menu_for_inactive_choice(tmp_pa
     dispatcher = DispatcherService(home_dir=tmp_path / "registry")
     dispatcher.register("P", "A", provider="codex", session_id="session")
     monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", lambda *a, **k: ["fake-resume"])
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run",
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process",
                         lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0))
     output = StringIO()
 
@@ -606,7 +606,7 @@ def test_inactive_original_can_create_reviewer_after_explicit_new_authorization(
                   if argv == ["fake-bootstrap"] else "")
         return subprocess.CompletedProcess(argv, 0, stdout=output)
 
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     args = Namespace(gui="P", agent_name="Implementer", reviewer_agent="Reviewer", provider="agy",
                      new=True, apply=True, cwd=None, environment=None)
 
@@ -660,7 +660,7 @@ def test_review_new_session_uses_fake_bootstrap_and_atomically_selects_exact_id(
         output = '{"conversation_id":"review-created","status":"SUCCESS"}' if argv == ["fake-bootstrap"] else ""
         return subprocess.CompletedProcess(argv, 0, stdout=output)
 
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     args = Namespace(gui="P", agent_name="Implementer", reviewer_agent="Reviewer", provider="agy",
                      new=True, apply=True, cwd=str(tmp_path), environment=None)
     assert _review(dispatcher, args, TTY("1\n"), TTY()) == 0
@@ -685,7 +685,7 @@ def test_review_bootstrap_failure_keeps_pending_cycle_and_refuses_automatic_retr
     dispatcher.register("P", "Implementer", provider="codex", session_id="original")
     monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv", lambda *a, **k: ["fake-bootstrap"])
     calls = []
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run",
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process",
                         lambda argv, **kwargs: calls.append(argv) or subprocess.CompletedProcess(argv, 1, stdout=""))
     args = Namespace(gui="P", agent_name="Implementer", reviewer_agent="Reviewer", provider="agy",
                      new=True, apply=True, cwd=None, environment=None)
@@ -722,7 +722,7 @@ def test_exit_option_six_fake_bootstrap_deactivates_source_only_after_capture(tm
                   if argv == ["fake-bootstrap"] else "")
         return subprocess.CompletedProcess(argv, 0, stdout=output)
 
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     output = TTY()
     result = _create_agent_after_exit(dispatcher, source,
                                       input_stream=TTY(f"New\n1\n{cwd}\ny\n1\n"), output_stream=output)
@@ -749,7 +749,7 @@ def test_exit_option_six_failed_bootstrap_keeps_source_active_and_pending_for_re
     dispatcher.register("P", "Source", provider="codex", session_id="source-id")
     source = dispatcher.get_slot(gui="P", name="Source")
     monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv", lambda *a, **k: ["fake-bootstrap"])
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run",
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process",
                         lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, stdout=""))
     result = _create_agent_after_exit(dispatcher, source,
                                       input_stream=TTY(f"New\n1\n{cwd}\ny\n"), output_stream=TTY())

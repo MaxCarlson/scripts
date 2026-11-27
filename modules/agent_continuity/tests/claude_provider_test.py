@@ -286,7 +286,7 @@ def test_post_exit_provider_picker_resumes_exact_session_across_all_providers(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", fake_argv)
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     selected = {"codex": "1", "agy": "2", "claude": "3"}[destination]
     assert _run_pane(dispatcher, slot_id=dispatcher.get_slot(gui="GUI", name="Agent")["slot_id"],
                      launch_id=None, input_stream=StringIO(f"4\n{selected}\nr\n"),
@@ -330,7 +330,7 @@ def test_claude_start_uses_direct_uuid_session_and_resolves_only_with_transcript
         observed.append((argv, kwargs))
         created_ids.add(argv[2])
         return SimpleNamespace(returncode=0)
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     monkeypatch.setattr(adapter, "get_session_metadata", lambda session_id: {
         "provider": "claude", "native_session_id": session_id,
         "transcript_reference": "fake-transcript.jsonl", "metadata_source": "test_fixture",
@@ -365,7 +365,7 @@ def test_claude_start_keeps_pending_when_transcript_is_absent(
     adapter = ClaudeAdapter(which_fn=lambda _name: str(fake_provider_bin / "claude.exe"), home_dir=tmp_path)
     dispatcher.continuity.adapters["claude"] = adapter
     monkeypatch.setattr("agent_continuity.dispatcher_cli.detect_runtime_kind", lambda: "windows")
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run",
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process",
                         lambda *_args, **_kwargs: SimpleNamespace(returncode=0))
     metadata_lookup = adapter.get_session_metadata
     monkeypatch.setattr(adapter, "get_session_metadata", lambda _session_id: None)
@@ -435,7 +435,7 @@ def test_interrupted_claude_initialization_keeps_uuid_recoverable(
     def interrupt_launch(*_args, **_kwargs):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", interrupt_launch)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", interrupt_launch)
     with pytest.raises(KeyboardInterrupt):
         _run_pane(dispatcher, slot_id=launch["details"]["slot_id"],
                   launch_id=launch["details"]["launch_id"], input_stream=StringIO(), output_stream=StringIO())
@@ -484,7 +484,7 @@ def test_repeated_claude_pending_launch_cannot_spawn_a_second_process(
         calls.append(argv)
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", interrupted)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", interrupted)
     for _ in range(2):
         try:
             _run_pane(dispatcher, slot_id=launch["details"]["slot_id"],
@@ -521,7 +521,7 @@ def test_concurrent_claude_pending_launch_has_single_claim_and_spawn(
         release.wait(timeout=5)
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", wait_in_provider)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", wait_in_provider)
     errors = []
 
     def execute():
@@ -583,7 +583,7 @@ def test_claude_can_be_new_provider_destination_and_preserves_old_session(tmp_pa
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr("agent_continuity.dispatcher_cli.detect_runtime_kind", lambda: "windows")
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     monkeypatch.setattr(adapter, "get_session_metadata", lambda session_id: {"native_session_id": session_id}
                         if session_id in started else None)
 
@@ -614,7 +614,7 @@ def test_claude_reviewer_creation_and_return_round_trip_preserve_codex_identity(
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr("agent_continuity.dispatcher_cli.detect_runtime_kind", lambda: "windows")
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", fake_run)
     monkeypatch.setattr(adapter, "get_session_metadata", lambda session_id: {"native_session_id": session_id}
                         if session_id in started else None)
     parser = build_parser()

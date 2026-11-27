@@ -718,7 +718,7 @@ def test_captured_id_is_recoverable_when_activation_persistence_fails(tmp_path, 
     launch = dispatcher.begin_launch(gui="AgentImprovement", name="AgentPerf", provider="codex", apply=True)
     monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv", lambda *a, **k: ["fake-codex"])
     monkeypatch.setattr(
-        "agent_continuity.dispatcher_cli.subprocess.run",
+        "agent_continuity.dispatcher_cli._run_provider_process",
         lambda *a, **k: SimpleNamespace(
             returncode=0,
             stdout="\n".join((

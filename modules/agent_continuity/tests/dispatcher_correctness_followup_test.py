@@ -301,7 +301,7 @@ def test_failed_historical_resume_keeps_exact_session_history_and_no_pending_lau
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 23)
 
-    monkeypatch.setattr("agent_continuity.dispatcher_cli.subprocess.run", failed_provider)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", failed_provider)
     parser = build_parser()
     args = parser.parse_args(["-H", str(home), "continue", "GUI", "Agent", "-p", "agy", "-a"])
     assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 23

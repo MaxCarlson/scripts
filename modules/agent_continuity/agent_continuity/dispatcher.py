@@ -451,6 +451,29 @@ class DispatcherService:
             (conversation["gui_id"],),
         )
 
+    def observe_runtime_session(self, provider: str, environment_id: str, session_id: str):
+        """Observe one exact session through the shared, read-only runtime-discovery API."""
+        environments = self.materializer.list_environments()
+        environment = next((item for item in environments if item.environment_id == environment_id), None)
+        if environment is None or not environment_is_locally_owned(self.home_dir, environment):
+            return None
+        from .environment import detect_runtime_kind
+        from .runtime_discovery import PsutilProcessEnumerator, RuntimeDiscovery, SessionKey
+
+        if detect_runtime_kind() != environment.runtime_kind:
+            return None
+        observer = RuntimeDiscovery(
+            process_enumerator=PsutilProcessEnumerator(),
+            runtime_kind=environment.runtime_kind,
+            environment_id=environment.environment_id,
+        )
+        return observer.observe(SessionKey(
+            provider=provider,
+            native_session_id=session_id,
+            environment_id=environment.environment_id,
+            runtime_kind=environment.runtime_kind,
+        ))
+
     def get_slot(self, *, gui: str, name: str) -> dict[str, Any]:
         conversation = self._gui(gui)
         slot = self._slot(conversation["gui_id"], name)
@@ -860,14 +883,35 @@ class DispatcherService:
         pending = self._with_captured_bootstrap_id(pending)
         session_id = pending.get("captured_session_id")
         provenance = "dispatcher_recovery"
+        runtime_process_match = False
         if (not session_id and not pending.get("captured_session_conflict")
                 and pending.get("provider") == "claude"):
             reserved_id = pending.get("reserved_session_id")
             adapter = self.continuity.adapters.get("claude")
-            evidence = adapter.get_session_metadata(reserved_id) if reserved_id and adapter else None
+            evidence = None
+            evidence_error: ContinuityError | None = None
+            try:
+                evidence = adapter.get_session_metadata(reserved_id) if reserved_id and adapter else None
+            except ContinuityError as exc:
+                evidence_error = exc
             if evidence:
                 session_id = reserved_id
                 provenance = "claude_transcript_recovery"
+            elif reserved_id:
+                observation = self.observe_runtime_session("claude", pending["environment_id"], reserved_id)
+                runtime_process_match = bool(
+                    observation
+                    and observation.process_session_match.value == "exact"
+                    and observation.process_liveness.value == "running"
+                    and observation.session_identity_state.value == "reserved"
+                    and not observation.identity_conflict
+                    and not observation.evidence_conflict
+                )
+                if runtime_process_match:
+                    session_id = reserved_id
+                    provenance = "claude_exact_runtime_process"
+                elif evidence_error:
+                    raise evidence_error
         if not session_id or pending.get("captured_session_conflict") or pending.get("reserved_session_conflict"):
             raise ContinuityError(ErrorCode.INVALID_INPUT,
                 "Recovery is unresolved: no exact session identity with provider evidence was found. Inspect provider state and use llmd attach with a verified ID.")
@@ -889,13 +933,51 @@ class DispatcherService:
             if latest is None:
                 raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch changed concurrently; inspect `llmd doctor` and retry recovery.")
             captured_now = self._with_captured_bootstrap_id(latest)
-            if provenance == "claude_transcript_recovery":
+            if provenance in {"claude_transcript_recovery", "claude_exact_runtime_process"}:
                 adapter = self.continuity.adapters.get("claude")
-                evidence = adapter.get_session_metadata(session_id) if adapter else None
                 if (captured_now.get("reserved_session_id") != session_id
-                        or captured_now.get("reserved_session_conflict") or not evidence):
+                        or captured_now.get("reserved_session_conflict")):
                     raise ContinuityError(ErrorCode.INVALID_INPUT,
-                                          "Claude transcript evidence changed; recovery was not applied.")
+                                          "Claude UUID reservation changed; recovery was not applied.")
+                if provenance == "claude_transcript_recovery":
+                    try:
+                        evidence = adapter.get_session_metadata(session_id) if adapter else None
+                    except ContinuityError:
+                        evidence = None
+                    if not evidence:
+                        observation = self.observe_runtime_session("claude", latest["environment_id"], session_id)
+                        runtime_process_match = bool(
+                            observation
+                            and observation.process_session_match.value == "exact"
+                            and observation.process_liveness.value == "running"
+                            and observation.session_identity_state.value == "reserved"
+                            and not observation.identity_conflict
+                            and not observation.evidence_conflict
+                        )
+                        if not runtime_process_match:
+                            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                "Claude transcript evidence is unavailable and the exact reserved process is no longer observed; recovery was not applied.")
+                        provenance = "claude_exact_runtime_process"
+                else:
+                    observation = self.observe_runtime_session("claude", latest["environment_id"], session_id)
+                    runtime_process_match = bool(
+                        observation
+                        and observation.process_session_match.value == "exact"
+                        and observation.process_liveness.value == "running"
+                        and observation.session_identity_state.value == "reserved"
+                        and not observation.identity_conflict
+                        and not observation.evidence_conflict
+                    )
+                    if not runtime_process_match:
+                        adapter_evidence = None
+                        try:
+                            adapter_evidence = adapter.get_session_metadata(session_id) if adapter else None
+                        except ContinuityError:
+                            pass
+                        if not adapter_evidence:
+                            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                "Exact Claude process evidence ended and transcript evidence is unavailable; recovery was not applied.")
+                        provenance = "claude_transcript_recovery"
             elif captured_now.get("captured_session_id") != session_id or captured_now.get("captured_session_conflict"):
                 raise ContinuityError(ErrorCode.INVALID_INPUT, "Captured session metadata changed; recovery was not applied.")
             slot = self._slot(conversation["gui_id"], slot["slot_id"])
@@ -914,7 +996,10 @@ class DispatcherService:
                 ckey = hashlib.sha256(f"{current['provider']}\0{current['environment_id']}\0{current['native_session_id']}".encode()).hexdigest()[:24]
                 with _mutation_lock(self.home_dir, f"session-{ckey}.lock", blocking=False):
                     pass
-            with _mutation_lock(self.home_dir, lock_name, blocking=False):
+            session_lock = contextlib.nullcontext() if provenance == "claude_exact_runtime_process" else _mutation_lock(
+                self.home_dir, lock_name, blocking=False
+            )
+            with session_lock:
                 now = now_utc_iso()
                 events: list[EventEnvelope] = []
                 known_envs = self.materializer.list_environments()
@@ -945,9 +1030,10 @@ class DispatcherService:
                 for event in events:
                     self.continuity._emit_and_materialize([event])
         return {"action": "recover", "applied": True, "status": "recovered",
-                "summary": f"Associated verified {pending['provider']} session {session_id} and resolved pending launch. No provider was launched.",
+                "summary": f"Associated exact {pending['provider']} session {session_id} and resolved pending launch. No provider was launched.",
                 "details": {"launch_id": pending["launch_id"], "session_id": session_id,
-                            "activation_added": not bool(current and same)}}
+                            "activation_added": not bool(current and same), "provenance": provenance,
+                            "resumability": "unverified" if provenance == "claude_exact_runtime_process" else "transcript_observed"}}
 
     def record_process_observation(
         self, *, slot_id: str, launch_id: str | None, return_code: int, outcome: str,
@@ -956,7 +1042,12 @@ class DispatcherService:
     ) -> None:
         slot = self.get_slot_by_id(slot_id)
         current = slot["current"]
-        pending = self.get_pending_launch(launch_id) if launch_id else None
+        pending = None
+        if launch_id:
+            self._sync()
+            pending = self._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?", (launch_id,))
+            if pending is None:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, f"Launch record not found: {launch_id!r}.")
         if pending:
             provider = pending["provider"]
             environment_id = pending["environment_id"]
@@ -969,15 +1060,25 @@ class DispatcherService:
             session_id = native_session_id or (current["native_session_id"] if current else None)
         if not provider or not environment_id:
             return
-        event = self._event(
-            EventType.DISPATCHER_PROCESS_OBSERVED,
-            environment_id=environment_id,
-            provider=provider,
-            session_id=session_id,
-            payload={"slot_id": slot_id, "launch_id": launch_id, "return_code": return_code,
-                     "outcome": outcome, "detail": detail, "native_session_id": native_session_id},
-        )
         with _mutation_lock(self.home_dir):
+            self._sync()
+            if launch_id and self._row(
+                """SELECT 1 FROM activity_events WHERE event_type = ?
+                   AND json_extract(payload_json, '$.launch_id') = ?
+                   AND json_extract(payload_json, '$.outcome') = ?
+                   AND json_extract(payload_json, '$.return_code') = ?
+                   AND COALESCE(json_extract(payload_json, '$.native_session_id'), '') = COALESCE(?, '') LIMIT 1""",
+                (EventType.DISPATCHER_PROCESS_OBSERVED.value, launch_id, outcome, return_code, native_session_id),
+            ):
+                return
+            event = self._event(
+                EventType.DISPATCHER_PROCESS_OBSERVED,
+                environment_id=environment_id,
+                provider=provider,
+                session_id=session_id,
+                payload={"slot_id": slot_id, "launch_id": launch_id, "return_code": return_code,
+                         "outcome": outcome, "detail": detail, "native_session_id": native_session_id},
+            )
             self.continuity._emit_and_materialize([event])
 
     def open_request(self, *, gui: str, cwd_override: str | None = None) -> dict[str, Any]:
@@ -990,6 +1091,10 @@ class DispatcherService:
         for slot in slots:
             session_id = slot.get("current_session_id")
             provider = slot.get("current_provider")
+            if slot.get("pending_launch_id"):
+                unresolved.append({"slot_id": slot["slot_id"], "agent_name": slot["name"],
+                                   "reason": f"pending {slot.get('pending_provider') or 'provider'} destination must be recovered before opening this slot"})
+                continue
             if not session_id or not provider:
                 reason = f"native {slot['pending_provider']} session identity pending" if slot.get("pending_launch_id") else "no selected native session"
                 unresolved.append({"slot_id": slot["slot_id"], "agent_name": slot["name"], "reason": reason})
