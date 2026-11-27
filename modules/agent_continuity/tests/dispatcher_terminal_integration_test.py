@@ -86,7 +86,7 @@ def test_noninteractive_open_previews_then_submits_grouped_active_slots(
     active_slots = _expected_activity_order(dispatcher.list_slots(gui="AgentImprovement"))
     runner = _capture_terminal(monkeypatch)
 
-    dry_code = main(["-H", str(home), "open", "-g", "AgentImprovement", "-k", str(pane_count), "-w", "llmd-test-window", "-j"])
+    dry_code = main(["-H", str(home), "open", "-g", "AgentImprovement", "-k", str(pane_count), "-w", "llmd-test-window", "-j", "-d"])
     dry_output = json.loads(capsys.readouterr().out)
 
     assert dry_code == 0
@@ -127,7 +127,7 @@ def test_interactive_open_all_uses_the_same_preview_and_submission_path(tmp_path
     from agent_continuity import interactive
 
     home = dispatcher.home_dir
-    cli_status = main(["-H", str(home), "open", "-g", "AgentImprovement", "-j"])
+    cli_status = main(["-H", str(home), "open", "-g", "AgentImprovement", "-j", "-d"])
     assert cli_status == 0
     cli_preview = json.loads(capsys.readouterr().out)
 
@@ -183,7 +183,7 @@ def test_default_open_uses_two_panes_per_tab(tmp_path, monkeypatch, capsys, acti
     active_slots = dispatcher.list_slots(gui="AgentImprovement")
     runner = _capture_terminal(monkeypatch)
 
-    status = main(["-H", str(home), "open", "-g", "AgentImprovement", "-j"])
+    status = main(["-H", str(home), "open", "-g", "AgentImprovement", "-j", "-d"])
     result = json.loads(capsys.readouterr().out)
 
     assert status == 0
