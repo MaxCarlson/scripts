@@ -38,3 +38,13 @@
 - [x] Synchronize Scripts primary to the integrated main, preserve unrelated edits, and verify both retired module paths physically absent.
 - [x] Verify published Metrics and canonical Toolkit Monitor import origins, `pip check` in both existing venvs, and successful managed Monitor/Coordinator help commands.
 - [ ] Keep Resource Coordinator retirement gated on H4 owner reconciliation; Phase-D owner worktree remains protected.
+
+## 2026-11-28 Resource Coordinator candidate
+
+- [x] Prepare canonical Toolkit H4 bundle tooling that selects current source by immutable Toolkit commit and historical source from the pinned Scripts revision; package and verify the canonical Metrics and Monitor wheels.
+- [x] Archive tracked Resource Coordinator docs, plans, and historical evidence, then remove the duplicate from the isolated Scripts candidate.
+- [x] Keep the transferred-module and CLI ownership registry entries so Scripts setup and launcher discovery continue to delegate to Toolkit.
+- [x] Update PrivExec H4 defaults/examples to use the canonical Toolkit tooling path; no live installation or VM action was run.
+- [x] Qualify focused Scripts ownership/setup tests and Toolkit H4 offline/synthetic tests (record exact branch heads and results in STATUS.md).
+- [ ] Reconcile the six dirty/new Phase-D owner documentation paths before integration; preserve the owner worktree unchanged.
+- [ ] Do not merge or synchronize primary checkouts under this task authorization.

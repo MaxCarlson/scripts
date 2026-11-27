@@ -44,6 +44,7 @@ RETIRED_TOOLKIT_SOURCE_DIRS = frozenset({
     "orchestrator_web_viewer",
     "resource_metrics",
     "llm_monitor",
+    "resource_coordinator",
 })
 RETIRED_SHARED_TRANSFERRED_SOURCE_DIRS = frozenset({"script_logging", "web_ui_tools"})
 
