@@ -436,6 +436,10 @@ class ManagedProcessStore:
         relay_process_created: int,
     ) -> str | None:
         """CAS a reserved pane to one relay before any child process can be spawned."""
+        if not self._owns_relay(relay_pid, relay_process_created):
+            return None
+        if self._lookup_liveness(relay_pid) is not ProcessLiveness.ALIVE:
+            return None
         token = uuid.uuid4().hex
         with self._connect() as connection:
             cursor = connection.execute(
@@ -501,6 +505,8 @@ class ManagedProcessStore:
                     raise ValueError(f"managed pane cannot be claimed: {pane_id}")
         if claim_token is None or relay_pid is None or relay_process_created is None:
             raise ValueError("start receipts require a pane claim and owning relay identity")
+        if not self._owns_relay(relay_pid, relay_process_created):
+            raise ValueError("start receipts may only be recorded by the owning relay process")
         with self._connect() as connection:
             cursor = connection.execute(
                 """UPDATE managed_panes SET state = ?, pid = ?, process_created = ?, started_at = ?
@@ -525,9 +531,17 @@ class ManagedProcessStore:
     def record_spawn_failure(self, launch_id: str, pane_id: str, *, claim_token: str, failure_code: str) -> None:
         self._validate_failure_code(failure_code)
         with self._connect() as connection:
+            row = self._load_pane(connection, pane_id)
+            if row is None or row["launch_id"] != launch_id or row["claim_token"] != claim_token:
+                raise ValueError(f"managed pane has no matching pre-spawn claim: {pane_id}")
+            relay_pid = row["relay_pid"]
+            relay_created = row["relay_process_created"]
+            if relay_pid is None or relay_created is None or not self._owns_relay(relay_pid, relay_created):
+                raise ValueError(f"spawn failure may only be recorded by the owning relay process: {pane_id}")
             cursor = connection.execute(
                 """UPDATE managed_panes SET state = ?, failure_code = ?
-                   WHERE launch_id = ? AND pane_id = ? AND state = ? AND claim_token = ?""",
+                   WHERE launch_id = ? AND pane_id = ? AND state = ? AND claim_token = ?
+                     AND relay_pid = ? AND relay_process_created = ?""",
                 (
                     ManagedProcessState.FAILED.value,
                     failure_code,
@@ -535,6 +549,8 @@ class ManagedProcessStore:
                     pane_id,
                     ManagedProcessState.CLAIMED.value,
                     claim_token,
+                    relay_pid,
+                    relay_created,
                 ),
             )
             if cursor.rowcount != 1:
@@ -568,10 +584,18 @@ class ManagedProcessStore:
         if claim_token is None:
             raise ValueError("exit receipts require the pane claim token")
         with self._connect() as connection:
+            row = self._load_pane(connection, pane_id)
+            if row is None or row["launch_id"] != launch_id or row["claim_token"] != claim_token:
+                raise ValueError(f"managed pane has no matching start receipt: {pane_id}")
+            relay_pid = row["relay_pid"]
+            relay_created = row["relay_process_created"]
+            if relay_pid is None or relay_created is None or not self._owns_relay(relay_pid, relay_created):
+                raise ValueError(f"exit receipts may only be recorded by the owning relay process: {pane_id}")
             cursor = connection.execute(
                 """UPDATE managed_panes SET state = ?, exited_at = ?, exit_code = ?,
                        interruption_state = CASE WHEN interruption_state = ? THEN ? ELSE interruption_state END
-                   WHERE launch_id = ? AND pane_id = ? AND state = ? AND claim_token = ?""",
+                   WHERE launch_id = ? AND pane_id = ? AND state = ? AND claim_token = ?
+                     AND relay_pid = ? AND relay_process_created = ?""",
                 (
                     ManagedProcessState.EXITED.value,
                     time.time(),
@@ -582,6 +606,8 @@ class ManagedProcessStore:
                     pane_id,
                     ManagedProcessState.STARTED.value,
                     claim_token,
+                    relay_pid,
+                    relay_created,
                 ),
             )
             if cursor.rowcount != 1:
@@ -598,20 +624,25 @@ class ManagedProcessStore:
                 claim_token = row["claim_token"]
                 if claim_token is None:
                     raise ValueError(f"managed pane has no pre-spawn claim: {pane_id}")
+                relay_pid = row["relay_pid"]
+                relay_created = row["relay_process_created"]
+                if (
+                    relay_pid is None
+                    or relay_created is None
+                    or not self._owns_relay(relay_pid, relay_created)
+                ):
+                    raise ValueError(f"failure may only be recorded by the owning relay process: {pane_id}")
                 cursor = connection.execute(
                     """UPDATE managed_panes SET state = ?, failure_code = ?
-                       WHERE pane_id = ? AND state = ? AND claim_token = ?""",
+                       WHERE pane_id = ? AND state = ? AND claim_token = ?
+                         AND relay_pid = ? AND relay_process_created = ?""",
                     (ManagedProcessState.FAILED.value, failure_code, pane_id,
-                     ManagedProcessState.CLAIMED.value, claim_token),
-                )
-            elif row["state"] == ManagedProcessState.RESERVED.value:
-                cursor = connection.execute(
-                    """UPDATE managed_panes SET state = ?, failure_code = ?
-                       WHERE pane_id = ? AND state = ?""",
-                    (ManagedProcessState.FAILED.value, failure_code, pane_id, ManagedProcessState.RESERVED.value),
+                     ManagedProcessState.CLAIMED.value, claim_token, relay_pid, relay_created),
                 )
             else:
-                raise ValueError(f"managed pane cannot be failed from state {row['state']}: {pane_id}")
+                raise ValueError(
+                    f"managed pane must be claimed by its relay before failure is recorded: {pane_id}"
+                )
             if cursor.rowcount != 1:
                 raise ValueError(f"managed pane failure raced with another receipt: {pane_id}")
 
@@ -620,6 +651,12 @@ class ManagedProcessStore:
 
     def _lookup_liveness(self, pid: int) -> ProcessLiveness:
         return self._liveness(pid)
+
+    def _owns_relay(self, relay_pid: int, relay_process_created: int) -> bool:
+        """Prove the caller is the exact relay process stored on the pane."""
+        if relay_pid != os.getpid():
+            return False
+        return self._lookup_identity(relay_pid) == (relay_pid, relay_process_created)
 
     def _load_pane(self, connection: sqlite3.Connection, pane_id: str) -> sqlite3.Row | None:
         return connection.execute("SELECT * FROM managed_panes WHERE pane_id = ?", (pane_id,)).fetchone()
@@ -722,6 +759,8 @@ class ManagedProcessStore:
         If the relay is interrupted after the claim, state remains ``delivering``;
         subsequent calls never send a second control event.
         """
+        if not self._owns_relay(relay_pid, relay_process_created):
+            return False
         with self._connect() as connection:
             row = self._load_pane(connection, pane_id)
             if row is None or row["state"] != ManagedProcessState.STARTED.value:
@@ -802,6 +841,8 @@ class ManagedProcessStore:
     ) -> None:
         if outcome not in {InterruptionState.DELIVERED, InterruptionState.UNKNOWN}:
             raise ValueError("delivery outcome must be delivered or unknown")
+        if not self._owns_relay(relay_pid, relay_process_created):
+            raise ValueError("interruption receipt may only be finalized by the owning relay process")
         with self._connect() as connection:
             cursor = connection.execute(
                 """UPDATE managed_panes SET interruption_state = ?,

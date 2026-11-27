@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -19,10 +20,16 @@ def reservation(pane_id: str, pane_index: int = 0) -> ManagedPaneReservation:
     return ManagedPaneReservation(pane_id, tab_index=0, pane_index=pane_index, requested_layout="single")
 
 
+def relay_identity() -> tuple[int, int]:
+    pid = os.getpid()
+    return pid, pid * 10
+
+
 def reserve_started(store: ManagedProcessStore, pane_id: str = "launch:0:0") -> str:
     store.reserve_launch("launch", "window", (reservation(pane_id),))
     store.mark_submission_started("launch")
-    token = store.claim_pane("launch", pane_id, relay_pid=700, relay_process_created=7000)
+    relay_pid, relay_created = relay_identity()
+    token = store.claim_pane("launch", pane_id, relay_pid=relay_pid, relay_process_created=relay_created)
     assert token is not None
     store.record_started(
         "launch",
@@ -30,8 +37,8 @@ def reserve_started(store: ManagedProcessStore, pane_id: str = "launch:0:0") -> 
         claim_token=token,
         pid=800,
         process_created=8000,
-        relay_pid=700,
-        relay_process_created=7000,
+        relay_pid=relay_pid,
+        relay_process_created=relay_created,
     )
     return token
 
@@ -77,7 +84,8 @@ def test_legacy_store_migration_keeps_ambiguous_panes_non_claimable(tmp_path):
     assert record.state is ManagedProcessState.UNKNOWN
     assert record.submission_state is LaunchSubmissionState.AMBIGUOUS
     assert record.interruption_state is InterruptionState.UNKNOWN
-    assert store.claim_pane("legacy", "legacy:0:0", relay_pid=700, relay_process_created=7000) is None
+    relay_pid, relay_created = relay_identity()
+    assert store.claim_pane("legacy", "legacy:0:0", relay_pid=relay_pid, relay_process_created=relay_created) is None
 
 
 def test_duplicate_and_concurrent_relays_can_claim_a_pane_only_once(tmp_path):
@@ -92,7 +100,10 @@ def test_duplicate_and_concurrent_relays_can_claim_a_pane_only_once(tmp_path):
     with ThreadPoolExecutor(max_workers=12) as executor:
         claims = list(
             executor.map(
-                lambda _: store.claim_pane("launch", "launch:0:0", relay_pid=700, relay_process_created=7000),
+                lambda _: store.claim_pane(
+                    "launch", "launch:0:0", relay_pid=relay_identity()[0],
+                    relay_process_created=relay_identity()[1],
+                ),
                 range(12),
             )
         )
@@ -100,7 +111,7 @@ def test_duplicate_and_concurrent_relays_can_claim_a_pane_only_once(tmp_path):
     assert sum(token is not None for token in claims) == 1
     [record] = store.enumerate_processes()
     assert record.state is ManagedProcessState.CLAIMED
-    assert record.relay_pid == 700
+    assert record.relay_pid == relay_identity()[0]
 
 
 def test_definite_rejection_marks_only_unclaimed_panes_and_late_receipt_is_preserved(tmp_path):
@@ -111,13 +122,14 @@ def test_definite_rejection_marks_only_unclaimed_panes_and_late_receipt_is_prese
     )
     store.reserve_launch("launch", "window", (reservation("launch:0:0"), reservation("launch:0:1", 1)))
     store.mark_submission_started("launch")
-    token = store.claim_pane("launch", "launch:0:0", relay_pid=700, relay_process_created=7000)
+    relay_pid, relay_created = relay_identity()
+    token = store.claim_pane("launch", "launch:0:0", relay_pid=relay_pid, relay_process_created=relay_created)
     assert token is not None
 
     store.mark_submission_outcome("launch", LaunchSubmissionState.REJECTED, failure_code="terminal_rejected")
     store.record_started(
         "launch", "launch:0:0", claim_token=token, pid=800, process_created=8000,
-        relay_pid=700, relay_process_created=7000,
+        relay_pid=relay_pid, relay_process_created=relay_created,
     )
     records = {record.pane_id: record for record in store.enumerate_processes()}
 
@@ -137,8 +149,9 @@ def test_ambiguous_submission_preserves_reserved_pane_for_one_late_original_rela
     store.mark_submission_started("launch")
     store.mark_submission_outcome("launch", LaunchSubmissionState.AMBIGUOUS)
 
-    first = store.claim_pane("launch", "launch:0:0", relay_pid=700, relay_process_created=7000)
-    duplicate = store.claim_pane("launch", "launch:0:0", relay_pid=701, relay_process_created=7001)
+    relay_pid, relay_created = relay_identity()
+    first = store.claim_pane("launch", "launch:0:0", relay_pid=relay_pid, relay_process_created=relay_created)
+    duplicate = store.claim_pane("launch", "launch:0:0", relay_pid=relay_pid, relay_process_created=relay_created)
 
     assert first is not None
     assert duplicate is None
@@ -148,7 +161,8 @@ def test_ambiguous_submission_preserves_reserved_pane_for_one_late_original_rela
 
 
 def test_interruption_between_claim_and_spawn_is_recoverable_but_never_retried(tmp_path):
-    liveness = {700: ProcessLiveness.ALIVE}
+    relay_pid, relay_created = relay_identity()
+    liveness = {relay_pid: ProcessLiveness.ALIVE}
     store = ManagedProcessStore(
         tmp_path / "interrupted.sqlite3",
         process_identity_lookup=lambda pid: (pid, pid * 10),
@@ -156,12 +170,12 @@ def test_interruption_between_claim_and_spawn_is_recoverable_but_never_retried(t
     )
     store.reserve_launch("launch", "window", (reservation("launch:0:0"),))
     store.mark_submission_started("launch")
-    token = store.claim_pane("launch", "launch:0:0", relay_pid=700, relay_process_created=7000)
+    token = store.claim_pane("launch", "launch:0:0", relay_pid=relay_pid, relay_process_created=relay_created)
     assert token is not None
-    liveness[700] = ProcessLiveness.EXITED
+    liveness[relay_pid] = ProcessLiveness.EXITED
 
     recovered = store.enumerate_processes()[0]
-    retry = store.claim_pane("launch", "launch:0:0", relay_pid=701, relay_process_created=7010)
+    retry = store.claim_pane("launch", "launch:0:0", relay_pid=relay_pid, relay_process_created=relay_created)
 
     assert recovered.state is ManagedProcessState.UNKNOWN
     assert recovered.owner_liveness is ProcessLiveness.EXITED
@@ -171,8 +185,10 @@ def test_interruption_between_claim_and_spawn_is_recoverable_but_never_retried(t
 def test_process_creation_identity_and_liveness_are_reported_separately(tmp_path):
     store = ManagedProcessStore(
         tmp_path / "liveness.sqlite3",
-        process_identity_lookup=lambda pid: (pid, 8000),
-        process_liveness_lookup=lambda _pid: ProcessLiveness.EXITED,
+        process_identity_lookup=lambda pid: (pid, pid * 10),
+        process_liveness_lookup=lambda pid: (
+            ProcessLiveness.ALIVE if pid == os.getpid() else ProcessLiveness.EXITED
+        ),
     )
     reserve_started(store)
 
@@ -187,16 +203,17 @@ def test_process_creation_identity_and_liveness_are_reported_separately(tmp_path
 def test_missing_creation_time_is_unknown_even_when_pid_is_live(tmp_path):
     store = ManagedProcessStore(
         tmp_path / "missing-creation.sqlite3",
-        process_identity_lookup=lambda pid: (pid, 8000),
+        process_identity_lookup=lambda pid: (pid, pid * 10),
         process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
     )
     store.reserve_launch("launch", "window", (reservation("launch:0:0"),))
     store.mark_submission_started("launch")
-    token = store.claim_pane("launch", "launch:0:0", relay_pid=700, relay_process_created=7000)
+    relay_pid, relay_created = relay_identity()
+    token = store.claim_pane("launch", "launch:0:0", relay_pid=relay_pid, relay_process_created=relay_created)
     assert token is not None
     store.record_started(
         "launch", "launch:0:0", claim_token=token, pid=800, process_created=None,
-        relay_pid=700, relay_process_created=7000,
+        relay_pid=relay_pid, relay_process_created=relay_created,
     )
 
     [record] = store.enumerate_processes()
@@ -216,7 +233,7 @@ def test_start_and_exit_receipts_are_conditional_and_idempotency_is_rejected(tmp
     with pytest.raises(ValueError, match="stale or does not belong"):
         store.record_started(
             "launch", "launch:0:0", claim_token=token, pid=800, process_created=8000,
-            relay_pid=700, relay_process_created=7000,
+            relay_pid=relay_identity()[0], relay_process_created=relay_identity()[1],
         )
 
     store.record_exit("launch", "launch:0:0", claim_token=token, exit_code=0)
@@ -233,6 +250,7 @@ def test_shutdown_delivery_is_at_most_once_under_concurrency(tmp_path):
         process_identity_lookup=lambda pid: (pid, pid * 10),
         process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
     )
+    relay_pid, relay_created = relay_identity()
     reserve_started(store)
     assert store.request_interrupt("launch:0:0").accepted
     signals: list[int] = []
@@ -240,8 +258,8 @@ def test_shutdown_delivery_is_at_most_once_under_concurrency(tmp_path):
     def deliver(_):
         return store.deliver_interruption(
             "launch:0:0",
-            relay_pid=700,
-            relay_process_created=7000,
+            relay_pid=relay_pid,
+            relay_process_created=relay_created,
             signal_process_group=lambda pid: signals.append(pid) or True,
         )
 
@@ -259,6 +277,7 @@ def test_interrupted_delivery_is_ambiguous_and_never_signaled_twice(tmp_path):
         process_identity_lookup=lambda pid: (pid, pid * 10),
         process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
     )
+    relay_pid, relay_created = relay_identity()
     reserve_started(store)
     store.request_interrupt("launch:0:0")
     signals: list[int] = []
@@ -269,11 +288,12 @@ def test_interrupted_delivery_is_ambiguous_and_never_signaled_twice(tmp_path):
 
     with pytest.raises(KeyboardInterrupt):
         store.deliver_interruption(
-            "launch:0:0", relay_pid=700, relay_process_created=7000, signal_process_group=signal_then_interrupt
+            "launch:0:0", relay_pid=relay_pid, relay_process_created=relay_created,
+            signal_process_group=signal_then_interrupt
         )
 
     assert not store.deliver_interruption(
-        "launch:0:0", relay_pid=700, relay_process_created=7000,
+        "launch:0:0", relay_pid=relay_pid, relay_process_created=relay_created,
         signal_process_group=lambda pid: signals.append(pid) or True,
     )
     assert signals == [800]
@@ -281,6 +301,7 @@ def test_interrupted_delivery_is_ambiguous_and_never_signaled_twice(tmp_path):
 
 
 def test_wrong_relay_identity_cannot_deliver_an_interruption(tmp_path):
+    relay_pid, relay_created = relay_identity()
     store = ManagedProcessStore(
         tmp_path / "relay-owner.sqlite3",
         process_identity_lookup=lambda pid: (pid, pid * 10),
@@ -291,13 +312,97 @@ def test_wrong_relay_identity_cannot_deliver_an_interruption(tmp_path):
     signals: list[int] = []
 
     delivered = store.deliver_interruption(
-        "launch:0:0", relay_pid=701, relay_process_created=7010,
+        "launch:0:0", relay_pid=relay_pid + 1, relay_process_created=(relay_pid + 1) * 10,
         signal_process_group=lambda pid: signals.append(pid) or True,
     )
 
     assert not delivered
     assert signals == []
     assert store.get_interruption_state("launch:0:0") is InterruptionState.PENDING
+
+
+def test_correct_stored_relay_identity_cannot_be_spoofed_by_another_caller(tmp_path, monkeypatch):
+    import terminal_launcher.managed as managed_module
+
+    store = ManagedProcessStore(
+        tmp_path / "spoofed-caller.sqlite3",
+        process_identity_lookup=lambda pid: (pid, pid * 10),
+        process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
+    )
+    relay_pid, relay_created = relay_identity()
+    reserve_started(store)
+    assert store.request_interrupt("launch:0:0").accepted
+    signals = []
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(managed_module.os, "getpid", lambda: 701)
+        delivered = store.deliver_interruption(
+            "launch:0:0",
+            relay_pid=relay_pid,
+            relay_process_created=relay_created,
+            signal_process_group=lambda pid: signals.append(pid) or True,
+        )
+        compatibility_delivered = store.deliver_shutdown_request(
+            "launch:0:0", signal_process_group=lambda pid: signals.append(pid) or True
+        )
+
+    assert not delivered
+    assert not compatibility_delivered
+    assert signals == []
+    assert store.get_interruption_state("launch:0:0") is InterruptionState.PENDING
+
+
+def test_claim_and_receipt_compatibility_methods_require_actual_owner(tmp_path, monkeypatch):
+    import terminal_launcher.managed as managed_module
+
+    relay_pid, relay_created = relay_identity()
+    store = ManagedProcessStore(
+        tmp_path / "owner-receipts.sqlite3",
+        process_identity_lookup=lambda pid: (pid, pid * 10),
+        process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
+    )
+    store.reserve_launch("launch", "window", (reservation("launch:0:0"),))
+    store.mark_submission_started("launch")
+    with pytest.raises(ValueError, match="claimed by its relay"):
+        store.record_failure("launch:0:0", failure_code="unowned_failure")
+
+    token = store.claim_pane(
+        "launch", "launch:0:0", relay_pid=relay_pid, relay_process_created=relay_created
+    )
+    assert token is not None
+    assert store.claim_pane(
+        "launch", "launch:0:0", relay_pid=relay_pid + 1, relay_process_created=(relay_pid + 1) * 10
+    ) is None
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(managed_module.os, "getpid", lambda: relay_pid + 1)
+        with pytest.raises(ValueError, match="owning relay process"):
+            store.record_started(
+                "launch", "launch:0:0", claim_token=token, pid=800, process_created=8000,
+                relay_pid=relay_pid, relay_process_created=relay_created,
+            )
+        with pytest.raises(ValueError, match="owning relay process"):
+            store.record_spawn_failure(
+                "launch", "launch:0:0", claim_token=token, failure_code="spawn_failed"
+            )
+
+    store.record_started(
+        "launch", "launch:0:0", claim_token=token, pid=800, process_created=8000,
+        relay_pid=relay_pid, relay_process_created=relay_created,
+    )
+    with monkeypatch.context() as patcher:
+        patcher.setattr(managed_module.os, "getpid", lambda: relay_pid + 1)
+        with pytest.raises(ValueError, match="owning relay process"):
+            store.record_exit("launch", "launch:0:0", claim_token=token, exit_code=0)
+        with pytest.raises(ValueError, match="owning relay process"):
+            store.finish_interruption_delivery(
+                "launch:0:0", relay_pid=relay_pid, relay_process_created=relay_created,
+                outcome=InterruptionState.DELIVERED,
+            )
+
+    [record] = store.enumerate_processes()
+    assert record.state is ManagedProcessState.RUNNING
+    assert record.exit_code is None
 
 
 def _relay_store(tmp_path, name="relay.sqlite3"):

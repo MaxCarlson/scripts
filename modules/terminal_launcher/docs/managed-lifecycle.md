@@ -11,8 +11,9 @@ runtime receipts without storing prompts or launch command lines. It does not ad
 - `ManagedLaunchResult.submission` describes only the `wt.exe` request result. `spawn_acknowledged_pane_ids` and
   `panes` describe child acknowledgments independently. `startup_timed_out` identifies incomplete acknowledgments.
 - `ManagedProcessStore.reserve_launch(launch_id, window_id, panes)` atomically reserves every pane in the plan.
-  `claim_pane()` gives one relay a durable one-time claim before it may spawn a child. Existing callers may still use
-  the deprecated one-pane `register_submission()` compatibility API; new launch paths must reserve the full plan.
+  `claim_pane()` gives the actual calling relay process a durable one-time claim before it may spawn a child; the
+  supplied relay PID and creation time must match the caller. Existing callers may still use the deprecated one-pane
+  `register_submission()` compatibility API; new launch paths must reserve the full plan.
 - `ManagedProcessStore.enumerate_processes(launch_id=None)` returns persisted launch/pane identities, a stable hash of
   the requested window name, requested tab and pane indexes/layout, PID and creation FILETIME, timestamps,
   failure/exit receipts, liveness, owning-relay liveness, submission state, and interruption progress.
@@ -20,6 +21,12 @@ runtime receipts without storing prompts or launch command lines. It does not ad
   queues one at-most-once Ctrl+Break interruption request for that pane's relay. It never signals a Windows Terminal
   host process. `request_graceful_shutdown()` remains as a deprecated compatibility alias; it does not promise graceful
   shutdown.
+
+Start, spawn-failure, exit, and interruption-delivery receipts are accepted only from the process whose PID and
+creation FILETIME own the pane claim. Supplying another relay's stored PID is insufficient. The deprecated
+`record_failure()` wrapper also requires a claimed pane and its actual owner; it cannot mark an unowned reserved pane
+failed. The deprecated `deliver_shutdown_request()` wrapper delegates to the same current-caller check as
+`deliver_interruption()`.
 
 `LaunchSubmissionState` distinguishes `reserved`, `submitting`, `accepted`, `rejected`, and `ambiguous`. A nonzero
 `wt.exe` result is a definite rejection; timeout, interrupted wait, or other uncertain submission is ambiguous. A

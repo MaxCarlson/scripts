@@ -94,3 +94,15 @@ No launch plan was submitted and no pane geometry was observed. No `agent_contin
 - No live Windows Terminal GUI test was added because this correction batch changes managed lifecycle/storage and relay
   semantics only. The already accepted named-window PowerShell qualification remains the desktop evidence; independent
   GUI review of this final correction SHA is still required before integration/merge.
+
+## Relay caller identity tightening (2026-11-27)
+
+- `claim_pane`, start/spawn-failure/exit receipts, interruption delivery, interruption finalization, and the deprecated
+  delivery wrapper now require the actual calling process to match the stored relay PID and creation FILETIME. The
+  deprecated `record_failure()` wrapper can only mark a pane claimed by its current owner; reserved panes cannot be
+  failed by an unrelated caller.
+- Regression covers supplying the correct stored relay identity from a different caller, including the compatibility
+  delivery wrapper, and checks the receipt/failure entry points for the same spoofing bypass.
+- Validation: Terminal Launcher `78 passed`, Ruff clean; wheel install smoke remains to be repeated on this exact
+  correction revision. The feature worktree is ready for a refreshed-main integration candidate; no dispatcher files
+  have been modified.

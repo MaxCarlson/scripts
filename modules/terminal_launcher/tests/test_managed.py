@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -60,6 +61,9 @@ def test_legacy_keyword_receipt_and_failure_methods_remain_available(tmp_path):
         launch_id="legacy", pane_id="legacy:0:0", window_id="window", tab_index=0,
         pane_index=0, requested_layout="single",
     )
+    relay_pid = os.getpid()
+    claim = store.claim_pane("legacy", "legacy:0:0", relay_pid=relay_pid, relay_process_created=123)
+    assert claim is not None
     store.record_failure(pane_id="legacy:0:0", failure_code="child_spawn_failed")
     store.register_submission(
         launch_id="legacy", pane_id="legacy:0:1", window_id="window", tab_index=0,
@@ -110,7 +114,7 @@ def test_graceful_shutdown_is_requested_for_exact_owned_process_only(tmp_path):
         requested_layout="two-column",
     )
     store.record_started(
-        "launch-3:0:1", pid=234, process_created=456, relay_pid=999, relay_process_created=456
+        "launch-3:0:1", pid=234, process_created=456, relay_pid=os.getpid(), relay_process_created=456
     )
 
     result = store.request_graceful_shutdown("launch-3:0:1")
@@ -136,7 +140,7 @@ def test_relay_consumes_shutdown_request_with_owned_process_group(tmp_path):
         requested_layout="single",
     )
     store.record_started(
-        "launch-3b:0:0", pid=345, process_created=456, relay_pid=999, relay_process_created=456
+        "launch-3b:0:0", pid=345, process_created=456, relay_pid=os.getpid(), relay_process_created=456
     )
     store.request_graceful_shutdown("launch-3b:0:0")
     signals = []
