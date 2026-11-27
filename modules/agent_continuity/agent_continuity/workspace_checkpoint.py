@@ -189,6 +189,9 @@ class WorkspaceSlotInput:
     worktree: WorkspaceWorktreeEvidence | None = None
     requested_topology: WorkspaceTopologyRequest | None = None
     metadata: WorkspaceSlotMetadata = field(default_factory=WorkspaceSlotMetadata)
+    pending_launch_id: str | None = None
+    pending_provider: str | None = None
+    authorization_valid: bool = True
 
     def session_key(self) -> SessionKey:
         return SessionKey(
@@ -949,6 +952,18 @@ def revalidate_checkpoint(
                     or current_slot.environment_id != entry.environment_id
                 ):
                     reasons.append("stale_session_superseded")
+                if current_slot.pending_launch_id or current_slot.pending_provider:
+                    reasons.append("stale_pending_transition")
+                if current_slot.lifecycle_state in {"completed", "abandoned"}:
+                    reasons.append("stale_lifecycle_terminal")
+                if (
+                    entry.metadata.profile_revision is not None
+                    and current_slot.metadata.profile_revision is not None
+                    and current_slot.metadata.profile_revision != entry.metadata.profile_revision
+                ):
+                    reasons.append("stale_profile_revision_changed")
+                if not current_slot.authorization_valid:
+                    reasons.append("authorization_revoked")
                 if (
                     entry.worktree.git_commit
                     and current_slot.worktree is not None
@@ -1024,6 +1039,10 @@ def revalidate_checkpoint(
             "stale_session_superseded",
             "stale_worktree_missing",
             "stale_worktree_changed",
+            "stale_pending_transition",
+            "stale_lifecycle_terminal",
+            "stale_profile_revision_changed",
+            "authorization_revoked",
             "reserved_unconfirmed",
             "identity_conflict",
             "evidence_conflict",

@@ -9,6 +9,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from terminal_launcher.backend import LaunchResult, LaunchStatus, TerminalLaunchPlan
 from terminal_launcher.managed import (
     LaunchSubmissionState,
@@ -20,6 +21,7 @@ from terminal_launcher.managed import (
 )
 
 from agent_continuity.dispatcher import DispatcherService
+from agent_continuity.environment import detect_runtime_kind
 from agent_continuity.runtime_discovery import (
     EvidenceAvailability,
     ProcessInventory,
@@ -31,10 +33,12 @@ from agent_continuity.workspace_adapters import (
     DispatcherSlotExecutionGuard,
     DispatcherWorkspaceAdapter,
     TerminalLauncherRestoreAdapter,
+    is_managed_terminal_available,
 )
 from agent_continuity.workspace_checkpoint import (
     CheckpointStore,
     WorkspaceSlotInput,
+    WorkspaceTopologyRequest,
 )
 from agent_continuity.workspace_cli import (
     handle_checkpoints,
@@ -43,7 +47,10 @@ from agent_continuity.workspace_cli import (
     handle_save,
     register_workspace_subcommands,
 )
-from agent_continuity.workspace_lifecycle import TopologyRestorer
+from agent_continuity.workspace_lifecycle import (
+    RestoreLaunchRequest,
+    TopologyRestorer,
+)
 
 
 class _StaticEnumerator:
@@ -157,7 +164,7 @@ def test_e2e_save_restart_restore_with_real_dispatcher_and_terminal_launcher(tmp
     receipt_src = adapter.build_receipt_source(tl_store)
     obs_before = RuntimeDiscovery(
         environment_id=ids["env_id"],
-        runtime_kind="local",
+        runtime_kind=detect_runtime_kind(),
         process_enumerator=_StaticEnumerator(
             (
                 ProcessRecord(
@@ -215,7 +222,7 @@ def test_e2e_save_restart_restore_with_real_dispatcher_and_terminal_launcher(tmp
     )
     obs_after = RuntimeDiscovery(
         environment_id=ids["env_id"],
-        runtime_kind="local",
+        runtime_kind=detect_runtime_kind(),
         process_enumerator=_StaticEnumerator(()),
         managed_receipt_source=DispatcherWorkspaceAdapter(fresh_dispatcher).build_receipt_source(fresh_tl_store),
     )
@@ -246,36 +253,55 @@ def test_e2e_save_restart_restore_with_real_dispatcher_and_terminal_launcher(tmp
             raise NotImplementedError
 
         def launch(self, plan: TerminalLaunchPlan) -> LaunchResult:
-            argv = plan.tabs[0].panes[0].argv
-            if argv[0] == "codex":
-                # Simulate relay acknowledging spawn in fresh_tl_store
-                recs = fresh_tl_store.enumerate_processes()
-                latest = recs[-1]
-                claim_tok = fresh_tl_store.claim_pane(
-                    latest.launch_id, latest.pane_id, relay_pid=relay_pid, relay_process_created=ft
-                )
-                assert claim_tok is not None
-                fresh_tl_store.record_started(
-                    latest.launch_id,
-                    latest.pane_id,
-                    claim_token=claim_tok,
-                    pid=2001,
-                    process_created=ft,
-                    relay_pid=relay_pid,
-                    relay_process_created=ft,
-                )
+            recs = [r for r in fresh_tl_store.enumerate_processes() if r.state.value == "reserved"]
+            for tab_idx, tab in enumerate(plan.tabs):
+                for pane_idx, pane in enumerate(tab.panes):
+                    if pane.argv[0] == "codex":
+                        target = next(
+                            (r for r in recs if r.requested_tab_index == tab_idx and r.requested_pane_index == pane_idx),
+                            None,
+                        )
+                        if target is not None:
+                            claim_tok = fresh_tl_store.claim_pane(
+                                target.launch_id, target.pane_id, relay_pid=relay_pid, relay_process_created=ft
+                            )
+                            assert claim_tok is not None
+                            fresh_tl_store.record_started(
+                                target.launch_id,
+                                target.pane_id,
+                                claim_token=claim_tok,
+                                pid=2001,
+                                process_created=ft,
+                                relay_pid=relay_pid,
+                                relay_process_created=ft,
+                            )
             return LaunchResult(status=LaunchStatus.SUBMITTED, backend="fake-wt")
 
-    launcher = TerminalLauncherRestoreAdapter(backend=_FakeBackend(), managed_store=fresh_tl_store)
+    launcher = TerminalLauncherRestoreAdapter(
+        backend=_FakeBackend(),
+        managed_store=fresh_tl_store,
+        home_dir=home_dir,
+        command_builder=type(
+            "_CmdBuilder",
+            (),
+            {
+                "build_pane_command": staticmethod(
+                    lambda req: (req.provider, "--session", req.native_session_id)
+                )
+            },
+        )(),
+    )
     buf = io.StringIO()
-    assert handle_restore(
+    restore_rc = handle_restore(
         parser.parse_args(["restore", "-c", chk_id, "-a", "-o", "op_e2e", "-j"]),
         dispatcher=fresh_dispatcher,
         launcher=launcher,
         managed_store=fresh_tl_store,
         observers=obs_after,
         stream=buf,
-    ) == 0
+    )
+    # Partial/unconfirmed outcome returns nonzero exit code 2
+    assert restore_rc == 2
     restore_json = json.loads(buf.getvalue())
     outcomes = {item["slot_id"]: item for item in restore_json["report"]["outcomes"]}
     assert outcomes[ids["codex_slot"]]["status"] == "restored"
@@ -285,7 +311,7 @@ def test_e2e_save_restart_restore_with_real_dispatcher_and_terminal_launcher(tmp
     assert outcomes[ids["agy_slot"]]["spawn_confirmed"] is False
     assert outcomes[ids["claude_slot"]]["status"] == "skipped"
 
-    # Queue inspection shows AGY as AMBIGUOUS and reserved Claude as PENDING; operator can resolve AGY
+    # Queue inspection shows AGY as AMBIGUOUS and reserved Claude as PENDING; operator can resolve AGY with -a
     buf = io.StringIO()
     assert handle_queue(parser.parse_args(["queue", "list", "-u", "-j"]), dispatcher=fresh_dispatcher, stream=buf) == 0
     unresolved = json.loads(buf.getvalue())["entries"]
@@ -293,9 +319,18 @@ def test_e2e_save_restart_restore_with_real_dispatcher_and_terminal_launcher(tmp
     agy_entry = next(e for e in unresolved if e["status"] == "ambiguous")
     agy_entry_id = agy_entry["queue_entry_id"]
 
+    # Without -a, queue resolve is preview-only
     buf = io.StringIO()
     assert handle_queue(
-        parser.parse_args(["queue", "resolve", "-e", agy_entry_id, "-O", "completed", "-r", "verified_manually", "-j"]),
+        parser.parse_args(["queue", "resolve", "-e", agy_entry_id, "-O", "completed", "-j"]),
+        dispatcher=fresh_dispatcher,
+        stream=buf,
+    ) == 0
+    assert json.loads(buf.getvalue())["mode"] == "preview"
+
+    buf = io.StringIO()
+    assert handle_queue(
+        parser.parse_args(["queue", "resolve", "-e", agy_entry_id, "-O", "completed", "-r", "verified_manually", "-a", "-j"]),
         dispatcher=fresh_dispatcher,
         stream=buf,
     ) == 0
@@ -392,3 +427,252 @@ def test_dispatcher_slot_execution_guard_cross_instance_exclusion(tmp_path: Path
     lease_b2 = guard_b.acquire_slot("slot_x", operator_id="op_b", checkpoint_id="chk_2", queue_entry_id="rq_2")
     assert lease_b2.acquired is True
     guard_b.release_slot(lease_b2)
+
+
+def test_real_managed_relay_grouped_restoration_and_failure_modes(tmp_path: Path) -> None:
+    """Exercise real WindowsTerminalBackend.launch_managed + real _managed_relay with harmless Python children."""
+    import subprocess
+    import sys
+
+    from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
+
+    home_dir = tmp_path / "llmd_home"
+    work_dir = tmp_path / "repo"
+    work_dir.mkdir()
+    dispatcher, ids = _seed_dispatcher_with_mixed_sessions(home_dir, work_dir, work_dir)
+
+    ft = 134000000000000000
+    obs_run = RuntimeDiscovery(
+        environment_id=ids["env_id"],
+        runtime_kind=detect_runtime_kind(),
+        process_enumerator=_StaticEnumerator(
+            (
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(5001, ft),
+                    parent_pid=500,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", ids["codex_sid"]),
+                ),
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(5002, ft),
+                    parent_pid=500,
+                    image_name="agy.exe",
+                    argv=("agy", "--conversation", ids["agy_sid"]),
+                ),
+            )
+        ),
+    )
+    slot_a = WorkspaceSlotInput(
+        slot_id=ids["codex_slot"],
+        gui_id="gui_alpha",
+        gui_alias="GUI-Alpha",
+        provider="codex",
+        native_session_id=ids["codex_sid"],
+        environment_id=ids["env_id"],
+        runtime_kind=detect_runtime_kind(),
+        worktree=DispatcherWorkspaceAdapter(dispatcher).slot_provider(ids["codex_slot"]).worktree,  # type: ignore[union-attr]
+        requested_topology=WorkspaceTopologyRequest(
+            target_window="win-grouped",
+            requested_tab_index=0,
+            requested_pane_index=0,
+            requested_layout="two-column",
+        ),
+    )
+    slot_b = WorkspaceSlotInput(
+        slot_id=ids["agy_slot"],
+        gui_id="gui_alpha",
+        gui_alias="GUI-Alpha",
+        provider="agy",
+        native_session_id=ids["agy_sid"],
+        environment_id=ids["env_id"],
+        runtime_kind=detect_runtime_kind(),
+        worktree=DispatcherWorkspaceAdapter(dispatcher).slot_provider(ids["agy_slot"]).worktree,  # type: ignore[union-attr]
+        requested_topology=WorkspaceTopologyRequest(
+            target_window="win-grouped",
+            requested_tab_index=0,
+            requested_pane_index=1,
+            requested_layout="two-column",
+        ),
+    )
+    chk = CheckpointStore(tmp_path / "state").create_checkpoint([slot_a, slot_b], observers=obs_run)
+
+    tl_store = ManagedProcessStore(tmp_path / "managed_real.sqlite3")
+    spawned_relays: list[subprocess.Popen[str]] = []
+
+    def _harmless_relay_runner(cmd: list[str], **_kwargs):
+        # Extract the real _pane_runner.py relay invocations embedded in wt.exe args
+        # and launch them directly as harmless local subprocesses running `python -c "import time; time.sleep(0.2)"`
+        modules_root = str(Path(__file__).resolve().parents[2])
+        idx = 0
+        while idx < len(cmd):
+            if cmd[idx].endswith("_pane_runner.py") and idx + 1 < len(cmd):
+                relay_cmd = [cmd[idx - 1], cmd[idx], cmd[idx + 1]]
+                proc = subprocess.Popen(
+                    relay_cmd,
+                    text=True,
+                    env={**os.environ, "PYTHONPATH": modules_root},
+                )
+                spawned_relays.append(proc)
+                idx += 2
+            else:
+                idx += 1
+        assert len(spawned_relays) == 2
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    backend = WindowsTerminalBackend(runner=_harmless_relay_runner)
+
+    class _HarmlessCmdBuilder:
+        def build_pane_command(self, request: RestoreLaunchRequest) -> tuple[str, ...]:
+            return (sys.executable, "-c", "import time; time.sleep(0.2)")
+
+    launcher = TerminalLauncherRestoreAdapter(
+        backend=backend,
+        managed_store=tl_store,
+        command_builder=_HarmlessCmdBuilder(),
+        startup_timeout=5.0,
+    )
+    obs_after = RuntimeDiscovery(environment_id=ids["env_id"], runtime_kind=detect_runtime_kind(), process_enumerator=_StaticEnumerator(()))
+    restorer = TopologyRestorer()
+    plan = restorer.preview_restore(chk, current_slots=[slot_a, slot_b], observers=obs_after)
+    report = restorer.execute_restore(
+        plan,
+        authorized=True,
+        operator_id="op_real_relay",
+        launcher=launcher,
+        checkpoint=chk,
+        receipt_store=tl_store,
+        slot_guard=DispatcherSlotExecutionGuard(home_dir),
+        current_slots=[slot_a, slot_b],
+        observers=obs_after,
+    )
+    for proc in spawned_relays:
+        proc.wait(timeout=5.0)
+
+    assert report.partial_failure is False
+    by_slot = {o.slot_id: o for o in report.outcomes}
+    assert by_slot[ids["codex_slot"]].status == "restored"
+    assert by_slot[ids["codex_slot"]].spawn_confirmed is True
+    assert by_slot[ids["codex_slot"]].observed_receipt is not None
+    assert by_slot[ids["agy_slot"]].status == "restored"
+    assert by_slot[ids["agy_slot"]].spawn_confirmed is True
+    # Both panes share the same grouped launch_id
+    assert by_slot[ids["codex_slot"]].observed_receipt.launch_id == by_slot[ids["agy_slot"]].observed_receipt.launch_id  # type: ignore[union-attr]
+
+
+def test_adapter_safety_floor_011_gui_scope_and_queue_recovery_gates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    home_dir = tmp_path / "llmd_home"
+    work_a = tmp_path / "repo_a"
+    work_b = tmp_path / "repo_b"
+    work_a.mkdir()
+    work_b.mkdir()
+    dispatcher, ids = _seed_dispatcher_with_mixed_sessions(home_dir, work_a, work_b)
+
+    # 1. Exact identity correlation & no pane_id inference from launch_id
+    dispatcher.record_terminal_launch(
+        {
+            "launch_id": "tl_no_pane",
+            "terminal_session_id": "0199c03e-319b-44f8-8fd5-a35eaaf0fee7",
+            "launch_started_at": "2026-11-27T17:00:00.000000Z",
+            "status": "launching",
+            "slot_id": ids["codex_slot"],
+            "gui_id": "gui_alpha",
+            "provider": "codex",
+            "native_session_id": ids["codex_sid"],
+            "environment_id": ids["env_id"],
+            "settings": {"model": "gpt-5"},
+        }
+    )
+    adapter = DispatcherWorkspaceAdapter(dispatcher)
+    # Without explicit pane_id, associations_for_session must return empty (never infer from launch_id)
+    from agent_continuity.runtime_discovery import SessionKey
+
+    assert adapter.associations_for_session(
+        SessionKey(provider="codex", native_session_id=ids["codex_sid"], environment_id=ids["env_id"], runtime_kind="local")
+    ) == ()
+    # Unknown environment_id returns "unknown" (never guesses from prefix)
+    assert adapter._resolve_runtime_kind("env_wsl_fake_prefix") == "unknown"
+
+    # 2. GUI-scoped restore excludes other GUIs from execution
+    ft = 134000000000000000
+    obs_run = RuntimeDiscovery(
+        environment_id=ids["env_id"],
+        runtime_kind=detect_runtime_kind(),
+        process_enumerator=_StaticEnumerator(
+            (
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(6001, ft),
+                    parent_pid=500,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", ids["codex_sid"]),
+                ),
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(6002, ft),
+                    parent_pid=500,
+                    image_name="claude.exe",
+                    argv=("claude", "--resume", ids["claude_sid"]),
+                ),
+            )
+        ),
+    )
+    slots = adapter.list_candidate_slots()
+    chk = CheckpointStore(home_dir / "workspace_state").create_checkpoint(slots, observers=obs_run)
+
+    class _CountingLauncher:
+        def __init__(self) -> None:
+            self.launched: list[str] = []
+
+        def launch_session(self, request: RestoreLaunchRequest):
+            from agent_continuity.workspace_lifecycle import RestoreLaunchOutcome
+
+            self.launched.append(request.slot_id)
+            return RestoreLaunchOutcome(accepted=True, launch_id="tl_g", pane_id="p_g", spawn_confirmed=True)
+
+    obs_after = RuntimeDiscovery(environment_id=ids["env_id"], runtime_kind=detect_runtime_kind(), process_enumerator=_StaticEnumerator(()))
+    parser = argparse.ArgumentParser(prog="llmd")
+    register_workspace_subcommands(parser.add_subparsers(dest="command"))
+    launcher = _CountingLauncher()
+    buf = io.StringIO()
+    assert handle_restore(
+        parser.parse_args(["restore", "-c", chk.checkpoint_id, "-g", "GUI-Alpha", "-a", "-j"]),
+        dispatcher=dispatcher,
+        launcher=launcher,
+        observers=obs_after,
+        stream=buf,
+    ) == 0
+    assert launcher.launched == [ids["codex_slot"]]
+
+    # 3. Queue recover refuses without --verified-abandoned
+    from agent_continuity.errors import ContinuityError
+    from agent_continuity.restoration_queue import RestorationQueue
+
+    q = RestorationQueue(home_dir / "workspace_state")
+    q.enqueue_checkpoint(chk)
+    e_id = q.list_entries()[0].queue_entry_id
+    q.claim(e_id, operator_id="op_live")
+    with pytest.raises(ContinuityError, match="abandonment"):
+        handle_queue(
+            parser.parse_args(["queue", "recover", "-e", e_id, "-a", "-j"]),
+            dispatcher=dispatcher,
+            stream=io.StringIO(),
+        )
+
+    # 4. Terminal Launcher 0.1.1 floor (no terminal_launcher.managed) still supports inspection & manual workflows
+    monkeypatch.setitem(sys.modules, "terminal_launcher.managed", None)
+    assert is_managed_terminal_available() is False
+    buf = io.StringIO()
+    assert handle_checkpoints(
+        parser.parse_args(["checkpoints", "list", "-j"]), dispatcher=dispatcher, stream=buf
+    ) == 0
+    assert json.loads(buf.getvalue())["managed_terminal_available"] is False
+    buf = io.StringIO()
+    assert handle_restore(
+        parser.parse_args(["restore", "-c", chk.checkpoint_id, "-m", "-j"]),
+        dispatcher=dispatcher,
+        observers=obs_after,
+        stream=buf,
+    ) == 0
+    assert json.loads(buf.getvalue())["managed_terminal_available"] is False

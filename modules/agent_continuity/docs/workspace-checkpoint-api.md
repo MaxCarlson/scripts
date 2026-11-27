@@ -7,7 +7,7 @@ This document defines the Agent #3-owned workspace checkpoint, shared restoratio
 - [`agent_continuity.workspace_checkpoint`](../agent_continuity/workspace_checkpoint.py) (LLMD-42)
 - [`agent_continuity.restoration_queue`](../agent_continuity/restoration_queue.py) (LLMD-43)
 - [`agent_continuity.workspace_lifecycle`](../agent_continuity/workspace_lifecycle.py) (LLMD-44, LLMD-45, and `WorkspaceCheckpointCoordinator`)
-- [`agent_continuity.workspace_adapters`](../agent_continuity/workspace_adapters.py) (`DispatcherWorkspaceAdapter`, `DispatcherSlotExecutionGuard`, `TerminalLauncherRestoreAdapter`, `build_manual_restore_command`)
+- [`agent_continuity.workspace_adapters`](../agent_continuity/workspace_adapters.py) (`DispatcherWorkspaceAdapter`, `DispatcherSlotExecutionGuard`, `TerminalLauncherRestoreAdapter`, `DispatcherLaunchCommandBuilder`, `canonical_llmd_pane_command`, `build_manual_restore_command`, `is_managed_terminal_available`)
 - [`agent_continuity.workspace_cli`](../agent_continuity/workspace_cli.py) (`handle_save`, `handle_restore`, `handle_checkpoints`, `handle_queue`, `register_workspace_subcommands`)
 
 ## Agent #1 Integration Guide
@@ -15,38 +15,43 @@ This document defines the Agent #3-owned workspace checkpoint, shared restoratio
 ### 1. Parser Registration (`dispatcher_cli.py`)
 Call `register_workspace_subcommands(subparsers)` on `llmd`'s `subparsers` to register:
 - `llmd save [-H HOME] [-g GUI] [-l LABEL] [-s] [-t TIMEOUT] [-d] [-a] [-j]`
-- `llmd restore [-H HOME] [-g GUI] [-c CHECKPOINT] [-o OPERATOR] [-m] [-d] [-a] [--allow-unmanaged-unknown] [--allow-reserved-claude] [-j]`
+- `llmd restore [-H HOME] [-g GUI] [-c CHECKPOINT] [-o OPERATOR] [-m] [-N] [-d] [-a] [--allow-unmanaged-unknown] [--allow-reserved-claude] [-j]`
 - `llmd checkpoints [list|show] [-H HOME] [-c CHECKPOINT] [-j]`
-- `llmd queue [list|recover|resolve|cancel|reconcile] [-H HOME] [-c CHECKPOINT] [-e ENTRY] [-o OPERATOR] [-r REASON] [-O completed|failed|cancelled] [-u] [-j]`
+- `llmd queue [list|recover|resolve|cancel|reconcile] [-H HOME] [-c CHECKPOINT] [-e ENTRY] [-o OPERATOR] [-r REASON] [-O completed|failed|cancelled] [-u] [-d] [-a] [--verified-abandoned] [--abandoned-reason NOTE] [-j]`
 
 Note: Add `save`, `restore`, `checkpoints`, `queue` to `modules/scripts_help/scripts_help/registry/registry.py` when wiring into `llmd` CLI.
 
-### 2. Constructor Dependencies & Wiring
-```python
-from agent_continuity.workspace_adapters import (
-    DispatcherSlotExecutionGuard,
-    DispatcherWorkspaceAdapter,
-    TerminalLauncherRestoreAdapter,
-)
-from agent_continuity.workspace_cli import handle_checkpoints, handle_queue, handle_restore, handle_save
-```
-- **Dispatcher adapter**: `adapter = DispatcherWorkspaceAdapter(dispatcher)` supplies `list_candidate_slots(...)`, `slot_provider(slot_id)` (using `get_slot_by_id`), and `associations_for_session(key)` (joining `list_recent_terminal_launches`).
-- **Slot-wide exclusion**: `guard = DispatcherSlotExecutionGuard(dispatcher.home_dir)` acquires non-blocking per-slot locks under `<home_dir>/locks/slot_<slot_id>.lock`. Agent #1 should also acquire this same lock (or integrate it with `_mutation_lock`) in `start`/`continue`/`switch`/`review`/`return` to exclude ordinary LLMD resume operations during restoration.
-- **Terminal Launcher integration (optional 0.2.0)**:
-  - `agent-continuity` retains `terminal-launcher>=0.1.1,<0.3`.
-  - When Terminal Launcher 0.2.0 is installed, construct `ManagedProcessStore()` and `TerminalLauncherRestoreAdapter(backend=WindowsTerminalBackend(), managed_store=managed_store)` for `handle_restore(..., launcher=launcher, managed_store=managed_store)`.
-  - Pass `managed_store` to `handle_save(..., managed_store=managed_store)` for bounded owned-session shutdown (`-s -a`).
-  - When Terminal Launcher 0.2.0 is absent or sessions are unmanaged, `handle_restore -m` (`--manual`) emits exact provider resume commands (`build_manual_restore_command`).
+### 2. Constructor Dependencies & Canonical Execution Path
+- **Dispatcher adapter**: `adapter = DispatcherWorkspaceAdapter(dispatcher)`
+  - Resolves `runtime_kind` from `dispatcher.materializer.list_environments()` (never from `env_wsl_` naming prefixes; returns `"unknown"` if missing).
+  - Correlates `launch_settings` and `worktree` by exact `(slot_id, provider, native_session_id, environment_id)` identity.
+  - Requires explicit `pane_id` in `associations_for_session` (never infers `pane_id` from `launch_id`).
+  - Surfaces `pending_launch_id`, `pending_provider`, `lifecycle_state`, `profile_revision`, and `authorization_valid` so `revalidate_checkpoint` blocks pending transitions, terminal slots, profile drift, and revoked authorizations.
+- **Canonical LLMD-managed execution (`DispatcherLaunchCommandBuilder`)**:
+  - Implement `build_pane_command(request: RestoreLaunchRequest) -> tuple[str, ...]` (or rely on `canonical_llmd_pane_command` which emits `python -m agent_continuity pane-run -H <home> -s <slot_id>`).
+  - `TerminalLauncherRestoreAdapter` groups eligible requests by `(target_window, requested_tab_index)` (with deterministic `<=2`-pane fallback when tab/pane indices are absent, flagging `geometry_fallback_used=True`) and submits via `WindowsTerminalBackend.launch_managed`.
+  - `build_manual_restore_command` prefers canonical `llmd continue -g <gui> <slot_id>` (with `-N/--direct-native` available for direct provider fallback).
+- **Terminal Launcher dependency floor (`>=0.1.1,<0.3`)**:
+  - All `terminal_launcher.managed` and `launch_managed` imports are isolated behind `is_managed_terminal_available()`. Inspection (`checkpoints`, `queue`) and manual (`restore -m`) workflows operate cleanly on `0.1.1` without `0.2.0`.
 
-### 3. Guard, Receipt, and Durability Invariants
-- **Preview vs. execution**: `preview_save`, `preview_restore`, `checkpoints`, and `queue list` perform zero persistent mutations even with populated queues, unapplied log events, and interrupted tails. Preview availability of a `SlotExecutionGuard` never implies an acquired lease; entries needing guarded verification surface as `conditional_restore`.
-- **Execution-boundary revalidation**: `TopologyRestorer.execute_restore` fails closed if `checkpoint` or `slot_guard` is missing (`require_slot_guard=True`), acquires `RestorationQueue` claim + `SlotExecutionGuard` lease, then obtains fresh `slot_provider(slot_id)` and fresh `RuntimeDiscovery` evidence under the guard.
-- **Partial-enumeration safety on Windows**: Absence of a managed receipt never implies verified exit. `partial_enum_safe_via_guard_and_receipts` requires both an acquired `SlotExecutionGuard` and a correlated exited receipt in `obs.historical_managed_panes`. Unmanaged sessions under partial enumeration remain blocked (`unmanaged_partial_enum_unverified`) until the operator passes `--allow-unmanaged-unknown` (`allow_unknown_runtime=True`).
-- **Launch acceptance vs. spawn confirmation**: `TerminalLauncherRestoreAdapter` sets `accepted=True` on backend submission and `spawn_confirmed=True` only when `ManagedProcessRecord.spawn_acknowledged` is `True`. Unconfirmed launches transition the queue entry to `AMBIGUOUS` (`accepted_unconfirmed`) rather than `COMPLETED`.
-- **Queue `fsync` & uncertainty quarantine**: Failed `fsync` or rollback marks `.restoration_queue.uncertain` and blocks further queue mutations until `llmd queue reconcile` (`queue.reconcile()`).
-- **Shutdown semantics**: `OwnedShutdownCoordinator` restricts targets strictly to the persisted checkpoint's exact identities, revalidates PID/creation-time immediately before signaling and during polling, and never claims `provider_exit_verified` or `provider_metadata_finalized` solely from an interrupt receipt.
+### 3. Lock Acquisition Order & Ownership Transfer Protocol
+1. `RestorationQueue.claim` (`.restoration_queue.lock`) — atomically claims `(checkpoint_id, slot_id)` and enforces cross-checkpoint slot exclusion.
+2. `DispatcherSlotExecutionGuard.acquire_slot` (`<home_dir>/locks/slot_<slot_id>.lock`) — acquires cooperating cross-process slot lock. Agent #1 should acquire this same lock in `start`/`continue`/`switch`/`review`/`return`.
+3. Fresh under-guard revalidation — `slot_provider(slot_id)` + fresh `RuntimeDiscovery` (`snapshots=None`) + `authorization_check`.
+4. `RestorationQueue.mark_launching` — durably records `LAUNCHING` before invoking `launcher`.
+5. `TerminalLauncherRestoreAdapter.launch_grouped` / `WindowsTerminalBackend.launch_managed` — reserves panes (`ManagedProcessStore.reserve_launch`), submits to terminal, and awaits relay `_pane_runner.py` acknowledgment (`spawn_acknowledged=True`).
+6. `RestorationQueue.complete` (only when `spawn_confirmed=True`), `record_failure` (positive rejection), or `mark_ambiguous` (`LaunchStatus.AMBIGUOUS`, backend exception, or accepted-without-spawn).
+7. Release `SlotExecutionGuard` leases in `finally` after durable outcomes are recorded.
 
-### 4. Outstanding Shared-Schema / Agent #1 Items
-- **v2.3.0 (`8892e900`)**: `DispatcherWorkspaceAdapter` already reads `workflow_type`, `profile_id`, `profile_revision`, and `agent_number` from slot dicts when present; once v2.3.0 is merged, those fields flow into checkpoints automatically.
-- **Claude `SessionStore`**: Until Agent #1 supplies a verified Claude transcript `SessionStore` to `RuntimeDiscovery`, Claude `--session-id` entries remain `reserved_unconfirmed` and require `--allow-reserved-claude` to restore.
-- **Window/pane geometry**: Never inferred; exact UI pane geometry/closure remains gated on Terminal Launcher managed receipts.
+### 4. CLI Exit Status & Recovery Safeguards
+- `handle_save -s -a` returns exit code `2` if any target fails/times out/is refused.
+- `handle_restore -a` constrains execution strictly to `-g/--gui` when supplied, and returns exit code `2` on any `failed`, `ambiguous`, or `accepted_unconfirmed` outcome.
+- `handle_queue` requires `-a/--apply` for `recover`, `resolve`, `cancel`, and `reconcile`; `recover` refuses without `--verified-abandoned` or an `abandonment_verifier` callback.
+- Failed `fsync` or rollback marks `.restoration_queue.uncertain` and blocks further mutations until `llmd queue reconcile -a`.
+
+### 5. Outstanding Shared-Schema / Agent #1 Items
+- **Parser & help registry**: Wire `register_workspace_subcommands` in `dispatcher_cli.py` and register commands in `scripts_help`.
+- **Dispatcher slot lock integration**: Acquire `<home_dir>/locks/slot_<slot_id>.lock` (or share `_mutation_lock`) in ordinary `llmd` launch/resume commands.
+- **v2.3.0 (`8892e900`)**: `DispatcherWorkspaceAdapter` already reads `workflow_type`, `profile_id`, `profile_revision`, and `agent_number` from slot dicts when present.
+- **Claude `SessionStore`**: Until supplied, Claude `--session-id` remains `reserved_unconfirmed` and requires `--allow-reserved-claude`.
+- **Window/pane geometry**: Never inferred; unsupported geometry uses deterministic fallback (`geometry_fallback_used=True`).

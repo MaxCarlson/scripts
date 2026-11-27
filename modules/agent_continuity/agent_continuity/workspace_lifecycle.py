@@ -763,12 +763,22 @@ class RestoreLaunchOutcome:
     spawn_confirmed: bool | None = None
     association_confirmed: bool = False
     resumability_confirmed: bool = False
+    submission_ambiguous: bool = False
+    geometry_fallback_used: bool = False
 
 
 class SessionLauncher(Protocol):
     """Pluggable session-restoration launcher owned by dispatcher/CLI integration."""
 
     def launch_session(self, request: RestoreLaunchRequest) -> RestoreLaunchOutcome: ...
+
+
+class GroupedSessionLauncher(SessionLauncher, Protocol):
+    """Optional grouped-topology launcher preserving window/tab/pane grouping."""
+
+    def launch_grouped(
+        self, requests: Sequence[RestoreLaunchRequest]
+    ) -> Mapping[str, RestoreLaunchOutcome]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -788,6 +798,7 @@ class RestorePlanItem:
     requested_topology: WorkspaceTopologyRequest | None
     metadata: WorkspaceSlotMetadata
     queue_entry_id: str | None = None
+    gui_alias: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -875,6 +886,7 @@ class RestoreItemOutcome:
     spawn_confirmed: bool = False
     association_confirmed: bool = False
     resumability_confirmed: bool = False
+    geometry_fallback_used: bool = False
     requested_topology: WorkspaceTopologyRequest | None = None
     observed_receipt: ObservedLaunchReceipt | None = None
 
@@ -888,6 +900,7 @@ class RestoreItemOutcome:
             "spawn_confirmed": self.spawn_confirmed,
             "association_confirmed": self.association_confirmed,
             "resumability_confirmed": self.resumability_confirmed,
+            "geometry_fallback_used": self.geometry_fallback_used,
             "requested_topology": self.requested_topology.to_dict() if self.requested_topology else None,
             "observed_receipt": self.observed_receipt.to_dict() if self.observed_receipt else None,
         }
@@ -918,6 +931,19 @@ class RestoreReport:
         }
 
 
+def _matches_gui_scope(
+    gui_id: str,
+    gui_alias: str | None,
+    gui_scope: str | None,
+) -> bool:
+    if gui_scope is None:
+        return True
+    target = gui_scope.strip().casefold()
+    if gui_id.strip().casefold() == target:
+        return True
+    return bool(gui_alias and gui_alias.strip().casefold() == target)
+
+
 class TopologyRestorer:
     """LLMD-44 operator-authorized topology and session restoration component."""
 
@@ -933,6 +959,7 @@ class TopologyRestorer:
         allow_reserved_claude: bool = False,
         allow_unknown_runtime: bool = False,
         has_slot_exclusion: bool = False,
+        gui_scope: str | None = None,
     ) -> RestorePlan:
         """Revalidate a checkpoint and produce a read-only restoration plan."""
         reval = revalidate_checkpoint(
@@ -955,8 +982,12 @@ class TopologyRestorer:
             rev = reval_by_slot[entry.slot_id]
             q_entry = queue_by_slot.get(entry.slot_id)
             reasons = list(rev.reasons)
+            effective_gui_id = rev.current_gui_id or entry.gui_id
 
-            if q_entry is not None and q_entry.status in {QueueEntryStatus.COMPLETED, QueueEntryStatus.CANCELLED}:
+            if not _matches_gui_scope(effective_gui_id, entry.gui_alias, gui_scope):
+                action = "skip_gui_scope"
+                reasons.append("gui_scope_excluded")
+            elif q_entry is not None and q_entry.status in {QueueEntryStatus.COMPLETED, QueueEntryStatus.CANCELLED}:
                 action = f"skip_{q_entry.status.value}"
                 reasons.append(f"queue_{q_entry.status.value}")
             elif q_entry is not None and q_entry.status in {QueueEntryStatus.CLAIMED, QueueEntryStatus.LAUNCHING}:
@@ -1010,6 +1041,7 @@ class TopologyRestorer:
                     requested_topology=entry.requested_topology,
                     metadata=entry.metadata,
                     queue_entry_id=q_entry.queue_entry_id if q_entry else None,
+                    gui_alias=entry.gui_alias,
                 )
             )
 
@@ -1042,6 +1074,7 @@ class TopologyRestorer:
         path_exists: Callable[[str], bool] | None = None,
         allow_unknown_runtime: bool = False,
         allow_reserved_claude: bool = False,
+        gui_scope: str | None = None,
     ) -> RestoreReport:
         """Execute an authorized restore plan with execution-boundary revalidation and durable recovery."""
         if not authorized:
@@ -1074,9 +1107,122 @@ class TopologyRestorer:
         any_uncertain_or_failed = False
         any_succeeded = False
 
+        # Collect validated, claimed, guarded items; use grouped launch when supported
+        use_grouped = callable(getattr(launcher, "launch_grouped", None))
+        prepared_batch: list[tuple[RestorePlanItem, str | None, str | None, SlotGuardLease | None, RestoreLaunchRequest]] = []
+
+        def _finalize_launch_outcome(
+            item: RestorePlanItem,
+            q_id: str | None,
+            claim_token: str | None,
+            launch_res: RestoreLaunchOutcome,
+        ) -> RestoreItemOutcome:
+            nonlocal any_uncertain_or_failed, any_succeeded
+            if launch_res.submission_ambiguous:
+                fail_reason = launch_res.failure_reason or "submission_ambiguous"
+                if queue is not None and q_id is not None and claim_token is not None:
+                    queue.mark_ambiguous(
+                        q_id,
+                        claim_token=claim_token,
+                        reason=fail_reason,
+                        launch_id=launch_res.launch_id,
+                        launch_submission_state="ambiguous",
+                    )
+                any_uncertain_or_failed = True
+                return RestoreItemOutcome(
+                    slot_id=item.slot_id,
+                    queue_entry_id=q_id,
+                    status="ambiguous",
+                    reason=fail_reason,
+                    launch_accepted=launch_res.accepted,
+                    spawn_confirmed=False,
+                    geometry_fallback_used=launch_res.geometry_fallback_used,
+                    requested_topology=item.requested_topology,
+                )
+            if not launch_res.accepted:
+                fail_reason = launch_res.failure_reason or "launch_rejected"
+                if queue is not None and q_id is not None and claim_token is not None:
+                    queue.record_failure(q_id, claim_token=claim_token, reason=fail_reason, partial=True)
+                any_uncertain_or_failed = True
+                return RestoreItemOutcome(
+                    slot_id=item.slot_id,
+                    queue_entry_id=q_id,
+                    status="failed",
+                    reason=fail_reason,
+                    launch_accepted=False,
+                    spawn_confirmed=False,
+                    geometry_fallback_used=launch_res.geometry_fallback_used,
+                    requested_topology=item.requested_topology,
+                )
+            observed_receipt = self._lookup_receipt(
+                receipt_store,
+                launch_id=launch_res.launch_id,
+                pane_id=launch_res.pane_id,
+            )
+            spawn_confirmed = bool(
+                launch_res.spawn_confirmed is True
+                or (observed_receipt is not None and observed_receipt.spawn_acknowledged)
+            )
+            if not spawn_confirmed:
+                uncertain_reason = launch_res.failure_reason or "launch_accepted_spawn_unconfirmed"
+                if queue is not None and q_id is not None and claim_token is not None:
+                    queue.mark_ambiguous(
+                        q_id,
+                        claim_token=claim_token,
+                        reason=uncertain_reason,
+                        launch_id=launch_res.launch_id,
+                        launch_submission_state="accepted",
+                    )
+                any_uncertain_or_failed = True
+                return RestoreItemOutcome(
+                    slot_id=item.slot_id,
+                    queue_entry_id=q_id,
+                    status="accepted_unconfirmed",
+                    reason=uncertain_reason,
+                    launch_accepted=True,
+                    spawn_confirmed=False,
+                    association_confirmed=launch_res.association_confirmed,
+                    resumability_confirmed=launch_res.resumability_confirmed,
+                    geometry_fallback_used=launch_res.geometry_fallback_used,
+                    requested_topology=item.requested_topology,
+                    observed_receipt=observed_receipt,
+                )
+            if queue is not None and q_id is not None and claim_token is not None:
+                queue.complete(
+                    q_id,
+                    claim_token=claim_token,
+                    launch_id=launch_res.launch_id,
+                    spawn_confirmed=True,
+                )
+            any_succeeded = True
+            return RestoreItemOutcome(
+                slot_id=item.slot_id,
+                queue_entry_id=q_id,
+                status="restored",
+                launch_accepted=True,
+                spawn_confirmed=True,
+                association_confirmed=launch_res.association_confirmed,
+                resumability_confirmed=launch_res.resumability_confirmed,
+                geometry_fallback_used=launch_res.geometry_fallback_used,
+                requested_topology=item.requested_topology,
+                observed_receipt=observed_receipt,
+            )
+
         for item in plan.items:
             q_entry = queue_by_slot.get(item.slot_id)
             q_id = q_entry.queue_entry_id if q_entry else item.queue_entry_id
+
+            if not _matches_gui_scope(item.gui_id, item.gui_alias, gui_scope):
+                outcomes.append(
+                    RestoreItemOutcome(
+                        slot_id=item.slot_id,
+                        queue_entry_id=q_id,
+                        status="skipped",
+                        reason="gui_scope_excluded",
+                        requested_topology=item.requested_topology,
+                    )
+                )
+                continue
 
             if item.action not in {"restore", "conditional_restore"}:
                 outcomes.append(
@@ -1107,6 +1253,7 @@ class TopologyRestorer:
                 claim_token = claim_res.claim_token
 
             lease: SlotGuardLease | None = None
+            keep_lease_for_batch = False
             try:
                 if slot_guard is not None:
                     lease = slot_guard.acquire_slot(
@@ -1149,7 +1296,6 @@ class TopologyRestorer:
                         )
                         continue
 
-                # Obtain fresh slot and runtime evidence under the execution guard (never reuse preview snapshots)
                 if slot_provider is not None:
                     fresh_slot = slot_provider(item.slot_id)
                     guard_slots: Sequence[WorkspaceSlotInput] | None = (
@@ -1157,6 +1303,24 @@ class TopologyRestorer:
                     )
                 else:
                     guard_slots = current_slots
+                if gui_scope is not None and guard_slots is not None:
+                    scoped_match = next((s for s in guard_slots if s.slot_id == item.slot_id), None)
+                    if scoped_match is not None and not _matches_gui_scope(
+                        scoped_match.gui_id, scoped_match.gui_alias or item.gui_alias, gui_scope
+                    ):
+                        if queue is not None and q_id is not None and claim_token is not None:
+                            queue.release(q_id, claim_token=claim_token, reason="gui_scope_excluded")
+                        outcomes.append(
+                            RestoreItemOutcome(
+                                slot_id=item.slot_id,
+                                queue_entry_id=q_id,
+                                status="skipped",
+                                reason="gui_scope_excluded",
+                                requested_topology=item.requested_topology,
+                            )
+                        )
+                        continue
+
                 effective_observers: Mapping[tuple[str, str], RuntimeDiscovery] | RuntimeDiscovery = (
                     observers
                     if observers is not None
@@ -1212,6 +1376,11 @@ class TopologyRestorer:
                     metadata=item.metadata,
                 )
 
+                if use_grouped:
+                    prepared_batch.append((item, q_id, claim_token, lease, launch_req))
+                    keep_lease_for_batch = True
+                    continue
+
                 try:
                     launch_res = launcher.launch_session(launch_req)
                 except Exception as exc:
@@ -1235,84 +1404,64 @@ class TopologyRestorer:
                     )
                     continue
 
-                if not launch_res.accepted:
-                    fail_reason = launch_res.failure_reason or "launch_rejected"
-                    if queue is not None and q_id is not None and claim_token is not None:
-                        queue.record_failure(q_id, claim_token=claim_token, reason=fail_reason, partial=True)
-                    any_uncertain_or_failed = True
-                    outcomes.append(
-                        RestoreItemOutcome(
-                            slot_id=item.slot_id,
-                            queue_entry_id=q_id,
-                            status="failed",
-                            reason=fail_reason,
-                            launch_accepted=False,
-                            spawn_confirmed=False,
-                            requested_topology=item.requested_topology,
-                        )
-                    )
-                    continue
-
-                observed_receipt = self._lookup_receipt(
-                    receipt_store,
-                    launch_id=launch_res.launch_id,
-                    pane_id=launch_res.pane_id,
-                )
-                spawn_confirmed = bool(
-                    launch_res.spawn_confirmed is True
-                    or (observed_receipt is not None and observed_receipt.spawn_acknowledged)
-                )
-                if not spawn_confirmed:
-                    uncertain_reason = "launch_accepted_spawn_unconfirmed"
-                    if queue is not None and q_id is not None and claim_token is not None:
-                        queue.mark_ambiguous(
-                            q_id,
-                            claim_token=claim_token,
-                            reason=uncertain_reason,
-                            launch_id=launch_res.launch_id,
-                            launch_submission_state="accepted",
-                        )
-                    any_uncertain_or_failed = True
-                    outcomes.append(
-                        RestoreItemOutcome(
-                            slot_id=item.slot_id,
-                            queue_entry_id=q_id,
-                            status="accepted_unconfirmed",
-                            reason=uncertain_reason,
-                            launch_accepted=True,
-                            spawn_confirmed=False,
-                            association_confirmed=launch_res.association_confirmed,
-                            resumability_confirmed=launch_res.resumability_confirmed,
-                            requested_topology=item.requested_topology,
-                            observed_receipt=observed_receipt,
-                        )
-                    )
-                    continue
-
-                if queue is not None and q_id is not None and claim_token is not None:
-                    queue.complete(
-                        q_id,
-                        claim_token=claim_token,
-                        launch_id=launch_res.launch_id,
-                        spawn_confirmed=True,
-                    )
-                any_succeeded = True
-                outcomes.append(
-                    RestoreItemOutcome(
-                        slot_id=item.slot_id,
-                        queue_entry_id=q_id,
-                        status="restored",
-                        launch_accepted=True,
-                        spawn_confirmed=True,
-                        association_confirmed=launch_res.association_confirmed,
-                        resumability_confirmed=launch_res.resumability_confirmed,
-                        requested_topology=item.requested_topology,
-                        observed_receipt=observed_receipt,
-                    )
-                )
+                outcomes.append(_finalize_launch_outcome(item, q_id, claim_token, launch_res))
             finally:
-                if lease is not None and slot_guard is not None and lease.acquired:
+                if not keep_lease_for_batch and lease is not None and slot_guard is not None and lease.acquired:
                     slot_guard.release_slot(lease)
+
+        if prepared_batch:
+            try:
+                batch_reqs = [entry[4] for entry in prepared_batch]
+                try:
+                    grouped_results = launcher.launch_grouped(batch_reqs)  # type: ignore[attr-defined]
+                except Exception as exc:
+                    fail_reason = f"launcher_exception:{type(exc).__name__}:{exc}"
+                    for item, q_id, claim_token, _lease, _req in prepared_batch:
+                        if queue is not None and q_id is not None and claim_token is not None:
+                            queue.mark_ambiguous(
+                                q_id,
+                                claim_token=claim_token,
+                                reason=fail_reason,
+                                launch_submission_state="ambiguous",
+                            )
+                        any_uncertain_or_failed = True
+                        outcomes.append(
+                            RestoreItemOutcome(
+                                slot_id=item.slot_id,
+                                queue_entry_id=q_id,
+                                status="ambiguous",
+                                reason=fail_reason,
+                                requested_topology=item.requested_topology,
+                            )
+                        )
+                else:
+                    for item, q_id, claim_token, _lease, _req in prepared_batch:
+                        res = grouped_results.get(item.slot_id)
+                        if res is None:
+                            if queue is not None and q_id is not None and claim_token is not None:
+                                queue.mark_ambiguous(
+                                    q_id,
+                                    claim_token=claim_token,
+                                    reason="missing_grouped_launch_outcome",
+                                    launch_submission_state="ambiguous",
+                                )
+                            any_uncertain_or_failed = True
+                            outcomes.append(
+                                RestoreItemOutcome(
+                                    slot_id=item.slot_id,
+                                    queue_entry_id=q_id,
+                                    status="ambiguous",
+                                    reason="missing_grouped_launch_outcome",
+                                    requested_topology=item.requested_topology,
+                                )
+                            )
+                        else:
+                            outcomes.append(_finalize_launch_outcome(item, q_id, claim_token, res))
+            finally:
+                if slot_guard is not None:
+                    for _item, _q_id, _tok, lease, _req in prepared_batch:
+                        if lease is not None and lease.acquired:
+                            slot_guard.release_slot(lease)
 
         restore_id = generate_id("rst")
         partial_failure = any_uncertain_or_failed and any_succeeded
@@ -1491,6 +1640,7 @@ class WorkspaceCheckpointCoordinator:
         path_exists: Callable[[str], bool] | None = None,
         allow_reserved_claude: bool = False,
         allow_unknown_runtime: bool = False,
+        gui_scope: str | None = None,
     ) -> RestorePlan:
         checkpoint = self.checkpoints.get_checkpoint(checkpoint_id)
         return self.restorer.preview_restore(
@@ -1502,6 +1652,7 @@ class WorkspaceCheckpointCoordinator:
             path_exists=path_exists,
             allow_reserved_claude=allow_reserved_claude,
             allow_unknown_runtime=allow_unknown_runtime,
+            gui_scope=gui_scope,
         )
 
     def restore(
@@ -1520,6 +1671,7 @@ class WorkspaceCheckpointCoordinator:
         allow_reserved_claude: bool = False,
         allow_unknown_runtime: bool = False,
         authorization_check: Callable[[RestorePlanItem], tuple[bool, str | None]] | None = None,
+        gui_scope: str | None = None,
     ) -> RestoreReport:
         checkpoint = self.checkpoints.get_checkpoint(checkpoint_id)
         plan = self.restorer.preview_restore(
@@ -1532,6 +1684,7 @@ class WorkspaceCheckpointCoordinator:
             allow_reserved_claude=allow_reserved_claude,
             allow_unknown_runtime=allow_unknown_runtime,
             has_slot_exclusion=False,
+            gui_scope=gui_scope,
         )
         return self.restorer.execute_restore(
             plan,
@@ -1552,4 +1705,5 @@ class WorkspaceCheckpointCoordinator:
             path_exists=path_exists,
             allow_unknown_runtime=allow_unknown_runtime,
             allow_reserved_claude=allow_reserved_claude,
+            gui_scope=gui_scope,
         )
