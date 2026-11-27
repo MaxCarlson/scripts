@@ -3,8 +3,7 @@ name: Shared Packages Linux Qualification
 on:
   push:
     branches:
-      - feat/scripts-shared-packages-20261119
-      - reconcile/scripts-mxc-main-20261120
+      - retire/shared-sources-current-main
   workflow_dispatch:
 
 permissions:
@@ -41,47 +40,54 @@ jobs:
         with:
           python-version: "3.12.10"
 
-      - name: Verify committed qualified wheel artifacts and metadata
+      - name: Verify published shared-package metadata and hashes
         run: |
-          cd .github/qualified-wheelhouse
-          sha256sum --check SHA256SUMS.txt
-          python -I - "$GITHUB_WORKSPACE/.github/qualified-wheelhouse" <<'PY'
-          import hashlib
-          import sys
-          from email.parser import BytesParser
-          from pathlib import Path
-          from zipfile import ZipFile
+          python -I - <<'PY'
+          import json
+          from urllib.request import urlopen
 
-          wheelhouse = Path(sys.argv[1])
           expected = {
-              "mxc_resource_metrics-0.3.0-py3-none-any.whl": ("mxc-resource-metrics", "0.3.0", "1512d9e9ab1a1d603c2dc244d1459baff1abcc738d82c4ee2a5fac835a04189a"),
-              "mxc_script_logging-0.1.1-py3-none-any.whl": ("mxc-script-logging", "0.1.1", "7554f367067123e2369b12996af2593adb4437a79667b53528d2e7bdd90b7f45"),
-              "mxc_web_ui_tools-0.2.0-py3-none-any.whl": ("mxc-web-ui-tools", "0.2.0", "0171dfa984eb9d521bb340a0d0241056fdea8be685fe0c3a26bc7cc2c7f54341"),
-              "mxc_termdash-0.10.0-py3-none-any.whl": ("mxc-termdash", "0.10.0", "34c69cd508753001cda19882c99aea17fcac558679c4274e6d68874065081c9b"),
-              "mxc_platform_utils-0.9.0-py3-none-any.whl": ("mxc-platform-utils", "0.9.0", "8d64a0553776065a12d1fd3342199e9f68d13bb6a18e834a4c39b6d6c41df7dc"),
+              "mxc-resource-metrics": ("0.3.0", {
+                  "mxc_resource_metrics-0.3.0-py3-none-any.whl": "a1e0e66c5d1b8bed507af26a906d0728b1da65fa14684be4a369da4b60ccac71",
+                  "mxc_resource_metrics-0.3.0.tar.gz": "f385bd1163ca23c410748fa4f320d23835393b77e69b603d6acd68be4bcd09cf",
+              }),
+              "mxc-script-logging": ("0.1.1", {
+                  "mxc_script_logging-0.1.1-py3-none-any.whl": "a9f0f7fe0f806637d3000374b163bf77ccefa4e00d1241e769387063656e4d92",
+                  "mxc_script_logging-0.1.1.tar.gz": "bb409a46954203b7645a718d158f5428c4bd32104b6877bb1058ccc7fd7ec4e7",
+              }),
+              "mxc-web-ui-tools": ("0.2.0", {
+                  "mxc_web_ui_tools-0.2.0-py3-none-any.whl": "0171dfa984eb9d521bb340a0d0241056fdea8be685fe0c3a26bc7cc2c7f54341",
+                  "mxc_web_ui_tools-0.2.0.tar.gz": "060735a26e105c9eb6db41c855923f2417c3f9e676102ee6412355515fdae0db",
+              }),
+              "mxc-termdash": ("0.10.0", {
+                  "mxc_termdash-0.10.0-py3-none-any.whl": "b97f31d275c930f90f614cee05e7d8176f3068f8506835f2d9a36c653fdd0f5d",
+                  "mxc_termdash-0.10.0.tar.gz": "adb9034a33ce691dc58399cfb657e63dc8af1bf0b801d58e03574c5514884758",
+              }),
+              "mxc-platform-utils": ("0.9.0", {
+                  "mxc_platform_utils-0.9.0-py3-none-any.whl": "24f9f70f265c9c18db31e59ecb9394b883de88fc7e7626c3713fc7d64828b6aa",
+                  "mxc_platform_utils-0.9.0.tar.gz": "558b2679ae07b7c811c198984fd6a7482ea845e982bdcfabd88ff3dad45a9206",
+              }),
           }
-          actual_wheels = {path.name for path in wheelhouse.glob("*.whl")}
-          if actual_wheels != set(expected):
-              raise SystemExit(f"wheel set mismatch: expected {sorted(expected)}, got {sorted(actual_wheels)}")
-          for filename, (expected_name, expected_version, expected_hash) in expected.items():
-              path = wheelhouse / filename
-              digest = hashlib.sha256(path.read_bytes()).hexdigest()
-              if digest != expected_hash:
-                  raise SystemExit(f"{filename}: expected SHA-256 {expected_hash}, got {digest}")
-              with ZipFile(path) as archive:
-                  metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
-                  metadata = BytesParser().parsebytes(archive.read(metadata_name))
-              if metadata["Name"] != expected_name or metadata["Version"] != expected_version:
-                  raise SystemExit(f"{filename}: unexpected metadata Name/Version {metadata['Name']}/{metadata['Version']}")
-              print(f"{expected_name}=={expected_version} sha256={digest}")
+          for project, (version, expected_files) in expected.items():
+              with urlopen(f"https://pypi.org/pypi/{project}/{version}/json", timeout=30) as response:
+                  release = json.load(response)
+              if release["info"]["name"] != project or release["info"]["version"] != version:
+                  raise SystemExit(f"unexpected release identity for {project}=={version}")
+              actual_files = {item["filename"]: item["digests"]["sha256"] for item in release["urls"]}
+              if actual_files != expected_files:
+                  raise SystemExit(f"{project}=={version} artifact hash/filename mismatch: {actual_files}")
+              print(f"{project}=={version}: wheel and sdist hashes match PyPI JSON")
           PY
 
-      - name: Install qualified wheels and Runmux web extra in an isolated environment
+      - name: Install published packages and Runmux web extra in an isolated environment
         run: |
           python -m venv .ci-venv
-          .ci-venv/bin/python -m pip install \
-            --find-links="$GITHUB_WORKSPACE/.github/qualified-wheelhouse" \
-            .github/qualified-wheelhouse/*.whl \
+          .ci-venv/bin/python -m pip install --index-url https://pypi.org/simple \
+            "mxc-resource-metrics==0.3.0" \
+            "mxc-script-logging==0.1.1" \
+            "mxc-web-ui-tools==0.2.0" \
+            "mxc-termdash==0.10.0" \
+            "mxc-platform-utils==0.9.0" \
             'modules/runmux[web]' \
             "pytest==8.3.5" "pytest-timeout==2.4.0" "httpx==0.28.1"
 
@@ -133,8 +139,7 @@ jobs:
 
       - name: Install selected scripts consumers without pscripts
         run: |
-          .ci-venv/bin/python -m pip install \
-            --find-links="$GITHUB_WORKSPACE/.github/qualified-wheelhouse" \
+          .ci-venv/bin/python -m pip install --index-url https://pypi.org/simple \
             --editable modules/backup_module \
             --editable modules/compresser \
             --editable modules/rrbackup \
@@ -300,7 +305,6 @@ jobs:
       - name: Run the Bash latest bootstrap in a clean scripts environment
         if: steps.pscripts.outcome == 'success'
         run: |
-          export PIP_FIND_LINKS="$GITHUB_WORKSPACE/.github/qualified-wheelhouse"
           timeout --signal=TERM --kill-after=15s 50m ./bootstrap_latest.sh
 
       - name: Install test-only HTTP and pytest tools

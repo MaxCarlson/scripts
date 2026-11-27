@@ -412,13 +412,6 @@ REGISTRY: dict = {
                 "version": "0.1.0",
             },
             {
-                "name": "termdash (module)",
-                "path": "modules/termdash",
-                "desc": "Real-time terminal dashboard for system stats and process monitoring",
-                "help_cmd": ["python", "-m", "termdash", "--help"],
-                "version": "0.4.0",
-            },
-            {
                 "name": "sshmanager (module)",
                 "path": "modules/sshmanager",
                 "desc": "Manage encrypted SSH host definitions and make connections",

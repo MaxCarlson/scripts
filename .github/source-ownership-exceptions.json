@@ -27,5 +27,70 @@
     "path": "modules/agent_memory",
     "reason": "Canonical implementation is in llm-agent-toolkit/modules/agent_memory; the sole tracked SQLite artifact is retained as data, and legacy stores remain discoverable or can be copied with agent-memory migrate.",
     "type": "retirement"
+  },
+  {
+    "type": "retirement",
+    "path": "modules/cross_platform",
+    "reason": "Retire shared cross_platform source copy in favor of mxc-platform-utils"
+  },
+  {
+    "type": "retirement",
+    "path": "modules/script_logging",
+    "reason": "Retire shared script_logging source copy in favor of mxc-script-logging"
+  },
+  {
+    "type": "retirement",
+    "path": "modules/termdash",
+    "reason": "Retire shared termdash source copy in favor of mxc-termdash"
+  },
+  {
+    "type": "retirement",
+    "path": "modules/web_ui_tools",
+    "reason": "Retire shared web_ui_tools source copy in favor of mxc-web-ui-tools"
+  },
+  {
+    "path": "modules/llm_monitor/pyproject.toml",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "3c0908a52cad76cb83bed9aefafae50a5c03d115",
+    "after": "78e131a81a77b6c061b8932e9d3787638442a5fc",
+    "reason": "Align llm_monitor optional dependencies to namespaced shared distributions at 0.9.0"
+  },
+  {
+    "path": "modules/llm_monitor/tests/conftest.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "3b2054b69d53b69e8849e4ffdb8c67911a7e2f6a",
+    "after": "4d634fb8c3896ee550514593e3c566a74acb423c",
+    "reason": "Remove retired modules/web_ui_tools/src path injection from llm_monitor test conftest"
+  },
+  {
+    "path": "modules/llm_monitor/tests/package_metadata_test.py",
+    "action": "A",
+    "before_mode": "000000",
+    "after_mode": "100644",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "8d3c888a1d86cdd6caabd852a86a85b427633e56",
+    "reason": "Add llm_monitor package metadata test for namespaced shared dependencies"
+  },
+  {
+    "path": "modules/orchestrator_web_viewer/pyproject.toml",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "48268043a848210d481fba0730bad5fb068542f5",
+    "after": "3173a71d81dabf87d44ff7aa1958110b28d75cf2",
+    "reason": "Update retained orchestrator_web_viewer termdash extra to mxc-termdash>=0.10.0,<0.11"
+  },
+  {
+    "path": "modules/orchestrator_web_viewer/tests/orchestrator_viewer_package_metadata_test.py",
+    "action": "A",
+    "before_mode": "000000",
+    "after_mode": "100644",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "739383cbb96de69b870edc6479ebd3ebcee1e85e",
+    "reason": "Add orchestrator_web_viewer package metadata test for mxc-termdash extra"
   }
 ]

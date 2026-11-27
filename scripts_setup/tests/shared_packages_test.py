@@ -1,6 +1,8 @@
 """Ownership and staging policy for independently distributed shared libraries."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from scripts_setup.shared_packages import (
     SHARED_DISTRIBUTION_REQUIREMENTS,
     SHARED_MODULE_DIRECTORY_TO_DISTRIBUTION,
@@ -9,6 +11,26 @@ from scripts_setup.shared_packages import (
     is_shared_source_install,
     needs_shared_distribution_replacement,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_retired_shared_source_directories_are_absent() -> None:
+    retired_source_dirs = {"script_logging", "termdash", "cross_platform", "web_ui_tools"}
+    assert not any((REPO_ROOT / "modules" / module_dir).exists() for module_dir in retired_source_dirs)
+    # resource_metrics remains temporarily for resource_coordinator's pinned H4 bundle builder.
+    assert (REPO_ROOT / "modules" / "resource_metrics").is_dir()
+
+
+def test_validation_targets_do_not_install_retired_shared_source_paths() -> None:
+    import json
+
+    manifest = json.loads((REPO_ROOT / "validation-targets.json").read_text(encoding="utf-8"))
+    text = json.dumps(manifest)
+    assert not any(
+        f"modules/{module_dir}" in text
+        for module_dir in ("script_logging", "termdash", "cross_platform", "web_ui_tools")
+    )
 
 
 def test_shared_package_registry_uses_qualified_compatible_ranges() -> None:
@@ -235,15 +257,15 @@ def test_installer_dry_run_does_not_call_pip(monkeypatch, capsys) -> None:
     assert "[DRY RUN] Would install shared distribution" in capsys.readouterr().out
 
 
-def test_installer_falls_back_to_local_shared_package_when_index_lacks_distribution(monkeypatch, tmp_path, capsys) -> None:
+def test_installer_does_not_fall_back_to_local_shared_package_when_index_lacks_distribution(
+    monkeypatch, tmp_path, capsys
+) -> None:
     import json
     from importlib import metadata
     from scripts_setup import shared_packages
 
-    shared_root = tmp_path / "shared-python-modules"
-    termdash_dir = shared_root / "packages" / "termdash"
+    termdash_dir = tmp_path / "packages" / "termdash"
     termdash_dir.mkdir(parents=True)
-    (termdash_dir / "pyproject.toml").write_text('[project]\nname = "mxc-termdash"\nversion = "0.10.0"\n', encoding="utf-8")
 
     installed: dict[str, object] = {}
     calls: list[list[str]] = []
@@ -274,15 +296,44 @@ def test_installer_falls_back_to_local_shared_package_when_index_lacks_distribut
             installed[target.split(">", 1)[0]] = Dist()
         return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-    monkeypatch.setenv("SHARED_PYTHON_MODULES_DIR", str(shared_root))
     monkeypatch.setattr(shared_packages.metadata, "distribution", distribution)
     monkeypatch.setattr(shared_packages.metadata, "distributions", lambda: [])
     monkeypatch.setattr(shared_packages.subprocess, "run", run)
     monkeypatch.setattr(shared_packages, "_legacy_editable_consumer_paths", lambda _root: [])
 
-    assert shared_packages.ensure_shared_distributions(python="isolated-python")
-    assert ["isolated-python", "-I", "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "-q", str(termdash_dir)] in calls
-    assert "installing directly from" in capsys.readouterr().out
+    assert not shared_packages.ensure_shared_distributions(python="isolated-python")
+    assert ["isolated-python", "-I", "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "-q", "mxc-termdash>=0.10.0,<0.11"] in calls
+    assert not any(command[-1] == str(termdash_dir) for command in calls)
+    assert "Could not install shared distribution mxc-termdash>=0.10.0,<0.11" in capsys.readouterr().err
+
+
+def test_validation_targets_install_shared_distributions_from_the_package_index() -> None:
+    manifest = (REPO_ROOT / "validation-targets.json").read_text(encoding="utf-8")
+    assert ".github/qualified-wheelhouse" not in manifest
+    assert "--find-links" not in manifest
+    for requirement in (
+        "mxc-termdash>=0.10.0,<0.11",
+        "mxc-platform-utils>=0.9.0,<0.10",
+        "mxc-script-logging>=0.1.1,<0.2",
+    ):
+        assert requirement in manifest
+
+
+def test_shared_package_qualification_workflow_uses_published_distributions() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "shared-packages-linux-qualification.yml").read_text(
+        encoding="utf-8"
+    )
+    assert ".github/qualified-wheelhouse" not in workflow
+    assert "--find-links" not in workflow
+    assert "PIP_FIND_LINKS" not in workflow
+    for distribution in (
+        "mxc-resource-metrics",
+        "mxc-script-logging",
+        "mxc-web-ui-tools",
+        "mxc-termdash",
+        "mxc-platform-utils",
+    ):
+        assert distribution in workflow
 
 
 def test_orphaned_worktree_legacy_consumer_detection(tmp_path) -> None:

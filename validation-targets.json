@@ -23,7 +23,7 @@
                     "executable": "{python}",
                     "arguments": [
                         "-c",
-                        "import shutil; from pathlib import Path; roots=[Path(r'{target_root}'), Path(r'{repo_root}')/'modules'/'termdash']; targets=[]; [targets.extend(list(root.glob('*.egg-info'))+[root/'build', root/'dist']) for root in roots]; [shutil.rmtree(str(path), ignore_errors=True) for path in targets if path.exists()]"
+                        "import shutil; from pathlib import Path; root=Path(r'{target_root}'); targets=list(root.glob('*.egg-info'))+[root/'build', root/'dist']; [shutil.rmtree(str(path), ignore_errors=True) for path in targets if path.exists()]"
                     ]
                 },
                 {
@@ -38,16 +38,16 @@
                     ]
                 },
                 {
-                    "name": "Install shared TermDash dependency",
+                    "name": "Install published TermDash distribution",
                     "executable": "{python}",
                     "arguments": [
                         "-m",
                         "pip",
                         "install",
                         "--disable-pip-version-check",
-                        "--no-build-isolation",
-                        "-e",
-                        "{repo_root}/modules/termdash"
+                        "--index-url",
+                        "https://pypi.org/simple",
+                        "mxc-termdash>=0.10.0,<0.11"
                     ]
                 },
                 {
@@ -295,8 +295,8 @@
             ]
         },
         "cross-platform": {
-            "description": "Cross-platform system utilities and storage-media detection validation.",
-            "working_directory": "modules/cross_platform",
+            "description": "Installed mxc-platform-utils distribution and import provenance check.",
+            "working_directory": ".",
             "context_files": [
                 "docs/plans/20261009-0325_storage-media-detection/STATUS.md",
                 "docs/plans/20261009-0325_storage-media-detection/checklist.md",
@@ -306,47 +306,37 @@
                 "PYTHONUTF8": "1",
                 "PYTHONUNBUFFERED": "1",
                 "PY_COLORS": "1",
-                "PYTHONPATH": "{repo_root}/modules"
+                "PYTHONPATH": ""
             },
             "bootstrap": [
                 {
-                    "name": "Install cross_platform editable development package",
+                    "name": "Install published platform utility distribution",
                     "executable": "{python}",
                     "arguments": [
                         "-m",
                         "pip",
                         "install",
                         "--disable-pip-version-check",
-                        "--no-build-isolation",
-                        "-e",
-                        "{target_root}"
+                        "--index-url",
+                        "https://pypi.org/simple",
+                        "mxc-platform-utils>=0.9.0,<0.10"
                     ]
                 }
             ],
             "commands": [
                 {
-                    "name": "Compile cross_platform package and tests",
-                    "executable": "{python}",
-                    "arguments": ["-m", "compileall", "-q", ".", "tests"]
-                },
-                {
-                    "name": "Lint cross_platform storage implementation and tests",
-                    "executable": "{python}",
-                    "arguments": ["-m", "ruff", "check", "storage.py", "tests/storage_test.py"]
-                },
-                {
-                    "name": "Cross-platform pytest suite",
+                    "name": "Check platform utility distribution metadata and imports",
                     "executable": "{python}",
                     "arguments": [
-                        "-m",
-                        "pytest",
-                        "tests",
-                        "-q",
-                        "--strict-config",
-                        "--strict-markers",
-                        "--basetemp",
-                        "{temp_root}"
+                        "-I",
+                        "-c",
+                        "import importlib.metadata as m, importlib, site; from pathlib import Path; d=m.distribution('mxc-platform-utils'); mod=importlib.import_module('cross_platform'); origin=Path(mod.__file__).resolve(); print(d.metadata['Name'], d.version, origin); assert d.version == '0.9.0' and any(origin.is_relative_to(Path(p).resolve()) for p in site.getsitepackages())"
                     ]
+                },
+                {
+                    "name": "Check shared platform utility dependencies",
+                    "executable": "{python}",
+                    "arguments": ["-I", "-m", "pip", "check"]
                 }
             ]
         },
@@ -359,20 +349,20 @@
                 "PYTHONUTF8": "1",
                 "PYTHONUNBUFFERED": "1",
                 "PY_COLORS": "1",
-                "PYTHONPATH": "{target_root};{repo_root}/modules/termdash;{repo_root}/modules"
+                "PYTHONPATH": "{target_root};{repo_root}/modules"
             },
             "bootstrap": [
                 {
-                    "name": "Install shared TermDash dependency",
+                    "name": "Install published TermDash distribution",
                     "executable": "{python}",
                     "arguments": [
                         "-m",
                         "pip",
                         "install",
                         "--disable-pip-version-check",
-                        "--no-build-isolation",
-                        "-e",
-                        "{repo_root}/modules/termdash"
+                        "--index-url",
+                        "https://pypi.org/simple",
+                        "mxc-termdash>=0.10.0,<0.11"
                     ]
                 },
                 {
@@ -588,8 +578,8 @@
             ]
         },
         "script-logging": {
-            "description": "Reusable event formatter and SQLite run-history library.",
-            "working_directory": "modules/script_logging",
+            "description": "Installed mxc-script-logging distribution and import provenance check.",
+            "working_directory": ".",
             "context_files": [
                 "docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/STATUS.md",
                 "docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/checklist.md"
@@ -597,13 +587,37 @@
             "environment": {
                 "PYTHONUTF8": "1",
                 "PYTHONUNBUFFERED": "1",
-                "PYTHONPATH": "{target_root};{repo_root}/modules"
+                "PYTHONPATH": ""
             },
+            "bootstrap": [
+                {
+                    "name": "Install published script logging distribution",
+                    "executable": "{python}",
+                    "arguments": [
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--index-url",
+                        "https://pypi.org/simple",
+                        "mxc-script-logging>=0.1.1,<0.2"
+                    ]
+                }
+            ],
             "commands": [
                 {
-                    "name": "Shared logging pytest suite",
+                    "name": "Check script logging distribution metadata and imports",
                     "executable": "{python}",
-                    "arguments": ["-m", "pytest", "tests", "-q", "--basetemp", "{temp_root}"]
+                    "arguments": [
+                        "-I",
+                        "-c",
+                        "import importlib.metadata as m, importlib, site; from pathlib import Path; d=m.distribution('mxc-script-logging'); mod=importlib.import_module('script_logging'); origin=Path(mod.__file__).resolve(); print(d.metadata['Name'], d.version, origin); assert d.version == '0.1.1' and any(origin.is_relative_to(Path(p).resolve()) for p in site.getsitepackages())"
+                    ]
+                },
+                {
+                    "name": "Check script logging dependencies",
+                    "executable": "{python}",
+                    "arguments": ["-I", "-m", "pip", "check"]
                 }
             ]
         }

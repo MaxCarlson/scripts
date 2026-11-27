@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orchestrator-web-viewer"
-version = "0.2.0"
+version = "0.3.0"
 description = "Web-based viewer for AI Orchestrator and Knowledge Manager"
 authors = [{name = "Your Name"}]
 requires-python = ">=3.11"
@@ -27,7 +27,8 @@ dev = [
     "httpx>=0.25.0",
 ]
 termdash = [
-    "termdash>=0.3.0",
+    "mxc-termdash>=0.10.0,<0.11",
+    "windows-curses>=2.4; sys_platform == 'win32'",
 ]
 
 [project.scripts]

@@ -269,6 +269,27 @@ def test_retired_toolkit_modules_are_not_listed_as_scripts_programs() -> None:
     assert not compatibility_retired_paths, compatibility_retired_paths
 
 
+def test_registry_does_not_advertise_retired_shared_source_directories() -> None:
+    retired_paths = {
+        f"modules/{name}"
+        for name in (
+            "resource_metrics",
+            "script_logging",
+            "web_ui_tools",
+            "termdash",
+            "cross_platform",
+        )
+    }
+    items = [item for category in REGISTRY.values() for item in category.get("items", [])]
+    items.extend(
+        item
+        for category in REGISTRY.values()
+        for subcategory in category.get("subcategories", {}).values()
+        for item in subcategory.get("items", [])
+    )
+    assert not retired_paths.intersection(item.get("path") for item in items)
+
+
 def test_collect_registered_paths_nonempty() -> None:
     paths = _collect_registered_paths()
     assert len(paths) > 0
