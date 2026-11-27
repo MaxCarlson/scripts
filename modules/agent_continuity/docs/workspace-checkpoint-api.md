@@ -57,3 +57,17 @@ Note: Add `save`, `restore`, `checkpoints`, `queue` to `modules/scripts_help/scr
 - **v2.3.0 (`8892e900`)**: `DispatcherWorkspaceAdapter` already reads `workflow_type`, `profile_id`, `profile_revision`, and `agent_number` from slot dicts when present.
 - **Claude `SessionStore`**: Until supplied, Claude `--session-id` remains `reserved_unconfirmed` and requires `--allow-reserved-claude`.
 - **Window/pane geometry**: Never inferred; unsupported geometry uses deterministic fallback (`geometry_fallback_used=True`).
+
+
+## Durable Ownership Transfer (`workspace_ownership.py`)
+
+- **Canonical slot lock**: `canonical_slot_lock_path(home_dir, slot_id)` resolves to `<home_dir>/slot-<slot_id>.lock` (aligned with Agent #1's dispatcher slot lock). `ReservationSlotExecutionGuard` / `DispatcherSlotExecutionGuard` acquires the OS lock only around atomic lease/reservation inspection and releases it before spawning child processes, avoiding parent-holds-lock/child-acquires-lock deadlocks.
+- **Durable reservation**: `RestorationReservationStore(home_dir)` persists exact-session reservations under `<home_dir>/restoration_reservations/` correlated to `checkpoint_id`, `queue_entry_id`, `attempt`, `slot_id`, `provider`, `native_session_id`, `environment_id`, `launch_id`, and `pane_id`.
+- **Atomic consumption & conflict protection**: While a reservation is `reserved`, `submitted`, or `ambiguous`, competing slot guard acquisitions and new reservations fail closed. `consume_reservation(...)` validates token, slot, provider, native session, environment, launch, and pane IDs under `slot-<slot_id>.lock` and records `dispatcher_ownership_acknowledged=True`.
+- **Completion & queue schema v3**: `RestorationQueue` (`QUEUE_SCHEMA_VERSION = 3`, with backward-compatible `ALTER TABLE` migration from v2) and `RestoreItemOutcome` track `relay_spawn_acknowledged`, `dispatcher_ownership_acknowledged`, `association_confirmed`, `current_liveness`, and `resumability_confirmed` separately. Managed restoration requires `dispatcher_ownership_acknowledged=True` by default (`require_dispatcher_ownership=True`).
+- **Manual fallback & entrypoint safety**: `build_manual_restore_command` fails closed with `RESUME_UNSUPPORTED` unless `exact_llmd_supported=True` or `allow_direct_native_fallback=True` (`--direct-native`). `canonical_llmd_dispatcher_entrypoint` verifies that any installed `llmd` matches `agent_continuity.__version__` before selecting it.
+
+### Minimal Agent #1 Dispatcher Hooks
+
+1. In `pane-run` / `continue` exact-session execution, accept `--reservation-id`, `--reservation-token`, `--checkpoint-id`, `--provider`, `--session-id`, and `--environment`, calling `RestorationReservationStore(home_dir).consume_reservation(...)` under `slot-<slot_id>.lock` before launching the provider.
+2. Check `RestorationReservationStore(home_dir).get_active_for_slot(slot_id)` under `slot-<slot_id>.lock` on ordinary `llmd continue` / `pane-run` launches and refuse when an active/ambiguous restoration reservation is present.

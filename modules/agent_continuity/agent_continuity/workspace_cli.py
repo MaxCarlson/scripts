@@ -30,6 +30,7 @@ from .workspace_lifecycle import (
     SlotExecutionGuard,
     WorkspaceCheckpointCoordinator,
 )
+from .workspace_ownership import RestorationReservationStore
 
 
 def _emit(
@@ -52,11 +53,13 @@ def _build_coordinator(
     state_root: Path,
     managed_store: ManagedShutdownStoreProtocol | None = None,
     slot_guard: SlotExecutionGuard | None = None,
+    reservation_store: RestorationReservationStore | None = None,
 ) -> WorkspaceCheckpointCoordinator:
     return WorkspaceCheckpointCoordinator(
         state_root,
         managed_store=managed_store,
         slot_guard=slot_guard,
+        reservation_store=reservation_store,
     )
 
 
@@ -157,7 +160,13 @@ def handle_restore(
     adapter = DispatcherWorkspaceAdapter(dispatcher)
     root = state_root or (Path(dispatcher.home_dir) / "workspace_state")
     guard = slot_guard or DispatcherSlotExecutionGuard(Path(dispatcher.home_dir))
-    coordinator = _build_coordinator(state_root=root, managed_store=managed_store, slot_guard=guard)
+    rsv_store = RestorationReservationStore(Path(dispatcher.home_dir))
+    coordinator = _build_coordinator(
+        state_root=root,
+        managed_store=managed_store,
+        slot_guard=guard,
+        reservation_store=rsv_store,
+    )
 
     checkpoint_id = getattr(args, "checkpoint", None)
     if not checkpoint_id:
@@ -192,26 +201,33 @@ def handle_restore(
     )
 
     if manual or dry_run or not apply:
-        manual_commands = {
-            item.slot_id: build_manual_restore_command(
-                item,
-                home_dir=Path(dispatcher.home_dir),
-                prefer_llmd=not direct_native,
-            )
-            for item in plan.items
-            if item.action in {"restore", "conditional_restore"}
-        }
+        manual_commands: dict[str, list[str]] = {}
+        manual_command_errors: dict[str, str] = {}
+        for item in plan.items:
+            if item.action not in {"restore", "conditional_restore"}:
+                continue
+            try:
+                manual_commands[item.slot_id] = build_manual_restore_command(
+                    item,
+                    home_dir=Path(dispatcher.home_dir),
+                    prefer_llmd=not direct_native,
+                    allow_direct_native_fallback=direct_native,
+                )
+            except ContinuityError as exc:
+                manual_command_errors[item.slot_id] = str(exc)
         payload = {
             "action": "restore",
             "mode": "manual" if manual else "preview",
             "managed_terminal_available": is_managed_terminal_available(),
             "plan": plan.to_dict(),
             "manual_commands": manual_commands,
+            "manual_command_errors": manual_command_errors,
         }
         lines = [f"Restore preview for {plan.checkpoint_id} ({len(plan.items)} entries):"]
         for item in plan.items:
             cmd = " ".join(manual_commands[item.slot_id]) if item.slot_id in manual_commands else ""
-            suffix = f" -> `{cmd}`" if (manual or cmd) and cmd else ""
+            err = manual_command_errors.get(item.slot_id)
+            suffix = f" -> `{cmd}`" if (manual or cmd) and cmd else (f" [manual_blocked: {err}]" if err else "")
             lines.append(
                 f"  {item.slot_id} [{item.provider}:{item.native_session_id}] action={item.action} "
                 f"reasons={','.join(item.reasons) or 'none'}{suffix}"
@@ -239,6 +255,7 @@ def handle_restore(
         allow_unknown_runtime=allow_unknown,
         authorization_check=authorization_check,
         gui_scope=gui_scope,
+        require_dispatcher_ownership=bool(getattr(launcher, "require_dispatcher_ownership", True)),
     )
     incomplete = any(o.status in {"failed", "ambiguous", "accepted_unconfirmed"} for o in report.outcomes)
     exit_code = 2 if (report.partial_failure or incomplete) else 0

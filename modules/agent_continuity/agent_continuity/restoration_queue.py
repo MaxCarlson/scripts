@@ -24,7 +24,7 @@ from .workspace_checkpoint import (
     sanitize_launch_settings,
 )
 
-QUEUE_SCHEMA_VERSION = 2
+QUEUE_SCHEMA_VERSION = 3
 
 
 class QueueEntryStatus(StrEnum):
@@ -81,6 +81,12 @@ class QueueEntry:
     launch_id: str | None = None
     launch_submission_state: str = "not_started"
     spawn_confirmed: bool = False
+    reservation_id: str | None = None
+    relay_spawn_acknowledged: bool = False
+    dispatcher_ownership_acknowledged: bool = False
+    association_confirmed: bool = False
+    current_liveness: str = "unknown"
+    resumability_confirmed: bool = False
     partial: bool = False
     recovery_note: str | None = None
     gui_alias: str | None = None
@@ -115,6 +121,12 @@ class QueueEntry:
             "launch_id": self.launch_id,
             "launch_submission_state": self.launch_submission_state,
             "spawn_confirmed": self.spawn_confirmed,
+            "reservation_id": self.reservation_id,
+            "relay_spawn_acknowledged": self.relay_spawn_acknowledged,
+            "dispatcher_ownership_acknowledged": self.dispatcher_ownership_acknowledged,
+            "association_confirmed": self.association_confirmed,
+            "current_liveness": self.current_liveness,
+            "resumability_confirmed": self.resumability_confirmed,
             "partial": self.partial,
             "recovery_note": self.recovery_note,
             "gui_alias": self.gui_alias,
@@ -181,6 +193,12 @@ CREATE TABLE IF NOT EXISTS queue_entries (
     launch_id TEXT,
     launch_submission_state TEXT NOT NULL DEFAULT 'not_started',
     spawn_confirmed INTEGER NOT NULL DEFAULT 0,
+    reservation_id TEXT,
+    relay_spawn_acknowledged INTEGER NOT NULL DEFAULT 0,
+    dispatcher_ownership_acknowledged INTEGER NOT NULL DEFAULT 0,
+    association_confirmed INTEGER NOT NULL DEFAULT 0,
+    current_liveness TEXT NOT NULL DEFAULT 'unknown',
+    resumability_confirmed INTEGER NOT NULL DEFAULT 0,
     partial INTEGER NOT NULL DEFAULT 0,
     recovery_note TEXT,
     gui_alias TEXT,
@@ -238,10 +256,29 @@ class RestorationQueue:
         finally:
             conn.close()
 
+    def _ensure_schema_migrations(self, conn: sqlite3.Connection) -> None:
+        """Apply backward-compatible v2 -> v3 column migrations on existing SQLite projections."""
+        cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(queue_entries)").fetchall()}
+        migrations = (
+            ("reservation_id", "ALTER TABLE queue_entries ADD COLUMN reservation_id TEXT"),
+            ("relay_spawn_acknowledged", "ALTER TABLE queue_entries ADD COLUMN relay_spawn_acknowledged INTEGER NOT NULL DEFAULT 0"),
+            (
+                "dispatcher_ownership_acknowledged",
+                "ALTER TABLE queue_entries ADD COLUMN dispatcher_ownership_acknowledged INTEGER NOT NULL DEFAULT 0",
+            ),
+            ("association_confirmed", "ALTER TABLE queue_entries ADD COLUMN association_confirmed INTEGER NOT NULL DEFAULT 0"),
+            ("current_liveness", "ALTER TABLE queue_entries ADD COLUMN current_liveness TEXT NOT NULL DEFAULT 'unknown'"),
+            ("resumability_confirmed", "ALTER TABLE queue_entries ADD COLUMN resumability_confirmed INTEGER NOT NULL DEFAULT 0"),
+        )
+        for col_name, ddl in migrations:
+            if col_name not in cols:
+                conn.execute(ddl)
+
     def _ensure_initialized_locked(self) -> None:
         self._require_reconciled_locked()
         with self._open_conn() as conn:
             conn.executescript(_QUEUE_DDL)
+            self._ensure_schema_migrations(conn)
         self._sync_from_log_locked()
 
     def _read_valid_events(self) -> tuple[list[dict[str, Any]], bool]:
@@ -312,6 +349,7 @@ class RestorationQueue:
             return 0
         with self._open_conn() as conn:
             conn.executescript(_QUEUE_DDL)
+            self._ensure_schema_migrations(conn)
             row = conn.execute("SELECT value FROM queue_meta WHERE key = 'applied_seq'").fetchone()
             applied_seq = int(row["value"]) if row is not None else 0
             pending = [(idx + 1, ev) for idx, ev in enumerate(events) if (idx + 1) > applied_seq]
@@ -381,6 +419,7 @@ class RestorationQueue:
 
         with self._open_conn() as conn:
             conn.executescript(_QUEUE_DDL)
+            self._ensure_schema_migrations(conn)
             conn.execute("BEGIN IMMEDIATE")
             try:
                 self._apply_event(conn, event_type, payload)
@@ -544,6 +583,7 @@ class RestorationQueue:
         queue_entry_id: str,
         *,
         claim_token: str,
+        reservation_id: str | None = None,
     ) -> QueueEntry:
         """Record durably before spawning that a claimed entry has entered launch submission."""
         with _checkpoint_lock(self.lock_path):
@@ -561,6 +601,7 @@ class RestorationQueue:
                     "claim_token": claim_token,
                     "updated_at": now,
                     "launch_submission_state": "submitting",
+                    "reservation_id": reservation_id,
                 },
             )
             return self._load_entry_locked(queue_entry_id)
@@ -727,12 +768,25 @@ class RestorationQueue:
         launch_id: str | None = None,
         note: str | None = None,
         spawn_confirmed: bool = False,
+        relay_spawn_acknowledged: bool | None = None,
+        dispatcher_ownership_acknowledged: bool = False,
+        require_dispatcher_ownership: bool = True,
+        association_confirmed: bool = False,
+        current_liveness: str = "unknown",
+        resumability_confirmed: bool = False,
     ) -> QueueEntry:
-        """Mark a claimed/launching queue entry completed only with explicit positive spawn_confirmed=True."""
-        if not spawn_confirmed:
+        """Mark a claimed/launching entry completed only with positive spawn and (when required) ownership evidence."""
+        relay_ack = bool(spawn_confirmed if relay_spawn_acknowledged is None else relay_spawn_acknowledged)
+        if not spawn_confirmed and not relay_ack:
             raise ContinuityError(
                 ErrorCode.INVALID_INPUT,
                 "Cannot mark queue entry completed without positive spawn_confirmed=True; use mark_ambiguous instead.",
+            )
+        if require_dispatcher_ownership and not dispatcher_ownership_acknowledged:
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "Cannot mark queue entry completed without dispatcher_ownership_acknowledged=True; "
+                "use mark_ambiguous until dispatcher ownership is verified.",
             )
         with _checkpoint_lock(self.lock_path):
             self._ensure_initialized_locked()
@@ -750,6 +804,11 @@ class RestorationQueue:
                     "completed_at": now,
                     "launch_id": launch_id,
                     "spawn_confirmed": True,
+                    "relay_spawn_acknowledged": relay_ack,
+                    "dispatcher_ownership_acknowledged": bool(dispatcher_ownership_acknowledged),
+                    "association_confirmed": bool(association_confirmed),
+                    "current_liveness": str(current_liveness),
+                    "resumability_confirmed": bool(resumability_confirmed),
                     "recovery_note": note,
                 },
             )
@@ -1015,9 +1074,11 @@ class RestorationQueue:
                     queue_entry_id, checkpoint_id, slot_id, gui_id, provider,
                     native_session_id, environment_id, runtime_kind, status,
                     created_at, updated_at, attempts, launch_submission_state, spawn_confirmed,
+                    reservation_id, relay_spawn_acknowledged, dispatcher_ownership_acknowledged,
+                    association_confirmed, current_liveness, resumability_confirmed,
                     partial, gui_alias, slot_name,
                     worktree_json, launch_settings_json, requested_topology_json, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     payload["queue_entry_id"],
                     payload["checkpoint_id"],
@@ -1033,6 +1094,12 @@ class RestorationQueue:
                     int(payload.get("attempts", 0)),
                     payload.get("launch_submission_state", "not_started"),
                     1 if payload.get("spawn_confirmed") else 0,
+                    payload.get("reservation_id"),
+                    1 if payload.get("relay_spawn_acknowledged") else 0,
+                    1 if payload.get("dispatcher_ownership_acknowledged") else 0,
+                    1 if payload.get("association_confirmed") else 0,
+                    str(payload.get("current_liveness", "unknown")),
+                    1 if payload.get("resumability_confirmed") else 0,
                     1 if payload.get("partial") else 0,
                     payload.get("gui_alias"),
                     payload.get("slot_name"),
@@ -1065,12 +1132,14 @@ class RestorationQueue:
         elif event_type == "queue.launching":
             conn.execute(
                 """UPDATE queue_entries
-                   SET status = ?, updated_at = ?, launch_submission_state = ?
+                   SET status = ?, updated_at = ?, launch_submission_state = ?,
+                       reservation_id = COALESCE(?, reservation_id)
                    WHERE queue_entry_id = ?""",
                 (
                     QueueEntryStatus.LAUNCHING.value,
                     payload["updated_at"],
                     payload.get("launch_submission_state", "submitting"),
+                    payload.get("reservation_id"),
                     payload["queue_entry_id"],
                 ),
             )
@@ -1140,6 +1209,11 @@ class RestorationQueue:
                        launch_id = COALESCE(?, launch_id),
                        launch_submission_state = 'accepted',
                        spawn_confirmed = ?,
+                       relay_spawn_acknowledged = ?,
+                       dispatcher_ownership_acknowledged = ?,
+                       association_confirmed = ?,
+                       current_liveness = ?,
+                       resumability_confirmed = ?,
                        partial = 0,
                        recovery_note = COALESCE(?, recovery_note)
                    WHERE queue_entry_id = ?""",
@@ -1149,6 +1223,11 @@ class RestorationQueue:
                     payload["completed_at"],
                     payload.get("launch_id"),
                     1 if payload.get("spawn_confirmed", True) else 0,
+                    1 if payload.get("relay_spawn_acknowledged", payload.get("spawn_confirmed", True)) else 0,
+                    1 if payload.get("dispatcher_ownership_acknowledged", False) else 0,
+                    1 if payload.get("association_confirmed", False) else 0,
+                    str(payload.get("current_liveness", "unknown")),
+                    1 if payload.get("resumability_confirmed", False) else 0,
                     payload.get("recovery_note"),
                     payload["queue_entry_id"],
                 ),
@@ -1197,6 +1276,7 @@ class RestorationQueue:
             )
 
     def _row_to_entry(self, row: sqlite3.Row) -> QueueEntry:
+        row_keys = set(row.keys())
         worktree_raw = json.loads(row["worktree_json"]) if row["worktree_json"] else None
         settings_raw = json.loads(row["launch_settings_json"]) if row["launch_settings_json"] else {}
         topology_raw = json.loads(row["requested_topology_json"]) if row["requested_topology_json"] else None
@@ -1221,6 +1301,16 @@ class RestorationQueue:
             launch_id=str(row["launch_id"]) if row["launch_id"] is not None else None,
             launch_submission_state=str(row["launch_submission_state"]),
             spawn_confirmed=bool(row["spawn_confirmed"]),
+            reservation_id=str(row["reservation_id"]) if "reservation_id" in row_keys and row["reservation_id"] is not None else None,
+            relay_spawn_acknowledged=(
+                bool(row["relay_spawn_acknowledged"]) if "relay_spawn_acknowledged" in row_keys else bool(row["spawn_confirmed"])
+            ),
+            dispatcher_ownership_acknowledged=(
+                bool(row["dispatcher_ownership_acknowledged"]) if "dispatcher_ownership_acknowledged" in row_keys else False
+            ),
+            association_confirmed=bool(row["association_confirmed"]) if "association_confirmed" in row_keys else False,
+            current_liveness=str(row["current_liveness"]) if "current_liveness" in row_keys and row["current_liveness"] is not None else "unknown",
+            resumability_confirmed=bool(row["resumability_confirmed"]) if "resumability_confirmed" in row_keys else False,
             partial=bool(row["partial"]),
             recovery_note=str(row["recovery_note"]) if row["recovery_note"] is not None else None,
             gui_alias=str(row["gui_alias"]) if row["gui_alias"] is not None else None,

@@ -32,6 +32,7 @@ from .workspace_checkpoint import (
     preview_checkpoint,
     revalidate_checkpoint,
 )
+from .workspace_ownership import RestorationReservation, RestorationReservationStore
 
 RESTORE_RECOVERY_SCHEMA_VERSION = 2
 
@@ -750,6 +751,8 @@ class RestoreLaunchRequest:
     launch_settings: dict[str, Any]
     requested_topology: WorkspaceTopologyRequest | None
     metadata: WorkspaceSlotMetadata
+    reservation_id: str | None = None
+    reservation_token: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -762,7 +765,10 @@ class RestoreLaunchOutcome:
     terminal_session_id: str | None = None
     failure_reason: str | None = None
     spawn_confirmed: bool | None = None
+    relay_spawn_acknowledged: bool = False
+    dispatcher_ownership_acknowledged: bool = False
     association_confirmed: bool = False
+    current_liveness: str = "unknown"
     resumability_confirmed: bool = False
     submission_ambiguous: bool = False
     geometry_fallback_used: bool = False
@@ -885,7 +891,10 @@ class RestoreItemOutcome:
     reason: str | None = None
     launch_accepted: bool = False
     spawn_confirmed: bool = False
+    relay_spawn_acknowledged: bool = False
+    dispatcher_ownership_acknowledged: bool = False
     association_confirmed: bool = False
+    current_liveness: str = "unknown"
     resumability_confirmed: bool = False
     geometry_fallback_used: bool = False
     requested_topology: WorkspaceTopologyRequest | None = None
@@ -899,7 +908,10 @@ class RestoreItemOutcome:
             "reason": self.reason,
             "launch_accepted": self.launch_accepted,
             "spawn_confirmed": self.spawn_confirmed,
+            "relay_spawn_acknowledged": self.relay_spawn_acknowledged,
+            "dispatcher_ownership_acknowledged": self.dispatcher_ownership_acknowledged,
             "association_confirmed": self.association_confirmed,
+            "current_liveness": self.current_liveness,
             "resumability_confirmed": self.resumability_confirmed,
             "geometry_fallback_used": self.geometry_fallback_used,
             "requested_topology": self.requested_topology.to_dict() if self.requested_topology else None,
@@ -1076,6 +1088,8 @@ class TopologyRestorer:
         allow_unknown_runtime: bool = False,
         allow_reserved_claude: bool = False,
         gui_scope: str | None = None,
+        reservation_store: RestorationReservationStore | None = None,
+        require_dispatcher_ownership: bool = True,
     ) -> RestoreReport:
         """Execute an authorized restore plan with execution-boundary revalidation and durable recovery."""
         if not authorized:
@@ -1117,10 +1131,20 @@ class TopologyRestorer:
             q_id: str | None,
             claim_token: str | None,
             launch_res: RestoreLaunchOutcome,
+            *,
+            reservation_id: str | None = None,
         ) -> RestoreItemOutcome:
             nonlocal any_uncertain_or_failed, any_succeeded
             if launch_res.submission_ambiguous:
                 fail_reason = launch_res.failure_reason or "submission_ambiguous"
+                if reservation_store is not None and reservation_id is not None:
+                    with contextlib.suppress(Exception):
+                        reservation_store.mark_ambiguous(
+                            reservation_id,
+                            reason=fail_reason,
+                            launch_id=launch_res.launch_id,
+                            pane_id=launch_res.pane_id,
+                        )
                 if queue is not None and q_id is not None and claim_token is not None:
                     queue.mark_ambiguous(
                         q_id,
@@ -1137,11 +1161,17 @@ class TopologyRestorer:
                     reason=fail_reason,
                     launch_accepted=launch_res.accepted,
                     spawn_confirmed=False,
+                    relay_spawn_acknowledged=False,
+                    dispatcher_ownership_acknowledged=False,
+                    current_liveness=launch_res.current_liveness,
                     geometry_fallback_used=launch_res.geometry_fallback_used,
                     requested_topology=item.requested_topology,
                 )
             if not launch_res.accepted:
                 fail_reason = launch_res.failure_reason or "launch_rejected"
+                if reservation_store is not None and reservation_id is not None:
+                    with contextlib.suppress(Exception):
+                        reservation_store.abort_reservation(reservation_id, reason=fail_reason)
                 if queue is not None and q_id is not None and claim_token is not None:
                     queue.record_failure(q_id, claim_token=claim_token, reason=fail_reason, partial=True)
                 any_uncertain_or_failed = True
@@ -1152,6 +1182,9 @@ class TopologyRestorer:
                     reason=fail_reason,
                     launch_accepted=False,
                     spawn_confirmed=False,
+                    relay_spawn_acknowledged=False,
+                    dispatcher_ownership_acknowledged=False,
+                    current_liveness=launch_res.current_liveness,
                     geometry_fallback_used=launch_res.geometry_fallback_used,
                     requested_topology=item.requested_topology,
                 )
@@ -1162,10 +1195,25 @@ class TopologyRestorer:
             )
             spawn_confirmed = bool(
                 launch_res.spawn_confirmed is True
+                or launch_res.relay_spawn_acknowledged
                 or (observed_receipt is not None and observed_receipt.spawn_acknowledged)
             )
-            if not spawn_confirmed:
-                uncertain_reason = launch_res.failure_reason or "launch_accepted_spawn_unconfirmed"
+            relay_ack = bool(launch_res.relay_spawn_acknowledged or spawn_confirmed)
+            dispatcher_ack = bool(launch_res.dispatcher_ownership_acknowledged)
+            if not spawn_confirmed or (require_dispatcher_ownership and not dispatcher_ack):
+                uncertain_reason = launch_res.failure_reason or (
+                    "launch_accepted_spawn_unconfirmed"
+                    if not spawn_confirmed
+                    else "relay_spawned_dispatcher_ownership_unconfirmed"
+                )
+                if reservation_store is not None and reservation_id is not None:
+                    with contextlib.suppress(Exception):
+                        reservation_store.mark_ambiguous(
+                            reservation_id,
+                            reason=uncertain_reason,
+                            launch_id=launch_res.launch_id,
+                            pane_id=launch_res.pane_id,
+                        )
                 if queue is not None and q_id is not None and claim_token is not None:
                     queue.mark_ambiguous(
                         q_id,
@@ -1181,8 +1229,11 @@ class TopologyRestorer:
                     status="accepted_unconfirmed",
                     reason=uncertain_reason,
                     launch_accepted=True,
-                    spawn_confirmed=False,
+                    spawn_confirmed=spawn_confirmed,
+                    relay_spawn_acknowledged=relay_ack,
+                    dispatcher_ownership_acknowledged=dispatcher_ack,
                     association_confirmed=launch_res.association_confirmed,
+                    current_liveness=launch_res.current_liveness,
                     resumability_confirmed=launch_res.resumability_confirmed,
                     geometry_fallback_used=launch_res.geometry_fallback_used,
                     requested_topology=item.requested_topology,
@@ -1194,6 +1245,12 @@ class TopologyRestorer:
                     claim_token=claim_token,
                     launch_id=launch_res.launch_id,
                     spawn_confirmed=True,
+                    relay_spawn_acknowledged=relay_ack,
+                    dispatcher_ownership_acknowledged=dispatcher_ack,
+                    require_dispatcher_ownership=require_dispatcher_ownership,
+                    association_confirmed=launch_res.association_confirmed,
+                    current_liveness=launch_res.current_liveness,
+                    resumability_confirmed=launch_res.resumability_confirmed,
                 )
             any_succeeded = True
             return RestoreItemOutcome(
@@ -1202,7 +1259,10 @@ class TopologyRestorer:
                 status="restored",
                 launch_accepted=True,
                 spawn_confirmed=True,
+                relay_spawn_acknowledged=relay_ack,
+                dispatcher_ownership_acknowledged=dispatcher_ack,
                 association_confirmed=launch_res.association_confirmed,
+                current_liveness=launch_res.current_liveness,
                 resumability_confirmed=launch_res.resumability_confirmed,
                 geometry_fallback_used=launch_res.geometry_fallback_used,
                 requested_topology=item.requested_topology,
@@ -1362,8 +1422,28 @@ class TopologyRestorer:
                             )
                             continue
 
+                    reservation: RestorationReservation | None = None
+                    if reservation_store is not None:
+                        q_attempts = q_entry.attempts + 1 if q_entry is not None else 1
+                        reservation = reservation_store.create_reservation(
+                            checkpoint_id=plan.checkpoint_id,
+                            queue_entry_id=q_id,
+                            attempt=q_attempts,
+                            slot_id=item.slot_id,
+                            gui_id=item.gui_id,
+                            provider=item.provider,
+                            native_session_id=item.native_session_id,
+                            environment_id=item.environment_id,
+                            runtime_kind=item.runtime_kind,
+                            operator_id=operator_id,
+                        )
+
                     if queue is not None and q_id is not None and claim_token is not None:
-                        queue.mark_launching(q_id, claim_token=claim_token)
+                        queue.mark_launching(
+                            q_id,
+                            claim_token=claim_token,
+                            reservation_id=reservation.reservation_id if reservation is not None else None,
+                        )
                         marked_launching = True
 
                     launch_req = RestoreLaunchRequest(
@@ -1379,6 +1459,8 @@ class TopologyRestorer:
                         launch_settings=dict(item.launch_settings),
                         requested_topology=item.requested_topology,
                         metadata=item.metadata,
+                        reservation_id=reservation.reservation_id if reservation is not None else None,
+                        reservation_token=reservation.reservation_token if reservation is not None else None,
                     )
 
                     if use_grouped:
@@ -1390,6 +1472,9 @@ class TopologyRestorer:
                         launch_res = launcher.launch_session(launch_req)
                     except Exception as exc:
                         fail_reason = f"launcher_exception:{type(exc).__name__}:{exc}"
+                        if reservation_store is not None and reservation is not None:
+                            with contextlib.suppress(Exception):
+                                reservation_store.mark_ambiguous(reservation.reservation_id, reason=fail_reason)
                         if queue is not None and q_id is not None and claim_token is not None:
                             queue.mark_ambiguous(
                                 q_id,
@@ -1409,7 +1494,15 @@ class TopologyRestorer:
                         )
                         continue
 
-                    outcomes.append(_finalize_launch_outcome(item, q_id, claim_token, launch_res))
+                    outcomes.append(
+                        _finalize_launch_outcome(
+                            item,
+                            q_id,
+                            claim_token,
+                            launch_res,
+                            reservation_id=reservation.reservation_id if reservation is not None else None,
+                        )
+                    )
                 except Exception:
                     if not keep_lease_for_batch and queue is not None and q_id is not None and claim_token is not None:
                         if marked_launching:
@@ -1433,7 +1526,10 @@ class TopologyRestorer:
                     grouped_results = launcher.launch_grouped(batch_reqs)  # type: ignore[attr-defined]
                 except Exception as exc:
                     fail_reason = f"launcher_exception:{type(exc).__name__}:{exc}"
-                    for item, q_id, claim_token, _lease, _req in prepared_batch:
+                    for item, q_id, claim_token, _lease, req in prepared_batch:
+                        if reservation_store is not None and req.reservation_id is not None:
+                            with contextlib.suppress(Exception):
+                                reservation_store.mark_ambiguous(req.reservation_id, reason=fail_reason)
                         if queue is not None and q_id is not None and claim_token is not None:
                             queue.mark_ambiguous(
                                 q_id,
@@ -1452,9 +1548,15 @@ class TopologyRestorer:
                             )
                         )
                 else:
-                    for item, q_id, claim_token, _lease, _req in prepared_batch:
+                    for item, q_id, claim_token, _lease, req in prepared_batch:
                         res = grouped_results.get(item.slot_id)
                         if res is None:
+                            if reservation_store is not None and req.reservation_id is not None:
+                                with contextlib.suppress(Exception):
+                                    reservation_store.mark_ambiguous(
+                                        req.reservation_id,
+                                        reason="missing_grouped_launch_outcome",
+                                    )
                             if queue is not None and q_id is not None and claim_token is not None:
                                 queue.mark_ambiguous(
                                     q_id,
@@ -1473,7 +1575,15 @@ class TopologyRestorer:
                                 )
                             )
                         else:
-                            outcomes.append(_finalize_launch_outcome(item, q_id, claim_token, res))
+                            outcomes.append(
+                                _finalize_launch_outcome(
+                                    item,
+                                    q_id,
+                                    claim_token,
+                                    res,
+                                    reservation_id=req.reservation_id,
+                                )
+                            )
         except Exception:
             if not batch_dispatched and prepared_batch and queue is not None:
                 for _item, q_id, claim_token, _lease, _req in prepared_batch:
@@ -1592,6 +1702,7 @@ class WorkspaceCheckpointCoordinator:
         *,
         managed_store: ManagedShutdownStoreProtocol | None = None,
         slot_guard: SlotExecutionGuard | None = None,
+        reservation_store: RestorationReservationStore | None = None,
     ) -> None:
         self.root_dir = Path(root_dir)
         self.checkpoints = CheckpointStore(self.root_dir)
@@ -1600,6 +1711,7 @@ class WorkspaceCheckpointCoordinator:
         self.restorer = TopologyRestorer()
         self.managed_store = managed_store
         self.slot_guard = slot_guard
+        self.reservation_store = reservation_store or RestorationReservationStore(self.root_dir)
 
     def preview_save(
         self,
@@ -1702,6 +1814,7 @@ class WorkspaceCheckpointCoordinator:
         allow_unknown_runtime: bool = False,
         authorization_check: Callable[[RestorePlanItem], tuple[bool, str | None]] | None = None,
         gui_scope: str | None = None,
+        require_dispatcher_ownership: bool = True,
     ) -> RestoreReport:
         checkpoint = self.checkpoints.get_checkpoint(checkpoint_id)
         plan = self.restorer.preview_restore(
@@ -1736,4 +1849,6 @@ class WorkspaceCheckpointCoordinator:
             allow_unknown_runtime=allow_unknown_runtime,
             allow_reserved_claude=allow_reserved_claude,
             gui_scope=gui_scope,
+            reservation_store=self.reservation_store,
+            require_dispatcher_ownership=require_dispatcher_ownership,
         )

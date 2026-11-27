@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import contextlib
-import os
 import shutil
+import subprocess
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
@@ -32,6 +33,7 @@ from .workspace_lifecycle import (
     RestorePlanItem,
     SlotGuardLease,
 )
+from .workspace_ownership import ReservationSlotExecutionGuard, RestorationReservationStore
 
 _PROVIDER_ALLOWED_SETTINGS: dict[str, frozenset[str]] = {
     "codex": frozenset({"model", "sandbox", "approval_policy", "reasoning_effort", "search", "add_dirs", "profile"}),
@@ -326,11 +328,14 @@ class DispatcherWorkspaceAdapter:
 
 
 class DispatcherSlotExecutionGuard:
-    """Cooperating cross-process per-slot exclusion lock under <home_dir>/locks/."""
+    """Cooperating cross-process per-slot exclusion lock aligned with canonical slot-<slot_id>.lock."""
 
-    def __init__(self, home_dir: Path) -> None:
-        self.locks_dir = Path(home_dir) / "locks"
-        self._handles: dict[str, Any] = {}
+    def __init__(self, home_dir: Path, *, blocking: bool = False, timeout_seconds: float = 5.0) -> None:
+        self._guard = ReservationSlotExecutionGuard(
+            home_dir,
+            blocking=blocking,
+            timeout_seconds=timeout_seconds,
+        )
 
     def acquire_slot(
         self,
@@ -340,60 +345,42 @@ class DispatcherSlotExecutionGuard:
         checkpoint_id: str,
         queue_entry_id: str | None,
     ) -> SlotGuardLease:
-        self.locks_dir.mkdir(parents=True, exist_ok=True)
-        lock_path = self.locks_dir / f"slot_{slot_id}.lock"
-        stream = lock_path.open("a+b")
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            stream.close()
-            return SlotGuardLease(
-                slot_id=slot_id,
-                lease_token="",
-                acquired=False,
-                reason="slot_lock_held",
-            )
-        token = generate_id("sgl")
-        self._handles[token] = stream
-        return SlotGuardLease(
-            slot_id=slot_id,
-            lease_token=token,
-            acquired=True,
-            reason="acquired",
+        return self._guard.acquire_slot(
+            slot_id,
+            operator_id=operator_id,
+            checkpoint_id=checkpoint_id,
+            queue_entry_id=queue_entry_id,
         )
 
     def release_slot(self, lease: SlotGuardLease) -> None:
-        stream = self._handles.pop(lease.lease_token, None)
-        if stream is None:
-            return
-        try:
-            if os.name == "nt":
-                import msvcrt
+        self._guard.release_slot(lease)
 
-                with contextlib.suppress(OSError):
-                    stream.seek(0)
-                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
 
-                with contextlib.suppress(OSError):
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
-        finally:
-            stream.close()
+def _installed_llmd_matches_package_version(exe: str) -> bool:
+    """Return True only when the installed `llmd` binary matches this package's version."""
+    try:
+        from . import __version__
+
+        proc = subprocess.run(
+            [exe, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except Exception:
+        return False
+    if proc.returncode != 0:
+        return False
+    output = f"{proc.stdout}\n{proc.stderr}"
+    return __version__ in output
 
 
 def canonical_llmd_dispatcher_entrypoint(*, prefer_installed: bool = True) -> tuple[str, ...]:
     """Return the canonical `llmd` dispatcher entry point (never legacy `python -m agent_continuity`)."""
     if prefer_installed:
         exe = shutil.which("llmd")
-        if exe:
+        if exe and _installed_llmd_matches_package_version(exe):
             return (exe,)
     return (
         sys.executable,
@@ -423,12 +410,13 @@ def build_manual_restore_command(
     home_dir: Path | None = None,
     prefer_llmd: bool = True,
     exact_llmd_supported: bool = False,
+    allow_direct_native_fallback: bool = False,
 ) -> list[str]:
     """Build a manual exact-session restoration command.
 
-    Canonical `llmd continue` currently resumes the slot's selected session without
-    CLI-level exact-session assertions. Unless `exact_llmd_supported=True`, emit
-    exact-ID native resume commands so manual recovery never resumes a drifted slot.
+    Unless `exact_llmd_supported=True`, `llmd continue` cannot assert exact
+    provider/session/environment identity, so callers must either opt into
+    `allow_direct_native_fallback=True` (`--direct-native`) or fail closed.
     """
     if prefer_llmd and exact_llmd_supported:
         argv = ["llmd", "continue"]
@@ -449,6 +437,13 @@ def build_manual_restore_command(
             ]
         )
         return argv
+    if prefer_llmd and not allow_direct_native_fallback:
+        raise ContinuityError(
+            ErrorCode.RESUME_UNSUPPORTED,
+            "Exact-session `llmd continue` restoration is not yet supported by the installed dispatcher; "
+            "pass allow_direct_native_fallback=True (--direct-native) to emit an unmanaged native resume command.",
+            {"slot_id": item.slot_id, "provider": item.provider},
+        )
 
     settings = validate_provider_launch_settings(item.provider, item.launch_settings, strict=False)
     if item.provider == "codex":
@@ -495,7 +490,8 @@ class TerminalLauncherRestoreAdapter:
         command_builder: DispatcherLaunchCommandBuilder | None = None,
         ownership_verifier: DispatcherOwnershipVerifier | None = None,
         require_exact_session_support: bool = True,
-        require_dispatcher_ownership: bool = False,
+        require_dispatcher_ownership: bool = True,
+        reservation_store: RestorationReservationStore | None = None,
         default_window: str = "llmd-restore",
         startup_timeout: float = 2.0,
         submission_timeout: float = 10.0,
@@ -507,6 +503,9 @@ class TerminalLauncherRestoreAdapter:
         self.ownership_verifier = ownership_verifier
         self.require_exact_session_support = require_exact_session_support
         self.require_dispatcher_ownership = require_dispatcher_ownership
+        self.reservation_store = reservation_store or (
+            RestorationReservationStore(home_dir) if home_dir is not None else None
+        )
         self.default_window = default_window
         self.startup_timeout = startup_timeout
         self.submission_timeout = submission_timeout
@@ -544,49 +543,91 @@ class TerminalLauncherRestoreAdapter:
         startup_timed_out: bool,
     ) -> RestoreLaunchOutcome:
         relay_spawn_ok = bool(rec is not None and getattr(rec, "spawn_acknowledged", False))
+        raw_state = getattr(rec, "state", None)
+        current_liveness = str(getattr(raw_state, "value", raw_state) or "unknown")
         ownership_ok = False
         association_ok = False
         if relay_spawn_ok and self.ownership_verifier is not None:
-            try:
-                ownership_ok, association_ok = self.ownership_verifier.verify_ownership(
-                    req, launch_id=launch_id, pane_id=pane_id
-                )
-            except Exception as exc:
-                return RestoreLaunchOutcome(
-                    accepted=True,
-                    launch_id=launch_id,
-                    pane_id=pane_id,
-                    failure_reason=f"ownership_verification_error:{type(exc).__name__}:{exc}",
-                    spawn_confirmed=False,
-                    association_confirmed=False,
-                    resumability_confirmed=False,
-                    submission_ambiguous=True,
-                    geometry_fallback_used=used_fallback,
-                )
+            deadline = time.monotonic() + min(max(self.startup_timeout, 0.1), 2.0)
+            while True:
+                try:
+                    ownership_ok, association_ok = self.ownership_verifier.verify_ownership(
+                        req, launch_id=launch_id, pane_id=pane_id
+                    )
+                except Exception as exc:
+                    if self.reservation_store is not None and req.reservation_id:
+                        with contextlib.suppress(Exception):
+                            self.reservation_store.mark_ambiguous(
+                                req.reservation_id,
+                                reason=f"ownership_verification_error:{type(exc).__name__}:{exc}",
+                                launch_id=launch_id,
+                                pane_id=pane_id,
+                            )
+                    return RestoreLaunchOutcome(
+                        accepted=True,
+                        launch_id=launch_id,
+                        pane_id=pane_id,
+                        failure_reason=f"ownership_verification_error:{type(exc).__name__}:{exc}",
+                        spawn_confirmed=relay_spawn_ok,
+                        relay_spawn_acknowledged=relay_spawn_ok,
+                        dispatcher_ownership_acknowledged=False,
+                        association_confirmed=False,
+                        current_liveness=current_liveness,
+                        resumability_confirmed=False,
+                        submission_ambiguous=True,
+                        geometry_fallback_used=used_fallback,
+                    )
+                if ownership_ok or not self.require_dispatcher_ownership or not getattr(req, "reservation_id", None):
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.025)
 
         if not relay_spawn_ok:
+            if self.reservation_store is not None and req.reservation_id:
+                with contextlib.suppress(Exception):
+                    self.reservation_store.mark_ambiguous(
+                        req.reservation_id,
+                        reason="relay_startup_timed_out" if startup_timed_out else "relay_spawn_unconfirmed",
+                        launch_id=launch_id,
+                        pane_id=pane_id,
+                    )
             return RestoreLaunchOutcome(
                 accepted=True,
                 launch_id=launch_id,
                 pane_id=pane_id,
                 failure_reason="relay_startup_timed_out" if startup_timed_out else "relay_spawn_unconfirmed",
                 spawn_confirmed=False,
+                relay_spawn_acknowledged=False,
+                dispatcher_ownership_acknowledged=False,
                 association_confirmed=False,
+                current_liveness=current_liveness,
                 resumability_confirmed=False,
                 submission_ambiguous=False,
                 geometry_fallback_used=used_fallback,
             )
 
         if self.require_dispatcher_ownership and not ownership_ok:
+            if self.reservation_store is not None and req.reservation_id:
+                with contextlib.suppress(Exception):
+                    self.reservation_store.mark_ambiguous(
+                        req.reservation_id,
+                        reason="dispatcher_ownership_unconfirmed",
+                        launch_id=launch_id,
+                        pane_id=pane_id,
+                    )
             return RestoreLaunchOutcome(
                 accepted=True,
                 launch_id=launch_id,
                 pane_id=pane_id,
                 failure_reason="dispatcher_ownership_unconfirmed",
-                spawn_confirmed=False,
-                association_confirmed=False,
+                spawn_confirmed=True,
+                relay_spawn_acknowledged=True,
+                dispatcher_ownership_acknowledged=False,
+                association_confirmed=association_ok,
+                current_liveness=current_liveness,
                 resumability_confirmed=False,
-                submission_ambiguous=True,
+                submission_ambiguous=False,
                 geometry_fallback_used=used_fallback,
             )
 
@@ -595,7 +636,10 @@ class TerminalLauncherRestoreAdapter:
             launch_id=launch_id,
             pane_id=pane_id,
             spawn_confirmed=True,
+            relay_spawn_acknowledged=True,
+            dispatcher_ownership_acknowledged=ownership_ok,
             association_confirmed=association_ok,
+            current_liveness=current_liveness,
             resumability_confirmed=False,
             submission_ambiguous=False,
             geometry_fallback_used=used_fallback,
@@ -699,6 +743,15 @@ class TerminalLauncherRestoreAdapter:
             plan = TerminalLaunchPlan(tabs=tuple(tabs), target_window=target_window)
             launch_id = generate_id("tlaunch")
 
+            if self.reservation_store is not None:
+                for tab_idx, pane_idx, req, _used_fallback in slot_order:
+                    if req.reservation_id:
+                        self.reservation_store.bind_launch(
+                            req.reservation_id,
+                            launch_id=launch_id,
+                            pane_id=f"{launch_id}:{tab_idx}:{pane_idx}",
+                        )
+
             if callable(getattr(self.backend, "launch_managed", None)):
                 managed_res = self.backend.launch_managed(
                     plan,
@@ -713,6 +766,12 @@ class TerminalLauncherRestoreAdapter:
                     pane_id = f"{launch_id}:{tab_idx}:{pane_idx}"
                     rec = pane_by_id.get(pane_id)
                     if sub.status is LaunchStatus.FAILED:
+                        if self.reservation_store is not None and req.reservation_id:
+                            with contextlib.suppress(Exception):
+                                self.reservation_store.abort_reservation(
+                                    req.reservation_id,
+                                    reason=sub.diagnostic or "managed_launch_rejected",
+                                )
                         outcomes[req.slot_id] = RestoreLaunchOutcome(
                             accepted=False,
                             launch_id=launch_id,
@@ -723,6 +782,14 @@ class TerminalLauncherRestoreAdapter:
                             geometry_fallback_used=used_fallback,
                         )
                     elif sub.status is LaunchStatus.AMBIGUOUS:
+                        if self.reservation_store is not None and req.reservation_id:
+                            with contextlib.suppress(Exception):
+                                self.reservation_store.mark_ambiguous(
+                                    req.reservation_id,
+                                    reason=sub.diagnostic or "managed_submission_ambiguous",
+                                    launch_id=launch_id,
+                                    pane_id=pane_id,
+                                )
                         outcomes[req.slot_id] = RestoreLaunchOutcome(
                             accepted=False,
                             launch_id=launch_id,
@@ -778,6 +845,12 @@ class TerminalLauncherRestoreAdapter:
                         launch_id, LaunchSubmissionState.REJECTED, failure_code=sub.diagnostic or "launch_failed"
                     )
                     for tab_idx, pane_idx, req, used_fallback in slot_order:
+                        if self.reservation_store is not None and req.reservation_id:
+                            with contextlib.suppress(Exception):
+                                self.reservation_store.abort_reservation(
+                                    req.reservation_id,
+                                    reason=sub.diagnostic or "backend_rejected",
+                                )
                         outcomes[req.slot_id] = RestoreLaunchOutcome(
                             accepted=False,
                             launch_id=launch_id,
@@ -792,10 +865,19 @@ class TerminalLauncherRestoreAdapter:
                         launch_id, LaunchSubmissionState.AMBIGUOUS, failure_code=sub.diagnostic or "launch_ambiguous"
                     )
                     for tab_idx, pane_idx, req, used_fallback in slot_order:
+                        pane_id = f"{launch_id}:{tab_idx}:{pane_idx}"
+                        if self.reservation_store is not None and req.reservation_id:
+                            with contextlib.suppress(Exception):
+                                self.reservation_store.mark_ambiguous(
+                                    req.reservation_id,
+                                    reason=sub.diagnostic or "submission_ambiguous",
+                                    launch_id=launch_id,
+                                    pane_id=pane_id,
+                                )
                         outcomes[req.slot_id] = RestoreLaunchOutcome(
                             accepted=False,
                             launch_id=launch_id,
-                            pane_id=f"{launch_id}:{tab_idx}:{pane_idx}",
+                            pane_id=pane_id,
                             failure_reason=sub.diagnostic or "submission_ambiguous",
                             spawn_confirmed=False,
                             submission_ambiguous=True,

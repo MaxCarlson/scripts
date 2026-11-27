@@ -298,7 +298,13 @@ def test_restoration_queue_dedup_concurrent_claim_and_rebuild_preserves_unresolv
     second_id = first.enqueued[1].queue_entry_id
     c2 = queue.claim(second_id, operator_id="op_done")
     assert c2.claim_token is not None
-    queue.complete(second_id, claim_token=c2.claim_token, launch_id="tlaunch_9", spawn_confirmed=True)
+    queue.complete(
+        second_id,
+        claim_token=c2.claim_token,
+        launch_id="tlaunch_9",
+        spawn_confirmed=True,
+        dispatcher_ownership_acknowledged=True,
+    )
 
     queue.db_path.unlink()
     replayed = queue.rebuild_index()
@@ -529,6 +535,7 @@ def test_topology_restorer_and_coordinator_save_restore_partial_recovery(tmp_pat
                     launch_id="tlaunch_restored",
                     pane_id="pane_restored_1",
                     terminal_session_id="term_r1",
+                    dispatcher_ownership_acknowledged=True,
                 )
             return RestoreLaunchOutcome(accepted=False, failure_reason="provider_start_failed")
 
@@ -1250,6 +1257,7 @@ def test_under_guard_stale_input_race_and_windows_partial_enumeration(tmp_path: 
         observers=obs_partial,
         allow_unknown_runtime=True,
         recovery_dir=tmp_path / "restores",
+        require_dispatcher_ownership=False,
     )
     assert launcher.launched == ["s_partial_win"]
     by_slot = {o.slot_id: o for o in report.outcomes}

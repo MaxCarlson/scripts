@@ -6,6 +6,7 @@ import argparse
 import io
 import json
 import os
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from terminal_launcher.managed import (
 
 from agent_continuity.dispatcher import DispatcherService
 from agent_continuity.environment import detect_runtime_kind
+from agent_continuity.errors import ContinuityError
 from agent_continuity.runtime_discovery import (
     EvidenceAvailability,
     ProcessInventory,
@@ -233,10 +235,23 @@ def test_e2e_save_restart_restore_with_real_dispatcher_and_terminal_launcher(tmp
     assert handle_checkpoints(parser.parse_args(["checkpoints", "list", "-j"]), dispatcher=fresh_dispatcher, stream=buf) == 0
     assert json.loads(buf.getvalue())["checkpoints"][0]["checkpoint_id"] == chk_id
 
-    # Manual restore preview (-m -j) emits manual commands for Codex/AGY and blocks reserved Claude
+    # Manual restore preview (-m -j) fails closed without -N; -m -N -j emits manual commands for Codex/AGY and blocks reserved Claude
     buf = io.StringIO()
     assert handle_restore(
         parser.parse_args(["restore", "-c", chk_id, "-m", "-j"]),
+        dispatcher=fresh_dispatcher,
+        managed_store=fresh_tl_store,
+        observers=obs_after,
+        stream=buf,
+    ) == 0
+    manual_blocked_json = json.loads(buf.getvalue())
+    assert manual_blocked_json["manual_commands"] == {}
+    assert ids["codex_slot"] in manual_blocked_json["manual_command_errors"]
+    assert ids["agy_slot"] in manual_blocked_json["manual_command_errors"]
+
+    buf = io.StringIO()
+    assert handle_restore(
+        parser.parse_args(["restore", "-c", chk_id, "-m", "-N", "-j"]),
         dispatcher=fresh_dispatcher,
         managed_store=fresh_tl_store,
         observers=obs_after,
@@ -282,6 +297,7 @@ def test_e2e_save_restart_restore_with_real_dispatcher_and_terminal_launcher(tmp
         backend=_FakeBackend(),
         managed_store=fresh_tl_store,
         home_dir=home_dir,
+        require_dispatcher_ownership=False,
         command_builder=type(
             "_CmdBuilder",
             (),
@@ -533,6 +549,7 @@ def test_real_managed_relay_grouped_restoration_and_failure_modes(tmp_path: Path
         backend=backend,
         managed_store=tl_store,
         command_builder=_HarmlessCmdBuilder(),
+        require_dispatcher_ownership=False,
         startup_timeout=5.0,
     )
     obs_after = RuntimeDiscovery(environment_id=ids["env_id"], runtime_kind=detect_runtime_kind(), process_enumerator=_StaticEnumerator(()))
@@ -548,6 +565,7 @@ def test_real_managed_relay_grouped_restoration_and_failure_modes(tmp_path: Path
         slot_guard=DispatcherSlotExecutionGuard(home_dir),
         current_slots=[slot_a, slot_b],
         observers=obs_after,
+        require_dispatcher_ownership=False,
     )
     for proc in spawned_relays:
         proc.wait(timeout=5.0)
@@ -633,7 +651,13 @@ def test_adapter_safety_floor_011_gui_scope_and_queue_recovery_gates(
             from agent_continuity.workspace_lifecycle import RestoreLaunchOutcome
 
             self.launched.append(request.slot_id)
-            return RestoreLaunchOutcome(accepted=True, launch_id="tl_g", pane_id="p_g", spawn_confirmed=True)
+            return RestoreLaunchOutcome(
+                accepted=True,
+                launch_id="tl_g",
+                pane_id="p_g",
+                spawn_confirmed=True,
+                dispatcher_ownership_acknowledged=True,
+            )
 
     obs_after = RuntimeDiscovery(environment_id=ids["env_id"], runtime_kind=detect_runtime_kind(), process_enumerator=_StaticEnumerator(()))
     parser = argparse.ArgumentParser(prog="llmd")
@@ -761,7 +785,13 @@ def test_entrypoint_exact_session_contract_ownership_separation_and_grouped_clea
         requested_topology=None,
         metadata=WorkspaceSlotMetadata(),
     )
-    assert build_manual_restore_command(plan_item, exact_llmd_supported=False)[:3] == [
+    with pytest.raises(ContinuityError, match="Exact-session"):
+        build_manual_restore_command(plan_item, exact_llmd_supported=False)
+    assert build_manual_restore_command(
+        plan_item,
+        exact_llmd_supported=False,
+        allow_direct_native_fallback=True,
+    )[:3] == [
         "codex",
         "resume",
         ids["codex_sid"],
@@ -804,9 +834,11 @@ def test_entrypoint_exact_session_contract_ownership_separation_and_grouped_clea
     )
     own_res = adapter_own.launch_session(req)
     assert own_res.accepted is True
-    assert own_res.spawn_confirmed is False
+    assert own_res.spawn_confirmed is True
+    assert own_res.relay_spawn_acknowledged is True
+    assert own_res.dispatcher_ownership_acknowledged is False
     assert own_res.association_confirmed is False
-    assert own_res.submission_ambiguous is True
+    assert own_res.submission_ambiguous is False
     assert own_res.geometry_fallback_used is False
 
     # 4. Grouped preparation interruption releases ALL held SlotExecutionGuard leases and marks LAUNCHING -> AMBIGUOUS
@@ -869,3 +901,468 @@ def test_entrypoint_exact_session_contract_ownership_separation_and_grouped_clea
     guard.release_slot(re_lease)
     q_entries = {e.slot_id: e for e in q.list_entries(checkpoint_id=chk.checkpoint_id)}
     assert q_entries[slots[0].slot_id].status is QueueEntryStatus.AMBIGUOUS
+
+
+def test_durable_ownership_transfer_cross_process_and_competing_launch_blocked(tmp_path: Path) -> None:
+    """Exercise real _pane_runner.py + cross-process reservation consumption under canonical slot-<slot_id>.lock."""
+    import subprocess
+    import sys
+
+    from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
+
+    from agent_continuity.restoration_queue import QueueEntryStatus, RestorationQueue
+    from agent_continuity.workspace_checkpoint import CheckpointStore
+    from agent_continuity.workspace_lifecycle import TopologyRestorer
+    from agent_continuity.workspace_ownership import (
+        ReservationOwnershipVerifier,
+        RestorationReservationStore,
+        canonical_slot_lock_path,
+    )
+
+    home_dir = tmp_path / "llmd_home"
+    work_dir = tmp_path / "repo"
+    work_dir.mkdir()
+    dispatcher, ids = _seed_dispatcher_with_mixed_sessions(home_dir, work_dir, work_dir)
+    slot_id = ids["codex_slot"]
+
+    ft = 134000000000000000
+    obs_run = RuntimeDiscovery(
+        environment_id=ids["env_id"],
+        runtime_kind=detect_runtime_kind(),
+        process_enumerator=_StaticEnumerator(
+            (
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(4401, ft),
+                    parent_pid=400,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", ids["codex_sid"]),
+                ),
+            )
+        ),
+    )
+    adapter = DispatcherWorkspaceAdapter(dispatcher)
+    slot_a = next(s for s in adapter.list_candidate_slots() if s.slot_id == slot_id)
+    chk = CheckpointStore(home_dir / "workspace_state").create_checkpoint([slot_a], observers=obs_run)
+
+    # 1. Reservation store blocks competing launches & rejects stale tokens/identity mismatches
+    rsv_store = RestorationReservationStore(home_dir)
+    manual_rsv = rsv_store.create_reservation(
+        checkpoint_id=chk.checkpoint_id,
+        queue_entry_id=None,
+        attempt=1,
+        slot_id=slot_id,
+        provider=slot_a.provider,
+        native_session_id=slot_a.native_session_id,
+        environment_id=slot_a.environment_id,
+        operator_id="op_block_test",
+    )
+    assert canonical_slot_lock_path(home_dir, slot_id).name == f"slot-{slot_id}.lock"
+    competing_guard = DispatcherSlotExecutionGuard(home_dir)
+    competing_lease = competing_guard.acquire_slot(
+        slot_id, operator_id="op_competing", checkpoint_id=chk.checkpoint_id, queue_entry_id=None
+    )
+    assert competing_lease.acquired is False
+    assert competing_lease.reason == "active_reservation:reserved"
+    with pytest.raises(ContinuityError, match="token mismatch"):
+        rsv_store.consume_reservation(
+            manual_rsv.reservation_id,
+            reservation_token="stale_wrong_token",
+            slot_id=slot_id,
+            provider=slot_a.provider,
+            native_session_id=slot_a.native_session_id,
+            environment_id=slot_a.environment_id,
+        )
+    with pytest.raises(ContinuityError, match="identity mismatch"):
+        rsv_store.consume_reservation(
+            manual_rsv.reservation_id,
+            reservation_token=manual_rsv.reservation_token,
+            slot_id=slot_id,
+            provider="claude",
+            native_session_id=slot_a.native_session_id,
+            environment_id=slot_a.environment_id,
+        )
+    rsv_store.abort_reservation(manual_rsv.reservation_id, reason="cleanup_before_relay_test")
+
+    # 2. Cross-process reservation consumption through real _pane_runner.py + ReservationOwnershipVerifier
+    tl_store = ManagedProcessStore(
+        tmp_path / "managed_ownership.sqlite3",
+        process_identity_lookup=lambda pid: (pid, ft),
+        process_liveness_lookup=lambda _pid: TLProcessLiveness.ALIVE,
+    )
+    spawned_relays: list[subprocess.Popen[str]] = []
+
+    def _relay_runner(cmd: Sequence[str], **_kwargs):
+        modules_root = str(Path(__file__).resolve().parents[2])
+        pkg_root = str(Path(__file__).resolve().parents[1])
+        py_path = f"{pkg_root}{os.pathsep}{modules_root}"
+        idx = 0
+        while idx < len(cmd):
+            if cmd[idx].endswith("_pane_runner.py") and idx + 1 < len(cmd):
+                relay_cmd = [cmd[idx - 1], cmd[idx], cmd[idx + 1]]
+                proc = subprocess.Popen(
+                    relay_cmd,
+                    text=True,
+                    env={**os.environ, "PYTHONPATH": py_path},
+                )
+                spawned_relays.append(proc)
+                idx += 2
+            else:
+                idx += 1
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    class _ConsumerCmdBuilder:
+        supports_exact_session = True
+
+        def build_pane_command(self, request: RestoreLaunchRequest) -> tuple[str, ...]:
+            code = (
+                "import sys, time; from pathlib import Path; "
+                "from agent_continuity.workspace_ownership import RestorationReservationStore; "
+                "store = RestorationReservationStore(Path(sys.argv[1])); "
+                "store.consume_reservation(sys.argv[2], reservation_token=sys.argv[3], "
+                "slot_id=sys.argv[4], provider=sys.argv[5], native_session_id=sys.argv[6], "
+                "environment_id=sys.argv[7]); "
+                "time.sleep(0.2)"
+            )
+            return (
+                sys.executable,
+                "-c",
+                code,
+                str(home_dir),
+                str(request.reservation_id),
+                str(request.reservation_token),
+                request.slot_id,
+                request.provider,
+                request.native_session_id,
+                request.environment_id,
+            )
+
+    launcher = TerminalLauncherRestoreAdapter(
+        backend=WindowsTerminalBackend(runner=_relay_runner),
+        managed_store=tl_store,
+        home_dir=home_dir,
+        command_builder=_ConsumerCmdBuilder(),
+        ownership_verifier=ReservationOwnershipVerifier(home_dir),
+        require_dispatcher_ownership=True,
+        reservation_store=rsv_store,
+        startup_timeout=5.0,
+    )
+    queue = RestorationQueue(home_dir / "workspace_state")
+    obs_after = RuntimeDiscovery(environment_id=ids["env_id"], runtime_kind=detect_runtime_kind(), process_enumerator=_StaticEnumerator(()))
+    restorer = TopologyRestorer()
+    plan = restorer.preview_restore(chk, queue=queue, current_slots=[slot_a], observers=obs_after)
+    report = restorer.execute_restore(
+        plan,
+        authorized=True,
+        operator_id="op_cross_proc",
+        launcher=launcher,
+        checkpoint=chk,
+        queue=queue,
+        receipt_store=tl_store,
+        slot_guard=DispatcherSlotExecutionGuard(home_dir),
+        current_slots=[slot_a],
+        observers=obs_after,
+        reservation_store=rsv_store,
+        require_dispatcher_ownership=True,
+    )
+    for proc in spawned_relays:
+        proc.wait(timeout=5.0)
+
+    assert len(report.outcomes) == 1
+    out = report.outcomes[0]
+    assert out.status == "restored"
+    assert out.spawn_confirmed is True
+    assert out.relay_spawn_acknowledged is True
+    assert out.dispatcher_ownership_acknowledged is True
+    assert out.association_confirmed is True
+
+    q_entry = queue.list_entries(checkpoint_id=chk.checkpoint_id)[0]
+    assert q_entry.status is QueueEntryStatus.COMPLETED
+    assert q_entry.dispatcher_ownership_acknowledged is True
+    assert q_entry.relay_spawn_acknowledged is True
+    assert q_entry.reservation_id is not None
+
+    consumed = rsv_store.get_reservation(q_entry.reservation_id)
+    assert consumed.state == "consumed"
+    assert consumed.dispatcher_ownership_acknowledged is True
+    # Duplicate consumption fails closed
+    with pytest.raises(ContinuityError, match="cannot be consumed"):
+        rsv_store.consume_reservation(
+            consumed.reservation_id,
+            reservation_token=consumed.reservation_token,
+            slot_id=slot_a.slot_id,
+            provider=slot_a.provider,
+            native_session_id=slot_a.native_session_id,
+            environment_id=slot_a.environment_id,
+        )
+
+
+def test_reservation_crash_recovery_delayed_ack_and_partial_grouped_restoration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify partial grouped ownership, ambiguous reservation blocking, and incompatible `llmd` fallback."""
+    import shutil
+
+    from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
+
+    from agent_continuity.restoration_queue import QueueEntryStatus, RestorationQueue
+    from agent_continuity.workspace_adapters import canonical_llmd_dispatcher_entrypoint
+    from agent_continuity.workspace_checkpoint import CheckpointStore
+    from agent_continuity.workspace_lifecycle import TopologyRestorer
+    from agent_continuity.workspace_ownership import ReservationOwnershipVerifier, RestorationReservationStore
+
+    # 1. Incompatible installed `llmd` binary must NOT be selected over candidate dispatcher_cli
+    monkeypatch.setattr(shutil, "which", lambda _name: "C:/fake/llmd.exe")
+    monkeypatch.setattr(
+        "agent_continuity.workspace_adapters._installed_llmd_matches_package_version",
+        lambda _exe: False,
+    )
+    ep = canonical_llmd_dispatcher_entrypoint(prefer_installed=True)
+    assert "agent_continuity.dispatcher_cli" in " ".join(ep)
+
+    # 2. Partial grouped restoration: slot A consumes reservation, slot B spawns relay only (no ownership ack)
+    home_dir = tmp_path / "llmd_partial"
+    work_dir = tmp_path / "repo"
+    work_dir.mkdir()
+    dispatcher, ids = _seed_dispatcher_with_mixed_sessions(home_dir, work_dir, work_dir)
+    adapter = DispatcherWorkspaceAdapter(dispatcher)
+    slots = [s for s in adapter.list_candidate_slots() if s.slot_id in {ids["codex_slot"], ids["agy_slot"]}]
+    ft = 134000000000000000
+    obs_run = RuntimeDiscovery(
+        environment_id=ids["env_id"],
+        runtime_kind=detect_runtime_kind(),
+        process_enumerator=_StaticEnumerator(
+            (
+                ProcessRecord(identity=process_identity_from_windows_filetime(5101, ft), parent_pid=500, image_name="codex.exe", argv=("codex", "resume", ids["codex_sid"])),
+                ProcessRecord(identity=process_identity_from_windows_filetime(5102, ft), parent_pid=500, image_name="agy.exe", argv=("agy", "--conversation", ids["agy_sid"])),
+            )
+        ),
+    )
+    chk = CheckpointStore(home_dir / "workspace_state").create_checkpoint(slots, observers=obs_run)
+
+    rsv_store = RestorationReservationStore(home_dir)
+    tl_store = ManagedProcessStore(
+        tmp_path / "managed_partial.sqlite3",
+        process_identity_lookup=lambda pid: (pid, ft),
+        process_liveness_lookup=lambda _pid: TLProcessLiveness.ALIVE,
+    )
+
+    import subprocess
+    import sys
+
+    spawned: list[subprocess.Popen[str]] = []
+
+    def _partial_relay_runner(cmd: Sequence[str], **_kwargs):
+        modules_root = str(Path(__file__).resolve().parents[2])
+        pkg_root = str(Path(__file__).resolve().parents[1])
+        py_path = f"{pkg_root}{os.pathsep}{modules_root}"
+        idx = 0
+        while idx < len(cmd):
+            if cmd[idx].endswith("_pane_runner.py") and idx + 1 < len(cmd):
+                proc = subprocess.Popen(
+                    [cmd[idx - 1], cmd[idx], cmd[idx + 1]],
+                    text=True,
+                    env={**os.environ, "PYTHONPATH": py_path},
+                )
+                spawned.append(proc)
+                idx += 2
+            else:
+                idx += 1
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    class _SelectiveConsumerCmdBuilder:
+        supports_exact_session = True
+
+        def build_pane_command(self, request: RestoreLaunchRequest) -> tuple[str, ...]:
+            if request.slot_id == ids["codex_slot"]:
+                code = (
+                    "import sys, time; from pathlib import Path; "
+                    "from agent_continuity.workspace_ownership import RestorationReservationStore; "
+                    "RestorationReservationStore(Path(sys.argv[1])).consume_reservation("
+                    "sys.argv[2], reservation_token=sys.argv[3], slot_id=sys.argv[4], "
+                    "provider=sys.argv[5], native_session_id=sys.argv[6], environment_id=sys.argv[7]); "
+                    "time.sleep(0.2)"
+                )
+                return (
+                    sys.executable,
+                    "-c",
+                    code,
+                    str(home_dir),
+                    str(request.reservation_id),
+                    str(request.reservation_token),
+                    request.slot_id,
+                    request.provider,
+                    request.native_session_id,
+                    request.environment_id,
+                )
+            return (sys.executable, "-c", "import time; time.sleep(0.2)")
+
+    launcher = TerminalLauncherRestoreAdapter(
+        backend=WindowsTerminalBackend(runner=_partial_relay_runner),
+        managed_store=tl_store,
+        home_dir=home_dir,
+        command_builder=_SelectiveConsumerCmdBuilder(),
+        ownership_verifier=ReservationOwnershipVerifier(home_dir),
+        require_dispatcher_ownership=True,
+        reservation_store=rsv_store,
+        startup_timeout=5.0,
+    )
+    queue = RestorationQueue(home_dir / "workspace_state")
+    obs_after = RuntimeDiscovery(environment_id=ids["env_id"], runtime_kind=detect_runtime_kind(), process_enumerator=_StaticEnumerator(()))
+    restorer = TopologyRestorer()
+    plan = restorer.preview_restore(chk, queue=queue, current_slots=slots, observers=obs_after)
+    report = restorer.execute_restore(
+        plan,
+        authorized=True,
+        operator_id="op_partial_group",
+        launcher=launcher,
+        checkpoint=chk,
+        queue=queue,
+        receipt_store=tl_store,
+        slot_guard=DispatcherSlotExecutionGuard(home_dir),
+        current_slots=slots,
+        observers=obs_after,
+        reservation_store=rsv_store,
+        require_dispatcher_ownership=True,
+    )
+    for proc in spawned:
+        proc.wait(timeout=5.0)
+
+    assert report.partial_failure is True
+    by_slot = {o.slot_id: o for o in report.outcomes}
+    assert by_slot[ids["codex_slot"]].status == "restored"
+    assert by_slot[ids["codex_slot"]].dispatcher_ownership_acknowledged is True
+    assert by_slot[ids["agy_slot"]].status == "accepted_unconfirmed"
+    assert by_slot[ids["agy_slot"]].relay_spawn_acknowledged is True
+    assert by_slot[ids["agy_slot"]].dispatcher_ownership_acknowledged is False
+
+    # AGY reservation remains ambiguous and blocks competing launch attempts
+    agy_entry = next(e for e in queue.list_entries(checkpoint_id=chk.checkpoint_id) if e.slot_id == ids["agy_slot"])
+    assert agy_entry.status is QueueEntryStatus.AMBIGUOUS
+    assert agy_entry.reservation_id is not None
+    assert rsv_store.get_reservation(agy_entry.reservation_id).state == "ambiguous"
+    assert DispatcherSlotExecutionGuard(home_dir).acquire_slot(
+        ids["agy_slot"], operator_id="op_competing", checkpoint_id=chk.checkpoint_id, queue_entry_id=None
+    ).acquired is False
+
+
+def test_restoration_queue_v2_to_v3_migration_and_restart_recovery(tmp_path: Path) -> None:
+    """Verify backward-compatible v2 SQLite migration to QUEUE_SCHEMA_VERSION = 3 and rebuild_index()."""
+    import sqlite3
+
+    from agent_continuity.restoration_queue import QUEUE_SCHEMA_VERSION, QueueEntryStatus, RestorationQueue
+
+    assert QUEUE_SCHEMA_VERSION == 3
+
+    # Build a genuine v2 SQLite table (without v3 columns) + matching v2 JSONL event
+    db_path = tmp_path / "restoration_queue.sqlite3"
+    events_path = tmp_path / "restoration_queue.events.jsonl"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE queue_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE queue_entries (
+            queue_entry_id TEXT PRIMARY KEY,
+            checkpoint_id TEXT NOT NULL,
+            slot_id TEXT NOT NULL,
+            gui_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            native_session_id TEXT NOT NULL,
+            environment_id TEXT NOT NULL,
+            runtime_kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            claimed_by TEXT,
+            claim_token TEXT,
+            claimed_at TEXT,
+            completed_at TEXT,
+            launch_id TEXT,
+            launch_submission_state TEXT NOT NULL DEFAULT 'not_started',
+            spawn_confirmed INTEGER NOT NULL DEFAULT 0,
+            partial INTEGER NOT NULL DEFAULT 0,
+            recovery_note TEXT,
+            gui_alias TEXT,
+            slot_name TEXT,
+            worktree_json TEXT,
+            launch_settings_json TEXT,
+            requested_topology_json TEXT,
+            metadata_json TEXT,
+            UNIQUE(checkpoint_id, slot_id)
+        );
+        INSERT INTO queue_meta(key, value) VALUES ('applied_seq', '1');
+        INSERT INTO queue_entries(
+            queue_entry_id, checkpoint_id, slot_id, gui_id, provider,
+            native_session_id, environment_id, runtime_kind, status,
+            created_at, updated_at, attempts, launch_submission_state, spawn_confirmed, partial
+        ) VALUES (
+            'rq_legacy_1', 'chk_legacy_1', 'slot_legacy_1', 'gui_1', 'codex',
+            '01a21ca1-528f-7e33-8024-bc784553a210', 'env_1', 'windows', 'pending',
+            '2026-11-27T00:00:00Z', '2026-11-27T00:00:00Z', 0, 'not_started', 0, 0
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    legacy_event = {
+        "schema_version": 2,
+        "event_seq": 1,
+        "event_id": "qev_legacy_1",
+        "event_type": "queue.enqueued",
+        "recorded_at": "2026-11-27T00:00:00Z",
+        "payload": {
+            "queue_entry_id": "rq_legacy_1",
+            "checkpoint_id": "chk_legacy_1",
+            "slot_id": "slot_legacy_1",
+            "gui_id": "gui_1",
+            "provider": "codex",
+            "native_session_id": "01a21ca1-528f-7e33-8024-bc784553a210",
+            "environment_id": "env_1",
+            "runtime_kind": "windows",
+            "status": "pending",
+            "created_at": "2026-11-27T00:00:00Z",
+            "updated_at": "2026-11-27T00:00:00Z",
+            "attempts": 0,
+            "launch_submission_state": "not_started",
+            "spawn_confirmed": False,
+            "partial": False,
+        },
+    }
+    events_path.write_text(json.dumps(legacy_event) + "\n", encoding="utf-8")
+
+    queue = RestorationQueue(tmp_path)
+    # Read-only query on unmigrated v2 DB succeeds without mutating DB
+    ro_entries = queue.list_entries()
+    assert len(ro_entries) == 1
+    assert ro_entries[0].queue_entry_id == "rq_legacy_1"
+    assert ro_entries[0].dispatcher_ownership_acknowledged is False
+
+    # Mutating operation triggers ALTER TABLE migration and preserves legacy entry
+    claim = queue.claim("rq_legacy_1", operator_id="op_migrated")
+    assert claim.acquired and claim.claim_token is not None
+    queue.mark_launching("rq_legacy_1", claim_token=claim.claim_token, reservation_id="rsv_migrated_1")
+    completed = queue.complete(
+        "rq_legacy_1",
+        claim_token=claim.claim_token,
+        launch_id="tl_migrated_1",
+        spawn_confirmed=True,
+        relay_spawn_acknowledged=True,
+        dispatcher_ownership_acknowledged=True,
+        association_confirmed=True,
+        current_liveness="alive",
+    )
+    assert completed.status is QueueEntryStatus.COMPLETED
+    assert completed.reservation_id == "rsv_migrated_1"
+    assert completed.dispatcher_ownership_acknowledged is True
+    assert completed.association_confirmed is True
+    assert completed.current_liveness == "alive"
+
+    # Rebuild from log preserves all v3 fields
+    queue.db_path.unlink()
+    replayed = queue.rebuild_index()
+    assert replayed == 4
+    rebuilt = queue.get_entry("rq_legacy_1")
+    assert rebuilt.status is QueueEntryStatus.COMPLETED
+    assert rebuilt.reservation_id == "rsv_migrated_1"
+    assert rebuilt.dispatcher_ownership_acknowledged is True
