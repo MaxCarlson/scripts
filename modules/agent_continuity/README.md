@@ -43,15 +43,16 @@ llm-dispatcher --help
 
 With an interactive terminal, `llmd` opens the selector. Type to filter names, use Up/Down and Enter to select, Esc to go back, Ctrl+N to register an alias or slot, and Ctrl+A on the agent list to open all selected sessions. Ctrl shortcuts avoid conflicting with incremental text search. Noninteractive no-argument calls print help and do not open a menu.
 
-Operational commands execute by default when they reuse or resume an existing session. Add `-d/--dry-run` to preview without applying; `-a/--apply` remains accepted for older scripts. Starting a new native conversation still requires explicit authorization: `start` and `review` use `-N -a`, while a new-provider `switch` retains its explicit `-a` gate. `switch -r` reuses a known session by default:
+Operational commands execute by default. `start GUI AGENT -p PROVIDER` resumes its selected exact session, or creates missing local records and initializes the first native session when no session is selected. `continue` resumes only an exact existing session and never creates one. `review` resumes an existing reviewer or initializes a new reviewer slot. `switch -p PROVIDER` performs the requested provider switch; `switch -r` explicitly reuses a prior session. Use `-d/--dry-run` to preview. `-a/--apply` remains a compatibility alias:
 
 ```powershell
 llmd gui add -n AgentImprovement
 llmd gui rename -g AgentImprovement -n AgentPerformance
 llmd slot create -g AgentImprovement -n AgentPerf
-llmd start -g AgentImprovement -n AgentPerf -p agy -N -a
+llmd start -g AgentImprovement -n AgentPerf -p agy
+llmd start -g AgentImprovement -n AgentPerf -p codex -N
 llmd attach -g AgentImprovement -n AgentPerf -p agy -i <native-session-id>
-llmd switch -g AgentImprovement -n AgentPerf -p codex -a
+llmd switch -g AgentImprovement -n AgentPerf -p codex
 llmd switch -g AgentImprovement -n AgentPerf -p agy -r
 llmd list -g AgentImprovement
 llmd history -g AgentImprovement -n AgentPerf
@@ -59,7 +60,7 @@ llmd pending -g AgentImprovement
 llmd open -g AgentImprovement -k 2
 llmd open -g AgentImprovement -k 4
 llmd slot disable -g AgentImprovement -n AgentPerf
-llmd review -g AgentImprovement -n AgentPerf -R AgentReview -p codex -C "C:\\worktrees\\review" -N -a
+llmd review -g AgentImprovement -n AgentPerf -R AgentReview -p codex -C "C:\\worktrees\\review"
 llmd return -g AgentImprovement -n AgentPerf -a
 ```
 
@@ -67,7 +68,7 @@ After a normal provider exit, option 4 reuses or explicitly creates the opposite
 
 Post-exit switching keeps `-C/--cwd` and provider-native arguments scoped to the session that received them. Options 4–6 explain when an override can or cannot apply to the selected destination. For compatible provider arguments, choose to apply them explicitly or use destination defaults; incompatible arguments require confirmation to proceed with defaults or cancellation. Existing-agent destinations default to their own recorded environment and working directory. Option 6 uses the newly selected directory. Cancel if you need different settings, then resume the destination directly with its own `-C` and provider options.
 
-`llmd review -g GUI -n ORIGINAL -R REVIEWER -p PROVIDER -C WORKTREE -a` resumes an existing reviewer session. The original may be active or inactive; its lifecycle and exact selected session remain unchanged while review starts. Creating a reviewer session requires both `-N -a`. `llmd return -g GUI -n ORIGINAL -a` deactivates the reviewer, reactivates the original, and resumes the original's recorded exact provider session. Review cycles retain the pre-review lifecycle and slot/session transitions are durable and survive rebuilding the SQLite index. Provider execution in automated tests uses fake processes only.
+`llmd review -g GUI -n ORIGINAL -R REVIEWER -p PROVIDER -C WORKTREE` resumes an existing reviewer session or initializes a first session for an empty reviewer slot. Add `-N` to replace the reviewer's selected session; prior sessions remain in history. The original may be active or inactive; its lifecycle and exact selected session remain unchanged until the reviewer launch durably captures its exact identity. `llmd return -g GUI -n ORIGINAL` deactivates the reviewer, reactivates the original, and resumes the original's recorded exact provider session. Review cycles retain pre-review lifecycle and slot/session transitions durably through SQLite index rebuilds. `-N -a` remains a valid legacy spelling. Provider execution in automated tests uses fake processes only.
 
 Starting a new provider session uses a bounded two-stage bootstrap. The dispatcher first persists a pending launch, then runs one fixed initialization-only model turn in a read-only/headless provider invocation. Codex's JSONL `thread.started.thread_id` or AGY's JSON `conversation_id` is captured from that specific child process, associated with the intended slot, and immediately resumed in the interactive pane. The user's actual assignment is not sent during bootstrap. A new slot start therefore uses one initialization model turn; continuing or reusing an existing session does not.
 
@@ -201,7 +202,7 @@ Runtime status is independent of registry lifecycle. `IN USE` means the same-run
 
 ## Starting and selecting historical sessions
 
-A start for an existing selected session resumes it by default; pass `-d` for a preview. A slot without a selected session only previews unless both `--new` and the explicit compatibility authorization `-a/--apply` are present. This `-N -a` pair remains required to create a native conversation and create any missing local GUI/agent records. `-N` alone never launches a provider.
+A start for an existing selected session resumes that exact session by default; pass `-d` for a preview. A slot without a selected session is initialized by `start` itself, creating missing local GUI/agent records atomically. Add `-N` when an existing selected session should be replaced by a new native conversation; prior activations remain in history. `-N -a` remains accepted. Pending launches, ambiguous bootstrap outcomes, conflicting associations, inaccessible environments, and unresolved identities block automatic creation.
 
 ```powershell
 llmd start "Project" "Agent" -p codex -d                 # explicit preview
@@ -221,11 +222,11 @@ llmd switch -g "Project" -n "Agent" -p agy -r           # reuse latest known AGY
 
 ## LLMD v2.0 action defaults and startup progress
 
-Operational dispatcher commands execute by default when they reuse an existing session or perform a normal local registry operation. Use `-d/--dry-run` for an explicit preview. `-a/--apply` remains accepted for compatibility; combining `-a` and `-d` is an error. Read-only `list`, `history`, `last`, `recent`, `doctor`, and `pending` remain read-only. Use `llmd last -r` (or legacy `llmd last -a`) to resume the exact terminal-scoped session.
+Operational dispatcher commands execute by default. `start` initializes a first session when none is selected, resumes the selected exact session otherwise, and uses `-N` for explicit replacement. `continue` never creates a session. `review` initializes a missing reviewer or resumes the selected reviewer; `switch -p` executes the requested provider change, and `switch -r` explicitly reuses history. Use `-d/--dry-run` to preview. `-a/--apply` remains accepted for compatibility; combining `-a` and `-d` is an error. Read-only `list`, `history`, `last`, `recent`, `doctor`, and `pending` remain read-only. Use `llmd last -r` (or legacy `llmd last -a`) to resume the exact terminal-scoped session.
 
-Creating a native conversation still requires explicit authorization: `start` and `review` require `-N -a`, and `-N` alone previews. A new-provider `switch` keeps its explicit `-a` new-session gate; `switch -r` resumes a known prior session by default. Reactivation and historical selection still require their existing explicit flags. The legacy `agents` command remains dry-run by default and is unchanged.
+The operational command expresses intent: `start` on an empty slot and `review` with an empty reviewer initialize by default; `-N` requests replacement; a provider-named `switch` performs that provider change. `-a` is optional and remains a compatibility alias. Existing-session reactivation, historical identity selection, and destructive operations retain their safeguards. The separate legacy `agents` command remains dry-run by default and is unchanged. External scripts that depended on the previous implicit-preview behavior must add `-d`; only in-repository callers were audited and migrated.
 
-For human-readable provider launches, LLMD writes flushed monotonic startup progress to stderr, with periodic elapsed updates during blocking bootstrap/provider calls. JSON stdout is not used for progress, and progress messages do not print provider argv. Stages include registry/environment discovery, launch reservation, bootstrap, exact-ID capture/persistence, and interactive handoff. The fixed read-only bootstrap remains because installed Codex/AGY help did not establish a supported exact-ID creation path that avoids a model turn; no newest-session-file heuristic is used. Timing goals (first progress near 250 ms and subsecond dispatcher-only overhead) are targets, not guarantees; measured evidence is recorded in the feature plan status.
+For human-readable provider launches, LLMD writes flushed monotonic startup progress to stderr and emits periodic elapsed updates only during blocking initialization/bootstrap, about every four seconds. Reporting stops before interactive provider handoff so it cannot write into a long-running provider TUI. JSON stdout is not used for progress, and progress messages do not print provider argv. Stages include registry/environment discovery, launch reservation, bootstrap, exact-ID capture/persistence, and interactive handoff. The fixed read-only Codex/AGY bootstrap remains because installed help did not establish a safe exact-ID creation path without an initialization turn; no newest-session-file heuristic is used. Provider startup acceleration is unverified. Timing goals (first progress near 250 ms and subsecond dispatcher-only overhead) are targets, not guarantees; dispatcher-only measurements are recorded in the feature plan status.
 
 At wide widths, listing name/session columns are allocated from the data in that result. At 120 columns the renderer preserves full 36-character UUIDs when they fit and uses additional stacked rows for longer identities rather than clipping timestamps or session IDs unnecessarily. Terminal widths are measured in display cells; JSON remains unchanged.
 

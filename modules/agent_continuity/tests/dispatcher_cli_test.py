@@ -180,11 +180,11 @@ def test_blocking_provider_progress_is_periodic_and_does_not_echo_argv(monkeypat
     assert "private-value" not in captured.err
 
 
-def test_new_conversation_requires_explicit_apply_even_with_execute_default(tmp_path, monkeypatch):
+def test_new_conversation_dry_run_never_bootstraps(tmp_path, monkeypatch):
     home = tmp_path / "registry"
     parser = build_parser()
     monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane", lambda *a, **k: pytest.fail("bootstrap must not run"))
-    args = parser.parse_args(["-H", str(home), "start", "G", "A", "-p", "codex", "-N"])
+    args = parser.parse_args(["-H", str(home), "start", "G", "A", "-p", "codex", "-N", "-d"])
     assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
     assert DispatcherService(home_dir=home).list_guis() == []
 
@@ -194,7 +194,7 @@ def test_new_provider_switch_keeps_explicit_authorization_while_reuse_executes_b
     service = DispatcherService(home_dir=home)
     service.register("G", "A", provider="codex", session_id="codex-id")
     parser = build_parser()
-    args = parser.parse_args(["-H", str(home), "switch", "-g", "G", "-n", "A", "-p", "agy"])
+    args = parser.parse_args(["-H", str(home), "switch", "-g", "G", "-n", "A", "-p", "agy", "-d"])
     assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
     assert service.get_slot(gui="G", name="A")["history"][-1]["native_session_id"] == "codex-id"
     assert service.list_pending_launches(gui="G") == []
@@ -204,6 +204,106 @@ def test_new_provider_switch_keeps_explicit_authorization_while_reuse_executes_b
     args = parser.parse_args(["-H", str(home), "switch", "-g", "G", "-n", "A", "-p", "codex", "-r"])
     assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
     assert calls
+
+
+def test_provider_switch_executes_by_default_and_preserves_prior_association(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.register("G", "A", provider="codex", session_id="codex-original")
+    launches = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
+                        lambda dispatcher, **kwargs: launches.append(kwargs["launch_id"]) or 0)
+    parser = build_parser()
+
+    args = parser.parse_args(["-H", str(home), "switch", "-g", "G", "-n", "A", "-p", "agy"])
+    assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+
+    slot = service.get_slot(gui="G", name="A")
+    pending = service.list_pending_launches(gui="G")
+    assert [row["native_session_id"] for row in slot["history"]] == ["codex-original"]
+    assert len(pending) == 1 and pending[0]["provider"] == "agy"
+    assert launches == [pending[0]["launch_id"]]
+
+
+def test_first_reviewer_session_initializes_by_default(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.register("G", "Implementer", provider="codex", session_id="implementation")
+    launches = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
+                        lambda dispatcher, **kwargs: launches.append(kwargs["launch_id"]) or 0)
+    parser = build_parser()
+
+    args = parser.parse_args([
+        "-H", str(home), "review", "-g", "G", "-n", "Implementer", "-R", "Review",
+        "-p", "agy",
+    ])
+    assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+
+    original = service.get_slot(gui="G", name="Implementer")
+    reviewer = service.get_slot(gui="G", name="Review")
+    pending = service.list_pending_launches(gui="G")
+    assert original["state"] == "active" and original["current"]["native_session_id"] == "implementation"
+    assert reviewer["current"] is None and reviewer["state"] == "active"
+    assert len(pending) == 1 and launches == [pending[0]["launch_id"]]
+    assert service.open_review_cycle(slot_id=original["slot_id"])["status"] == "pending"
+
+
+def test_review_new_flag_replaces_selected_reviewer_without_apply(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.register("G", "Implementer", provider="codex", session_id="implementation")
+    service.register("G", "Review", provider="agy", session_id="review-original")
+    launches = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
+                        lambda dispatcher, **kwargs: launches.append(kwargs["launch_id"]) or 0)
+    parser = build_parser()
+
+    args = parser.parse_args([
+        "-H", str(home), "review", "-g", "G", "-n", "Implementer", "-R", "Review",
+        "-p", "agy", "-N",
+    ])
+    assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+
+    reviewer = service.get_slot(gui="G", name="Review")
+    pending = service.list_pending_launches(gui="G")
+    assert [row["native_session_id"] for row in reviewer["history"]] == ["review-original"]
+    assert len(pending) == 1 and pending[0]["provider"] == "agy"
+    assert launches == [pending[0]["launch_id"]]
+
+
+def test_start_first_session_concurrency_reserves_only_one_pending_launch(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from agent_continuity.errors import ContinuityError
+
+    home = tmp_path / "registry"
+    parser = build_parser()
+    barrier = Barrier(2)
+    launches = []
+
+    def synchronized_preview(*args, **kwargs):
+        barrier.wait(timeout=3)
+        return {"environment": {"id": "local"}}
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._new_launch_preview", synchronized_preview)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
+                        lambda dispatcher, **kwargs: launches.append(kwargs["launch_id"]) or 0)
+
+    def start_once():
+        args = parser.parse_args(["-H", str(home), "start", "G", "A", "-p", "codex"])
+        try:
+            return dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())
+        except ContinuityError:
+            return "rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: start_once(), range(2)))
+
+    pending = DispatcherService(home_dir=home).list_pending_launches(gui="G")
+    assert results.count(0) == 1 and results.count("rejected") == 1
+    assert len(pending) == 1 and launches == [pending[0]["launch_id"]]
 
 
 def test_last_resume_aliases_are_compatible_and_read_only_by_default():

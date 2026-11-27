@@ -623,7 +623,7 @@ def test_inactive_original_can_create_reviewer_after_explicit_new_authorization(
     assert calls == [["fake-bootstrap"], ["fake-resume"]]
 
 
-def test_review_new_provider_session_requires_new_and_apply(tmp_path):
+def test_review_dry_run_does_not_register_reviewer(tmp_path):
     from argparse import Namespace
     from io import StringIO
 
@@ -632,7 +632,7 @@ def test_review_new_provider_session_requires_new_and_apply(tmp_path):
     dispatcher = DispatcherService(home_dir=tmp_path / "registry")
     dispatcher.register("P", "Implementer", provider="codex", session_id="original")
     args = Namespace(gui="P", agent_name="Implementer", reviewer_agent="Reviewer", provider="agy",
-                     new=True, apply=False, cwd=None, environment=None)
+                     new=False, apply=False, cwd=None, environment=None)
     assert _review(dispatcher, args, StringIO(), StringIO()) == 0
     assert [row["name"] for row in dispatcher.list_slots(gui="P", active_only=False)] == ["Implementer"]
     assert dispatcher.list_pending_launches() == []
@@ -937,12 +937,48 @@ def test_runtime_lease_is_nonblocking_and_lifetime_scoped(tmp_path):
     assert not _try_session_runtime_lock(dispatcher, "session-test.lock")
 
 
-def test_positional_start_requires_explicit_authorization_without_launch(tmp_path):
+def test_positional_start_dry_run_without_launch_is_explicit(tmp_path):
     home = tmp_path / "registry"
     parser = build_parser()
-    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "codex"])
+    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "codex", "-d"])
     assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
     assert DispatcherService(home_dir=home).list_guis() == []
+
+
+def test_start_without_selected_session_initializes_by_default(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    parser = build_parser()
+    launches = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
+                        lambda dispatcher, **kwargs: launches.append(kwargs["launch_id"]) or 0)
+
+    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "codex"])
+    assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+
+    service = DispatcherService(home_dir=home)
+    slot = service.get_slot(gui="P", name="A")
+    pending = service.list_pending_launches(gui="P")
+    assert slot["current"] is None
+    assert len(pending) == 1
+    assert launches == [pending[0]["launch_id"]]
+
+
+def test_start_new_flag_without_apply_authorizes_replacement_and_keeps_history(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.register("P", "A", provider="codex", session_id="prior-session")
+    launches = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
+                        lambda dispatcher, **kwargs: launches.append(kwargs["launch_id"]) or 0)
+    parser = build_parser()
+
+    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "codex", "-N"])
+    assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
+
+    slot = service.get_slot(gui="P", name="A")
+    assert [item["native_session_id"] for item in slot["history"]] == ["prior-session"]
+    assert len(service.list_pending_launches(gui="P")) == 1
+    assert launches[0] == service.list_pending_launches(gui="P")[0]["launch_id"]
 
 
 def test_positional_start_new_apply_creates_pending_without_mocked_provider_call(tmp_path, monkeypatch):
@@ -962,7 +998,7 @@ def test_named_start_preview_matches_positional_and_does_not_register(tmp_path):
     output = StringIO()
 
     assert dispatch(
-        parser.parse_args(["-H", str(home), "start", "-g", "P", "-n", "A", "-p", "codex"]),
+        parser.parse_args(["-H", str(home), "start", "-g", "P", "-n", "A", "-p", "codex", "-d"]),
         parser,
         input_stream=StringIO(),
         output_stream=output,
@@ -971,15 +1007,15 @@ def test_named_start_preview_matches_positional_and_does_not_register(tmp_path):
     service = DispatcherService(home_dir=home)
     assert service.list_guis() == []
     assert "would register" in output.getvalue().lower()
-    assert "requires --new -a" in output.getvalue()
+    assert "dry-run" in output.getvalue().lower()
 
 
-def test_named_start_requires_new_and_apply_then_registers_once(tmp_path, monkeypatch):
+def test_named_start_first_session_without_new_or_apply_registers_and_reserves_once(tmp_path, monkeypatch):
     home = tmp_path / "registry"
     parser = build_parser()
     monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane", lambda *a, **k: 0)
 
-    args = parser.parse_args(["-H", str(home), "start", "-g", "P", "-n", "A", "-p", "codex", "-N", "-a"])
+    args = parser.parse_args(["-H", str(home), "start", "-g", "P", "-n", "A", "-p", "codex"])
     assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
 
     service = DispatcherService(home_dir=home)
@@ -988,15 +1024,17 @@ def test_named_start_requires_new_and_apply_then_registers_once(tmp_path, monkey
     assert len(service.list_pending_launches(gui="P")) == 1
 
 
-def test_named_start_apply_without_new_never_creates_pending_launch(tmp_path):
+def test_named_start_legacy_apply_without_new_still_initializes_first_session(tmp_path, monkeypatch):
     home = tmp_path / "registry"
     parser = build_parser()
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane", lambda *a, **kw: 0)
     args = parser.parse_args(["-H", str(home), "start", "-g", "P", "-n", "A", "-p", "codex", "-a"])
 
-    with pytest.raises(ContinuityError, match="requires --new"):
-        dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())
+    assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
 
-    assert DispatcherService(home_dir=home).list_guis() == []
+    service = DispatcherService(home_dir=home)
+    assert service.get_slot(gui="P", name="A")["current"] is None
+    assert len(service.list_pending_launches(gui="P")) == 1
 
 
 def test_start_with_selected_session_resumes_without_creating_duplicate_launch(tmp_path, monkeypatch):
@@ -1008,7 +1046,7 @@ def test_start_with_selected_session_resumes_without_creating_duplicate_launch(t
                         lambda dispatcher, **kw: launches.append(kw["launch_id"]) or 0)
     parser = build_parser()
 
-    args = parser.parse_args(["-H", str(home), "start", "-g", "P", "-n", "A", "-p", "codex", "-a"])
+    args = parser.parse_args(["-H", str(home), "start", "-g", "P", "-n", "A", "-p", "codex"])
     assert dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO()) == 0
 
     assert launches == [None]
@@ -1054,7 +1092,7 @@ def test_start_refuses_second_pending_launch_before_any_new_provider_call(tmp_pa
     monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
                         lambda *a, **kw: pytest.fail("pending launch must not be retried"))
     parser = build_parser()
-    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "agy", "-N", "-a"])
+    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "codex"])
 
     with pytest.raises(ContinuityError, match="already pending"):
         dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())
@@ -1075,7 +1113,7 @@ def test_start_refuses_to_replace_an_in_use_selected_session(tmp_path):
         f"{current['provider']}\0{current['environment_id']}\0{current['native_session_id']}".encode()
     ).hexdigest()[:24]
     parser = build_parser()
-    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "agy", "-N", "-a"])
+    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "codex"])
 
     with _session_runtime_lock(service, f"session-{lock_key}.lock"), pytest.raises(ContinuityError, match="in use"):
         dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())
@@ -1118,7 +1156,7 @@ def test_start_new_prompt_cancel_leaves_selected_session_and_history_unchanged(t
     monkeypatch.setattr("agent_continuity.dispatcher_cli._run_pane",
                         lambda *a, **kw: pytest.fail("canceled new start must not launch"))
     parser = build_parser()
-    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "agy", "-N", "-a"])
+    args = parser.parse_args(["-H", str(home), "start", "P", "A", "-p", "agy", "-N"])
     output = TTYOutput()
 
     assert dispatch(args, parser, input_stream=TTYInput("n\n"), output_stream=output) == 0

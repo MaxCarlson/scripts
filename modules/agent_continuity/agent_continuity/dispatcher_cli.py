@@ -65,7 +65,7 @@ def _startup_progress(message: str) -> None:
 
 
 def _run_provider_with_progress(
-    argv: Sequence[str], *, label: str, progress_interval: float = 10.0, **kwargs: Any
+    argv: Sequence[str], *, label: str, progress_interval: float = 4.0, **kwargs: Any
 ) -> subprocess.CompletedProcess:
     """Run a provider process while periodically reporting elapsed wait time to stderr."""
     done = threading.Event()
@@ -267,7 +267,7 @@ def build_parser() -> argparse.ArgumentParser:
                              help="Authorize validated generic provider options after `--`.")
         _add_execution_options(command)
         if command_name == "start":
-            command.add_argument("-N", "--new", action="store_true", help="Explicitly authorize a new native conversation.")
+            command.add_argument("-N", "--new", action="store_true", help="Start a new native conversation instead of resuming the selected session.")
             command.add_argument("-r", "--reactivate", action="store_true",
                                  help="Explicitly reactivate an inactive agent before resuming or starting.")
 
@@ -291,7 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     review = sub.add_parser(
         "review", help="Open or resume a reviewer agent linked to an original agent.",
-        epilog="Pass supported provider options after `--`; for a new reviewer retain explicit `-N -a` authorization.",
+        epilog="An empty reviewer slot is initialized automatically; pass -N to replace a selected reviewer session. Use -d to preview.",
     )
     _add_common_options(review)
     review.add_argument("-g", "--gui", required=True)
@@ -302,7 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("-C", "--cwd", help="Reviewer working directory.")
     review.add_argument("-U", "--allow-native-unknown", action="store_true",
                         help="Authorize validated generic provider options after `--`.")
-    review.add_argument("-N", "--new", action="store_true", help="Explicitly request a new reviewer conversation.")
+    review.add_argument("-N", "--new", action="store_true", help="Start a new reviewer conversation instead of resuming its selected session.")
     _add_execution_options(review)
 
     returning = sub.add_parser(
@@ -1176,6 +1176,7 @@ def _run_pane(
                 bootstrap = _run_provider_with_progress(
                     bootstrap_argv,
                     label="provider bootstrap",
+                    progress_interval=4.0,
                     cwd=process_cwd,
                     capture_output=True,
                     text=True,
@@ -1338,7 +1339,8 @@ def _run_pane(
                 dispatcher.record_terminal_launch(terminal_record)
                 terminal_record_written = True
             _startup_progress("interactive provider handoff")
-            result = _run_provider_with_progress(argv, label="interactive provider", cwd=process_cwd, check=False)
+            _STARTUP_PROGRESS.set(False)
+            result = subprocess.run(argv, cwd=process_cwd, check=False)
     except KeyboardInterrupt:
         if launch_id:
             dispatcher.mark_launch_failed(launch_id=launch_id, detail="Provider launch was interrupted; inspect provider state before retrying.", apply=True)
@@ -1829,43 +1831,34 @@ def _review(dispatcher: DispatcherService, args: argparse.Namespace,
         _validate_cwd_override(dispatcher,
                                reviewer_identity[1] if reviewer_identity and not args.new else (args.environment or "local"),
                                args.cwd)
-    if not args.new:
-        if reviewer_identity is None:
-            raise ContinuityError(ErrorCode.INVALID_INPUT, "Reviewer has no selected session; use -N -a to create one.")
+    create_reviewer = bool(args.new or reviewer_identity is None)
+    if create_reviewer:
+        preview = _new_launch_preview(dispatcher, args.provider, args.environment or "local", args.cwd, native_args,
+                                      allow_native_unknown=allow_native_unknown)
+        if not args.apply:
+            if getattr(args, "json_output", False):
+                print(json.dumps({"action": "review", "applied": False, "launch_preview": preview}, indent=2), file=output_stream)
+            else:
+                _render_launch_preview(preview, output_stream)
+                print("Dry-run only; an empty reviewer slot initializes automatically. Use -N to replace a selected reviewer session.",
+                      file=output_stream)
+            return 0
+    else:
         if reviewer_identity[0] != args.provider:
-            raise ContinuityError(ErrorCode.INVALID_INPUT, "Reviewer provider differs from the selected session; use -N -a for a new one.")
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                  "Reviewer provider differs from its selected session; use -N to start a new reviewer conversation.")
         if _session_in_use(dispatcher, *reviewer_identity):
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Reviewer session is already in use.")
         preview = _launch_preview(dispatcher, reviewer_identity[0], reviewer_identity[2], reviewer_identity[1],
                                   args.cwd or _current_native_cwd(dispatcher, reviewer["current"]), native_args,
                                   allow_native_unknown=allow_native_unknown)
-        if args.apply and native_args:
-            _render_launch_preview(preview, output_stream)
-    elif not args.apply:
-        environment_id = args.environment or (reviewer_identity[1] if reviewer_identity else "local")
-        preview = _new_launch_preview(dispatcher, args.provider, environment_id, args.cwd, native_args,
-                                      allow_native_unknown=allow_native_unknown)
-        if getattr(args, "json_output", False):
-            print(json.dumps({"action": "review", "applied": False, "launch_preview": preview}, indent=2), file=output_stream)
-        else:
-            _render_launch_preview(preview, output_stream)
-            print("New reviewer sessions require both -N and -a; preview only.", file=output_stream)
-        return 0
-    if args.new and not args.apply:
-        print("New reviewer sessions require both -N and -a; no provider was launched.", file=output_stream)
-        return 0
-    if not args.apply:
-        preview = _launch_preview(dispatcher, reviewer_identity[0], reviewer_identity[2], reviewer_identity[1],
-                                  args.cwd or _current_native_cwd(dispatcher, reviewer["current"]), native_args,
-                                  allow_native_unknown=allow_native_unknown)
-        if getattr(args, "json_output", False):
-            print(json.dumps({"action": "review", "applied": False, "launch_preview": preview}, indent=2), file=output_stream)
-        else:
-            _render_launch_preview(preview, output_stream)
-        return 0
-    if args.new:
-        preview = _new_launch_preview(dispatcher, args.provider, args.environment or "local", args.cwd, native_args,
-                                      allow_native_unknown=allow_native_unknown)
+        if not args.apply:
+            if getattr(args, "json_output", False):
+                print(json.dumps({"action": "review", "applied": False, "launch_preview": preview}, indent=2), file=output_stream)
+            else:
+                _render_launch_preview(preview, output_stream)
+            return 0
+    if create_reviewer:
         if native_args:
             _render_launch_preview(preview, output_stream)
         _startup_progress("reserving reviewer bootstrap and review-cycle intent")
@@ -2673,16 +2666,6 @@ def _resolve_execution_mode(args: argparse.Namespace) -> None:
         raise ContinuityError(ErrorCode.INVALID_INPUT, "Choose either --dry-run or --apply.")
     args.apply_explicit = explicit_apply
     args.apply = explicit_apply or not dry_run
-    # A new provider conversation remains an explicitly authorized action.
-    if command in {"start", "review"} and getattr(args, "new", False) and not explicit_apply:
-        args.apply = False
-    # A non-reuse switch creates a native conversation. Its legacy explicit
-    # apply flag remains the new-session authorization after ordinary actions
-    # move to execute-by-default.
-    if command == "switch" and not getattr(args, "reuse_previous", False) and not explicit_apply:
-        args.apply = False
-
-
 def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input_stream: TextIO, output_stream: TextIO) -> int:
     if args.command is None:
         if not (input_stream.isatty() and output_stream.isatty()):
@@ -3070,13 +3053,12 @@ def _start(
                          native_args=getattr(args, "native_args", []), cwd_override=args.cwd,
                          allow_native_unknown=getattr(args, "allow_native_unknown", False))
 
-    if not args.new:
-        if getattr(args, "apply_explicit", False):
-            raise ContinuityError(ErrorCode.INVALID_INPUT,
-                                  "Starting a new conversation requires --new and -a/--apply.")
-        # No selected session and no explicit new-conversation authorization: show
-        # the existing safe preview without registering or launching anything.
-        args.apply = False
+    if slot and slot["state"] == "completed":
+        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                              "Completed agents require an explicit lifecycle change before starting a session.")
+    if slot and slot["state"] == "inactive" and not args.reactivate:
+        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                              "This agent is inactive; pass --reactivate to confirm its lifecycle change.")
     if (current and args.new and args.apply and input_stream.isatty() and output_stream.isatty()
             and not _ask_confirmation(
                 input_stream, output_stream,
@@ -3130,7 +3112,7 @@ def _start(
     if args.json_output:
         print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True, default=_json_default), file=output_stream)
     else:
-        print(f"{result['summary']} New provider session preview only; execution requires --new -a.", file=output_stream)
+        print(f"{result['summary']} Use -N to replace an existing selected session.", file=output_stream)
         _render_launch_preview(result["launch_preview"], output_stream)
     return 0
 

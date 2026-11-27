@@ -128,7 +128,7 @@
 
 ## LLMD v2.0.0 feature batch — LLMD-46/47 and LLMD-39 layout
 
-- [x] Record action-default contract, `-d`/`-a` conflict rules, explicit `-N -a` invariant, latency stages, and responsive layout acceptance before code changes.
+- [x] Record action-default contract, `-d`/`-a` conflict rules, explicit `-N` replacement intent with compatible `-N -a`, latency stages, and responsive layout acceptance before code changes.
 - [x] Make operational LLMD commands execute by default for existing-session/ordinary operations; retain `-a` alias and add explicit `-d` preview.
 - [x] Keep read-only commands read-only; implement `last -r` with `last -a` compatibility.
 - [x] Audit and migrate repository tests, examples, docs, and scripts that depended on implicit previews; inventory external callers.
@@ -140,3 +140,12 @@
 - [x] Update README, CLI reference, plan, status, checklist, help registry, and package metadata to v2.0.0.
 - [x] Validate focused tests, full agent_continuity and compatibility suites, Ruff, disposable installation/smoke, version consistency, and diff checks with fake-provider isolation.
 - [x] Commit and push the feature branch for independent GUI review; do not merge before review acceptance.
+
+## v2.0.0 pre-review corrections
+
+- [x] Repair focused regressions for execute-by-default lock validation and migrate preview-dependent tests to explicit `-d`.
+- [x] Cover reviewer first-session initialization and explicit `review -N` replacement without mandatory `-a`.
+- [x] Bound periodic startup progress to initialization and stop it before interactive provider handoff.
+- [x] Reconcile active CLI reference text with the v2.0.0 contract while labeling prior release behavior as historical.
+- [x] Run full module and relevant compatibility suites, scoped Ruff, version/help consistency, disposable-registry CLI smoke, and diff checks.
+- [ ] Commit and push the correction candidate; await independent GUI review before integration or LLMD-56 implementation.

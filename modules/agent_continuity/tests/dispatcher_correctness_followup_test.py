@@ -94,7 +94,7 @@ def test_new_launch_dry_run_json_reports_resolved_environment(tmp_path, command,
                            environment_selector=environment.environment_id, apply=True)
     argv = ["-H", str(home), command]
     if command == "start":
-        argv.extend(["GUI", "Agent", "-p", "agy", "-N", "-j"])
+        argv.extend(["GUI", "Agent", "-p", "agy", "-N", "-j", "-d"])
     else:
         argv.extend(["-g", "GUI", "-n", "Agent", "-p", "agy", "-j", "-d"])
     if explicit_environment:
