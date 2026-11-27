@@ -201,3 +201,42 @@ The implementation handoff carries the following reviewer constraints into the p
 Each implementation batch uses its own isolated worktree/feature branch, or a single sequential feature branch if one agent owns every modified file. No simultaneous writers to `dispatcher_cli.py` or `interactive.py`. Commit and push authorized feature changes for review, **do not merge**. Do not change other tools/modules without a demonstrated interface dependency. Do not start public publishing, background inference or local model loading.
 
 The v2.1 documentation began as a design proposal. This implementation handoff authorizes the sequential A–E implementation described here; compatibility changes outside that scope still require an approval gate. Remaining evaluation criteria are listed in [02_PROPOSED_CHANGES_EVALUATION.md](02_PROPOSED_CHANGES_EVALUATION.md).
+
+## Batch G — Terminal-specific launch context (LLMD-27–29)
+
+**Approved persistence design:** append-only dispatcher launch-history events in the existing event spool, with a rebuildable SQLite projection. `TERMINAL_SESSION_ID` and `TERMINAL_SESSION_OWNER_PID` are read-only environment inputs. Only a syntactically valid UUID is a terminal scope key; owner PID is diagnostic metadata and never an ownership key. Missing or malformed IDs must not trigger a global fallback.
+
+Each launch has a unique launch ID, so concurrent invocations, Windows Terminal panes and repeated launches from one shell append distinct records. Each launcher-created pane receives a distinct launcher-owned UUID through the hidden `pane-run -T` argument; it must not overwrite the initiating profile-owned shell ID or share another pane's context. That same context must be forwarded through post-exit options 4–6, including reviewer returns and subsequent transitions in the pane. The projection stores stable GUI/slot IDs, exact provider/session/environment identity, launch and exit timestamps/status, requested and effective launch cwd, recorded native session cwd, detected repository/worktree/branch/commit, and an allowlisted non-sensitive settings summary. Bootstrap records begin without a native ID and gain the exact ID only after safe capture; unresolved starts remain visibly pending/interrupted and are never retried automatically. A `launching` record means the outcome is unknown after hard termination, not that a live provider process has been verified.
+
+**CLI contract:**
+
+```text
+llmd last                 # show the latest launch in this terminal only
+llmd last -j              # one JSON document for this terminal's latest record
+llmd last -N COUNT        # show the COUNT newest records for this terminal
+llmd last -a              # resume the exact recorded session
+llmd last -R -a           # explicitly reactivate an inactive slot, then resume
+llmd recent               # read-only cross-terminal history
+llmd recent -N COUNT -j   # bounded JSON history (read-only)
+llmd last -C WORKTREE -a -- --sandbox workspace-write  # explicit invocation-scoped settings
+```
+
+`last -a` requires a recorded exact session ID and revalidates GUI/slot/session selection and session ownership under existing lifecycle guards. Completed slots are rejected. Inactive slots require both `-R` and `-a`. A missing, malformed, or stale terminal scope is a clear error; no global latest-session fallback is allowed. Resume never replays stored launch permissions, generic native options, or a stale launch cwd; only explicit current-invocation `-C`/native options may override defaults, and these are validated and previewed before activation. `recent` never mutates or resumes and redacts terminal IDs by default; JSON can expose terminal UUIDs only as registry metadata, not credentials.
+
+Interrupted starts, failed spawns, normal/nonzero exits, bootstrap capture, resume, and post-exit switches each update history through new immutable events. A pane’s launch is separate even if multiple panes inherit diagnostic owner metadata. Git metadata is observational and may be incomplete when the target runtime cannot be queried safely; it never changes session provenance.
+
+**Acceptance:** event rebuild/idempotence; multiple terminals and panes; concurrent starts; absent/malformed UUID; interrupted bootstrap and failed provider process; exact session resume and inactive/completed safeguards; no cwd/permission replay; requested/effective/native cwd distinction; Windows/WSL worktree metadata; post-exit switches; JSON/text history and read-only cross-terminal listing; old event-spool compatibility.
+
+## Batch H — Comprehensive native CLI support (LLMD-30–31)
+
+Common provider options become first-class managed settings when they are documented by the installed provider: permissions, sandbox/approval policy, additional directories, model, reasoning effort, supported configuration values and profiles. Managed settings receive provider-specific value validation, safe preview reporting and an allowlisted non-sensitive history summary. Codex config uses structured `-c key=value` arguments; AGY session settings use its structured `--settings` input only for supported non-secret keys. Raw prompts, credentials, file contents and arbitrary configuration are never persisted.
+
+Unknown provider arguments are accepted only after explicit `--allow-native-unknown`; the option authorizes forwarding but does not bypass identity/bootstrap/execution-mode/executable/cwd conflict checks, or permission preview safeguards. The `--` delimiter remains mandatory. Structured argv token boundaries and provider-specific placement are preserved exactly. LLMD cannot establish the semantics or safety of unfamiliar provider flags, including aliases introduced by later provider versions; previews identify recognized permission-affecting settings and redact their values, but the operator must inspect installed help and review unfamiliar options. Unsafe recognized bypass/remote/executable/session-selection arguments remain forbidden even with authorization.
+
+Managed `--add-dir` paths and AGY `additional_directories` values must be absolute in the selected provider runtime and are validated in that runtime before preview or launch. Relative paths are rejected to avoid depending on a host cwd different from the provider's effective cwd.
+
+The common interface works on `continue`, `start`, `switch`, `review`, and `return` as applicable. New-session bootstrap remains fixed read-only and receives no interactive overrides; options affect only the subsequent interactive launch. Terminal-pane `open` propagation is supported only when a homogeneous provider/option contract is provable; otherwise LLMD reports an actionable explicit unsupported-combination error before any pane or lifecycle mutation.
+
+**Acceptance:** exact option placement from installed help without inference; Codex resume and AGY conversation resume; managed aliases/equal forms/repeated flags; config/model/profile/reasoning/add-dir/permission settings; explicitly authorized generic passthrough; unsafe identity, mode, bootstrap, path and executable conflicts; permission preview; no raw setting persistence; WSL/Windows quoting; fixed bootstrap isolation; failure/session-history preservation; fake-provider isolation.
+
+LLMD-25 persistent launch profiles remain the next planned batch. LLMD-26 native lock diagnostics remain deferred.

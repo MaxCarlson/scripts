@@ -7,7 +7,7 @@ import sqlite3
 from .errors import ContinuityError, ErrorCode
 from .identifiers import now_utc_iso
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _DDL_V1 = """
 CREATE TABLE IF NOT EXISTS schema_metadata (
@@ -231,6 +231,32 @@ CREATE TABLE IF NOT EXISTS dispatcher_review_cycles (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS dispatcher_terminal_launches (
+    launch_id TEXT PRIMARY KEY,
+    terminal_session_id TEXT NOT NULL,
+    terminal_session_owner_pid TEXT,
+    gui_id TEXT,
+    gui_alias TEXT,
+    slot_id TEXT,
+    slot_name TEXT,
+    provider TEXT,
+    native_session_id TEXT,
+    environment_id TEXT NOT NULL,
+    launch_started_at TEXT NOT NULL,
+    launch_exited_at TEXT,
+    status TEXT NOT NULL,
+    exit_code INTEGER,
+    requested_cwd TEXT,
+    effective_cwd TEXT,
+    native_cwd TEXT,
+    git_repository TEXT,
+    git_worktree TEXT,
+    git_branch TEXT,
+    git_commit TEXT,
+    settings_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_dispatcher_review_cycle_slots
     ON dispatcher_review_cycles(original_slot_id, reviewer_slot_id, status);
 
@@ -244,6 +270,10 @@ CREATE INDEX IF NOT EXISTS idx_activity_observed ON activity_events(observed_tim
 CREATE INDEX IF NOT EXISTS idx_dispatcher_gui_activity ON dispatcher_gui_conversations(status, last_activity_at);
 CREATE INDEX IF NOT EXISTS idx_agent_slots_gui_state ON agent_slots(gui_id, state, last_activity_at);
 CREATE INDEX IF NOT EXISTS idx_agent_slot_activations_slot ON agent_slot_activations(slot_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_terminal_launch_scope
+    ON dispatcher_terminal_launches(terminal_session_id, launch_started_at DESC, launch_id DESC);
+CREATE INDEX IF NOT EXISTS idx_terminal_launch_recent
+    ON dispatcher_terminal_launches(launch_started_at DESC, launch_id DESC);
 """
 
 
@@ -291,7 +321,7 @@ def ensure_schema(conn: sqlite3.Connection) -> int:
                 (now,),
             )
         return SCHEMA_VERSION
-    if current == 1:
+    if current in {1, 2}:
         conn.executescript(_DDL_V1)
         now = now_utc_iso()
         with conn:

@@ -21,9 +21,26 @@ def test_schema_v1_migrates_dispatcher_tables_without_losing_workflows(tmp_path)
 
     version = ensure_schema(connection)
 
-    assert version == SCHEMA_VERSION == 2
+    assert version == SCHEMA_VERSION == 3
     assert connection.execute("SELECT title FROM workflows WHERE workflow_id = 'wf_abcdef'").fetchone()[0] == "Legacy workflow"
     assert connection.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_slot_activations'"
+    ).fetchone()
+    assert connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='dispatcher_terminal_launches'"
+    ).fetchone()
+    connection.close()
+
+
+def test_schema_v2_migrates_terminal_launch_projection(tmp_path):
+    path = tmp_path / "registry.sqlite"
+    connection = sqlite3.connect(path)
+    ensure_schema(connection)
+    connection.execute("DROP TABLE dispatcher_terminal_launches")
+    connection.execute("UPDATE schema_metadata SET value = '2' WHERE key = 'schema_version'")
+
+    assert ensure_schema(connection) == SCHEMA_VERSION
+    assert connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='dispatcher_terminal_launches'"
     ).fetchone()
     connection.close()
