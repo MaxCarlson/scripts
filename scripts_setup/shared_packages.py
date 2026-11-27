@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import sys
@@ -27,14 +26,6 @@ SHARED_MODULE_DIRECTORY_TO_DISTRIBUTION: dict[str, str] = {
     "web_ui_tools": "mxc-web-ui-tools",
     "termdash": "mxc-termdash",
     "cross_platform": "mxc-platform-utils",
-}
-
-SHARED_DISTRIBUTION_SOURCE_DIRS: dict[str, str] = {
-    "mxc-resource-metrics": "resource-metrics",
-    "mxc-script-logging": "script-logging",
-    "mxc-web-ui-tools": "web-ui-tools",
-    "mxc-termdash": "termdash",
-    "mxc-platform-utils": "cross-platform",
 }
 
 LEGACY_SHARED_DISTRIBUTIONS: tuple[str, ...] = (
@@ -177,19 +168,6 @@ def _legacy_editable_consumer_paths(
     return sorted(candidates)
 
 
-def _local_shared_package_dir(distribution: str, repository_root: Path) -> Path | None:
-    """Return the local shared-python-modules package directory for fallback installation."""
-    folder = SHARED_DISTRIBUTION_SOURCE_DIRS.get(distribution)
-    if not folder:
-        return None
-    override = os.environ.get("SHARED_PYTHON_MODULES_DIR", "").strip()
-    shared_root = Path(override).expanduser() if override else (repository_root.parent / "shared-python-modules")
-    candidate = shared_root / "packages" / folder
-    if (candidate / "pyproject.toml").is_file():
-        return candidate
-    return None
-
-
 def _orphaned_worktree_legacy_consumers(
     repository_root: Path,
     distributions: object | None = None,
@@ -327,17 +305,6 @@ def ensure_shared_distributions(
             command.append("-q")
         command.append(requirement)
         result = subprocess.run(command, check=False, capture_output=not verbose, text=True)
-        used_local_fallback = False
-        if result.returncode:
-            local_dir = _local_shared_package_dir(distribution, repository_root)
-            if local_dir is not None:
-                print(f"[INFO] {requirement} not available from package index; installing directly from {local_dir}")
-                fallback_cmd = [interpreter, "-I", "-m", "pip", "install", "--no-input", "--disable-pip-version-check"]
-                if not verbose:
-                    fallback_cmd.append("-q")
-                fallback_cmd.append(str(local_dir))
-                result = subprocess.run(fallback_cmd, check=False, capture_output=not verbose, text=True)
-                used_local_fallback = result.returncode == 0
         if result.returncode:
             print(f"[ERROR] Could not install shared distribution {requirement}", file=sys.stderr)
             if result.stderr:
@@ -349,7 +316,7 @@ def ensure_shared_distributions(
             installed = metadata.distribution(distribution)
             raw_direct_url = installed.read_text("direct_url.json")
             direct_url = json.loads(raw_direct_url) if raw_direct_url else None
-            if not used_local_fallback and needs_shared_distribution_replacement(direct_url):
+            if needs_shared_distribution_replacement(direct_url):
                 print(f"[ERROR] {distribution} still resolves to an application checkout after installation", file=sys.stderr)
                 failures.append(distribution)
         except (metadata.PackageNotFoundError, OSError, json.JSONDecodeError) as exc:
