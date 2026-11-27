@@ -97,5 +97,118 @@
     "type": "retirement",
     "path": "modules/orchestrator_web_viewer",
     "reason": "Canonical viewer and TermDash attachment qualified in toolkit and shared-package worktrees"
+  },
+  {
+    "type": "retirement",
+    "path": "modules/resource_metrics",
+    "reason": "Retire Scripts copy after H4 bundle migration to the published mxc-resource-metrics==0.3.0 wheel and consumer metadata reconciliation"
+  },
+  {
+    "path": "modules/resource_coordinator/docs/plans/20261112-h4-windows-qualification/STATUS.md",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "3157718446ef25f97e56cb8f3fc6a890417fc52f",
+    "after": "119f3c8fff23840d26bf69c8139c6b2846c85bcf",
+    "reason": "Replace Resource Metrics source coupling with the published canonical wheel while preserving H4 archive integrity and historical compatibility"
+  },
+  {
+    "path": "modules/resource_coordinator/docs/plans/20261112-h4-windows-qualification/WINDOWS_ACCEPTANCE.md",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "7fe3cd46f967b0b43b5c70165d93db877d8964bc",
+    "after": "13394e4e443f2fc73f1e5d817498fb2c091dd0c6",
+    "reason": "Replace Resource Metrics source coupling with the published canonical wheel while preserving H4 archive integrity and historical compatibility"
+  },
+  {
+    "path": "modules/resource_coordinator/docs/plans/20261112-h4-windows-qualification/checklist.md",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "1380c719ba34cac6bedf74e3931276ecc084b5f5",
+    "after": "54dbe7d72c3066136d09e9c081163c271bd11a30",
+    "reason": "Replace Resource Metrics source coupling with the published canonical wheel while preserving H4 archive integrity and historical compatibility"
+  },
+  {
+    "path": "modules/resource_coordinator/docs/plans/20261125-canonical-resource-metrics-bundle/STATUS.md",
+    "action": "A",
+    "before_mode": "000000",
+    "after_mode": "100644",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "c79e8f54c036412f413d8a59bb30fdaeec984238",
+    "reason": "Replace Resource Metrics source coupling with the published canonical wheel while preserving H4 archive integrity and historical compatibility"
+  },
+  {
+    "path": "modules/resource_coordinator/docs/plans/20261125-canonical-resource-metrics-bundle/checklist.md",
+    "action": "A",
+    "before_mode": "000000",
+    "after_mode": "100644",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "4c7a6a098b94b5101238e036dece8758c3e8fa21",
+    "reason": "Replace Resource Metrics source coupling with the published canonical wheel while preserving H4 archive integrity and historical compatibility"
+  },
+  {
+    "path": "modules/resource_coordinator/pyproject.toml",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "0f5d4ffd932f75bdbc18527b87c22a1d3c330be2",
+    "after": "ad084ebcf9161f03e30d8c11e870adadd5185064",
+    "reason": "Replace Resource Metrics source coupling with the published canonical wheel while preserving H4 archive integrity and historical compatibility"
+  },
+  {
+    "path": "modules/resource_coordinator/tests/test_h4_release_compatibility.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "3bd6682f5ce0772e503d2a672d8b90571d58f051",
+    "after": "66dc86cfdc18ebd0cdeb063f9965a1a52b5f7eae",
+    "reason": "Replace Resource Metrics source coupling with the published canonical wheel while preserving H4 archive integrity and historical compatibility"
+  },
+  {
+    "path": "modules/resource_coordinator/tests/test_h4_release_hardening.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "9eb0a0b835bcf999ebabd53853b77e2470694fdf",
+    "after": "6a1e97eeaa2c199d87499107a50b54c27bcf3a96",
+    "reason": "Replace Resource Metrics source coupling with the published canonical wheel while preserving H4 archive integrity and historical compatibility"
+  },
+  {
+    "path": "modules/resource_coordinator/tests/test_h4_windows_acceptance.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "e34bfb899692fb2c1aa4dd370d3a04cb3f60c343",
+    "after": "49fd8dad842b623402c46af22db82c08983b231d",
+    "reason": "Replace Resource Metrics source coupling with the published canonical wheel while preserving H4 archive integrity and historical compatibility"
+  },
+  {
+    "path": "modules/resource_coordinator/tools/h4_qualification/bundle_builder.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "49fdddfa50a3bcf9cf4d5022fb023bc4b387dccd",
+    "after": "fc1feecef895534a49d6cad019e82b1512bd0a2e",
+    "reason": "Replace Resource Metrics source coupling with the published canonical wheel while preserving H4 archive integrity and historical compatibility"
+  },
+  {
+    "path": "modules/resource_coordinator/tools/h4_qualification/wheelhouse/mxc_resource_metrics-0.3.0-py3-none-any.whl",
+    "action": "A",
+    "before_mode": "000000",
+    "after_mode": "100644",
+    "before": "0000000000000000000000000000000000000000",
+    "after": "021285caa2be7b98b66d5a8b0bec3fc244474312",
+    "reason": "Replace Resource Metrics source coupling with the published canonical wheel while preserving H4 archive integrity and historical compatibility"
+  },
+  {
+    "path": "modules/resource_coordinator/tools/h4_qualification/windows_acceptance.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "d2fc19a3513748c7e99daffcc5c3da52b6bb72b3",
+    "after": "c589475300001ea47a62dc5eedafaeb127d2bdc8",
+    "reason": "Replace Resource Metrics source coupling with the published canonical wheel while preserving H4 archive integrity and historical compatibility"
   }
 ]

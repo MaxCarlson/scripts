@@ -114,8 +114,8 @@ def test_bundle_metadata_distinguishes_rc_and_h4_python_contracts_and_dependenci
     assert lock["python_requires"] == ">=3.10"
     assert lock["rc_package_python_requires"] == ">=3.10"
     assert lock["h4_tooling_python_requires"] == ">=3.12"
-    assert lock["dependency_status"] == "resolved_not_hashed"
-    assert lock["wheelhouse_status"] == "unavailable"
+    assert lock["dependency_status"] == "partially_hashed"
+    assert lock["wheelhouse_status"] == "partial"
     assert (bundle_root / "harness" / "python_compat.py").is_file()
     assert "unauthenticated `.sha256`" in readme
 

@@ -2,6 +2,15 @@
 
 Date: 2026-11-12 (Pacific)
 
+## Canonical Resource Metrics bundle integration (2026-11-24)
+
+- [x] Work from an isolated feature branch based on committed H4 `ea6ad23fe705bc828f06a99ccf1ab3477e621d49`; leave dirty Phase-D worktree untouched.
+- [x] Stage the qualified `mxc-resource-metrics==0.3.0` wheel with exact SHA-256 metadata; remove legacy `modules/resource_metrics` source exports.
+- [x] Preserve `resource_metrics.cpu_percent` and `resource_metrics.nvidia_gpus` imports from the canonical wheel and have the acceptance harness use that wheel.
+- [x] Focused bundle and harness tests pass; Ruff, compileall, and whitespace checks pass.
+- [ ] H4 owner review and integration; real guest lifecycle remains separately gated.
+- [x] Four host-dependent tests fail because Task Scheduler/session inventory and isolated credential ACL checks are unavailable in this sandbox; see current `STATUS.md`.
+
 ## H4.5 full lifecycle acceptance infrastructure (2026-11-15)
 
 - [x] Verify the assigned H4 source checkpoint and V3 checksum in the isolated implementation worktree.
