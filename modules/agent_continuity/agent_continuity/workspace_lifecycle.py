@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -1208,209 +1209,225 @@ class TopologyRestorer:
                 observed_receipt=observed_receipt,
             )
 
-        for item in plan.items:
-            q_entry = queue_by_slot.get(item.slot_id)
-            q_id = q_entry.queue_entry_id if q_entry else item.queue_entry_id
+        batch_dispatched = False
+        try:
+            for item in plan.items:
+                q_entry = queue_by_slot.get(item.slot_id)
+                q_id = q_entry.queue_entry_id if q_entry else item.queue_entry_id
 
-            if not _matches_gui_scope(item.gui_id, item.gui_alias, gui_scope):
-                outcomes.append(
-                    RestoreItemOutcome(
-                        slot_id=item.slot_id,
-                        queue_entry_id=q_id,
-                        status="skipped",
-                        reason="gui_scope_excluded",
-                        requested_topology=item.requested_topology,
-                    )
-                )
-                continue
-
-            if item.action not in {"restore", "conditional_restore"}:
-                outcomes.append(
-                    RestoreItemOutcome(
-                        slot_id=item.slot_id,
-                        queue_entry_id=q_id,
-                        status="skipped",
-                        reason=item.action,
-                        requested_topology=item.requested_topology,
-                    )
-                )
-                continue
-
-            claim_token: str | None = None
-            if queue is not None and q_id is not None:
-                claim_res = queue.claim(q_id, operator_id=operator_id)
-                if not claim_res.acquired or claim_res.claim_token is None:
+                if not _matches_gui_scope(item.gui_id, item.gui_alias, gui_scope):
                     outcomes.append(
                         RestoreItemOutcome(
                             slot_id=item.slot_id,
                             queue_entry_id=q_id,
                             status="skipped",
-                            reason=f"concurrent_claim:{claim_res.reason}",
+                            reason="gui_scope_excluded",
                             requested_topology=item.requested_topology,
                         )
                     )
                     continue
-                claim_token = claim_res.claim_token
 
-            lease: SlotGuardLease | None = None
-            keep_lease_for_batch = False
-            try:
-                if slot_guard is not None:
-                    lease = slot_guard.acquire_slot(
-                        item.slot_id,
-                        operator_id=operator_id,
-                        checkpoint_id=plan.checkpoint_id,
-                        queue_entry_id=q_id,
-                    )
-                    if not lease.acquired:
-                        fail_reason = f"slot_guard_busy:{lease.reason}"
-                        if queue is not None and q_id is not None and claim_token is not None:
-                            queue.release(q_id, claim_token=claim_token, reason=fail_reason)
-                        outcomes.append(
-                            RestoreItemOutcome(
-                                slot_id=item.slot_id,
-                                queue_entry_id=q_id,
-                                status="skipped",
-                                reason=fail_reason,
-                                requested_topology=item.requested_topology,
-                            )
-                        )
-                        continue
-
-                # Fresh execution-boundary revalidation AFTER acquiring claim & slot guard
-                if authorization_check is not None:
-                    auth_ok, auth_reason = authorization_check(item)
-                    if not auth_ok:
-                        fail_reason = f"authorization_revoked:{auth_reason or 'denied'}"
-                        if queue is not None and q_id is not None and claim_token is not None:
-                            queue.record_failure(q_id, claim_token=claim_token, reason=fail_reason, partial=False)
-                        any_uncertain_or_failed = True
-                        outcomes.append(
-                            RestoreItemOutcome(
-                                slot_id=item.slot_id,
-                                queue_entry_id=q_id,
-                                status="failed",
-                                reason=fail_reason,
-                                requested_topology=item.requested_topology,
-                            )
-                        )
-                        continue
-
-                if slot_provider is not None:
-                    fresh_slot = slot_provider(item.slot_id)
-                    guard_slots: Sequence[WorkspaceSlotInput] | None = (
-                        [fresh_slot] if fresh_slot is not None else []
-                    )
-                else:
-                    guard_slots = current_slots
-                if gui_scope is not None and guard_slots is not None:
-                    scoped_match = next((s for s in guard_slots if s.slot_id == item.slot_id), None)
-                    if scoped_match is not None and not _matches_gui_scope(
-                        scoped_match.gui_id, scoped_match.gui_alias or item.gui_alias, gui_scope
-                    ):
-                        if queue is not None and q_id is not None and claim_token is not None:
-                            queue.release(q_id, claim_token=claim_token, reason="gui_scope_excluded")
-                        outcomes.append(
-                            RestoreItemOutcome(
-                                slot_id=item.slot_id,
-                                queue_entry_id=q_id,
-                                status="skipped",
-                                reason="gui_scope_excluded",
-                                requested_topology=item.requested_topology,
-                            )
-                        )
-                        continue
-
-                effective_observers: Mapping[tuple[str, str], RuntimeDiscovery] | RuntimeDiscovery = (
-                    observers
-                    if observers is not None
-                    else RuntimeDiscovery(environment_id=item.environment_id, runtime_kind=item.runtime_kind)
-                )
-                fresh_reval = revalidate_checkpoint(
-                    checkpoint,
-                    current_slots=guard_slots,
-                    observers=effective_observers,
-                    snapshots=None,
-                    path_exists=path_exists,
-                    allow_unknown_runtime=allow_unknown_runtime,
-                    has_slot_exclusion=bool(lease is not None and lease.acquired),
-                )
-                fresh_entry = next((e for e in fresh_reval.entries if e.slot_id == item.slot_id), None)
-                if fresh_entry is not None:
-                    allowed_reserved_only = (
-                        allow_reserved_claude and set(fresh_entry.reasons) == {"reserved_unconfirmed"}
-                    )
-                    if not fresh_entry.can_restore and not allowed_reserved_only:
-                        fail_reason = f"execution_revalidation_failed:{','.join(fresh_entry.reasons)}"
-                        if queue is not None and q_id is not None and claim_token is not None:
-                            queue.record_failure(
-                                q_id, claim_token=claim_token, reason=fail_reason, partial=False
-                            )
-                        any_uncertain_or_failed = True
-                        outcomes.append(
-                            RestoreItemOutcome(
-                                slot_id=item.slot_id,
-                                queue_entry_id=q_id,
-                                status="failed",
-                                reason=fail_reason,
-                                requested_topology=item.requested_topology,
-                            )
-                        )
-                        continue
-
-                if queue is not None and q_id is not None and claim_token is not None:
-                    queue.mark_launching(q_id, claim_token=claim_token)
-
-                launch_req = RestoreLaunchRequest(
-                    checkpoint_id=plan.checkpoint_id,
-                    queue_entry_id=q_id,
-                    slot_id=item.slot_id,
-                    gui_id=item.gui_id,
-                    provider=item.provider,
-                    native_session_id=item.native_session_id,
-                    environment_id=item.environment_id,
-                    runtime_kind=item.runtime_kind,
-                    cwd=item.cwd,
-                    launch_settings=dict(item.launch_settings),
-                    requested_topology=item.requested_topology,
-                    metadata=item.metadata,
-                )
-
-                if use_grouped:
-                    prepared_batch.append((item, q_id, claim_token, lease, launch_req))
-                    keep_lease_for_batch = True
-                    continue
-
-                try:
-                    launch_res = launcher.launch_session(launch_req)
-                except Exception as exc:
-                    fail_reason = f"launcher_exception:{type(exc).__name__}:{exc}"
-                    if queue is not None and q_id is not None and claim_token is not None:
-                        queue.mark_ambiguous(
-                            q_id,
-                            claim_token=claim_token,
-                            reason=fail_reason,
-                            launch_submission_state="ambiguous",
-                        )
-                    any_uncertain_or_failed = True
+                if item.action not in {"restore", "conditional_restore"}:
                     outcomes.append(
                         RestoreItemOutcome(
                             slot_id=item.slot_id,
                             queue_entry_id=q_id,
-                            status="ambiguous",
-                            reason=fail_reason,
+                            status="skipped",
+                            reason=item.action,
                             requested_topology=item.requested_topology,
                         )
                     )
                     continue
 
-                outcomes.append(_finalize_launch_outcome(item, q_id, claim_token, launch_res))
-            finally:
-                if not keep_lease_for_batch and lease is not None and slot_guard is not None and lease.acquired:
-                    slot_guard.release_slot(lease)
+                claim_token: str | None = None
+                if queue is not None and q_id is not None:
+                    claim_res = queue.claim(q_id, operator_id=operator_id)
+                    if not claim_res.acquired or claim_res.claim_token is None:
+                        outcomes.append(
+                            RestoreItemOutcome(
+                                slot_id=item.slot_id,
+                                queue_entry_id=q_id,
+                                status="skipped",
+                                reason=f"concurrent_claim:{claim_res.reason}",
+                                requested_topology=item.requested_topology,
+                            )
+                        )
+                        continue
+                    claim_token = claim_res.claim_token
 
-        if prepared_batch:
-            try:
+                lease: SlotGuardLease | None = None
+                keep_lease_for_batch = False
+                marked_launching = False
+                try:
+                    if slot_guard is not None:
+                        lease = slot_guard.acquire_slot(
+                            item.slot_id,
+                            operator_id=operator_id,
+                            checkpoint_id=plan.checkpoint_id,
+                            queue_entry_id=q_id,
+                        )
+                        if not lease.acquired:
+                            fail_reason = f"slot_guard_busy:{lease.reason}"
+                            if queue is not None and q_id is not None and claim_token is not None:
+                                queue.release(q_id, claim_token=claim_token, reason=fail_reason)
+                            outcomes.append(
+                                RestoreItemOutcome(
+                                    slot_id=item.slot_id,
+                                    queue_entry_id=q_id,
+                                    status="skipped",
+                                    reason=fail_reason,
+                                    requested_topology=item.requested_topology,
+                                )
+                            )
+                            continue
+
+                    # Fresh execution-boundary revalidation AFTER acquiring claim & slot guard
+                    if authorization_check is not None:
+                        auth_ok, auth_reason = authorization_check(item)
+                        if not auth_ok:
+                            fail_reason = f"authorization_revoked:{auth_reason or 'denied'}"
+                            if queue is not None and q_id is not None and claim_token is not None:
+                                queue.record_failure(q_id, claim_token=claim_token, reason=fail_reason, partial=False)
+                            any_uncertain_or_failed = True
+                            outcomes.append(
+                                RestoreItemOutcome(
+                                    slot_id=item.slot_id,
+                                    queue_entry_id=q_id,
+                                    status="failed",
+                                    reason=fail_reason,
+                                    requested_topology=item.requested_topology,
+                                )
+                            )
+                            continue
+
+                    if slot_provider is not None:
+                        fresh_slot = slot_provider(item.slot_id)
+                        guard_slots: Sequence[WorkspaceSlotInput] | None = (
+                            [fresh_slot] if fresh_slot is not None else []
+                        )
+                    else:
+                        guard_slots = current_slots
+                    if gui_scope is not None and guard_slots is not None:
+                        scoped_match = next((s for s in guard_slots if s.slot_id == item.slot_id), None)
+                        if scoped_match is not None and not _matches_gui_scope(
+                            scoped_match.gui_id, scoped_match.gui_alias or item.gui_alias, gui_scope
+                        ):
+                            if queue is not None and q_id is not None and claim_token is not None:
+                                queue.release(q_id, claim_token=claim_token, reason="gui_scope_excluded")
+                            outcomes.append(
+                                RestoreItemOutcome(
+                                    slot_id=item.slot_id,
+                                    queue_entry_id=q_id,
+                                    status="skipped",
+                                    reason="gui_scope_excluded",
+                                    requested_topology=item.requested_topology,
+                                )
+                            )
+                            continue
+
+                    effective_observers: Mapping[tuple[str, str], RuntimeDiscovery] | RuntimeDiscovery = (
+                        observers
+                        if observers is not None
+                        else RuntimeDiscovery(environment_id=item.environment_id, runtime_kind=item.runtime_kind)
+                    )
+                    fresh_reval = revalidate_checkpoint(
+                        checkpoint,
+                        current_slots=guard_slots,
+                        observers=effective_observers,
+                        snapshots=None,
+                        path_exists=path_exists,
+                        allow_unknown_runtime=allow_unknown_runtime,
+                        has_slot_exclusion=bool(lease is not None and lease.acquired),
+                    )
+                    fresh_entry = next((e for e in fresh_reval.entries if e.slot_id == item.slot_id), None)
+                    if fresh_entry is not None:
+                        allowed_reserved_only = (
+                            allow_reserved_claude and set(fresh_entry.reasons) == {"reserved_unconfirmed"}
+                        )
+                        if not fresh_entry.can_restore and not allowed_reserved_only:
+                            fail_reason = f"execution_revalidation_failed:{','.join(fresh_entry.reasons)}"
+                            if queue is not None and q_id is not None and claim_token is not None:
+                                queue.record_failure(
+                                    q_id, claim_token=claim_token, reason=fail_reason, partial=False
+                                )
+                            any_uncertain_or_failed = True
+                            outcomes.append(
+                                RestoreItemOutcome(
+                                    slot_id=item.slot_id,
+                                    queue_entry_id=q_id,
+                                    status="failed",
+                                    reason=fail_reason,
+                                    requested_topology=item.requested_topology,
+                                )
+                            )
+                            continue
+
+                    if queue is not None and q_id is not None and claim_token is not None:
+                        queue.mark_launching(q_id, claim_token=claim_token)
+                        marked_launching = True
+
+                    launch_req = RestoreLaunchRequest(
+                        checkpoint_id=plan.checkpoint_id,
+                        queue_entry_id=q_id,
+                        slot_id=item.slot_id,
+                        gui_id=item.gui_id,
+                        provider=item.provider,
+                        native_session_id=item.native_session_id,
+                        environment_id=item.environment_id,
+                        runtime_kind=item.runtime_kind,
+                        cwd=item.cwd,
+                        launch_settings=dict(item.launch_settings),
+                        requested_topology=item.requested_topology,
+                        metadata=item.metadata,
+                    )
+
+                    if use_grouped:
+                        prepared_batch.append((item, q_id, claim_token, lease, launch_req))
+                        keep_lease_for_batch = True
+                        continue
+
+                    try:
+                        launch_res = launcher.launch_session(launch_req)
+                    except Exception as exc:
+                        fail_reason = f"launcher_exception:{type(exc).__name__}:{exc}"
+                        if queue is not None and q_id is not None and claim_token is not None:
+                            queue.mark_ambiguous(
+                                q_id,
+                                claim_token=claim_token,
+                                reason=fail_reason,
+                                launch_submission_state="ambiguous",
+                            )
+                        any_uncertain_or_failed = True
+                        outcomes.append(
+                            RestoreItemOutcome(
+                                slot_id=item.slot_id,
+                                queue_entry_id=q_id,
+                                status="ambiguous",
+                                reason=fail_reason,
+                                requested_topology=item.requested_topology,
+                            )
+                        )
+                        continue
+
+                    outcomes.append(_finalize_launch_outcome(item, q_id, claim_token, launch_res))
+                except Exception:
+                    if not keep_lease_for_batch and queue is not None and q_id is not None and claim_token is not None:
+                        if marked_launching:
+                            queue.mark_ambiguous(
+                                q_id,
+                                claim_token=claim_token,
+                                reason="preparation_interrupted_after_mark_launching",
+                                launch_submission_state="ambiguous",
+                            )
+                        else:
+                            queue.release(q_id, claim_token=claim_token, reason="preparation_interrupted")
+                    raise
+                finally:
+                    if not keep_lease_for_batch and lease is not None and slot_guard is not None and lease.acquired:
+                        slot_guard.release_slot(lease)
+
+            if prepared_batch:
+                batch_dispatched = True
                 batch_reqs = [entry[4] for entry in prepared_batch]
                 try:
                     grouped_results = launcher.launch_grouped(batch_reqs)  # type: ignore[attr-defined]
@@ -1457,10 +1474,23 @@ class TopologyRestorer:
                             )
                         else:
                             outcomes.append(_finalize_launch_outcome(item, q_id, claim_token, res))
-            finally:
-                if slot_guard is not None:
-                    for _item, _q_id, _tok, lease, _req in prepared_batch:
-                        if lease is not None and lease.acquired:
+        except Exception:
+            if not batch_dispatched and prepared_batch and queue is not None:
+                for _item, q_id, claim_token, _lease, _req in prepared_batch:
+                    if q_id is not None and claim_token is not None:
+                        with contextlib.suppress(Exception):
+                            queue.mark_ambiguous(
+                                q_id,
+                                claim_token=claim_token,
+                                reason="grouped_preparation_aborted",
+                                launch_submission_state="ambiguous",
+                            )
+            raise
+        finally:
+            if slot_guard is not None:
+                for _item, _q_id, _tok, lease, _req in prepared_batch:
+                    if lease is not None and lease.acquired:
+                        with contextlib.suppress(Exception):
                             slot_guard.release_slot(lease)
 
         restore_id = generate_id("rst")

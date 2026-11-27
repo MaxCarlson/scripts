@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -73,9 +74,25 @@ class DispatcherLike(Protocol):
 
 
 class DispatcherLaunchCommandBuilder(Protocol):
-    """Contract for Agent #1 to supply canonical LLMD-managed pane commands."""
+    """Contract for Agent #1 to supply canonical exact-session LLMD-managed pane commands."""
+
+    supports_exact_session: bool
 
     def build_pane_command(self, request: RestoreLaunchRequest) -> tuple[str, ...]: ...
+
+
+class DispatcherOwnershipVerifier(Protocol):
+    """Optional Agent #1 contract confirming atomic dispatcher ownership of a managed pane."""
+
+    def verify_ownership(
+        self,
+        request: RestoreLaunchRequest,
+        *,
+        launch_id: str,
+        pane_id: str,
+    ) -> tuple[bool, bool]:
+        """Return (dispatcher_ownership_acknowledged, exact_association_confirmed)."""
+        ...
 
 
 def validate_provider_launch_settings(
@@ -208,7 +225,6 @@ class DispatcherWorkspaceAdapter:
             launch_id = rec.get("launch_id")
             term_sid = rec.get("terminal_session_id")
             pane_id = rec.get("pane_id")
-            # Never infer pane_id from launch_id
             if not launch_id or not term_sid or not pane_id:
                 continue
             state = (
@@ -373,13 +389,28 @@ class DispatcherSlotExecutionGuard:
             stream.close()
 
 
+def canonical_llmd_dispatcher_entrypoint(*, prefer_installed: bool = True) -> tuple[str, ...]:
+    """Return the canonical `llmd` dispatcher entry point (never legacy `python -m agent_continuity`)."""
+    if prefer_installed:
+        exe = shutil.which("llmd")
+        if exe:
+            return (exe,)
+    return (
+        sys.executable,
+        "-c",
+        "import sys; from agent_continuity.dispatcher_cli import main; sys.exit(main())",
+    )
+
+
 def canonical_llmd_pane_command(
     request: RestoreLaunchRequest,
     *,
     home_dir: Path | None = None,
+    prefer_installed: bool = True,
 ) -> tuple[str, ...]:
-    """Build the canonical `llmd pane-run` command preserving slot/lifecycle/history safeguards."""
-    argv = [sys.executable, "-m", "agent_continuity", "pane-run"]
+    """Build the canonical `llmd pane-run` invocation via dispatcher_cli (never legacy cli.py)."""
+    argv = list(canonical_llmd_dispatcher_entrypoint(prefer_installed=prefer_installed))
+    argv.append("pane-run")
     if home_dir is not None:
         argv.extend(["-H", str(home_dir)])
     argv.extend(["-s", request.slot_id])
@@ -391,14 +422,32 @@ def build_manual_restore_command(
     *,
     home_dir: Path | None = None,
     prefer_llmd: bool = True,
+    exact_llmd_supported: bool = False,
 ) -> list[str]:
-    """Prefer canonical exact-session LLMD continuation; fall back to direct native resume only if requested."""
-    if prefer_llmd:
+    """Build a manual exact-session restoration command.
+
+    Canonical `llmd continue` currently resumes the slot's selected session without
+    CLI-level exact-session assertions. Unless `exact_llmd_supported=True`, emit
+    exact-ID native resume commands so manual recovery never resumes a drifted slot.
+    """
+    if prefer_llmd and exact_llmd_supported:
         argv = ["llmd", "continue"]
         if home_dir is not None:
             argv.extend(["-H", str(home_dir)])
         gui_selector = getattr(item, "gui_alias", None) or item.gui_id
-        argv.extend(["-g", gui_selector, item.slot_id])
+        argv.extend(
+            [
+                "-g",
+                gui_selector,
+                "--provider",
+                item.provider,
+                "--session-id",
+                item.native_session_id,
+                "--environment",
+                item.environment_id,
+                item.slot_id,
+            ]
+        )
         return argv
 
     settings = validate_provider_launch_settings(item.provider, item.launch_settings, strict=False)
@@ -444,6 +493,9 @@ class TerminalLauncherRestoreAdapter:
         managed_store: Any,
         home_dir: Path | None = None,
         command_builder: DispatcherLaunchCommandBuilder | None = None,
+        ownership_verifier: DispatcherOwnershipVerifier | None = None,
+        require_exact_session_support: bool = True,
+        require_dispatcher_ownership: bool = False,
         default_window: str = "llmd-restore",
         startup_timeout: float = 2.0,
         submission_timeout: float = 10.0,
@@ -452,6 +504,9 @@ class TerminalLauncherRestoreAdapter:
         self.managed_store = managed_store
         self.home_dir = home_dir
         self.command_builder = command_builder
+        self.ownership_verifier = ownership_verifier
+        self.require_exact_session_support = require_exact_session_support
+        self.require_dispatcher_ownership = require_dispatcher_ownership
         self.default_window = default_window
         self.startup_timeout = startup_timeout
         self.submission_timeout = submission_timeout
@@ -459,11 +514,92 @@ class TerminalLauncherRestoreAdapter:
     def _pane_argv(self, request: RestoreLaunchRequest) -> tuple[str, ...]:
         validate_provider_launch_settings(request.provider, request.launch_settings, strict=True)
         if self.command_builder is not None:
+            if self.require_exact_session_support and not getattr(
+                self.command_builder, "supports_exact_session", False
+            ):
+                raise ContinuityError(
+                    ErrorCode.RESUME_UNSUPPORTED,
+                    "Dispatcher launch command builder does not assert exact provider/session/environment identity.",
+                )
             return tuple(self.command_builder.build_pane_command(request))
+        if self.require_exact_session_support:
+            raise ContinuityError(
+                ErrorCode.RESUME_UNSUPPORTED,
+                "Canonical `llmd pane-run` does not yet expose exact-session CLI assertions; "
+                "supply an exact-session DispatcherLaunchCommandBuilder.",
+            )
         return canonical_llmd_pane_command(request, home_dir=self.home_dir)
 
     def launch_session(self, request: RestoreLaunchRequest) -> RestoreLaunchOutcome:
         return self.launch_grouped([request])[request.slot_id]
+
+    def _evaluate_pane_outcome(
+        self,
+        req: RestoreLaunchRequest,
+        *,
+        launch_id: str,
+        pane_id: str,
+        rec: Any | None,
+        used_fallback: bool,
+        startup_timed_out: bool,
+    ) -> RestoreLaunchOutcome:
+        relay_spawn_ok = bool(rec is not None and getattr(rec, "spawn_acknowledged", False))
+        ownership_ok = False
+        association_ok = False
+        if relay_spawn_ok and self.ownership_verifier is not None:
+            try:
+                ownership_ok, association_ok = self.ownership_verifier.verify_ownership(
+                    req, launch_id=launch_id, pane_id=pane_id
+                )
+            except Exception as exc:
+                return RestoreLaunchOutcome(
+                    accepted=True,
+                    launch_id=launch_id,
+                    pane_id=pane_id,
+                    failure_reason=f"ownership_verification_error:{type(exc).__name__}:{exc}",
+                    spawn_confirmed=False,
+                    association_confirmed=False,
+                    resumability_confirmed=False,
+                    submission_ambiguous=True,
+                    geometry_fallback_used=used_fallback,
+                )
+
+        if not relay_spawn_ok:
+            return RestoreLaunchOutcome(
+                accepted=True,
+                launch_id=launch_id,
+                pane_id=pane_id,
+                failure_reason="relay_startup_timed_out" if startup_timed_out else "relay_spawn_unconfirmed",
+                spawn_confirmed=False,
+                association_confirmed=False,
+                resumability_confirmed=False,
+                submission_ambiguous=False,
+                geometry_fallback_used=used_fallback,
+            )
+
+        if self.require_dispatcher_ownership and not ownership_ok:
+            return RestoreLaunchOutcome(
+                accepted=True,
+                launch_id=launch_id,
+                pane_id=pane_id,
+                failure_reason="dispatcher_ownership_unconfirmed",
+                spawn_confirmed=False,
+                association_confirmed=False,
+                resumability_confirmed=False,
+                submission_ambiguous=True,
+                geometry_fallback_used=used_fallback,
+            )
+
+        return RestoreLaunchOutcome(
+            accepted=True,
+            launch_id=launch_id,
+            pane_id=pane_id,
+            spawn_confirmed=True,
+            association_confirmed=association_ok,
+            resumability_confirmed=False,
+            submission_ambiguous=False,
+            geometry_fallback_used=used_fallback,
+        )
 
     def launch_grouped(self, requests: Sequence[RestoreLaunchRequest]) -> dict[str, RestoreLaunchOutcome]:
         """Group restoration requests into window/tab/pane plans and launch via managed relay."""
@@ -482,7 +618,6 @@ class TerminalLauncherRestoreAdapter:
 
         outcomes: dict[str, RestoreLaunchOutcome] = {}
         for target_window, win_reqs in by_window.items():
-            # Group by explicit requested_tab_index when present; otherwise chunk into <=4 panes per tab
             tab_buckets: dict[tuple[int, int], list[RestoreLaunchRequest]] = {}
             fallback_list: list[RestoreLaunchRequest] = []
             for req in win_reqs:
@@ -513,27 +648,41 @@ class TerminalLauncherRestoreAdapter:
 
             tabs: list[TabSpec] = []
             slot_order: list[tuple[int, int, RestoreLaunchRequest, bool]] = []
-            for tab_idx, (group_reqs, used_fallback) in enumerate(ordered_groups):
+            prep_failed = False
+            for tab_idx, (group_reqs, group_fallback) in enumerate(ordered_groups):
                 panes: list[PaneSpec] = []
-                for pane_idx, req in enumerate(group_reqs):
-                    panes.append(
-                        PaneSpec(
-                            title=f"{req.provider}:{req.slot_id}",
-                            argv=self._pane_argv(req),
-                            cwd=req.cwd,
-                        )
-                    )
-                    slot_order.append((tab_idx, pane_idx, req, used_fallback))
                 requested_layout = (
                     group_reqs[0].requested_topology.requested_layout
                     if group_reqs[0].requested_topology
                     else None
                 )
-                canonical_layout = _layout_for_pane_count(len(panes))
-                if requested_layout and requested_layout == canonical_layout:
-                    chosen_layout = requested_layout
-                else:
-                    chosen_layout = canonical_layout
+                canonical_layout = _layout_for_pane_count(len(group_reqs))
+                layout_fallback = bool(requested_layout and requested_layout != canonical_layout)
+                used_fallback = group_fallback or layout_fallback
+                for pane_idx, req in enumerate(group_reqs):
+                    try:
+                        argv = self._pane_argv(req)
+                    except Exception as exc:
+                        outcomes[req.slot_id] = RestoreLaunchOutcome(
+                            accepted=False,
+                            failure_reason=f"command_preparation_failed:{type(exc).__name__}:{exc}",
+                            spawn_confirmed=False,
+                            submission_ambiguous=False,
+                            geometry_fallback_used=used_fallback,
+                        )
+                        prep_failed = True
+                        continue
+                    panes.append(
+                        PaneSpec(
+                            title=f"{req.provider}:{req.slot_id}",
+                            argv=argv,
+                            cwd=req.cwd,
+                        )
+                    )
+                    slot_order.append((tab_idx, pane_idx, req, used_fallback))
+                if not panes:
+                    continue
+                chosen_layout = _layout_for_pane_count(len(panes))
                 tabs.append(
                     TabSpec(
                         title=" | ".join(p.title for p in panes),
@@ -541,6 +690,11 @@ class TerminalLauncherRestoreAdapter:
                         layout=chosen_layout,  # type: ignore[arg-type]
                     )
                 )
+
+            if prep_failed and not tabs:
+                continue
+            if not tabs:
+                continue
 
             plan = TerminalLaunchPlan(tabs=tuple(tabs), target_window=target_window)
             launch_id = generate_id("tlaunch")
@@ -579,19 +733,13 @@ class TerminalLauncherRestoreAdapter:
                             geometry_fallback_used=used_fallback,
                         )
                     else:
-                        spawn_ok = bool(rec is not None and rec.spawn_acknowledged)
-                        outcomes[req.slot_id] = RestoreLaunchOutcome(
-                            accepted=True,
+                        outcomes[req.slot_id] = self._evaluate_pane_outcome(
+                            req,
                             launch_id=launch_id,
                             pane_id=pane_id,
-                            failure_reason=(
-                                "relay_startup_timed_out" if not spawn_ok and managed_res.startup_timed_out else None
-                            ),
-                            spawn_confirmed=spawn_ok,
-                            association_confirmed=spawn_ok,
-                            resumability_confirmed=False,
-                            submission_ambiguous=False,
-                            geometry_fallback_used=used_fallback,
+                            rec=rec,
+                            used_fallback=used_fallback,
+                            startup_timed_out=managed_res.startup_timed_out,
                         )
             else:
                 from terminal_launcher.managed import LaunchSubmissionState, ManagedPaneReservation
@@ -658,16 +806,12 @@ class TerminalLauncherRestoreAdapter:
                     recs = {r.pane_id: r for r in self.managed_store.enumerate_processes(launch_id=launch_id)}
                     for tab_idx, pane_idx, req, used_fallback in slot_order:
                         pane_id = f"{launch_id}:{tab_idx}:{pane_idx}"
-                        rec = recs.get(pane_id)
-                        spawn_ok = bool(rec is not None and rec.spawn_acknowledged)
-                        outcomes[req.slot_id] = RestoreLaunchOutcome(
-                            accepted=True,
+                        outcomes[req.slot_id] = self._evaluate_pane_outcome(
+                            req,
                             launch_id=launch_id,
                             pane_id=pane_id,
-                            spawn_confirmed=spawn_ok,
-                            association_confirmed=spawn_ok,
-                            resumability_confirmed=False,
-                            submission_ambiguous=False,
-                            geometry_fallback_used=used_fallback,
+                            rec=recs.get(pane_id),
+                            used_fallback=used_fallback,
+                            startup_timed_out=False,
                         )
         return outcomes

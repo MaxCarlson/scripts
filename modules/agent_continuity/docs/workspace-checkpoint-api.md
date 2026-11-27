@@ -27,10 +27,12 @@ Note: Add `save`, `restore`, `checkpoints`, `queue` to `modules/scripts_help/scr
   - Correlates `launch_settings` and `worktree` by exact `(slot_id, provider, native_session_id, environment_id)` identity.
   - Requires explicit `pane_id` in `associations_for_session` (never infers `pane_id` from `launch_id`).
   - Surfaces `pending_launch_id`, `pending_provider`, `lifecycle_state`, `profile_revision`, and `authorization_valid` so `revalidate_checkpoint` blocks pending transitions, terminal slots, profile drift, and revoked authorizations.
-- **Canonical LLMD-managed execution (`DispatcherLaunchCommandBuilder`)**:
-  - Implement `build_pane_command(request: RestoreLaunchRequest) -> tuple[str, ...]` (or rely on `canonical_llmd_pane_command` which emits `python -m agent_continuity pane-run -H <home> -s <slot_id>`).
+- **Canonical LLMD-managed execution (`DispatcherLaunchCommandBuilder` & `DispatcherOwnershipVerifier`)**:
+  - `python -m agent_continuity` routes through the legacy `cli.py`; `canonical_llmd_dispatcher_entrypoint` uses the installed `llmd` dispatcher entry point (`agent_continuity.dispatcher_cli:main`).
+  - `TerminalLauncherRestoreAdapter` fails closed (`require_exact_session_support=True`) unless supplied with a `DispatcherLaunchCommandBuilder` whose `supports_exact_session=True` asserts exact `(provider, native_session_id, environment_id, cwd)` identity (Agent #1 additive flags on `pane-run`: `--expected-provider`, `--expected-session-id`, `--expected-environment`, `--cwd`).
+  - `DispatcherOwnershipVerifier.verify_ownership(request, *, launch_id, pane_id) -> (ownership_ok, association_ok)` separates relay spawn acknowledgment (`spawn_acknowledged`) from dispatcher ownership acknowledgment and exact-session association; `association_confirmed` is never inferred from a spawned relay process alone.
   - `TerminalLauncherRestoreAdapter` groups eligible requests by `(target_window, requested_tab_index)` (with deterministic `<=2`-pane fallback when tab/pane indices are absent, flagging `geometry_fallback_used=True`) and submits via `WindowsTerminalBackend.launch_managed`.
-  - `build_manual_restore_command` prefers canonical `llmd continue -g <gui> <slot_id>` (with `-N/--direct-native` available for direct provider fallback).
+  - `build_manual_restore_command` emits exact-ID native resume commands until Agent #1 adds exact-session flags to `llmd continue` (`exact_llmd_supported=True`).
 - **Terminal Launcher dependency floor (`>=0.1.1,<0.3`)**:
   - All `terminal_launcher.managed` and `launch_managed` imports are isolated behind `is_managed_terminal_available()`. Inspection (`checkpoints`, `queue`) and manual (`restore -m`) workflows operate cleanly on `0.1.1` without `0.2.0`.
 

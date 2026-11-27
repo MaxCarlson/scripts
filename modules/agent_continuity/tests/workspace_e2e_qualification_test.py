@@ -38,6 +38,7 @@ from agent_continuity.workspace_adapters import (
 from agent_continuity.workspace_checkpoint import (
     CheckpointStore,
     WorkspaceSlotInput,
+    WorkspaceSlotMetadata,
     WorkspaceTopologyRequest,
 )
 from agent_continuity.workspace_cli import (
@@ -285,9 +286,10 @@ def test_e2e_save_restart_restore_with_real_dispatcher_and_terminal_launcher(tmp
             "_CmdBuilder",
             (),
             {
+                "supports_exact_session": True,
                 "build_pane_command": staticmethod(
                     lambda req: (req.provider, "--session", req.native_session_id)
-                )
+                ),
             },
         )(),
     )
@@ -522,6 +524,8 @@ def test_real_managed_relay_grouped_restoration_and_failure_modes(tmp_path: Path
     backend = WindowsTerminalBackend(runner=_harmless_relay_runner)
 
     class _HarmlessCmdBuilder:
+        supports_exact_session = True
+
         def build_pane_command(self, request: RestoreLaunchRequest) -> tuple[str, ...]:
             return (sys.executable, "-c", "import time; time.sleep(0.2)")
 
@@ -676,3 +680,192 @@ def test_adapter_safety_floor_011_gui_scope_and_queue_recovery_gates(
         stream=buf,
     ) == 0
     assert json.loads(buf.getvalue())["managed_terminal_available"] is False
+
+
+def test_entrypoint_exact_session_contract_ownership_separation_and_grouped_cleanup(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    from agent_continuity.restoration_queue import QueueEntryStatus, RestorationQueue
+    from agent_continuity.workspace_adapters import (
+        build_manual_restore_command,
+        canonical_llmd_dispatcher_entrypoint,
+    )
+    from agent_continuity.workspace_lifecycle import RestorePlanItem
+
+    # 1. Canonical dispatcher entrypoint invokes dispatcher_cli (not legacy cli.py) against disposable registry
+    home_dir = tmp_path / "disp_home"
+    work_dir = tmp_path / "repo"
+    work_dir.mkdir()
+    dispatcher, ids = _seed_dispatcher_with_mixed_sessions(home_dir, work_dir, work_dir)
+    modules_root = str(Path(__file__).resolve().parents[2])
+    entry_cmd = list(canonical_llmd_dispatcher_entrypoint(prefer_installed=False)) + [
+        "-H",
+        str(home_dir),
+        "list",
+        "-j",
+    ]
+    proc = subprocess.run(
+        entry_cmd,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": modules_root},
+        check=True,
+    )
+    listed = json.loads(proc.stdout)
+    assert listed["action"] == "list"
+    assert len(listed["conversations"]) == 2
+
+    # 2. Exact-session contract fails closed when no exact-session command_builder is supplied
+    tl_store = ManagedProcessStore(tmp_path / "managed_exact.sqlite3")
+    req = RestoreLaunchRequest(
+        checkpoint_id="chk_1",
+        queue_entry_id="rq_1",
+        slot_id=ids["codex_slot"],
+        gui_id="gui_alpha",
+        provider="codex",
+        native_session_id=ids["codex_sid"],
+        environment_id=ids["env_id"],
+        runtime_kind=detect_runtime_kind(),
+        cwd=str(work_dir),
+        launch_settings={},
+        requested_topology=WorkspaceTopologyRequest(
+            target_window="win_1",
+            requested_tab_index=0,
+            requested_pane_index=0,
+            requested_layout="single",
+        ),
+        metadata=WorkspaceSlotMetadata(),
+    )
+    fail_closed_adapter = TerminalLauncherRestoreAdapter(
+        backend=type("_NoopBackend", (), {"launch": lambda self, p: LaunchResult(LaunchStatus.SUBMITTED, "fake")})(),
+        managed_store=tl_store,
+        require_exact_session_support=True,
+    )
+    res_fail = fail_closed_adapter.launch_session(req)
+    assert res_fail.accepted is False
+    assert "command_preparation_failed" in (res_fail.failure_reason or "")
+
+    # Manual command prefers exact-ID native resume until exact_llmd_supported=True
+    plan_item = RestorePlanItem(
+        slot_id=ids["codex_slot"],
+        gui_id="gui_alpha",
+        provider="codex",
+        native_session_id=ids["codex_sid"],
+        environment_id=ids["env_id"],
+        runtime_kind=detect_runtime_kind(),
+        action="restore",
+        reasons=(),
+        cwd=str(work_dir),
+        launch_settings={},
+        requested_topology=None,
+        metadata=WorkspaceSlotMetadata(),
+    )
+    assert build_manual_restore_command(plan_item, exact_llmd_supported=False)[:3] == [
+        "codex",
+        "resume",
+        ids["codex_sid"],
+    ]
+    assert "--session-id" in build_manual_restore_command(plan_item, exact_llmd_supported=True)
+
+    # 3. Relay spawn != dispatcher ownership; require_dispatcher_ownership preserves ambiguity
+    ft = 134000000000000000
+    relay_pid = os.getpid()
+    tl_store_own = ManagedProcessStore(
+        tmp_path / "managed_own.sqlite3",
+        process_identity_lookup=lambda pid: (pid, ft) if pid in {relay_pid, 7777} else None,
+        process_liveness_lookup=lambda _pid: TLProcessLiveness.ALIVE,
+    )
+
+    class _SpawnOnlyBackend:
+        def launch(self, plan: TerminalLaunchPlan) -> LaunchResult:
+            rec = tl_store_own.enumerate_processes()[-1]
+            tok = tl_store_own.claim_pane(rec.launch_id, rec.pane_id, relay_pid=relay_pid, relay_process_created=ft)
+            assert tok is not None
+            tl_store_own.record_started(
+                rec.launch_id, rec.pane_id, claim_token=tok, pid=7777, process_created=ft, relay_pid=relay_pid, relay_process_created=ft
+            )
+            return LaunchResult(status=LaunchStatus.SUBMITTED, backend="fake")
+
+    exact_builder = type(
+        "_ExactB",
+        (),
+        {"supports_exact_session": True, "build_pane_command": staticmethod(lambda r: (sys.executable, "-V"))},
+    )()
+    unconfirmed_own = type(
+        "_UnconfOwn", (), {"verify_ownership": staticmethod(lambda _r, *, launch_id, pane_id: (False, False))}
+    )()
+    adapter_own = TerminalLauncherRestoreAdapter(
+        backend=_SpawnOnlyBackend(),
+        managed_store=tl_store_own,
+        command_builder=exact_builder,
+        ownership_verifier=unconfirmed_own,
+        require_dispatcher_ownership=True,
+    )
+    own_res = adapter_own.launch_session(req)
+    assert own_res.accepted is True
+    assert own_res.spawn_confirmed is False
+    assert own_res.association_confirmed is False
+    assert own_res.submission_ambiguous is True
+    assert own_res.geometry_fallback_used is False
+
+    # 4. Grouped preparation interruption releases ALL held SlotExecutionGuard leases and marks LAUNCHING -> AMBIGUOUS
+    obs_run = RuntimeDiscovery(
+        environment_id=ids["env_id"],
+        runtime_kind=detect_runtime_kind(),
+        process_enumerator=_StaticEnumerator(
+            (
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(8801, ft),
+                    parent_pid=500,
+                    image_name="codex.exe",
+                    argv=("codex", "resume", ids["codex_sid"]),
+                ),
+                ProcessRecord(
+                    identity=process_identity_from_windows_filetime(8802, ft),
+                    parent_pid=500,
+                    image_name="agy.exe",
+                    argv=("agy", "--conversation", ids["agy_sid"]),
+                ),
+            )
+        ),
+    )
+    slots = DispatcherWorkspaceAdapter(dispatcher).list_candidate_slots(gui="GUI-Alpha")[:2]
+    chk = CheckpointStore(tmp_path / "chk_abort").create_checkpoint(slots, observers=obs_run)
+    q = RestorationQueue(tmp_path / "chk_abort")
+    guard = DispatcherSlotExecutionGuard(home_dir)
+    obs_empty = RuntimeDiscovery(
+        environment_id=ids["env_id"],
+        runtime_kind=detect_runtime_kind(),
+        process_enumerator=_StaticEnumerator(()),
+    )
+    restorer = TopologyRestorer()
+    plan = restorer.preview_restore(chk, queue=q, current_slots=slots, observers=obs_empty)
+
+    calls = {"n": 0}
+
+    def _exploding_slot_provider(slot_id: str):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("simulated_mid_batch_prep_crash")
+        return next(s for s in slots if s.slot_id == slot_id)
+
+    with pytest.raises(RuntimeError, match="simulated_mid_batch_prep_crash"):
+        restorer.execute_restore(
+            plan,
+            authorized=True,
+            operator_id="op_abort",
+            launcher=adapter_own,
+            checkpoint=chk,
+            queue=q,
+            slot_guard=guard,
+            slot_provider=_exploding_slot_provider,
+            observers=obs_empty,
+        )
+
+    # Item 1's lease MUST have been released and its queue entry preserved as AMBIGUOUS (not lost/retryable)
+    re_lease = guard.acquire_slot(slots[0].slot_id, operator_id="op_next", checkpoint_id=chk.checkpoint_id, queue_entry_id=None)
+    assert re_lease.acquired is True
+    guard.release_slot(re_lease)
+    q_entries = {e.slot_id: e for e in q.list_entries(checkpoint_id=chk.checkpoint_id)}
+    assert q_entries[slots[0].slot_id].status is QueueEntryStatus.AMBIGUOUS
