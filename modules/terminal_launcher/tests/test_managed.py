@@ -8,7 +8,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
-from terminal_launcher.managed import ManagedProcessState, ManagedProcessStore, ProcessLiveness
+from terminal_launcher.managed import (
+    LaunchSubmissionState,
+    ManagedPaneReservation,
+    ManagedProcessState,
+    ManagedProcessStore,
+    ProcessLiveness,
+)
 from terminal_launcher.models import PaneSpec, TabSpec, TerminalLaunchPlan
 
 
@@ -189,23 +195,44 @@ def test_concurrent_receipts_remain_queryable(tmp_path):
         process_identity_lookup=lambda pid: (pid, pid + 1),
         process_liveness_lookup=lambda _pid: ProcessLiveness.ALIVE,
     )
+    launch_id = "launch-5"
+    relay_pid = os.getpid()
+    relay_process_created = relay_pid + 1
+    panes = tuple(
+        ManagedPaneReservation(f"{launch_id}:{index}", index, 0, "single")
+        for index in range(32)
+    )
+    store.reserve_launch(launch_id, "window", panes)
+    store.mark_submission_started(launch_id)
+    store.mark_submission_outcome(launch_id, LaunchSubmissionState.ACCEPTED)
 
     def record(index):
-        pane_id = f"launch-5:{index}"
-        store.register_submission(
-            launch_id="launch-5",
-            pane_id=pane_id,
-            window_id="window",
-            tab_index=index,
-            pane_index=0,
-            requested_layout="single",
+        pane_id = f"{launch_id}:{index}"
+        claim_token = store.claim_pane(
+            launch_id,
+            pane_id,
+            relay_pid=relay_pid,
+            relay_process_created=relay_process_created,
         )
-        store.record_started(pane_id, pid=1000 + index, process_created=1001 + index)
+        assert claim_token is not None
+        store.record_started(
+            launch_id,
+            pane_id,
+            claim_token=claim_token,
+            pid=1000 + index,
+            process_created=1001 + index,
+            relay_pid=relay_pid,
+            relay_process_created=relay_process_created,
+        )
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         list(executor.map(record, range(32)))
 
-    assert len(store.enumerate_processes()) == 32
+    records = store.enumerate_processes()
+    assert len(records) == 32
+    assert {record.pid for record in records} == set(range(1000, 1032))
+    assert all(record.spawn_acknowledged for record in records)
+    assert all(record.state is ManagedProcessState.RUNNING for record in records)
 
 
 def test_managed_launch_reports_submission_separately_from_spawn_and_keeps_args_out_of_store(tmp_path, monkeypatch):
