@@ -8,7 +8,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_CONSUMERS = (
     "backup_module",
     "compresser",
-    "llm_monitor",
     "resource_coordinator",
     "rrbackup",
     "runmux",
@@ -25,7 +24,6 @@ RETIRED_TOOLKIT_CONSUMERS = (
 PROJECT_VERSIONS = {
     "backup_module": "0.3.0",
     "compresser": "3.4.0",
-    "llm_monitor": "0.9.0",
     "resource_coordinator": "1.0.0",
     "rrbackup": "2.2.0",
     "runmux": "0.15.0",

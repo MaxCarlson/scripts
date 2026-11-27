@@ -13,11 +13,12 @@ Verifies:
 
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import asyncio
-import json
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Optional
 
 import httpx
 import pytest
@@ -27,14 +28,23 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-# Ensure llm_monitor is importable from scripts repo
-scripts_root = Path(__file__).resolve().parent.parent.parent.parent
-llm_monitor_path = scripts_root / "modules" / "llm_monitor"
-if str(llm_monitor_path) not in sys.path:
-    sys.path.insert(0, str(llm_monitor_path))
+# Use the pinned canonical distribution wheel from the H4 bundle or module tooling.
+_module_root = Path(__file__).resolve().parents[1]
+_monitor_wheel = (
+    Path(__file__).resolve().parents[5] / "dependencies" / "wheelhouse" /
+    "llm_monitor-0.9.0-py3-none-any.whl"
+)
+if not _monitor_wheel.is_file():
+    _monitor_wheel = _module_root / "tools" / "h4_qualification" / "wheelhouse" / "llm_monitor-0.9.0-py3-none-any.whl"
+if _monitor_wheel.is_file() and str(_monitor_wheel) not in sys.path:
+    sys.path.insert(0, str(_monitor_wheel))
 
 from llm_monitor.gateway import OpenAIInferenceGateway, RequestEventHub
 from llm_monitor.live_store import LiveInferenceStore
+import llm_monitor
+
+if _monitor_wheel.is_file() and str(_monitor_wheel) not in str(llm_monitor.__file__):
+    raise RuntimeError("LLM Monitor proxy-chain tests must import the pinned canonical wheel")
 from resource_coordinator.adapters.lmstudio.gateway import LMStudioGateway
 from resource_coordinator.config import (
     CoordinatorConfig,
