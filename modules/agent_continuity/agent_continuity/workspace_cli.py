@@ -86,6 +86,11 @@ def handle_save(
     json_output = bool(getattr(args, "json_output", False))
     label = getattr(args, "label", None)
     timeout = float(getattr(args, "timeout", 5.0))
+    if with_shutdown and managed_store is None:
+        raise ContinuityError(
+            ErrorCode.RESUME_UNSUPPORTED,
+            "Owned-pane shutdown is unavailable because no managed Terminal Launcher store was provided.",
+        )
 
     if dry_run or not apply:
         preview = coordinator.preview_save(

@@ -650,7 +650,7 @@ class ReservationSlotExecutionGuard:
                 slot_id,
                 blocking=self.blocking,
                 timeout_seconds=self.timeout_seconds,
-            ):
+            ), acquire_canonical_slot_lock(self.home_dir, f"lease-{slot_id}", blocking=True):
                 existing = self.store.get_active_for_slot(slot_id)
                 if existing is not None:
                     return SlotGuardLease(
@@ -697,7 +697,7 @@ class ReservationSlotExecutionGuard:
         )
 
     def release_slot(self, lease: Any) -> None:
-        """Release the preparation lease without blocking if a child holds long-lived `slot-<slot_id>.lock`."""
+        """Release under a lease-specific lock, even while a child holds the slot lock."""
         slot_id = self._leases.pop(lease.lease_token, None)
         if slot_id is None:
             return
@@ -714,12 +714,7 @@ class ReservationSlotExecutionGuard:
                 with contextlib.suppress(OSError):
                     lease_path.unlink(missing_ok=True)
 
-        try:
-            with acquire_canonical_slot_lock(self.home_dir, slot_id, blocking=False):
-                _unlink_if_owner()
-        except ContinuityError:
-            # Child dispatcher may already retain canonical `slot-<slot_id>.lock`;
-            # token-checked unlink prevents blocking coordinator cleanup.
+        with acquire_canonical_slot_lock(self.home_dir, f"lease-{slot_id}", blocking=True):
             _unlink_if_owner()
 
     def recover_abandoned_lease(
@@ -743,7 +738,9 @@ class ReservationSlotExecutionGuard:
                 {"slot_id": slot_id},
             )
         lease_path = self._lease_path(slot_id)
-        with acquire_canonical_slot_lock(self.home_dir, slot_id, blocking=True):
+        with acquire_canonical_slot_lock(self.home_dir, slot_id, blocking=True), acquire_canonical_slot_lock(
+            self.home_dir, f"lease-{slot_id}", blocking=True
+        ):
             if not lease_path.exists():
                 raise ContinuityError(
                     ErrorCode.SESSION_NOT_FOUND,

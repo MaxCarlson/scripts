@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import shutil
 import subprocess
 import sys
@@ -463,6 +464,34 @@ def build_manual_restore_command(
                 item.environment_id,
             ]
         )
+        if item.cwd:
+            argv.extend(["-C", item.cwd])
+        settings = validate_provider_launch_settings(item.provider, item.launch_settings, strict=False)
+        provider_args: list[str] = []
+        if item.provider == "codex":
+            for key, option in (("model", "--model"), ("sandbox", "--sandbox"),
+                                ("approval_policy", "--ask-for-approval"), ("profile", "--profile")):
+                if settings.get(key) is not None:
+                    provider_args.extend([option, str(settings[key])])
+            if settings.get("reasoning_effort"):
+                provider_args.extend(["--config", f"model_reasoning_effort={settings['reasoning_effort']}"])
+            if settings.get("search"):
+                provider_args.append("--search")
+            for path in settings.get("add_dirs", []):
+                provider_args.extend(["--add-dir", str(path)])
+        elif item.provider == "claude":
+            for key, option in (("model", "--model"), ("effort", "--effort"),
+                                ("permission_mode", "--permission-mode")):
+                if settings.get(key) is not None:
+                    provider_args.extend([option, str(settings[key])])
+            for path in settings.get("add_dirs", []):
+                provider_args.extend(["--add-dir", str(path)])
+        elif item.provider == "agy":
+            mapped = {key: settings[key] for key in ("model", "effort", "sandbox", "add_dirs") if key in settings}
+            if mapped:
+                provider_args.extend(["--settings", json.dumps(mapped, ensure_ascii=False, separators=(",", ":"))])
+        if provider_args:
+            argv.extend(["--", *provider_args])
         return argv
     if prefer_llmd and not allow_direct_native_fallback:
         raise ContinuityError(
@@ -721,7 +750,10 @@ class TerminalLauncherRestoreAdapter:
             tabs: list[TabSpec] = []
             slot_order: list[tuple[int, int, RestoreLaunchRequest, bool]] = []
             prep_failed = False
-            for tab_idx, (group_reqs, group_fallback) in enumerate(ordered_groups):
+            for _group_idx, (group_reqs, group_fallback) in enumerate(ordered_groups):
+                # Failed preparation creates no submitted tab; number identities
+                # from the compact final topology, not the requested topology.
+                tab_idx = len(tabs)
                 panes: list[PaneSpec] = []
                 requested_layout = (
                     group_reqs[0].requested_topology.requested_layout
@@ -731,7 +763,10 @@ class TerminalLauncherRestoreAdapter:
                 canonical_layout = _layout_for_pane_count(len(group_reqs))
                 layout_fallback = bool(requested_layout and requested_layout != canonical_layout)
                 used_fallback = group_fallback or layout_fallback
-                for pane_idx, req in enumerate(group_reqs):
+                for req in group_reqs:
+                    # A failed preceding pane is excluded from this submitted tab,
+                    # so later pane identities use their final compact index.
+                    pane_idx = len(panes)
                     pane_id = f"{launch_id}:{tab_idx}:{pane_idx}"
                     req = replace(req, reservation_launch_id=launch_id, reservation_pane_id=pane_id)
                     try:
