@@ -129,6 +129,21 @@ def _mutation_lock(home_dir: Path, lock_name: str = "dispatcher.lock", *, blocki
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
+@contextlib.contextmanager
+def _session_runtime_lock_ctx(
+    home_dir: Path, provider: str, environment_id: str, session_id: str, *, blocking: bool = False
+) -> Iterator[None]:
+    """Acquire exclusive runtime ownership of one exact session."""
+    lock_name = _session_lock_name(provider, environment_id, session_id)
+    with _mutation_lock(home_dir, lock_name=lock_name, blocking=blocking):
+        key = (str(home_dir.resolve()), lock_name)
+        token = _HELD_SESSION_LOCKS.set(_HELD_SESSION_LOCKS.get() | {key})
+        try:
+            yield
+        finally:
+            _HELD_SESSION_LOCKS.reset(token)
+
+
 class DispatcherService:
     """Durable dispatcher operations sharing the existing continuity spool and index."""
 
@@ -512,23 +527,23 @@ class DispatcherService:
             (conversation["gui_id"],),
         )
 
-    def _check_slot_available(self, slot_id: str) -> None:
+    def _hold_slot_lock(self, slot_id: str):
         if (str(self.home_dir.resolve()), slot_id) in _HELD_SLOT_LOCKS.get():
-            return
-        try:
-            with _mutation_lock(self.home_dir, _slot_lock_name(slot_id), blocking=False):
-                pass
-        except ContinuityError as exc:
-            raise ContinuityError(
-                ErrorCode.INVALID_INPUT,
-                f"Agent slot {slot_id} already has an active or launching session.",
-            ) from exc
+            return contextlib.nullcontext()
+        return _slot_runtime_lock(self.home_dir, slot_id, blocking=False)
 
-    def _check_session_available(self, provider: str, environment_id: str, session_id: str) -> None:
+    def _hold_session_lock(self, provider: str, environment_id: str, session_id: str):
         lock_name = _session_lock_name(provider, environment_id, session_id)
         if (str(self.home_dir.resolve()), lock_name) in _HELD_SESSION_LOCKS.get():
-            return
-        with _mutation_lock(self.home_dir, lock_name, blocking=False):
+            return contextlib.nullcontext()
+        return _session_runtime_lock_ctx(self.home_dir, provider, environment_id, session_id, blocking=False)
+
+    def _check_slot_available(self, slot_id: str) -> None:
+        with self._hold_slot_lock(slot_id):
+            pass
+
+    def _check_session_available(self, provider: str, environment_id: str, session_id: str) -> None:
+        with self._hold_session_lock(provider, environment_id, session_id):
             pass
 
     def observe_runtime_sessions(self, requests: Sequence[tuple[str, str, str]]) -> dict[tuple[str, str, str], Any]:
@@ -782,15 +797,16 @@ class DispatcherService:
                 if pending:
                     raise ContinuityError(ErrorCode.INVALID_INPUT,
                                           "A launch is already pending for this agent; inspect `llmd pending` before retrying.")
-                self._check_slot_available(slot["slot_id"])
-                if current:
-                    self._check_session_available(
-                        current[-1]["provider"], current[-1]["environment_id"], current[-1]["native_session_id"]
+            with contextlib.ExitStack() as held_locks:
+                    held_locks.enter_context(self._hold_slot_lock(slot["slot_id"]))
+                    if current:
+                        held_locks.enter_context(self._hold_session_lock(
+                            current[-1]["provider"], current[-1]["environment_id"], current[-1]["native_session_id"]
+                        ))
+                    environment_events = self.continuity._ensure_environment_event(
+                        env, self.materializer.list_environments(), event.observed_timestamp
                     )
-                environment_events = self.continuity._ensure_environment_event(
-                    env, self.materializer.list_environments(), event.observed_timestamp
-                )
-                self.continuity._emit_and_materialize([*environment_events, *events])
+                    self.continuity._emit_and_materialize([*environment_events, *events])
         return {
             "action": "launch-request",
             "applied": apply,
@@ -896,18 +912,20 @@ class DispatcherService:
                     if pending:
                         raise ContinuityError(ErrorCode.INVALID_INPUT,
                                               "A launch is already pending for this agent; inspect `llmd pending` before retrying.")
-                    self._check_slot_available(latest_slot["slot_id"])
-                    if current:
-                        self._check_session_available(
-                            current[-1]["provider"], current[-1]["environment_id"], current[-1]["native_session_id"]
-                        )
-                env_now = load_or_create_environment(self.home_dir, persist=True)
-                if env_now.environment_id != local_env.environment_id:
-                    raise ContinuityError(ErrorCode.INVALID_INPUT, "Runtime environment changed while start was prepared; retry.")
-                env_events = self.continuity._ensure_environment_event(
-                    env, self.materializer.list_environments(), now
-                )
-                self.continuity._emit_and_materialize([*env_events, *events])
+            with contextlib.ExitStack() as held_locks:
+                    if latest_slot:
+                        held_locks.enter_context(self._hold_slot_lock(latest_slot["slot_id"]))
+                        if current:
+                            held_locks.enter_context(self._hold_session_lock(
+                                current[-1]["provider"], current[-1]["environment_id"], current[-1]["native_session_id"]
+                            ))
+                    env_now = load_or_create_environment(self.home_dir, persist=True)
+                    if env_now.environment_id != local_env.environment_id:
+                        raise ContinuityError(ErrorCode.INVALID_INPUT, "Runtime environment changed while start was prepared; retry.")
+                    env_events = self.continuity._ensure_environment_event(
+                        env, self.materializer.list_environments(), now
+                    )
+                    self.continuity._emit_and_materialize([*env_events, *events])
         registration_summary = []
         if conversation is None:
             registration_summary.append(f"{'Registered' if apply else 'Would register'} GUI {gui_name!r}")
@@ -964,8 +982,6 @@ class DispatcherService:
 
     def recover_captured_launch(self, *, gui: str, name: str, apply: bool = False) -> dict[str, Any]:
         """Resolve a pending launch only when its exact bootstrap session ID was durably captured."""
-        import hashlib
-
         conversation = self._row("SELECT * FROM dispatcher_gui_conversations WHERE alias_key = ? OR gui_id = ?",
                                  (gui.strip().casefold(), gui.strip()))
         if conversation is None:
@@ -1026,8 +1042,6 @@ class DispatcherService:
         if env is None or not environment_is_locally_owned(self.home_dir, env):
             raise ContinuityError(ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE,
                 "Recovery refused because runtime ownership cannot be established for this host and environment.")
-        key = hashlib.sha256(f"{pending['provider']}\0{pending['environment_id']}\0{session_id}".encode()).hexdigest()[:24]
-        lock_name = f"session-{key}.lock"
         if not apply:
             return {"action": "recover", "applied": False, "status": "preview",
                     "summary": f"Would associate captured {pending['provider']} session {session_id} and resolve pending launch {pending['launch_id']}; no provider will be launched.",
@@ -1096,10 +1110,6 @@ class DispatcherService:
                     "Agent selection changed while recovery was prepared; no metadata was overwritten. Inspect doctor and retry.")
             current_is_target = current and (current["provider"], current["environment_id"], current["native_session_id"]) == (
                 pending["provider"], env.environment_id, session_id)
-            if current and not current_is_target:
-                self._check_session_available(
-                    current["provider"], current["environment_id"], current["native_session_id"]
-                )
             live_claude_process = provenance == "claude_exact_runtime_process"
             if not live_claude_process and pending["provider"] == "claude" and provenance == "claude_transcript_recovery":
                 obs = self.observe_runtime_session("claude", env.environment_id, session_id)
@@ -1111,12 +1121,16 @@ class DispatcherService:
                     and not obs.identity_conflict
                     and not obs.evidence_conflict
                 )
-            if not live_claude_process:
-                self._check_slot_available(slot["slot_id"])
-            session_lock = contextlib.nullcontext() if live_claude_process else _mutation_lock(
-                self.home_dir, lock_name, blocking=False
-            )
-            with session_lock:
+            with contextlib.ExitStack() as held_locks:
+                if current and not current_is_target:
+                    held_locks.enter_context(self._hold_session_lock(
+                        current["provider"], current["environment_id"], current["native_session_id"]
+                    ))
+                if not live_claude_process:
+                    held_locks.enter_context(self._hold_slot_lock(slot["slot_id"]))
+                    held_locks.enter_context(self._hold_session_lock(
+                        pending["provider"], env.environment_id, session_id
+                    ))
                 now = now_utc_iso()
                 events: list[EventEnvelope] = []
                 known_envs = self.materializer.list_environments()
@@ -1285,8 +1299,8 @@ class DispatcherService:
                 if latest_slot["state"] == normalized:
                     return {"action": "slot-state", "applied": False, "summary": f"Slot is already {normalized}.",
                             "details": {"slot_id": slot["slot_id"], "state": normalized}, "events": []}
-                self._check_slot_available(slot["slot_id"])
-                self.continuity._emit_and_materialize([event])
+                with self._hold_slot_lock(slot["slot_id"]):
+                    self.continuity._emit_and_materialize([event])
         return {"action": "slot-state", "applied": apply,
                 "summary": f"{'Updated' if apply else 'Dry-run: would update'} slot {slot['name']!r} to {normalized}.",
                 "details": {"slot_id": slot["slot_id"], "state": normalized}, "events": [event.to_dict()]}
@@ -1340,9 +1354,10 @@ class DispatcherService:
                     if self.open_review_cycle(slot_id=slot_id):
                         raise ContinuityError(ErrorCode.INVALID_INPUT,
                                               "One of these slots already has an open review cycle.")
-                self._check_slot_available(original["slot_id"])
-                self._check_slot_available(reviewer["slot_id"])
-                self.continuity._emit_and_materialize([event])
+            with contextlib.ExitStack() as held_locks:
+                    held_locks.enter_context(self._hold_slot_lock(original["slot_id"]))
+                    held_locks.enter_context(self._hold_slot_lock(reviewer["slot_id"]))
+                    self.continuity._emit_and_materialize([event])
         return {"action": "review-cycle", "applied": apply, "cycle": cycle,
                 "summary": "Pending review cycle persisted." if apply else "Preview: review cycle not persisted.",
                 "events": [event.to_dict()]}
@@ -1414,9 +1429,10 @@ class DispatcherService:
             with _mutation_lock(self.home_dir):
                 self._sync()
                 validate()
-                self._check_slot_available(source_slot_id)
-                self._check_slot_available(destination_slot_id)
-                self.continuity._emit_and_materialize([event])
+            with contextlib.ExitStack() as held_locks:
+                    held_locks.enter_context(self._hold_slot_lock(source_slot_id))
+                    held_locks.enter_context(self._hold_slot_lock(destination_slot_id))
+                    self.continuity._emit_and_materialize([event])
         return {"action": "slot-transition", "applied": apply,
                 "summary": "Agent transition applied." if apply else "Preview: agent transition not applied.",
                 "details": {"source_slot_id": source_slot_id, "destination_slot_id": destination_slot_id},
@@ -1571,17 +1587,20 @@ class DispatcherService:
             with _mutation_lock(self.home_dir):
                 self._sync()
                 validate()
-                self._check_slot_available(source_slot_id)
-                self._check_slot_available(destination_slot_id)
-                identities = [identity for identity in (expected_source,
-                                                        None if launch_id else (provider_name, environment_id, session))
-                              if identity]
-                for runtime_provider, runtime_environment, runtime_session in sorted(set(identities)):
-                    self._check_session_available(runtime_provider, runtime_environment, runtime_session)
-                latest_history = self._history(destination_slot_id)
-                payload["activation"]["sequence"] = (latest_history[-1]["sequence"] if latest_history else 0) + 1
-                payload["activation"]["activation_id"] = generate_id("act")
-                self.continuity._emit_and_materialize([event])
+            with contextlib.ExitStack() as held_locks:
+                    held_locks.enter_context(self._hold_slot_lock(source_slot_id))
+                    held_locks.enter_context(self._hold_slot_lock(destination_slot_id))
+                    identities = [identity for identity in (expected_source,
+                                                            None if launch_id else (provider_name, environment_id, session))
+                                  if identity]
+                    for runtime_provider, runtime_environment, runtime_session in sorted(set(identities)):
+                        held_locks.enter_context(self._hold_session_lock(
+                            runtime_provider, runtime_environment, runtime_session
+                        ))
+                    latest_history = self._history(destination_slot_id)
+                    payload["activation"]["sequence"] = (latest_history[-1]["sequence"] if latest_history else 0) + 1
+                    payload["activation"]["activation_id"] = generate_id("act")
+                    self.continuity._emit_and_materialize([event])
         return {"action": "agent-transition", "applied": apply,
                 "summary": "Agent transition applied." if apply else "Preview: agent transition not applied.",
                 "details": {"source_slot_id": source_slot_id, "destination_slot_id": destination_slot_id,
@@ -1682,84 +1701,85 @@ class DispatcherService:
                     if pending_now is None:
                         raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch was already resolved or failed.")
                 current_slot = self._slot(conversation["gui_id"], slot["slot_id"])
-                self._check_slot_available(current_slot["slot_id"])
-                if not launch_id and self._row(
-                    "SELECT 1 FROM dispatcher_pending_launches WHERE slot_id = ? AND status = 'pending' LIMIT 1",
-                    (current_slot["slot_id"],),
-                ):
-                    raise ContinuityError(
-                        ErrorCode.INVALID_INPUT,
-                        "This agent has an unresolved pending launch; recover or resolve it before attaching another session.",
-                    )
-                latest = self._history(current_slot["slot_id"])
-                latest_identity = ((latest[-1]["provider"], latest[-1]["environment_id"],
-                                    latest[-1]["native_session_id"]) if latest else None)
-                if check_current and latest_identity != expected_current:
-                    raise ContinuityError(ErrorCode.INVALID_INPUT,
-                                          "Agent selection changed while provider switch was prepared; retry.")
-                if check_current and current_slot["state"] == "completed":
-                    raise ContinuityError(ErrorCode.INVALID_INPUT,
-                                          "Completed agents require an explicit lifecycle change before resumption.")
-                if check_current and current_slot["state"] == "inactive" and not reactivate:
-                    raise ContinuityError(ErrorCode.INVALID_INPUT,
-                                          "This agent is inactive; pass --reactivate to confirm its lifecycle change.")
-                if latest and (latest[-1]["provider"], latest[-1]["environment_id"], latest[-1]["native_session_id"]) == (
-                    provider_name, env.environment_id, session
-                ):
-                    if launch_id:
-                        resolved_event = self._event(
-                            EventType.DISPATCHER_LAUNCH_RESOLVED, environment_id=env.environment_id,
-                            provider=provider_name, session_id=session,
-                            payload={"launch_id": launch_id, "native_session_id": session},
+            with contextlib.ExitStack() as held_locks:
+                    held_locks.enter_context(self._hold_slot_lock(current_slot["slot_id"]))
+                    if not launch_id and self._row(
+                        "SELECT 1 FROM dispatcher_pending_launches WHERE slot_id = ? AND status = 'pending' LIMIT 1",
+                        (current_slot["slot_id"],),
+                    ):
+                        raise ContinuityError(
+                            ErrorCode.INVALID_INPUT,
+                            "This agent has an unresolved pending launch; recover or resolve it before attaching another session.",
                         )
-                        self.continuity._emit_and_materialize([resolved_event])
-                        return {"action": "attach", "applied": True,
-                                "summary": f"Completed pending launch resolution for {provider_name} session {session}.",
-                                "details": {"slot_id": slot["slot_id"], "session_id": session, "launch_id": launch_id},
-                                "events": [resolved_event.to_dict()]}
-                    if reactivate and current_slot["state"] == "inactive":
-                        state_event = self._event(
-                            EventType.DISPATCHER_SLOT_STATE_CHANGED, environment_id=env.environment_id,
-                            payload={"slot_id": slot["slot_id"], "state": "active"},
-                        )
-                        self.continuity._emit_and_materialize([state_event])
-                        return {"action": "slot-state", "applied": True,
-                                "summary": "Reactivated the selected exact session.",
-                                "details": {"slot_id": slot["slot_id"], "state": "active"},
-                                "events": [state_event.to_dict()]}
-                    return {
-                        "action": "attach", "applied": False,
-                        "summary": "Session became current before this request was applied.",
-                        "details": {"slot_id": slot["slot_id"], "session_id": session}, "events": [],
-                    }
-                try:
-                    self._check_session_available(provider_name, env.environment_id, session)
-                except ContinuityError as exc:
-                    raise ContinuityError(
-                        ErrorCode.INVALID_INPUT,
-                        f"Cannot attach target session {session} while it is in use.",
-                    ) from exc
-                current = latest[-1] if latest else None
-                if current:
+                    latest = self._history(current_slot["slot_id"])
+                    latest_identity = ((latest[-1]["provider"], latest[-1]["environment_id"],
+                                        latest[-1]["native_session_id"]) if latest else None)
+                    if check_current and latest_identity != expected_current:
+                        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                              "Agent selection changed while provider switch was prepared; retry.")
+                    if check_current and current_slot["state"] == "completed":
+                        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                              "Completed agents require an explicit lifecycle change before resumption.")
+                    if check_current and current_slot["state"] == "inactive" and not reactivate:
+                        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                              "This agent is inactive; pass --reactivate to confirm its lifecycle change.")
+                    if latest and (latest[-1]["provider"], latest[-1]["environment_id"], latest[-1]["native_session_id"]) == (
+                        provider_name, env.environment_id, session
+                    ):
+                        if launch_id:
+                            resolved_event = self._event(
+                                EventType.DISPATCHER_LAUNCH_RESOLVED, environment_id=env.environment_id,
+                                provider=provider_name, session_id=session,
+                                payload={"launch_id": launch_id, "native_session_id": session},
+                            )
+                            self.continuity._emit_and_materialize([resolved_event])
+                            return {"action": "attach", "applied": True,
+                                    "summary": f"Completed pending launch resolution for {provider_name} session {session}.",
+                                    "details": {"slot_id": slot["slot_id"], "session_id": session, "launch_id": launch_id},
+                                    "events": [resolved_event.to_dict()]}
+                        if reactivate and current_slot["state"] == "inactive":
+                            state_event = self._event(
+                                EventType.DISPATCHER_SLOT_STATE_CHANGED, environment_id=env.environment_id,
+                                payload={"slot_id": slot["slot_id"], "state": "active"},
+                            )
+                            self.continuity._emit_and_materialize([state_event])
+                            return {"action": "slot-state", "applied": True,
+                                    "summary": "Reactivated the selected exact session.",
+                                    "details": {"slot_id": slot["slot_id"], "state": "active"},
+                                    "events": [state_event.to_dict()]}
+                        return {
+                            "action": "attach", "applied": False,
+                            "summary": "Session became current before this request was applied.",
+                            "details": {"slot_id": slot["slot_id"], "session_id": session}, "events": [],
+                        }
                     try:
-                        self._check_session_available(
-                            current["provider"], current["environment_id"], current["native_session_id"]
-                        )
+                        held_locks.enter_context(self._hold_session_lock(provider_name, env.environment_id, session))
                     except ContinuityError as exc:
                         raise ContinuityError(
                             ErrorCode.INVALID_INPUT,
-                            f"Cannot change selection while current session {current['native_session_id']} is in use.",
+                            f"Cannot attach target session {session} while it is in use.",
                         ) from exc
-                if reactivate and current_slot["state"] == "inactive":
-                    events.insert(0, self._event(
-                        EventType.DISPATCHER_SLOT_STATE_CHANGED, environment_id=env.environment_id,
-                        payload={"slot_id": slot["slot_id"], "state": "active"},
-                    ))
-                next_sequence = (latest[-1]["sequence"] if latest else 0) + 1
-                sequence = next_sequence
-                activation_event.payload["sequence"] = next_sequence
-                activation_event.payload["activation_id"] = generate_id("act")
-                self.continuity._emit_and_materialize(events)
+                    current = latest[-1] if latest else None
+                    if current:
+                        try:
+                            held_locks.enter_context(self._hold_session_lock(
+                                current["provider"], current["environment_id"], current["native_session_id"]
+                            ))
+                        except ContinuityError as exc:
+                            raise ContinuityError(
+                                ErrorCode.INVALID_INPUT,
+                                f"Cannot change selection while current session {current['native_session_id']} is in use.",
+                            ) from exc
+                    if reactivate and current_slot["state"] == "inactive":
+                        events.insert(0, self._event(
+                            EventType.DISPATCHER_SLOT_STATE_CHANGED, environment_id=env.environment_id,
+                            payload={"slot_id": slot["slot_id"], "state": "active"},
+                        ))
+                    next_sequence = (latest[-1]["sequence"] if latest else 0) + 1
+                    sequence = next_sequence
+                    activation_event.payload["sequence"] = next_sequence
+                    activation_event.payload["activation_id"] = generate_id("act")
+                    self.continuity._emit_and_materialize(events)
         return {"action": "attach", "applied": apply,
                 "summary": f"{'Selected' if apply else 'Dry-run: would select'} {provider_name} session {session} for {slot['name']}.",
                 "details": {"slot_id": slot["slot_id"], "provider": provider_name,

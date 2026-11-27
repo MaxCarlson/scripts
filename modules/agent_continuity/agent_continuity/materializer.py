@@ -136,10 +136,10 @@ class SQLiteMaterializer:
                                     db_path=str(self.db_path),
                                     rebuilt=False,
                                 )
-                            applied_ids = {
-                                row[0] for row in ro_conn.execute("SELECT event_id FROM applied_events").fetchall()
+                            ingested_ids = {
+                                row[0] for row in ro_conn.execute("SELECT event_id FROM ingested_events").fetchall()
                             }
-                            if all(rec.envelope.event_id in applied_ids for rec in scan.records):
+                            if all(rec.envelope.event_id in ingested_ids for rec in scan.records):
                                 return SyncResult(
                                     ingested_count=0,
                                     skipped_duplicates=len(scan.records),
