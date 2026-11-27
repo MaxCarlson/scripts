@@ -1,6 +1,16 @@
 [
   {
     "type": "retirement",
+    "path": "modules/agent_abilities",
+    "reason": "Canonical source and its pinned upstream references are maintained in llm-agent-toolkit/modules/agent_abilities."
+  },
+  {
+    "type": "retirement",
+    "path": "modules/agent_skills",
+    "reason": "Canonical source and its pinned upstream references are maintained in llm-agent-toolkit/modules/agent_skills."
+  },
+  {
+    "type": "retirement",
     "path": "modules/llm_local",
     "reason": "Agent Memory optional classifier fallback qualified with canonical package absent and present"
   },
