@@ -14,9 +14,9 @@
 - [x] Complete hosted qualification for PR #38 (`45347357571`), PR #39 (`45348359248`), PR #41 (`45347910359`), and PR #42 (`45347914913`); all passed their clean bootstrap, launcher, consumer, and dependency-health steps.
 - [x] Reconcile PR #39 to current Scripts main and stack it after PR #34; its final retirement removes the Viewer metadata test added by #34. The prior #35-stacked Viewer history is no longer part of the reconciled branch.
 - [ ] Diagnose toolkit PR #5 only if actionable hosted evidence appears. Four runs (`45333414610`, `45334638802`, `45345602914`, `45345628821`) show all eight jobs failing before runner assignment (`runner_id=0`, empty steps); log downloads return 404. Local Runmux compatibility remains 19 passed; do not retry until hosted diagnostics are available.
-- [ ] Coordinate H4 bundle source/metadata and Monitor API contracts with its owner. Preserve active `.worktrees/resource-coordinator-phase-d` and state; only remove `llm_monitor`, `resource_coordinator`, or `resource_metrics` sources after the canonical package contract and immutable bundle qualification pass.
+- [x] Reconcile H4 bundle source/metadata and Monitor API contracts; preserve the protected Phase-D worktree and qualify the canonical bundle before final source relocation.
 - [x] Verify all five requested releases on PyPI and qualify clean-index dependency resolution; wheel/sdist metadata and SHA256 match PyPI release records. The PyPI Integrity API returned 404 for all ten artifact provenance requests, so source/build lineage remains an open review limitation.
-- [ ] Do not merge, publish, synchronize the primary checkout, or migrate runtime data without the existing separate authorization.
+- [x] Obtain separate authorization before integrating and synchronizing the final retirement. No package publication or live-data migration was performed.
 
 - [x] Update PR #34 validation and installer contracts to use published distributions and fail rather than falling back to local shared source packages.
 - [x] Reconcile PR #34, stacked PR #39, and Toolkit PR #5 against refreshed main refs; individual and combined synthetic qualification is recorded in the 2026-11-27 checkpoint.
@@ -37,7 +37,7 @@
 - [x] Copy and SHA-256 verify the original local `resource_metrics` (22 files) and `llm_monitor` (280 files) trees under `C:\Users\mcarls\src\_migration_backups\source_retirement_20261127_052030`; retain post-sync residual caches under its `post_sync_residuals` directory.
 - [x] Synchronize Scripts primary to the integrated main, preserve unrelated edits, and verify both retired module paths physically absent.
 - [x] Verify published Metrics and canonical Toolkit Monitor import origins, `pip check` in both existing venvs, and successful managed Monitor/Coordinator help commands.
-- [ ] Keep Resource Coordinator retirement gated on H4 owner reconciliation; Phase-D owner worktree remains protected.
+- [x] Complete H4 owner reconciliation and final retirement authorization; keep the protected Phase-D worktree unchanged.
 
 ## 2026-11-28 Resource Coordinator candidate
 
@@ -55,4 +55,12 @@
 
 - [x] Integrate released Toolkit runtime a4e181f49c4e274393a39609570fe313cabf315b into main at 89157b10b00138fdbd317951a83330134a8ad4b8; 24 focused offline tests passed, import provenance resolved to the integration tree, and pip check found no broken requirements.
 - [x] Extend the existing Coordinator backup with all 81 ignored entries; verify 2,367 files/26,545,349 bytes by SHA-256 while leaving all source data in place.
-- [ ] Keep physical removal of modules/resource_coordinator behind its separate authorization gate.
+- [x] Complete the authorized physical relocation of modules/resource_coordinator to verified recoverable storage; original path is absent.
+
+## 2026-11-27 final Coordinator retirement completion
+
+- [x] Verify tracked and ignored source backups against all current contents; relocate the entire current Coordinator directory and verify every post-move file hash.
+- [x] Adopt canonical resource-coordinator 1.0.0 from Toolkit main 89157b10b00138fdbd317951a83330134a8ad4b8 in the existing Scripts venv without changing other distributions or PATH.
+- [x] Integrate and sync Scripts retirement at 02473389e4c7c0cac1537f7a592ca909a6567ae0; verify 25 unique registry paths contain zero tracked implementations.
+- [x] Verify import provenance, pip check, six CLI launcher help paths, source-ownership enforcement, seven transferred-module tests, and four affected H4 tests.
+- [x] Preserve environment rollback snapshots, canonical wheel/archive provenance, full relocated source, and tracked/ignored manifests outside the repository.
