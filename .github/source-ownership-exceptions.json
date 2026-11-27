@@ -92,5 +92,10 @@
     "before": "0000000000000000000000000000000000000000",
     "after": "739383cbb96de69b870edc6479ebd3ebcee1e85e",
     "reason": "Add orchestrator_web_viewer package metadata test for mxc-termdash extra"
+  },
+  {
+    "type": "retirement",
+    "path": "modules/orchestrator_web_viewer",
+    "reason": "Canonical viewer and TermDash attachment qualified in toolkit and shared-package worktrees"
   }
 ]
