@@ -226,8 +226,49 @@ implementation was copied across the active owner boundary.
 
 The two Scripts branches would raise the integrated retirement count from
 22/25 to 24/25 after their ordered integration (Metrics before stacked Monitor).
-Resource Coordinator remains the concrete H4/Phase-D owner gate. The dirty
-`.worktrees/resource-coordinator-phase-d` documentation/design state was
-verified unchanged; primary Scripts dirty/untracked data and Toolkit's
-untracked `pkg/` were also preserved. No PRs were created and no merge, package
-publication, live deployment, or local adoption was performed.
+Resource Coordinator remains the concrete H4/Phase-D owner gate. This initial checkpoint predates the later authorized ordered integration and
+local adoption. See the 2026-11-27 closeout below for final repository state.
+
+
+## 2026-11-27 integration and local-adoption closeout
+
+Ordered branch-first integrations are complete and pushed. Toolkit main is
+`6b09559c287fb434ede42c4e64f5e5097c6982fd`. Scripts main integration is
+`9d9a813b8b58f5f94bb4fe9ab5ea20d828a88a79`, merging Resource Metrics after
+current main and Monitor after Metrics. The Monitor branch follow-up
+`73a6e8255104fee0d2bfa2ae6cf36f1c89b75938` moved its 88 retained README,
+documentation, examples, and evidence files verbatim to
+`docs/archive/llm_monitor/`; two direct references were repaired.
+
+The 25-directory ownership inventory now has 24 retired implementations.
+`resource_coordinator` remains the sole implementation hold;
+`agent_memory` retains its tracked SQLite index only. The protected
+`.worktrees/resource-coordinator-phase-d` remains untouched at
+`a3bbb53dd658e9a9e3413056fa3b3c3aea571259` with its pre-existing owner edits.
+
+Before primary synchronization, both original Scripts module directories were
+backed up to
+`C:\Users\mcarls\src\_migration_backups\source_retirement_20261127_052030`.
+The SHA-256 manifest covers 22 Resource Metrics files and 280 Monitor files;
+all hashes matched. After synchronization, 13 and 103 ignored residual files
+were moved into `post_sync_residuals` after matching them against the backup.
+Both `scripts/modules/resource_metrics` and `scripts/modules/llm_monitor` are
+physically absent.
+
+The Scripts venv resolves `mxc-resource-metrics==0.3.0` from site-packages and
+passes `pip check`; the Toolkit venv resolves editable `llm-monitor==0.9.0`
+from `llm-agent-toolkit/modules/llm_monitor` and also passes `pip check`. The
+managed `llm-monitor.cmd --help` and `resource-coordinator.cmd --help` both
+exit successfully. No unrelated public `llm-monitor` distribution was
+installed.
+
+The previously completed combined 110-test qualification and artifact evidence
+were reused. On the actual integrated tree, retirement/registry checks passed
+11 tests and the focused synthetic H4 bundle/consumer recheck passed 3 tests;
+source-ownership enforcement passed. Bundle wheel digests remained
+`a1e0e66c5d1b8bed507af26a906d0728b1da65fa14684be4a369da4b60ccac71` for
+Metrics and `bc503adab4b02416f56cd1c286ab827116e2ba527afcd49790a79704c4175adb`
+for Monitor.
+
+The remaining gate is H4 owner reconciliation before Resource Coordinator
+retirement or live deployment. No additional retirement batch is started here.

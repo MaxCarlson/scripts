@@ -20,7 +20,7 @@
 
 - [x] Update PR #34 validation and installer contracts to use published distributions and fail rather than falling back to local shared source packages.
 - [x] Reconcile PR #34, stacked PR #39, and Toolkit PR #5 against refreshed main refs; individual and combined synthetic qualification is recorded in the 2026-11-27 checkpoint.
-- [ ] Pause for ordered merge approval: Toolkit PR #5, Scripts PR #34, then Scripts PR #39. Keep the H4 owner gate separate.
+- [x] Pass the approval gate and complete ordered integration: Toolkit, Scripts Resource Metrics, then Scripts Monitor; see the final closeout below.
 
 - [x] Reconcile and push PR #34, stacked PR #39, and Toolkit PR #5 at final current-main refs; combined tree passed 110 synthetic contracts, ownership CLI, dependency resolution, import provenance, launcher discovery, and pip check.
 
@@ -30,4 +30,11 @@
 - [x] Qualify and push the stacked Monitor successor with Toolkit `e10544f6` wheel provenance, synthetic proxy/Runmux contracts, preserved historical evidence, and source-ownership CLI.
 - [x] Reconcile Toolkit Resource Coordinator's Metrics dependency bound in an isolated successor; build metadata verified locally.
 - [x] Classify current Coordinator source divergence and preserve the active Phase-D owner worktree.
-- [ ] Integrate the two Scripts successors in order after review; keep full Resource Coordinator source retirement gated on H4/Phase-D owner reconciliation. No PRs were created in this continuation.
+- [x] Integrate and push the two Scripts successors in order; code integration is at `9d9a813b8b58f5f94bb4fe9ab5ea20d828a88a79` and Toolkit dependency correction at `6b09559c287fb434ede42c4e64f5e5097c6982fd`. Keep full Resource Coordinator source retirement gated on H4/Phase-D owner reconciliation. No PRs were created.
+
+
+- [x] Relocate all 88 retained Monitor README/docs/examples/evidence files to `docs/archive/llm_monitor/`, preserve their hashes, add archive index, and repair direct references.
+- [x] Copy and SHA-256 verify the original local `resource_metrics` (22 files) and `llm_monitor` (280 files) trees under `C:\Users\mcarls\src\_migration_backups\source_retirement_20261127_052030`; retain post-sync residual caches under its `post_sync_residuals` directory.
+- [x] Synchronize Scripts primary to the integrated main, preserve unrelated edits, and verify both retired module paths physically absent.
+- [x] Verify published Metrics and canonical Toolkit Monitor import origins, `pip check` in both existing venvs, and successful managed Monitor/Coordinator help commands.
+- [ ] Keep Resource Coordinator retirement gated on H4 owner reconciliation; Phase-D owner worktree remains protected.
