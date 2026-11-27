@@ -40,7 +40,19 @@ RETIRED_TOOLKIT_SOURCE_DIRS = frozenset({
     "lmstui",
     "local_agent_bridge",
     "web_ai_automator",
+    "llm_local",
 })
+
+
+def _tracked_module_paths() -> set[str]:
+    result = subprocess.run(
+        ["git", "ls-files", "--", "modules"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return set(result.stdout.splitlines())
 
 
 def _retired_toolkit_source_dirs() -> set[str]:
@@ -56,8 +68,6 @@ def _preserved_data_paths(directory: str) -> set[str]:
     if directory == "agent_memory":
         return {"modules/agent_memory/notes/.index/notes.sqlite3"}
     return set()
-
-
 def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scripts_modules() -> None:
     assert len(TRANSFERRED_MODULE_DIRS) == 23
     assert len(TRANSFERRED_MODULE_DIRECTORY_TO_DISTRIBUTION) == 23
@@ -66,6 +76,7 @@ def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scri
         assert not is_transferred_module_dir(shared)
         assert not is_transferred_distribution(shared)
 
+    tracked_module_paths = _tracked_module_paths()
     retired = _retired_toolkit_source_dirs()
     assert retired <= TRANSFERRED_MODULE_DIRS
 
@@ -76,12 +87,10 @@ def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scri
         assert is_transferred_distribution(dist_name.replace("-", "_"))
         source_path = REPO_ROOT / "modules" / directory
         if directory in (RETIRED_TOOLKIT_SOURCE_DIRS | retired):
-            tracked = subprocess.run(
-                ["git", "-C", str(REPO_ROOT), "ls-files", "--", f"modules/{directory}"],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.splitlines()
+            tracked = [
+                path for path in tracked_module_paths
+                if path.startswith(f"modules/{directory}/")
+            ]
             assert set(tracked) == _preserved_data_paths(directory)
             assert not any(Path(path).suffix == ".py" for path in tracked)
             assert not any(Path(path).name == "pyproject.toml" for path in tracked)

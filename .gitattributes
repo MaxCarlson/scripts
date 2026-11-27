@@ -1,0 +1,4 @@
+/.gitmodules whitespace=cr-at-eol
+/.github/source-ownership-exceptions.json whitespace=cr-at-eol
+/scripts_setup/tests/transferred_modules_test.py whitespace=cr-at-eol
+/scripts_setup/transferred_modules.py whitespace=cr-at-eol
