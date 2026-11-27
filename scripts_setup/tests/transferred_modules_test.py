@@ -1,7 +1,9 @@
 """Tests for permanent ownership boundary and transferred-module exclusions in scripts."""
 from __future__ import annotations
 
-from pathlib import Path
+import json
+import subprocess
+from pathlib import Path, PurePosixPath
 
 import bootstrap_latest
 from modules.setup_utils.dependency_resolver import resolve_module_order
@@ -41,6 +43,15 @@ RETIRED_TOOLKIT_SOURCE_DIRS = frozenset({
 })
 
 
+def _retired_toolkit_source_dirs() -> set[str]:
+    exceptions = json.loads((REPO_ROOT / ".github" / "source-ownership-exceptions.json").read_text(encoding="utf-8"))
+    return {
+        PurePosixPath(entry["path"]).name
+        for entry in exceptions
+        if entry.get("type") == "retirement"
+    }
+
+
 def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scripts_modules() -> None:
     assert len(TRANSFERRED_MODULE_DIRS) == 23
     assert len(TRANSFERRED_MODULE_DIRECTORY_TO_DISTRIBUTION) == 23
@@ -49,16 +60,25 @@ def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scri
         assert not is_transferred_module_dir(shared)
         assert not is_transferred_distribution(shared)
 
+    retired = _retired_toolkit_source_dirs()
+    assert retired <= TRANSFERRED_MODULE_DIRS
+
     for directory, dist_name in TRANSFERRED_MODULE_DIRECTORY_TO_DISTRIBUTION.items():
         assert is_transferred_module_dir(directory)
         assert is_transferred_module_dir(REPO_ROOT / "modules" / directory)
         assert is_transferred_distribution(dist_name)
         assert is_transferred_distribution(dist_name.replace("-", "_"))
-        source_dir = REPO_ROOT / "modules" / directory
-        if directory in RETIRED_TOOLKIT_SOURCE_DIRS:
-            assert not source_dir.exists()
+        source_path = REPO_ROOT / "modules" / directory
+        if directory in (RETIRED_TOOLKIT_SOURCE_DIRS | retired):
+            tracked = subprocess.run(
+                ["git", "-C", str(REPO_ROOT), "ls-files", "--", f"modules/{directory}"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()
+            assert not tracked
         else:
-            assert source_dir.is_dir()
+            assert source_path.is_dir()
 
 
 def test_dependency_resolver_excludes_all_23_transferred_modules() -> None:
