@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import queue
 import re
+from dataclasses import dataclass
 
 import pytest
-
 from procwatch.config import ConfigValidationError, GuardConfig, GuardMode
 from procwatch.guard.window_guard import (
     CHILDID_SELF,
