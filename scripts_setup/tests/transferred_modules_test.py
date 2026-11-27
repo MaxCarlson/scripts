@@ -64,6 +64,10 @@ def _retired_toolkit_source_dirs() -> set[str]:
     }
 
 
+def _preserved_data_paths(directory: str) -> set[str]:
+    if directory == "agent_memory":
+        return {"modules/agent_memory/notes/.index/notes.sqlite3"}
+    return set()
 def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scripts_modules() -> None:
     assert len(TRANSFERRED_MODULE_DIRS) == 23
     assert len(TRANSFERRED_MODULE_DIRECTORY_TO_DISTRIBUTION) == 23
@@ -83,10 +87,13 @@ def test_transferred_registry_contains_exact_23_modules_and_excludes_shared_scri
         assert is_transferred_distribution(dist_name.replace("-", "_"))
         source_path = REPO_ROOT / "modules" / directory
         if directory in (RETIRED_TOOLKIT_SOURCE_DIRS | retired):
-            assert not any(
-                path.startswith(f"modules/{directory}/")
-                for path in tracked_module_paths
-            )
+            tracked = [
+                path for path in tracked_module_paths
+                if path.startswith(f"modules/{directory}/")
+            ]
+            assert set(tracked) == _preserved_data_paths(directory)
+            assert not any(Path(path).suffix == ".py" for path in tracked)
+            assert not any(Path(path).name == "pyproject.toml" for path in tracked)
         else:
             assert source_path.is_dir()
 
