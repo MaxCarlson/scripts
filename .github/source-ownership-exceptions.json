@@ -1,7 +1,31 @@
 [
   {
     "type": "retirement",
+    "path": "modules/agent_abilities",
+    "reason": "Canonical source and its pinned upstream references are maintained in llm-agent-toolkit/modules/agent_abilities."
+  },
+  {
+    "type": "retirement",
+    "path": "modules/agent_skills",
+    "reason": "Canonical source and its pinned upstream references are maintained in llm-agent-toolkit/modules/agent_skills."
+  },
+  {
+    "type": "retirement",
+    "path": "modules/llm_local",
+    "reason": "Agent Memory optional classifier fallback qualified with canonical package absent and present"
+  },
+  {
+    "path": "modules/agent_memory/tests/classify_test.py",
+    "action": "M",
+    "before_mode": "100644",
+    "after_mode": "100644",
+    "before": "302426ceafddba6f3c7e6ef8e0b9e229a8387bb6",
+    "after": "b9b663209bd559b418d2d00fa339dadf24130cef",
+    "reason": "Add deterministic optional-package compatibility coverage"
+  },
+  {
     "path": "modules/llm_monitor",
-    "reason": "Retire scripts llm_monitor source copy after canonical H4 bundle qualification and Toolkit PR #5 dependency alignment"
+    "reason": "Retire scripts llm_monitor source copy after canonical H4 bundle qualification and Toolkit PR #5 dependency alignment",
+    "type": "retirement"
   }
 ]
