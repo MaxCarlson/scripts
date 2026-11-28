@@ -423,7 +423,7 @@ def test_text_file_mode_hierarchy_and_content(temp_test_dir: Path, tmp_path: Pat
         DEFAULT_EXCLUDE_FILES, [], [], False, False, False
     )
     assert output_txt.exists()
-    content = output_txt.read_text()
+    content = output_txt.read_text(encoding="utf-8")
     # Preamble exists
     assert "This document is a self-contained representation of a software repository" in content
     # Structure
