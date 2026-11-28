@@ -49,9 +49,10 @@ The module also exposes:
 """
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import argparse
+import json
 import fnmatch
 import io
 import os
@@ -66,7 +67,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-__version__ = "0.1.0"
 
 
 # =====================================================================================
@@ -245,33 +245,17 @@ def flatten_directory(source_dir: Path, exclusion: Exclusion, name_by_path: bool
         shutil.rmtree(flat)
     flat.mkdir()
 
-    for root, dirs, files in os.walk(source_dir):
-        root_path = Path(root)
-
-        # Prune excluded directories
-        dirs[:] = [d for d in dirs if not exclusion.dir_is_excluded(_relpath(root_path / d, source_dir))]
-
-        if flat in root_path.parents or root_path == flat:
-            continue
-
-        for f in files:
-            src = root_path / f
-            rel = _relpath(src, source_dir)
-
-            if exclusion.file_is_excluded(rel):
-                if verbose:
-                    _print_skip(rel, "excluded")
-                continue
-
-            target_name = rel.replace("/", "_") if name_by_path else f
-            dst = flat / target_name
+    for src in _selected_files(source_dir, exclusion):
+        rel = _relpath(src, source_dir)
+        target_name = rel.replace("/", "_") if name_by_path else src.name
+        dst = flat / target_name
+        if verbose:
+            _print_ok(f"flatten: {rel} -> {_relpath(dst, source_dir)}")
+        try:
+            shutil.copy2(src, dst)
+        except Exception as e:
             if verbose:
-                _print_ok(f"flatten: {rel} -> {_relpath(dst, source_dir)}")
-            try:
-                shutil.copy2(src, dst)
-            except Exception as e:
-                if verbose:
-                    _print_warn(f"failed to copy {rel}: {e}")
+                _print_warn(f"failed to copy {rel}: {e}")
 
     # Add a plain structure marker file for zip output parity
     (flat / "folder_structure.txt").write_text("Flattened view artifacts (see text mode for full structure).")
@@ -379,6 +363,39 @@ class Exclusion:
             if self.dir_is_excluded(agg):
                 return True
         return False
+
+    def exclusion_reason(self, rel_path: str) -> str:
+        """Return a readable reason for an excluded file, respecting keep precedence."""
+        base = Path(rel_path).name
+        if base in self.keep_patterns or any(fnmatch.fnmatch(base, pat) for pat in self.keep_patterns):
+            return "included by keep pattern"
+        if base in self.exclude_files:
+            return "excluded filename"
+        if Path(rel_path).suffix in self.exclude_exts:
+            return "excluded extension"
+        if any(fnmatch.fnmatch(rel_path, pat) for pat in self.remove_patterns):
+            return "removed by pattern"
+        parts = Path(rel_path).parts
+        agg = ""
+        for part in parts[:-1]:
+            agg = f"{agg}/{part}" if agg else part
+            if self.dir_is_excluded(agg):
+                return "under excluded directory"
+        return "excluded"
+
+
+def _selected_files(source_dir: Path, exclusion: Exclusion) -> Iterable[Path]:
+    """Yield selected files deterministically while pruning excluded directories."""
+    for root, dirs, files in os.walk(source_dir):
+        root_path = Path(root)
+        dirs[:] = sorted(
+            (d for d in dirs if not exclusion.dir_is_excluded(_relpath(root_path / d, source_dir))),
+            key=lambda name: (name.casefold(), name),
+        )
+        for name in sorted(files, key=lambda name: (name.casefold(), name)):
+            path = root_path / name
+            if not exclusion.file_is_excluded(_relpath(path, source_dir)):
+                yield path
 
 
 # =====================================================================================
@@ -562,27 +579,10 @@ def zip_folder(
         if verbose:
             _print_header("Preparing files for zip...")
 
-        for r, dirs, files in os.walk(source_dir):
-            root_path = Path(r)
-            rel_dir = _relpath(root_path, source_dir)
-
-            # Prune excluded dirs before descent
-            dirs[:] = [d for d in dirs if not exclusion.dir_is_excluded(_relpath(root_path / d, source_dir))]
-
-            # Create corresponding directory structure in staging area
-            if rel_dir != ".":
-                (staging_root / rel_dir).mkdir(parents=True, exist_ok=True)
-
-            for f in files:
-                p = root_path / f
-                rel = _relpath(p, source_dir)
-                if exclusion.file_is_excluded(rel):
-                    if verbose:
-                        _print_skip(rel, "excluded")
-                    continue
-                
-                # Copy file to staging directory
-                shutil.copy2(p, staging_root / rel)
+        for p in _selected_files(source_dir, exclusion):
+            rel = _relpath(p, source_dir)
+            (staging_root / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, staging_root / rel)
 
         if flatten:
             if verbose:
@@ -926,17 +926,194 @@ def render_size_tree(
     return "\n".join(lines)
 
 
+def build_preview(
+    source_dir: Path,
+    exclusion: Exclusion,
+    *,
+    flatten: bool = False,
+    name_by_path: bool = False,
+    max_size: Optional[int] = None,
+    preferences: Optional[List[str]] = None,
+    output_paths: Optional[Dict[str, str]] = None,
+    preset: Optional[str] = None,
+) -> Dict[str, object]:
+    """Build a read-only packaging report using the packaging exclusion rules."""
+    files: List[Dict[str, object]] = []
+    excluded_files: List[Dict[str, str]] = []
+    pruned_dirs: List[str] = []
+    sizes: Dict[Path, int] = {}
+    selected_dirs: List[str] = []
+    source_root = source_dir.resolve()
+
+    # Traverse explicitly so pruned subtrees are never enumerated for counts.
+    stack = [source_root]
+    while stack:
+        folder = stack.pop()
+        sizes.setdefault(folder, 0)
+        if folder != source_root:
+            selected_dirs.append(_relpath(folder, source_root))
+        try:
+            children = sorted(folder.iterdir(), key=lambda p: (not p.is_dir(), p.name.casefold(), p.name))
+        except OSError:
+            continue
+        dirs = []
+        for child in children:
+            rel = _relpath(child, source_root)
+            try:
+                is_dir = child.is_dir()
+            except OSError:
+                continue
+            if is_dir:
+                if exclusion.dir_is_excluded(rel):
+                    pruned_dirs.append(rel)
+                elif child.is_symlink():
+                    # os.walk's default does not recurse into directory symlinks.
+                    continue
+                else:
+                    dirs.append(child)
+            else:
+                if exclusion.file_is_excluded(rel):
+                    excluded_files.append({"path": rel, "reason": exclusion.exclusion_reason(rel)})
+                    continue
+                try:
+                    size = child.stat().st_size
+                except OSError as exc:
+                    files.append({"path": rel, "size_bytes": None, "readable_text": False, "error": str(exc)})
+                    continue
+                try:
+                    data = child.read_bytes()
+                    data.decode("utf-8")
+                    readable = True
+                    error = None
+                except UnicodeDecodeError:
+                    readable = False
+                    error = None
+                except OSError as exc:
+                    readable = False
+                    error = str(exc)
+                file_report = {"path": rel, "size_bytes": size, "readable_text": readable}
+                if error:
+                    file_report["error"] = error
+                files.append(file_report)
+                parent = child.parent
+                while True:
+                    sizes[parent] = sizes.get(parent, 0) + size
+                    if parent == source_root:
+                        break
+                    parent = parent.parent
+        stack.extend(reversed(dirs))
+
+    files.sort(key=lambda item: (str(item["path"]).casefold(), str(item["path"])))
+    excluded_files.sort(key=lambda item: (item["path"].casefold(), item["path"]))
+    pruned_dirs.sort(key=lambda value: (value.casefold(), value))
+    projected = []
+    groups: Dict[str, List[str]] = {}
+    for item in files:
+        rel = str(item["path"])
+        target = rel.replace("/", "_") if flatten and name_by_path else (Path(rel).name if flatten else rel)
+        projected.append({"source": rel, "destination": target})
+        if flatten:
+            groups.setdefault(target.casefold(), []).append(rel)
+    collisions = [
+        {"destination": target, "sources": sorted(sources, key=lambda value: (value.casefold(), value))}
+        for target, sources in sorted(groups.items()) if len(sources) > 1
+    ]
+
+    zip_files = list(files)
+    trimmed: List[str] = []
+    if max_size is not None:
+        max_bytes = max_size * 1024 * 1024
+        remaining = sum(int(item["size_bytes"] or 0) for item in zip_files)
+        preferences_set = set(preferences or [])
+        while remaining > max_bytes and zip_files:
+            preferred = [item for item in zip_files if Path(str(item["path"])).suffix in preferences_set]
+            candidates = preferred or zip_files
+            victim = max(candidates, key=lambda item: (int(item["size_bytes"] or 0), str(item["path"]).casefold()))
+            zip_files.remove(victim)
+            remaining -= int(victim["size_bytes"] or 0)
+            trimmed.append(str(victim["path"]))
+
+    readable_bytes = sum(int(item["size_bytes"] or 0) for item in files if item["readable_text"])
+    return {
+        "version": __version__, "source": str(source_root), "preset": preset,
+        "filters": {
+            "exclude_dirs": sorted(exclusion.exclude_dirs, key=str.casefold),
+            "exclude_extensions": sorted(exclusion.exclude_exts, key=str.casefold),
+            "exclude_files": sorted(exclusion.exclude_files, key=str.casefold),
+            "remove_patterns": list(exclusion.remove_patterns), "keep_patterns": list(exclusion.keep_patterns),
+        },
+        "modes": {"text": output_paths.get("text") if output_paths else None,
+                  "zip": output_paths.get("zip") if output_paths else None,
+                  "flatten": flatten, "name_by_path": name_by_path},
+        "included_files": files, "included_directories": sorted(selected_dirs, key=str.casefold),
+        "excluded_files": excluded_files, "pruned_directories": pruned_dirs,
+        "projected_names": projected, "flatten_collisions": collisions,
+        "largest_included_files": sorted(
+            ({"path": str(item["path"]), "size_bytes": item["size_bytes"]} for item in files),
+            key=lambda item: (-int(item["size_bytes"] or 0), str(item["path"]).casefold(), str(item["path"])),
+        )[:10],
+        "zip_trimmed_files": sorted(trimmed, key=lambda value: (value.casefold(), value)),
+        "zip_files_after_size_trim_estimate": sorted(
+            (str(item["path"]) for item in zip_files), key=lambda value: (value.casefold(), value)
+        ),
+        "zip_membership_stage": "selected source files before compression; size trimming is an estimate",
+        "statistics": {
+            "included_file_count": len(files),
+            "included_source_bytes": sum(int(item["size_bytes"] or 0) for item in files),
+            "excluded_file_count": len(excluded_files), "pruned_directory_count": len(pruned_dirs),
+            "readable_text_file_count": sum(bool(item["readable_text"]) for item in files),
+            "estimated_consolidated_text_tokens_approx": round(readable_bytes / 4),
+        },
+        "size_tree": sizes,
+    }
+
+
+def _preview_tree(source_dir: Path, report: Dict[str, object]) -> str:
+    file_sizes = {str(item["path"]): item["size_bytes"] for item in report["included_files"]}
+    files = set(file_sizes)
+    pruned = set(report["pruned_directories"])
+    directories = set(report["included_directories"])
+    lines = [f"{source_dir.name}/"]
+    def walk(folder: Path, prefix: str = "") -> None:
+        try:
+            children = sorted(folder.iterdir(), key=lambda p: (not p.is_dir(), p.name.casefold(), p.name))
+        except OSError:
+            return
+        visible = [p for p in children if (
+            _relpath(p, source_dir) in pruned or _relpath(p, source_dir) in files or
+            _relpath(p, source_dir) in directories
+        )]
+        for index, child in enumerate(visible):
+            rel = _relpath(child, source_dir)
+            last = index == len(visible) - 1
+            connector = "└── " if last else "├── "
+            if rel in pruned:
+                lines.append(f"{prefix}{connector}{child.name}/ (excluded)")
+            elif child.is_dir():
+                lines.append(f"{prefix}{connector}{child.name}/")
+                walk(child, prefix + ("    " if last else "│   "))
+            else:
+                size = file_sizes.get(rel)
+                lines.append(f"{prefix}{connector}{child.name} ({size if size is not None else 'unreadable'} bytes)")
+    walk(source_dir)
+    return "\n".join(lines)
+
+
 # =====================================================================================
 # CLI
 # =====================================================================================
 
 def main(argv: Optional[List[str]] = None) -> int:
-    p = argparse.ArgumentParser(description="Package a repo for LLMs and optionally run Gemini analysis.")
+    p = argparse.ArgumentParser(description="Preview and package a repo for LLMs; optionally run Gemini analysis.")
     p.add_argument("source", help="Source folder to package")
     p.add_argument("-o", "--output", "-O", help="Output base path (no extension needed)", default=None)
 
     p.add_argument("-f", "--file-mode", action="store_true", help="Write consolidated text file")
     p.add_argument("-z", "--zip-mode", action="store_true", help="Write zip file")
+    p.add_argument("-d", "--dry-run", "--preview", action="store_true", help="Preview selection without creating outputs")
+    p.add_argument("-l", "--list-files", action="store_true", help="List selected files and sizes in preview")
+    p.add_argument("-E", "--list-excluded", action="store_true", help="List excluded files and reasons in preview")
+    p.add_argument("-j", "--json", action="store_true", help="Print deterministic JSON preview")
 
     p.add_argument("-x", "--exclude-dir", action="append", default=[], help="Exclude directory (repeatable)")
     p.add_argument("-e", "--exclude-ext", action="append", default=[], help="Exclude extension with dot (repeatable)")
@@ -1000,7 +1177,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     output_path = Path(output_base)
     output_dir = output_path.parent if output_path.parent != Path("") else Path.cwd()
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     if output_path.name.startswith('.') and not output_path.stem.startswith('.'):
         base_name = output_path.name
@@ -1053,6 +1229,80 @@ def main(argv: Optional[List[str]] = None) -> int:
         actual_text = output_dir / (base_name + ".txt")
     elif run_zip_mode:
         actual_zip = output_dir / (base_name + ".zip")
+
+    preview_mode = args.dry_run or args.list_files or args.list_excluded or args.json
+    if preview_mode:
+        exclusion = Exclusion(final_exclude_dirs, final_exclude_exts, final_exclude_files,
+                              final_remove_patterns, final_keep_patterns)
+        report = build_preview(
+            source_dir, exclusion, flatten=args.flatten, name_by_path=args.name_by_path,
+            max_size=args.max_size, preferences=preferences,
+            output_paths={"text": str(actual_text) if actual_text else None,
+                          "zip": str(actual_zip) if actual_zip else None}, preset=args.preset,
+        )
+        if args.size_tree is not None or args.auto_size_tree is not None:
+            depth = None if args.auto_size_tree is not None else args.size_tree
+            report["size_tree_report"] = render_size_tree(
+                source_dir, report["size_tree"], depth=depth, auto_top_n=args.auto_size_tree
+            )
+        if args.json:
+            report.pop("size_tree", None)
+            print(json.dumps(report, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            return 0
+        print(_preview_tree(source_dir, report))
+        stats = report["statistics"]
+        print("\nPreview statistics")
+        for label, key in (
+            ("Included files", "included_file_count"), ("Included source bytes", "included_source_bytes"),
+            ("Excluded files", "excluded_file_count"), ("Pruned directories", "pruned_directory_count"),
+            ("Readable text files", "readable_text_file_count"),
+            ("Estimated consolidated-text tokens (approx.)", "estimated_consolidated_text_tokens_approx"),
+        ):
+            print(f"  {label}: {stats[key]}")
+        print(f"  Preset: {args.preset or '(none)'}")
+        print("  Effective filters:")
+        print(f"    Exclude directories: {', '.join(sorted(final_exclude_dirs, key=str.casefold))}")
+        print(f"    Exclude extensions: {', '.join(sorted(final_exclude_exts, key=str.casefold))}")
+        print(f"    Exclude filenames: {', '.join(sorted(final_exclude_files, key=str.casefold))}")
+        print(f"    Remove patterns: {', '.join(final_remove_patterns) or '(none)'}")
+        print(f"    Keep patterns: {', '.join(final_keep_patterns) or '(none)'}")
+        print(f"  Packaging: text={'yes' if actual_text else 'no'}, zip={'yes' if actual_zip else 'no'}, "
+              f"flatten={'yes' if args.flatten else 'no'}")
+        print(f"  Output paths: text={actual_text or '(none)'}, zip={actual_zip or '(none)'}")
+        print(f"  Flatten name collisions: {len(report['flatten_collisions'])}")
+        print("\nLargest included files")
+        for item in report["largest_included_files"]:
+            size = item["size_bytes"] if item["size_bytes"] is not None else "unreadable"
+            print(f"  {item['path']} ({size} bytes)")
+        if args.flatten:
+            print("\nProjected destinations")
+            for item in report["projected_names"]:
+                print(f"  {item['source']} -> {item['destination']}")
+            if report["flatten_collisions"]:
+                print("Flatten collisions (Windows case-insensitive)")
+                for collision in report["flatten_collisions"]:
+                    print(f"  {collision['destination']}: {', '.join(collision['sources'])}")
+        if args.max_size is not None and actual_zip:
+            print(f"  ZIP files before compression: {len(report['included_files'])} selected; "
+                  f"{len(report['zip_files_after_size_trim_estimate'])} estimated after size trimming")
+        if args.list_files:
+            print("\nIncluded files")
+            for item in report["included_files"]:
+                size = item["size_bytes"] if item["size_bytes"] is not None else "unreadable"
+                text_state = "text" if item["readable_text"] else "binary/non-UTF-8 or unreadable"
+                print(f"  {item['path']} ({size} bytes; {text_state})")
+        if args.list_excluded:
+            print("\nExcluded files")
+            for item in report["excluded_files"]:
+                print(f"  {item['path']} ({item['reason']})")
+            print("Pruned directories")
+            for item in report["pruned_directories"]:
+                print(f"  {item}/ (directory exclusion)")
+        if args.size_tree is not None or args.auto_size_tree is not None:
+            print(report.get("size_tree_report", ""))
+        return 0
+
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.verbose:
         _print_header("Packaging parameters")
