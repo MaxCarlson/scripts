@@ -10,8 +10,8 @@
 - [x] Preserve independent custom instructions when workflow selection changes; reject exact-session replay and unsupported providers; fail before provider invocation on missing, changed, conflicting, or unavailable resources.
 - [x] Add redacted instruction previews and verify instruction text is absent from persisted event payloads.
 - [x] Optimize guarded-start synchronization without weakening mutation-lock freshness or session ownership evidence; measured 21 syncs versus the previous 27.
-- [x] Complete final xdist qualification (553 passed), `scripts_help` registry checks (54 passed), Ruff, CLI help aliases, version agreement, and diff hygiene.
-- [ ] Rerun xdist including the new synchronization-count regression, review final diff, commit and push.
+- [x] Complete final xdist qualification (554 passed), `scripts_help` registry checks (54 passed), Ruff, CLI help aliases, version agreement, and diff hygiene.
+- [x] Review final task-scoped diff and publish the feature checkpoint; update this checklist in the final documentation commit.
 
 ## v2.3.0 final integration correction pass (2026-11-27)
 
