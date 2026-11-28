@@ -142,7 +142,8 @@ PRESETS = {
     "python": {
         "dirs": {
             ".venv", "venv", "env", "__pycache__", ".pytest_cache",
-            ".mypy_cache", ".tox", "build", "dist", "*.egg-info",
+            ".pytest_tmp_root", ".pytest_tmp*", ".mypy_cache", ".tox",
+            "build", "dist", "*.egg-info",
         },
         "exts": {".pyc", ".pyo", ".pyd", ".so"},
         "files": {".python-version", ".coverage", "coverage.xml"},

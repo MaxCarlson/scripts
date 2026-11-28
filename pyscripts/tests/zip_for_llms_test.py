@@ -914,14 +914,19 @@ def test_preview_applies_preset_glob_and_trim_estimate(tmp_path: Path, capsys):
     root = tmp_path / "repo"
     (root / "build-cache").mkdir(parents=True)
     (root / "build-cache" / "ignore.pyc").write_bytes(b"x")
+    (root / ".pytest_tmp_root").mkdir()
+    (root / ".pytest_tmp_root" / "generated.py").write_text("generated")
     (root / "src").mkdir()
     (root / "src" / "keep.py").write_text("x" * 50)
     (root / "src" / "ignore.pyc").write_bytes(b"x" * 200)
     (root / "src" / "skip.txt").write_text("removed by glob")
-    rules = Exclusion({"build-*"}, {".pyc"}, set(), ["src/skip.*"], [])
+    rules = Exclusion(
+        set(PRESETS["python"]["dirs"]) | {"build-*"},
+        set(PRESETS["python"]["exts"]), set(), ["src/skip.*"], [],
+    )
     report = build_preview(root, rules, max_size=0, preset="python")
     assert [item["path"] for item in report["included_files"]] == ["src/keep.py"]
-    assert report["pruned_directories"] == ["build-cache"]
+    assert set(report["pruned_directories"]) == {"build-cache", ".pytest_tmp_root"}
     assert report["zip_trimmed_files"] == ["src/keep.py"]
     assert report["zip_files_after_size_trim_estimate"] == []
     assert {item["path"]: item["reason"] for item in report["excluded_files"]} == {
@@ -934,6 +939,7 @@ def test_preview_applies_preset_glob_and_trim_estimate(tmp_path: Path, capsys):
     assert cli_report["preset"] == "python"
     assert "src/ignore.pyc" not in [item["path"] for item in cli_report["included_files"]]
     assert "build-cache" in cli_report["pruned_directories"]
+    assert ".pytest_tmp_root" in cli_report["pruned_directories"]
 
 
 def test_preview_keeps_unreadable_selected_files_with_error(tmp_path: Path, monkeypatch):
