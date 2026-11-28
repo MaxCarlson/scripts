@@ -29,8 +29,8 @@ Implement the compare output improvements, general `flatten` filter, and metadat
 
 ## Verification notes
 
-- Compare plus flatten focused tests: 30 passed.
-- scripts_help registry/view tests: 14 passed.
+- Compare plus flatten focused tests: 31 passed.
+- scripts_help registry/view and CLI tests: 59 passed (15 registry/view, 44 CLI).
 - scripts_help CLI tests: 44 passed.
 - Python compile checks passed.
 - A broader clipboard module test collection was attempted but stopped during collection because the environment lacks the existing `cross_platform.clipboard_utils` package; this is an environment prerequisite, not a failure in the changed compare tests.
