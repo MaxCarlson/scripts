@@ -6,7 +6,9 @@ import json
 import os
 import secrets
 import sqlite3
+from collections.abc import Sequence
 from contextlib import closing, contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,7 @@ from .events import (
     MAX_EVENT_FILE_BYTES,
     SpoolIssue,
     _stat_tuple,
+    append_event,
     compute_event_checksum,
     discover_spool_roots,
     read_spool_events,
@@ -70,6 +73,8 @@ CREATE TABLE IF NOT EXISTS spool_file_fingerprints (
     event_id TEXT NOT NULL
 )
 """
+
+_HELD_WRITER_LOCKS: ContextVar[frozenset[str]] = ContextVar("ac_held_writer_locks", default=frozenset())
 
 
 def _ensure_fingerprints_table(conn: sqlite3.Connection) -> None:
@@ -166,9 +171,14 @@ class SQLiteMaterializer:
 
     @contextmanager
     def _writer_lock(self, *, timeout_seconds: float = 10.0):
-        """Cross-process writer exclusion protecting index.sqlite and WAL/SHM sidecars."""
+        """Serialize spool publication, SQLite writes, and atomic rebuilds across processes."""
         import time
 
+        key = str(self.home_dir.resolve())
+        held = _HELD_WRITER_LOCKS.get()
+        if key in held:
+            yield
+            return
         lock_path = self.home_dir / ".index.sqlite.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + timeout_seconds
@@ -194,9 +204,11 @@ class SQLiteMaterializer:
                             {"db_path": str(self.db_path)},
                         ) from exc
                     time.sleep(0.01)
+            token = _HELD_WRITER_LOCKS.set(held | {key})
             try:
                 yield
             finally:
+                _HELD_WRITER_LOCKS.reset(token)
                 if os.name == "nt":
                     import msvcrt
 
@@ -212,6 +224,21 @@ class SQLiteMaterializer:
                         fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
         finally:
             stream.close()
+
+    def publish_events(
+        self,
+        events: Sequence[EventEnvelope],
+        *,
+        materialize: bool = True,
+    ) -> list[tuple[EventEnvelope, str, str]]:
+        """Publish an event batch and its projection while holding one writer boundary."""
+        if not events:
+            return []
+        with self._writer_lock():
+            items = [(event, str(append_event(self.home_dir, event)), "") for event in events]
+            if materialize:
+                self.ingest_events(items)
+            return items
 
     def _connect_rw(self, path: Path | None = None) -> sqlite3.Connection:
         target = path or self.db_path
@@ -270,6 +297,25 @@ class SQLiteMaterializer:
                 ) from exc
 
     def sync_from_spools(
+        self,
+        extra_roots: list[Path] | None = None,
+        *,
+        verify_checksums: bool = False,
+    ) -> SyncResult:
+        """Synchronize from a complete spool snapshot after any active batch publication."""
+        if not self.home_dir.exists() and not extra_roots:
+            return SyncResult(
+                ingested_count=0,
+                skipped_duplicates=0,
+                total_spool_events=0,
+                issues=[],
+                db_path=str(self.db_path),
+                rebuilt=False,
+            )
+        with self._writer_lock():
+            return self._sync_from_spools_locked(extra_roots, verify_checksums=verify_checksums)
+
+    def _sync_from_spools_locked(
         self,
         extra_roots: list[Path] | None = None,
         *,

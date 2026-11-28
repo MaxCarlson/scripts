@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from agent_continuity.dispatcher import DispatcherService
 from agent_continuity.models import EventEnvelope, EventType
 from agent_continuity.service import ContinuityService
@@ -26,6 +28,86 @@ def test_slot_lookup_uses_one_sync_and_honors_locked_freshness_hint(tmp_path, mo
     sync_calls = 0
     assert dispatcher.get_slot_by_id(slot_id, state_already_synced=True)["slot_id"] == slot_id
     assert sync_calls == 0
+
+
+def test_begin_launch_acquires_slot_exclusion_before_releasing_registry_mutation_lock(tmp_path, monkeypatch):
+    from agent_continuity.dispatcher import _HELD_MUTATION_LOCKS
+
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.create_gui("GUI", apply=True)
+    dispatcher.create_slot(gui="GUI", name="Agent", apply=True)
+    lock_key = str((home / "dispatcher.lock").resolve())
+    hold_slot = dispatcher._hold_slot_lock
+
+    def assert_registry_lock_held(slot_id, **kwargs):
+        assert lock_key in _HELD_MUTATION_LOCKS.get()
+        return hold_slot(slot_id, **kwargs)
+
+    monkeypatch.setattr(dispatcher, "_hold_slot_lock", assert_registry_lock_held)
+    dispatcher.begin_launch(gui="GUI", name="Agent", provider="codex", apply=True)
+
+
+def test_attach_session_waits_for_slot_runtime_lock_without_registry_lock(tmp_path, monkeypatch):
+    from agent_continuity.dispatcher import _HELD_MUTATION_LOCKS
+
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.create_gui("GUI", apply=True)
+    dispatcher.create_slot(gui="GUI", name="Agent", apply=True)
+    lock_key = str((home / "dispatcher.lock").resolve())
+    hold_slot = dispatcher._hold_slot_lock
+    emit = dispatcher.continuity._emit_and_materialize
+    saw_slot_lock = False
+    saw_commit_lock = False
+
+    def assert_no_registry_lock_while_waiting(slot_id, **kwargs):
+        nonlocal saw_slot_lock
+        if kwargs.get("wait_for_metadata_contention"):
+            assert lock_key not in _HELD_MUTATION_LOCKS.get()
+            saw_slot_lock = True
+        return hold_slot(slot_id, **kwargs)
+
+    def assert_commit_lock(events):
+        nonlocal saw_commit_lock
+        assert lock_key in _HELD_MUTATION_LOCKS.get()
+        saw_commit_lock = True
+        return emit(events)
+
+    monkeypatch.setattr(dispatcher, "_hold_slot_lock", assert_no_registry_lock_while_waiting)
+    monkeypatch.setattr(dispatcher.continuity, "_emit_and_materialize", assert_commit_lock)
+    dispatcher.attach_session(gui="GUI", name="Agent", provider="codex", session_id="session-1", apply=True)
+    assert saw_slot_lock and saw_commit_lock
+
+
+def test_attach_session_revalidates_current_after_waiting_for_slot_lock(tmp_path, monkeypatch):
+    from agent_continuity.errors import ContinuityError
+
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.create_gui("GUI", apply=True)
+    dispatcher.create_slot(gui="GUI", name="Agent", apply=True)
+    concurrent = DispatcherService(home_dir=home)
+    hold_slot = dispatcher._hold_slot_lock
+    injected = False
+
+    def competing_attach_before_slot_acquisition(slot_id, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            concurrent.attach_session(
+                gui="GUI", name="Agent", provider="agy", session_id="concurrent-session", apply=True,
+            )
+        return hold_slot(slot_id, **kwargs)
+
+    monkeypatch.setattr(dispatcher, "_hold_slot_lock", competing_attach_before_slot_acquisition)
+    with pytest.raises(ContinuityError, match="changed concurrently|selection changed"):
+        dispatcher.attach_session(
+            gui="GUI", name="Agent", provider="codex", session_id="stale-session",
+            expected_current=None, check_current=True, apply=True,
+        )
+    current = DispatcherService(home_dir=home).get_slot(gui="GUI", name="Agent")["current"]
+    assert (current["provider"], current["native_session_id"]) == ("agy", "concurrent-session")
 
 
 def test_activation_history_preserves_repeated_native_session_and_rebuild(tmp_path):

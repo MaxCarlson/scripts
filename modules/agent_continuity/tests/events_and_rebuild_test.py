@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,13 @@ from typing import Any
 import pytest
 
 from agent_continuity.errors import ContinuityError, ErrorCode
-from agent_continuity.events import append_event, discover_spool_roots, read_spool_events
+from agent_continuity.events import (
+    append_event,
+    atomic_write_json,
+    discover_spool_roots,
+    read_spool_events,
+    read_spool_events_incremental,
+)
 from agent_continuity.materializer import SQLiteMaterializer
 from agent_continuity.models import EventEnvelope, EventType
 from agent_continuity.service import ContinuityService
@@ -677,3 +684,151 @@ def test_checksum_conflict_legacy_empty_handle_race_and_rebuild_lock(
     assert rebuild_done.is_set()
     assert rebuild_result[0].rebuilt is True
     assert rebuild_result[0].ingested_count == 2
+
+
+def test_full_and_incremental_spool_scans_order_dependencies_before_equal_timestamp_events(tmp_path: Path) -> None:
+    home = tmp_path / "state"
+    timestamp = "2026-11-27T12:00:00Z"
+    events = [
+        EventEnvelope(
+            event_id="evt_z_session", event_schema_version=1,
+            event_type=EventType.SESSION_REGISTERED.value, provider="codex",
+            environment_id="env_windows", native_session_id="session-1",
+            source_timestamp=timestamp, observed_timestamp=timestamp,
+            source_adapter_version="test", payload={"environment": {"environment_id": "env_windows"}},
+        ),
+        EventEnvelope(
+            event_id="evt_a_environment", event_schema_version=1,
+            event_type=EventType.ENVIRONMENT_REGISTERED.value, provider=None,
+            environment_id="env_windows", native_session_id=None,
+            source_timestamp=timestamp, observed_timestamp=timestamp,
+            source_adapter_version="test", payload={"environment_id": "env_windows"},
+        ),
+    ]
+    for event in events:
+        append_event(home, event)
+
+    full = read_spool_events(discover_spool_roots(home))
+    incremental = read_spool_events_incremental(discover_spool_roots(home))
+
+    expected = [EventType.ENVIRONMENT_REGISTERED.value, EventType.SESSION_REGISTERED.value]
+    assert [record.envelope.event_type for record in full.records] == expected
+    assert [record.envelope.event_type for record in incremental.records] == expected
+
+
+def test_batch_publication_serializes_sync_and_rebuild_across_partial_spool_visibility(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agent_continuity.materializer as materializer_module
+    from agent_continuity.dispatcher import DispatcherService
+
+    home = tmp_path / "publication"
+    service = ContinuityService(home)
+    timestamp = "2026-11-27T12:00:00.000000Z"
+    environment_id = "env_publication"
+    gui_id = "gui_publication"
+    slot_id = "slot_publication"
+    events = [
+        EventEnvelope(
+            event_id="evt_pub_env", event_schema_version=1,
+            event_type=EventType.ENVIRONMENT_REGISTERED.value, provider=None,
+            environment_id=environment_id, native_session_id=None,
+            source_timestamp=timestamp, observed_timestamp=timestamp,
+            source_adapter_version="test",
+            payload={"environment_id": environment_id, "runtime_kind": "windows", "label": "Windows"},
+        ),
+        EventEnvelope(
+            event_id="evt_pub_gui", event_schema_version=1,
+            event_type=EventType.DISPATCHER_GUI_REGISTERED.value, provider=None,
+            environment_id=environment_id, native_session_id=None,
+            source_timestamp=timestamp, observed_timestamp=timestamp,
+            source_adapter_version="test", payload={"gui_id": gui_id, "alias": "GUI", "alias_key": "gui"},
+        ),
+        EventEnvelope(
+            event_id="evt_pub_slot", event_schema_version=1,
+            event_type=EventType.DISPATCHER_SLOT_CREATED.value, provider=None,
+            environment_id=environment_id, native_session_id=None,
+            source_timestamp=timestamp, observed_timestamp=timestamp,
+            source_adapter_version="test",
+            payload={"slot_id": slot_id, "gui_id": gui_id, "name": "Agent", "name_key": "agent"},
+        ),
+        EventEnvelope(
+            event_id="evt_pub_launch", event_schema_version=1,
+            event_type=EventType.DISPATCHER_LAUNCH_REQUESTED.value, provider="codex",
+            environment_id=environment_id, native_session_id=None,
+            source_timestamp=timestamp, observed_timestamp=timestamp,
+            source_adapter_version="test",
+            payload={"launch_id": "launch_publication", "slot_id": slot_id},
+        ),
+    ]
+    first_written = threading.Event()
+    release_batch = threading.Event()
+    real_append = materializer_module.append_event
+
+    def gated_append(target_home: Path, event: EventEnvelope) -> Path:
+        result = real_append(target_home, event)
+        if event.event_id == "evt_pub_env":
+            first_written.set()
+            assert release_batch.wait(timeout=5.0)
+        return result
+
+    monkeypatch.setattr(materializer_module, "append_event", gated_append)
+    publisher = threading.Thread(target=service._emit_and_materialize, args=(events,))
+    publisher.start()
+    assert first_written.wait(timeout=2.0)
+
+    sync_results = []
+    rebuild_results = []
+    sync_done = threading.Event()
+    rebuild_done = threading.Event()
+
+    def sync_worker() -> None:
+        sync_results.append(service.materializer.sync_from_spools())
+        sync_done.set()
+
+    def rebuild_worker() -> None:
+        rebuild_results.append(service.materializer.rebuild_from_spools())
+        rebuild_done.set()
+
+    sync_thread = threading.Thread(target=sync_worker)
+    rebuild_thread = threading.Thread(target=rebuild_worker)
+    sync_thread.start()
+    rebuild_thread.start()
+    time.sleep(0.15)
+    assert not sync_done.is_set()
+    assert not rebuild_done.is_set()
+
+    release_batch.set()
+    publisher.join(timeout=5.0)
+    sync_thread.join(timeout=5.0)
+    rebuild_thread.join(timeout=5.0)
+    assert not publisher.is_alive() and not sync_thread.is_alive() and not rebuild_thread.is_alive()
+    assert sync_results[0].total_spool_events == 4
+    assert rebuild_results[0].total_spool_events == 4
+    assert DispatcherService(service).list_pending_launches()[0]["launch_id"] == "launch_publication"
+
+
+def test_atomic_json_replace_retries_transient_windows_share_violation(tmp_path: Path, monkeypatch) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows share violations are specific to the Windows filesystem API.")
+    import agent_continuity.events as events_module
+
+    target = tmp_path / "record.json"
+    target.write_text('{"old": true}\n', encoding="utf-8")
+    real_replace = events_module.os.replace
+    calls = 0
+
+    def share_then_replace(source: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            error = PermissionError("temporary sharing violation")
+            error.winerror = 32
+            raise error
+        real_replace(source, destination)
+
+    monkeypatch.setattr(events_module.os, "replace", share_then_replace)
+    atomic_write_json(target, {"new": True})
+
+    assert calls == 3
+    assert target.read_text(encoding="utf-8") == '{\n  "new": true\n}\n'

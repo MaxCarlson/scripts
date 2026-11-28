@@ -2004,6 +2004,18 @@ def _bootstrap_native_argv(
     return [*argv, "--print", prompt, "--output-format", "json", "--sandbox"]
 
 
+def _native_allocation_qualification(provider: str) -> Any | None:
+    """Return a code-bound live qualification; Codex and AGY remain disabled by default."""
+    from .native_bootstrap import provider_native_bootstrap_readiness
+
+    readiness = provider_native_bootstrap_readiness().get(provider, {})
+    if not readiness.get("safe_to_enable_now"):
+        return None
+    # Codex and AGY must remain explicitly code-qualified for the exact installed
+    # version/runtime/mechanism. No user config or provider preference enables this.
+    return None
+
+
 def _extract_bootstrap_session_id(provider: str, stdout: str) -> str | None:
     """Return an ID only when the provider reports a successful invocation with one unambiguous ID."""
     if provider == "codex":
@@ -2093,7 +2105,14 @@ def _run_pane(
     prompt_token = _ONE_TIME_PROMPT.set(prompt)
     _startup_progress("provider handoff preparation and exact-session validation")
     try:
-        with _slot_runtime_lock(dispatcher.home_dir, slot_id, blocking=False):
+        execution_slot_ids = {slot_id}
+        if transition_source and transition_source.get("slot_id"):
+            execution_slot_ids.add(str(transition_source["slot_id"]))
+        with contextlib.ExitStack() as held_slot_locks:
+            for execution_slot_id in sorted(execution_slot_ids):
+                held_slot_locks.enter_context(
+                    _slot_runtime_lock(dispatcher.home_dir, execution_slot_id, blocking=False)
+                )
             status_or_menu = _run_pane_locked(
                 dispatcher,
                 slot_id=slot_id,
@@ -2189,6 +2208,11 @@ def _run_pane_locked(
                 ErrorCode.INVALID_INPUT,
                 "This launch already has an incomplete bootstrap attempt. It was not retried automatically; inspect the provider session and attach its exact ID, or create a new launch.",
             )
+        if pending.get("native_allocation_attempted"):
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "This native allocation was already attempted; inspect provider state and recover the exact ID. Automatic retry and bootstrap fallback are disabled.",
+            )
         provider = pending["provider"]
         environment_id = pending["environment_id"]
         target_environment = next(
@@ -2282,6 +2306,9 @@ def _run_pane_locked(
     bootstrap_completed = False
     reservation_consumed = False
     reservation_startup_confirmed = False
+    native_allocation_pending = False
+    native_allocation_startup_confirmed = False
+    native_workflow_prompt: str | None = None
     workflow_prep = None
 
     def emit_exit_summary(outcome: str, exit_code: int, *, resume_available: bool) -> None:
@@ -2434,6 +2461,9 @@ def _run_pane_locked(
                 "no partial instruction payload was submitted.",
                 {"resource_ids": limitation_ids},
             )
+    native_allocation_qualification = (
+        _native_allocation_qualification(provider) if launch_id and provider in {"codex", "agy"} else None
+    )
     _startup_progress("environment, executable and Git worktree context resolved")
     try:
         if launch_id and provider == "claude":
@@ -2442,6 +2472,71 @@ def _run_pane_locked(
             argv = _native_argv(dispatcher, provider, None, environment_id=environment_id, cwd=cwd,
                                 native_args=native_args, allow_native_unknown=allow_native_unknown,
                                 new_session_id=session_id)
+        elif launch_id and provider in {"codex", "agy"} and native_allocation_qualification is not None:
+            from .native_bootstrap import NativeBootstrapRequest, allocate_native_session
+
+            native_workflow_prompt = (
+                workflow_prep.get("delivery_prompt")
+                if workflow_prep and workflow_prep.get("applied") and workflow_prep.get("delivery_prompt")
+                else None
+            )
+            launch_prompt = _ONE_TIME_PROMPT.get()
+            if provider == "agy" and (native_workflow_prompt or launch_prompt is not None):
+                raise ContinuityError(
+                    ErrorCode.RESUME_UNSUPPORTED,
+                    "AGY interactive prompt or instruction delivery is not qualified for native allocation; no session was allocated.",
+                )
+            if provider == "codex" and native_workflow_prompt and launch_prompt is not None:
+                launch_prompt = f"{native_workflow_prompt}\n\n--- One-time launch prompt ---\n{launch_prompt}"
+            elif provider == "codex" and native_workflow_prompt:
+                launch_prompt = native_workflow_prompt
+            settings = _safe_launch_settings(provider, native_args, allow_unknown=allow_native_unknown)
+            expected_sandbox = settings.get("sandbox") if provider == "codex" else None
+            expected_sandbox = {
+                "workspace-write": "workspaceWrite",
+                "read-only": "readOnly",
+                "danger-full-access": "dangerFullAccess",
+            }.get(expected_sandbox, expected_sandbox)
+            request = NativeBootstrapRequest(
+                provider=provider,
+                cwd=str(Path(bootstrap_cwd or effective_cwd).resolve()),
+                model=settings.get("model"),
+                expected_approval_policy=settings.get("approval_policy") if provider == "codex" else None,
+                expected_sandbox_type=expected_sandbox,
+                live_qualification=native_allocation_qualification,
+            )
+            dispatcher.begin_native_allocation(
+                launch_id=launch_id, slot_id=slot_id, provider=provider,
+                environment_id=environment_id, cwd=request.cwd,
+            )
+            try:
+                allocation = allocate_native_session(request)
+            except Exception as exc:
+                dispatcher.mark_launch_failed(
+                    launch_id=launch_id,
+                    detail=f"Native allocation raised {type(exc).__name__}; do not retry or fall back automatically.",
+                    apply=True,
+                )
+                raise ContinuityError(
+                    ErrorCode.PROVIDER_UNAVAILABLE,
+                    "Native allocation failed after its one-shot attempt was claimed; automatic fallback and retry are disabled.",
+                ) from exc
+            session_id = dispatcher.record_native_allocation(
+                launch_id=launch_id, slot_id=slot_id, allocation=allocation,
+            )
+            if not session_id:
+                raise ContinuityError(
+                    ErrorCode.PROVIDER_UNAVAILABLE,
+                    "Native allocation did not produce durably qualified persistence evidence; no fallback was attempted.",
+                )
+            native_allocation_pending = True
+            if launch_prompt is not None:
+                _ONE_TIME_PROMPT.set(launch_prompt)
+            argv = _native_argv(dispatcher, provider, session_id, environment_id=environment_id, cwd=cwd,
+                                native_args=native_args, allow_native_unknown=allow_native_unknown)
+            if terminal_record:
+                terminal_record["native_session_id"] = session_id
+                terminal_record["native_cwd"] = bootstrap_cwd
         elif launch_id:
             workflow_prompt = (
                 workflow_prep.get("delivery_prompt")
@@ -2632,6 +2727,60 @@ def _run_pane_locked(
         if terminal_record_written:
             _finish_terminal_launch(dispatcher, terminal_record, exit_code=1)
         raise
+
+    def acknowledge_native_session_start(provider_pid: int) -> None:
+        nonlocal launch_id, native_allocation_startup_confirmed
+        if not native_allocation_pending or not launch_id or not session_id or provider_pid <= 0:
+            raise ContinuityError(ErrorCode.ASSOCIATION_CONFLICT,
+                                  "Exact native startup evidence did not match a pending allocation.")
+        dispatcher.record_process_observation(
+            slot_id=slot_id, launch_id=launch_id, return_code=0,
+            outcome="native_interactive_startup_confirmed",
+            detail=f"Exact provider process PID {provider_pid} was observed for the allocated native session.",
+            native_session_id=session_id,
+        )
+        if transition_source:
+            if transition_source.get("review_cycle"):
+                transition_source["review_cycle"].update({
+                    "reviewer_provider": provider,
+                    "reviewer_environment_id": environment_id,
+                    "reviewer_session_id": session_id,
+                })
+            dispatcher.complete_agent_transition(
+                gui=slot["gui_alias"], source_slot_id=transition_source["slot_id"],
+                destination_slot_id=slot_id, provider=provider, environment_id=environment_id,
+                session_id=session_id,
+                source_state=transition_source.get("source_state", "inactive"),
+                destination_state=transition_source.get("destination_state", "active"),
+                expected_source=transition_source["expected_source"], expected_destination=None,
+                cwd=bootstrap_cwd, launch_id=launch_id,
+                provenance=transition_source.get("provenance", "agent_transition"),
+                allow_inactive_source=transition_source.get("allow_inactive_source", False),
+                review_cycle=transition_source.get("review_cycle"), apply=True,
+                _execution_locks_held=True,
+            )
+        else:
+            dispatcher.attach_session(
+                gui=slot["gui_alias"], name=slot["name"], provider=provider,
+                session_id=session_id, environment_selector=environment_id,
+                cwd=bootstrap_cwd, launch_id=launch_id, apply=True,
+                provenance="native_allocation_exact_runtime_observation",
+                _execution_locks_held=True,
+            )
+        if native_workflow_prompt and workflow_prep:
+            dispatcher.confirm_workflow_init_delivered(
+                slot_id=slot_id, launch_id=launch_id, provider=provider,
+                environment_id=environment_id, session_id=session_id,
+                provenance=workflow_prep.get("provenance", ()),
+                resource_snapshot=workflow_prep.get("resource_snapshot"),
+            )
+        if terminal_record:
+            terminal_record["native_session_id"] = session_id
+            terminal_record["native_cwd"] = bootstrap_cwd
+            dispatcher.record_terminal_launch(terminal_record)
+        native_allocation_startup_confirmed = True
+        launch_id = None
+
     print(f"Launching {slot['name']}: {provider} {session_id or '(new session)'}", file=output_stream)
     try:
         session_lock = contextlib.nullcontext()
@@ -2719,6 +2868,28 @@ def _run_pane_locked(
                     session_id=session_id,
                     on_provider_startup=acknowledge_provider_startup,
                 )
+            elif native_allocation_pending:
+                result = _run_reserved_provider_process(
+                    dispatcher,
+                    argv,
+                    cwd=process_cwd,
+                    provider=provider,
+                    environment_id=environment_id,
+                    session_id=session_id,
+                    on_provider_startup=acknowledge_native_session_start,
+                )
+                if not native_allocation_startup_confirmed:
+                    if launch_id:
+                        dispatcher.record_process_observation(
+                            slot_id=slot_id, launch_id=launch_id, return_code=result.returncode,
+                            outcome="native_interactive_startup_unconfirmed",
+                            detail="Allocated session produced no exact provider startup evidence; launch remains recoverable by exact-ID inspection only.",
+                            native_session_id=session_id,
+                        )
+                    raise ContinuityError(
+                        ErrorCode.PROVIDER_UNAVAILABLE,
+                        "Native session allocation completed, but exact interactive provider startup was not observed; no fallback was attempted.",
+                    )
             else:
                 result = _run_provider_process(argv, cwd=process_cwd, check=False)
     except KeyboardInterrupt:
@@ -2735,12 +2906,22 @@ def _run_pane_locked(
                     detail="Claude launch was interrupted after UUID reservation; exact transcript recovery may be attempted.",
                     native_session_id=session_id,
                 )
-            else:
+            elif launch_id and not native_allocation_pending:
                 dispatcher.mark_launch_failed(launch_id=launch_id,
                                                detail="Provider launch was interrupted; inspect provider state before retrying.",
                                                apply=True)
+            elif native_allocation_pending:
+                dispatcher.record_process_observation(
+                    slot_id=slot_id, launch_id=launch_id, return_code=130,
+                    outcome="native_interactive_interrupted",
+                    detail="Interactive attach was interrupted after allocation; inspect and explicitly recover the persisted exact session.",
+                    native_session_id=session_id,
+                )
         _finish_terminal_launch(dispatcher, terminal_record, exit_code=130, status="interrupted")
-        emit_exit_summary("interrupted", 130, resume_available=not reservation_consumed)
+        emit_exit_summary("interrupted", 130, resume_available=(
+            (not reservation_consumed or reservation_startup_confirmed)
+            and (not native_allocation_pending or native_allocation_startup_confirmed)
+        ))
         raise
     except ContinuityError as exc:
         if reservation_consumed:
@@ -2748,9 +2929,19 @@ def _run_pane_locked(
                 dispatcher, reservation_id=reservation_id, launch_id=reservation_launch_id,
                 pane_id=pane_id, reason=f"provider_execution_error:{type(exc).__name__}",
             )
+        if launch_id and native_allocation_pending:
+            dispatcher.record_process_observation(
+                slot_id=slot_id, launch_id=launch_id, return_code=1,
+                outcome="native_interactive_startup_error",
+                detail=f"Interactive attach did not complete with confirmed ownership ({type(exc).__name__}); inspect and explicitly recover.",
+                native_session_id=session_id,
+            )
         if terminal_record_written:
             _finish_terminal_launch(dispatcher, terminal_record, exit_code=1, status="failed")
-        emit_exit_summary("abnormal", 1, resume_available=not reservation_consumed)
+        emit_exit_summary("abnormal", 1, resume_available=(
+            (not reservation_consumed or reservation_startup_confirmed)
+            and (not native_allocation_pending or native_allocation_startup_confirmed)
+        ))
         raise
     except OSError as exc:
         if reservation_consumed:
@@ -2758,15 +2949,25 @@ def _run_pane_locked(
                 dispatcher, reservation_id=reservation_id, launch_id=reservation_launch_id,
                 pane_id=pane_id, reason=f"provider_spawn_error:{type(exc).__name__}",
             )
-        if launch_id:
+        if launch_id and not native_allocation_pending:
             dispatcher.mark_launch_failed(launch_id=launch_id, detail=str(exc), apply=True)
+        elif launch_id and native_allocation_pending:
+            dispatcher.record_process_observation(
+                slot_id=slot_id, launch_id=launch_id, return_code=-1,
+                outcome="native_interactive_spawn_failed",
+                detail=f"Interactive attach spawn failed ({type(exc).__name__}); persisted allocation remains available for explicit recovery.",
+                native_session_id=session_id,
+            )
         elif session_id:
             dispatcher.record_process_observation(
                 slot_id=slot_id, launch_id=None, return_code=-1, outcome="spawn_failed",
                 session_identity=(provider, environment_id, session_id),
             )
         _finish_terminal_launch(dispatcher, terminal_record, exit_code=1, status="spawn_failed")
-        emit_exit_summary("abnormal", 1, resume_available=not reservation_consumed)
+        emit_exit_summary("abnormal", 1, resume_available=(
+            (not reservation_consumed or reservation_startup_confirmed)
+            and (not native_allocation_pending or native_allocation_startup_confirmed)
+        ))
         raise ContinuityError(ErrorCode.PROVIDER_UNAVAILABLE, f"Failed to launch {provider}: {exc}") from exc
     if result.returncode == 0 and session_id and (
         portable_context_snapshot is not None or (workflow_prep and workflow_prep.get("resource_snapshot"))
@@ -2820,7 +3021,8 @@ def _run_pane_locked(
     emit_exit_summary(
         "normal" if result.returncode == 0 else "abnormal",
         result.returncode,
-        resume_available=not reservation_consumed or reservation_startup_confirmed,
+        resume_available=(not reservation_consumed or reservation_startup_confirmed)
+        and (not native_allocation_pending or native_allocation_startup_confirmed),
     )
     claude_launch_outcome_recorded = False
     claude_reconcile: dict[str, Any] | None = None

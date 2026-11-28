@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import agent_continuity.dispatcher_cli as dispatcher_cli
 from agent_continuity.dispatcher import DispatcherService
 from agent_continuity.dispatcher_cli import (
     _bootstrap_native_argv,
@@ -970,6 +972,230 @@ def test_new_agy_launch_bootstraps_captures_associates_then_resumes_exact_sessio
     assert slot["current"]["native_session_id"] == "agy-bootstrapped"
     assert slot["current"]["provenance"] == "provider_bootstrap_output"
     assert dispatcher.list_pending_launches() == []
+
+
+@pytest.mark.parametrize("provider,session_id", [("codex", "codex-native-1"), ("agy", "agy-native-1")])
+def test_gated_native_allocation_attaches_only_after_guarded_exact_process_observation(
+    tmp_path, monkeypatch, provider, session_id,
+):
+    from agent_continuity.native_bootstrap import NativeAllocationStatus, NativeSessionAllocation
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.create_gui("Native", apply=True)
+    dispatcher.create_slot(gui="Native", name="Agent", apply=True)
+    launch = dispatcher.begin_launch(gui="Native", name="Agent", provider=provider, apply=True)
+    launch_id = launch["details"]["launch_id"]
+    slot_id = launch["details"]["slot_id"]
+    qualification = SimpleNamespace(provider=provider)
+    allocation_calls = []
+    runner_calls = []
+    prompt_seen = []
+
+    def allocate(request):
+        allocation_calls.append(request)
+        return NativeSessionAllocation(
+            provider=provider, status=NativeAllocationStatus.ALLOCATED,
+            native_session_id=session_id, persisted=True, interactively_resumable=True,
+            effective_provider_context={"cwd": request.cwd, "provider_version": "guarded-test"},
+            persistence_evidence={"mechanism": "guarded fake provider", "verified": True},
+        )
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_allocation_qualification",
+                        lambda requested: qualification)
+    monkeypatch.setattr("agent_continuity.native_bootstrap.allocate_native_session", allocate)
+    guarded_argv = [sys.executable, "-c", "import time; time.sleep(0.4)"]
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv",
+                        lambda *args, **kwargs: (prompt_seen.append(
+                            dispatcher_cli._ONE_TIME_PROMPT.get()
+                        ) or guarded_argv))
+    monkeypatch.setattr(dispatcher, "observe_runtime_session", lambda *args: object())
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._exact_launched_provider_pid",
+                        lambda observation, *, launched_wrapper_pid: launched_wrapper_pid)
+
+    from agent_continuity.dispatcher_cli import _run_reserved_provider_process as run_reserved
+
+    def guarded_run(_dispatcher, argv, **kwargs):
+        runner_calls.append((argv, kwargs))
+        return run_reserved(_dispatcher, argv, **kwargs)
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_reserved_provider_process", guarded_run)
+    prompt_token = dispatcher_cli._LAUNCH_PROMPT.set("guarded one-time prompt") if provider == "codex" else None
+    try:
+        result = _run_pane(
+            dispatcher, slot_id=slot_id, launch_id=launch_id,
+            input_stream=StringIO(""), output_stream=StringIO(),
+        )
+    finally:
+        if prompt_token is not None:
+            dispatcher_cli._LAUNCH_PROMPT.reset(prompt_token)
+
+    assert result == 0
+    assert len(allocation_calls) == len(runner_calls) == 1
+    assert allocation_calls[0].provider == provider
+    assert runner_calls[0][0] == guarded_argv
+    assert prompt_seen == (["guarded one-time prompt"] if provider == "codex" else [None])
+    current = dispatcher.get_slot(gui="Native", name="Agent")["current"]
+    assert (current["provider"], current["native_session_id"]) == (provider, session_id)
+    assert dispatcher.list_pending_launches() == []
+
+
+def test_uncertain_native_allocation_never_falls_back_or_retries(tmp_path, monkeypatch):
+    from agent_continuity.native_bootstrap import NativeAllocationStatus, NativeSessionAllocation
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.create_gui("Native", apply=True)
+    dispatcher.create_slot(gui="Native", name="Agent", apply=True)
+    launch = dispatcher.begin_launch(gui="Native", name="Agent", provider="codex", apply=True)
+    launch_id = launch["details"]["launch_id"]
+    slot_id = launch["details"]["slot_id"]
+    calls = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_allocation_qualification",
+                        lambda _provider: SimpleNamespace(provider="codex"))
+    monkeypatch.setattr("agent_continuity.native_bootstrap.allocate_native_session", lambda request:
+                        NativeSessionAllocation(provider="codex", status=NativeAllocationStatus.UNCERTAIN,
+                                                native_session_id=None, persisted=False,
+                                                interactively_resumable=False, error_code="uncertain"))
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv",
+                        lambda *args, **kwargs: pytest.fail("uncertain allocation must not fall back"))
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process",
+                        lambda *args, **kwargs: calls.append(args))
+
+    with pytest.raises(ContinuityError, match="did not produce durably qualified"):
+        _run_pane(dispatcher, slot_id=slot_id, launch_id=launch_id,
+                  input_stream=StringIO(""), output_stream=StringIO())
+
+    assert calls == []
+    assert dispatcher.list_pending_launches() == []
+
+
+def test_persisted_native_allocation_can_be_recovered_by_exact_identity_without_provider_launch(tmp_path):
+    from agent_continuity.native_bootstrap import NativeAllocationStatus, NativeSessionAllocation
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.create_gui("Native", apply=True)
+    dispatcher.create_slot(gui="Native", name="Agent", apply=True)
+    launch = dispatcher.begin_launch(gui="Native", name="Agent", provider="codex", apply=True)
+    launch_id = launch["details"]["launch_id"]
+    slot_id = launch["details"]["slot_id"]
+    cwd = str(tmp_path.resolve())
+    dispatcher.begin_native_allocation(
+        launch_id=launch_id, slot_id=slot_id, provider="codex",
+        environment_id=launch["details"]["environment_id"], cwd=cwd,
+    )
+    allocation = NativeSessionAllocation(
+        provider="codex", status=NativeAllocationStatus.ALLOCATED,
+        native_session_id="codex-persisted-exact", persisted=True, interactively_resumable=True,
+        effective_provider_context={"cwd": cwd, "provider_version": "guarded-test"},
+        persistence_evidence={"mechanism": "guarded fake provider"},
+    )
+    dispatcher.record_native_allocation(launch_id=launch_id, slot_id=slot_id, allocation=allocation)
+
+    preview = dispatcher.recover_captured_launch(gui="Native", name="Agent", apply=False)
+    result = dispatcher.recover_captured_launch(gui="Native", name="Agent", apply=True)
+
+    assert preview["details"]["session_id"] == "codex-persisted-exact"
+    assert result["details"]["provenance"] == "native_allocation_persisted_recovery"
+    assert result["details"]["resumability"] == "native_allocation_persisted"
+    current = dispatcher.get_slot(gui="Native", name="Agent")["current"]
+    assert current["native_session_id"] == "codex-persisted-exact"
+    assert dispatcher.list_pending_launches() == []
+
+
+def test_codex_native_attach_preserves_instruction_order_and_delivers_one_time_prompt_once(tmp_path, monkeypatch):
+    from agent_continuity.native_bootstrap import NativeAllocationStatus, NativeSessionAllocation
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.create_gui("Native", apply=True)
+    dispatcher.create_slot(gui="Native", name="Agent", apply=True)
+    launch = dispatcher.begin_launch(gui="Native", name="Agent", provider="codex", apply=True)
+    session_id = "codex-instructions-session"
+    delivery = {
+        "status": "prepared", "applied": True,
+        "delivery_prompt": "First instruction file\nSecond instruction file",
+        "resource_snapshot": {"schema_version": 2, "provider": "codex", "resources": []},
+        "provenance": [{"resource_id": "custom:first"}, {"resource_id": "custom:second"}],
+        "limitations": [],
+    }
+    dispatcher.workflow_bridge = object()
+    monkeypatch.setattr(dispatcher, "prepare_new_session_workflow", lambda **_kwargs: delivery)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_allocation_qualification",
+                        lambda _provider: SimpleNamespace(provider="codex"))
+    monkeypatch.setattr("agent_continuity.native_bootstrap.allocate_native_session", lambda request:
+                        NativeSessionAllocation(
+                            provider="codex", status=NativeAllocationStatus.ALLOCATED,
+                            native_session_id=session_id, persisted=True, interactively_resumable=True,
+                            effective_provider_context={"cwd": request.cwd, "provider_version": "guarded-test"},
+                            persistence_evidence={"mechanism": "guarded fake provider"},
+                        ))
+    seen_prompt = []
+    guarded_argv = [sys.executable, "-c", "import time; time.sleep(0.3)"]
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv",
+                        lambda *args, **kwargs: (seen_prompt.append(dispatcher_cli._ONE_TIME_PROMPT.get()) or guarded_argv))
+    monkeypatch.setattr(dispatcher, "observe_runtime_session", lambda *args: object())
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._exact_launched_provider_pid",
+                        lambda observation, *, launched_wrapper_pid: launched_wrapper_pid)
+    from agent_continuity.dispatcher_cli import _run_reserved_provider_process as run_reserved
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_reserved_provider_process", run_reserved)
+    prompt_token = dispatcher_cli._LAUNCH_PROMPT.set("Do this one time")
+    try:
+        result = _run_pane(
+            dispatcher, slot_id=launch["details"]["slot_id"], launch_id=launch["details"]["launch_id"],
+            input_stream=StringIO(""), output_stream=StringIO(),
+        )
+    finally:
+        dispatcher_cli._LAUNCH_PROMPT.reset(prompt_token)
+
+    assert result == 0
+    assert seen_prompt == ["First instruction file\nSecond instruction file\n\n--- One-time launch prompt ---\nDo this one time"]
+    delivered = dispatcher._rows(
+        "SELECT json_extract(payload_json, '$.outcome') AS outcome FROM activity_events "
+        "WHERE json_extract(payload_json, '$.launch_id') = ?",
+        (launch["details"]["launch_id"],),
+    )
+    assert [row["outcome"] for row in delivered].count("workflow_init_delivered") == 1
+
+
+def test_interrupted_native_allocation_attempt_is_not_retried_or_sent_to_bootstrap(tmp_path, monkeypatch):
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.create_gui("Native", apply=True)
+    dispatcher.create_slot(gui="Native", name="Agent", apply=True)
+    launch = dispatcher.begin_launch(gui="Native", name="Agent", provider="codex", apply=True)
+    launch_id = launch["details"]["launch_id"]
+    dispatcher.begin_native_allocation(
+        launch_id=launch_id, slot_id=launch["details"]["slot_id"], provider="codex",
+        environment_id=launch["details"]["environment_id"], cwd=str(tmp_path.resolve()),
+    )
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv",
+                        lambda *args, **kwargs: pytest.fail("crashed allocation must not fall back"))
+
+    with pytest.raises(ContinuityError, match="already attempted"):
+        _run_pane(dispatcher, slot_id=launch["details"]["slot_id"], launch_id=launch_id,
+                  input_stream=StringIO(""), output_stream=StringIO())
+
+
+def test_agy_native_allocation_refuses_unsupported_one_time_prompt_before_allocation(tmp_path, monkeypatch):
+    from agent_continuity.dispatcher_cli import _LAUNCH_PROMPT
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.create_gui("Native", apply=True)
+    dispatcher.create_slot(gui="Native", name="Agent", apply=True)
+    launch = dispatcher.begin_launch(gui="Native", name="Agent", provider="agy", apply=True)
+    calls = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_allocation_qualification",
+                        lambda _provider: SimpleNamespace(provider="agy"))
+    monkeypatch.setattr("agent_continuity.native_bootstrap.allocate_native_session",
+                        lambda request: calls.append(request))
+    token = _LAUNCH_PROMPT.set("keep this exact prompt")
+    try:
+        with pytest.raises(ContinuityError, match="no session was allocated"):
+            _run_pane(dispatcher, slot_id=launch["details"]["slot_id"],
+                      launch_id=launch["details"]["launch_id"],
+                      input_stream=StringIO(""), output_stream=StringIO())
+    finally:
+        _LAUNCH_PROMPT.reset(token)
+    assert calls == []
+    pending = dispatcher.get_pending_launch(launch["details"]["launch_id"])
+    assert not pending["native_allocation_attempted"]
 
 
 def test_bootstrap_capture_failure_is_durable_and_does_not_retry_or_replace_current(tmp_path, monkeypatch):

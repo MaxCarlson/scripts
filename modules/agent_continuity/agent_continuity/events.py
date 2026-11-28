@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import secrets
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,52 @@ _REQUIRED_FIELDS = (
     "observed_timestamp",
     "payload",
 )
+
+_EVENT_DEPENDENCY_RANK: dict[str, int] = {
+    "environment.registered": 0,
+    "workflow.registered": 10,
+    "workflow.updated": 10,
+    "workflow.archived": 10,
+    "workflow.unarchived": 10,
+    "dispatcher.gui_registered": 10,
+    "dispatcher.gui_renamed": 10,
+    "dispatcher.launch_profile_created": 10,
+    "dispatcher.launch_profile_updated": 10,
+    "workflow.gui_linked": 20,
+    "workflow.gui_unlinked": 20,
+    "gui_conversation.linked": 20,
+    "dispatcher.slot_created": 20,
+    "dispatcher.slot_profile_assigned": 20,
+    "session.registered": 20,
+    "session.observed": 20,
+    "association.created": 25,
+    "dispatcher.agent_number_assigned": 30,
+    "dispatcher.slot_state_changed": 30,
+    "dispatcher.session_activated": 30,
+    "dispatcher.launch_requested": 30,
+    "dispatcher.slots_transitioned": 30,
+    "dispatcher.slot_workflow_type_changed": 30,
+    "dispatcher.slot_transferred": 30,
+    "dispatcher.agent_transition_completed": 35,
+    "dispatcher.launch_resolved": 40,
+    "dispatcher.launch_failed": 40,
+    "dispatcher.process_observed": 40,
+    "dispatcher.terminal_launch_recorded": 40,
+    "session.status_changed": 40,
+    "candidate.rejected": 40,
+    "association.updated": 40,
+    "association.superseded": 40,
+    "association.unlinked": 40,
+    "association.conflict_flagged": 40,
+    "association.candidate_rejected": 40,
+    "dispatcher.launch_profile_retired": 40,
+    "hook.event": 40,
+    "checkpoint.recorded": 40,
+}
+
+
+def _event_dependency_rank(event_type: str) -> int:
+    return _EVENT_DEPENDENCY_RANK.get(event_type, 50)
 
 
 @dataclass(slots=True)
@@ -92,7 +139,15 @@ def atomic_write_json(target: Path, data: dict[str, Any]) -> None:
             fh.flush()
             with contextlib.suppress(OSError):
                 os.fsync(fh.fileno())
-        os.replace(tmp_path, target)
+        for attempt in range(8):
+            try:
+                os.replace(tmp_path, target)
+                break
+            except OSError as exc:
+                winerror = getattr(exc, "winerror", None)
+                if os.name != "nt" or winerror not in {5, 32, 33} or attempt == 7:
+                    raise
+                time.sleep(0.01 * (attempt + 1))
     except OSError as exc:
         with contextlib.suppress(OSError):
             tmp_path.unlink(missing_ok=True)
@@ -311,7 +366,9 @@ def read_spool_events(
         elif rec is not None:
             records.append(rec)
 
-    records.sort(key=lambda r: (r.envelope.observed_timestamp, r.envelope.event_id))
+    records.sort(key=lambda r: (
+        r.envelope.observed_timestamp, _event_dependency_rank(r.envelope.event_type), r.envelope.event_id,
+    ))
     return SpoolScanResult(records=records, issues=issues, spool_roots=spool_roots)
 
 
@@ -343,7 +400,9 @@ def read_spool_events_incremental(
             records.append(rec)
             current_keys.add(key)
 
-    records.sort(key=lambda r: (r.envelope.observed_timestamp, r.envelope.event_id))
+    records.sort(key=lambda r: (
+        r.envelope.observed_timestamp, _event_dependency_rank(r.envelope.event_type), r.envelope.event_id,
+    ))
     return IncrementalSpoolScanResult(
         records=records,
         issues=issues,
