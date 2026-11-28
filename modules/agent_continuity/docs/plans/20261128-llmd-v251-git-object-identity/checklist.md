@@ -7,7 +7,7 @@
 - [x] Omit malformed historical commit strings from terminal history, portable previews, and checkpoint identity comparisons without rewriting recorded events.
 - [x] Set package and help-registry metadata to 2.5.1.
 - [x] Run focused and full affected qualification; preserve provenance and known unrelated registry import failures.
-- [ ] Review and commit the task-only diff, then push the branch.
-- [ ] Merge and push main after qualification.
-- [ ] Preserve a 2.5.0 rollback wheel; install from the exact 2.5.1 merged-source wheel.
-- [ ] Verify production CLI version, help, disposable previews, allocation gate, and unchanged read-only registry fingerprint.
+- [x] Review and commit the task-only diff, then push the branch.
+- [x] Merge and push main after qualification.
+- [x] Preserve a 2.5.0 rollback wheel; install from the exact 2.5.1 merged-source wheel.
+- [x] Verify production CLI version, help, disposable previews, allocation gate, and unchanged read-only registry fingerprint.
