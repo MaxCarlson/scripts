@@ -220,10 +220,10 @@ def test_incremental_spool_sync_preserves_authority_and_handles_changes(tmp_path
     parse_calls = 0
     orig_read = events_mod._read_and_validate_spool_file
 
-    def _counting_read(path: Path, *, size: int, max_event_bytes: int):
+    def _counting_read(path: Path, *, max_event_bytes: int):
         nonlocal parse_calls
         parse_calls += 1
-        return orig_read(path, size=size, max_event_bytes=max_event_bytes)
+        return orig_read(path, max_event_bytes=max_event_bytes)
 
     monkeypatch.setattr(events_mod, "_read_and_validate_spool_file", _counting_read)
 
@@ -294,3 +294,138 @@ def test_incremental_spool_sync_preserves_authority_and_handles_changes(tmp_path
     post_rebuild_warm = mat.sync_from_spools()
     assert post_rebuild_warm.ingested_count == 0
     assert parse_calls == parse_calls_before_warm
+
+
+def test_incremental_sync_same_size_preserved_mtime_concurrent_writers_and_repair(tmp_path: Path) -> None:
+    """Qualify same-size+preserved-mtime replacement, concurrent writers/syncs, tx rollback, and malformed repair."""
+    import json
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    import pytest
+
+    from agent_continuity.errors import ContinuityError
+
+    home = tmp_path / "state_conc"
+    mat = SQLiteMaterializer(home)
+
+    # 1. Same-size replacement with preserved mtime_ns is detected via st_ino / st_ctime_ns
+    ev_a = EventEnvelope(
+        event_id="evt_same_001",
+        event_schema_version=1,
+        event_type=EventType.SESSION_OBSERVED.value,
+        provider="codex",
+        environment_id="env_win_1",
+        native_session_id="sid_aaa",
+        source_timestamp="2026-11-27T11:00:00Z",
+        observed_timestamp="2026-11-27T11:00:01Z",
+        source_adapter_version="2.3.0",
+        payload={"first_observed_at": "2026-11-27T11:00:01Z", "last_seen_at": "2026-11-27T11:00:01Z"},
+    )
+    p_a = append_event(home, ev_a)
+    assert mat.sync_from_spools().ingested_count == 1
+    orig_st = p_a.stat()
+    tmp_rep = p_a.with_name(".tmp.replace.json")
+    tmp_rep.write_text(
+        p_a.read_text(encoding="utf-8").replace("evt_same_001", "evt_same_002").replace("sid_aaa", "sid_bbb"),
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert tmp_rep.stat().st_size == orig_st.st_size
+    os.utime(tmp_rep, ns=(orig_st.st_atime_ns, orig_st.st_mtime_ns))
+    os.replace(tmp_rep, p_a)
+
+    rep_sync = mat.sync_from_spools()
+    assert rep_sync.ingested_count == 1
+    assert mat.get_session("codex", "env_win_1", "sid_bbb") is not None
+
+    # 2. Explicit full verification path detects even in-place identical-stat tampering if forced
+    ver_sync = mat.sync_from_spools(verify_checksums=True)
+    assert ver_sync.ingested_count == 0
+    assert ver_sync.skipped_duplicates == 1
+
+    # 3. Malformed file -> SpoolIssue -> repaired -> ingested cleanly
+    bad_path = home / "events" / "env_win_1" / "20261127T110002Z_evt_bad_1.json"
+    bad_path.write_text("{corrupt", encoding="utf-8")
+    bad_res = mat.sync_from_spools()
+    assert len(bad_res.issues) == 1
+    ev_repaired = EventEnvelope(
+        event_id="evt_bad_1",
+        event_schema_version=1,
+        event_type=EventType.SESSION_OBSERVED.value,
+        provider="codex",
+        environment_id="env_win_1",
+        native_session_id="sid_repaired",
+        source_timestamp="2026-11-27T11:00:02Z",
+        observed_timestamp="2026-11-27T11:00:03Z",
+        source_adapter_version="2.3.0",
+        payload={"first_observed_at": "2026-11-27T11:00:03Z", "last_seen_at": "2026-11-27T11:00:03Z"},
+    )
+    bad_path.write_text(json.dumps(ev_repaired.to_dict()), encoding="utf-8")
+    rep_ok = mat.sync_from_spools()
+    assert rep_ok.issues == []
+    assert rep_ok.ingested_count == 1
+    assert mat.get_session("codex", "env_win_1", "sid_repaired") is not None
+
+    # 4. Transaction interruption does not leave partial fingerprint/event state
+    ev_tx = EventEnvelope(
+        event_id="evt_tx_fail",
+        event_schema_version=1,
+        event_type=EventType.SESSION_OBSERVED.value,
+        provider="codex",
+        environment_id="env_win_1",
+        native_session_id="sid_tx_fail",
+        source_timestamp="2026-11-27T11:00:04Z",
+        observed_timestamp="2026-11-27T11:00:05Z",
+        source_adapter_version="2.3.0",
+        payload={"first_observed_at": "2026-11-27T11:00:05Z", "last_seen_at": "2026-11-27T11:00:05Z"},
+    )
+    p_tx = append_event(home, ev_tx)
+    orig_apply = mat._apply_event_in_tx
+
+    def _boom_apply(conn, event, *, spool_file=None, checksum=""):
+        if event.event_id == "evt_tx_fail":
+            raise RuntimeError("simulated_tx_interruption")
+        return orig_apply(conn, event, spool_file=spool_file, checksum=checksum)
+
+    mat._apply_event_in_tx = _boom_apply  # type: ignore[method-assign]
+    with pytest.raises(ContinuityError, match="simulated_tx_interruption"):
+        mat.sync_from_spools()
+    mat._apply_event_in_tx = orig_apply  # type: ignore[method-assign]
+    assert mat.get_session("codex", "env_win_1", "sid_tx_fail") is None
+    # Next sync recovers cleanly because fingerprint was rolled back with the transaction
+    recovered = mat.sync_from_spools()
+    assert recovered.ingested_count == 1
+    assert mat.get_session("codex", "env_win_1", "sid_tx_fail") is not None
+    assert p_tx.exists()
+
+    # 5. Concurrent writers and overlapping syncs preserve all events without corruption
+    def _writer(idx: int) -> str:
+        ev = EventEnvelope(
+            event_id=f"evt_conc_{idx:03d}",
+            event_schema_version=1,
+            event_type=EventType.SESSION_OBSERVED.value,
+            provider="codex",
+            environment_id="env_win_1",
+            native_session_id=f"sid_conc_{idx:03d}",
+            source_timestamp="2026-11-27T11:01:00Z",
+            observed_timestamp=f"2026-11-27T11:01:{idx:02d}Z",
+            source_adapter_version="2.3.0",
+            payload={"first_observed_at": "2026-11-27T11:01:00Z", "last_seen_at": "2026-11-27T11:01:00Z"},
+        )
+        append_event(home, ev)
+        if idx % 3 == 0:
+            mat.sync_from_spools()
+        return ev.event_id
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        ids = list(pool.map(_writer, range(18)))
+
+    final = mat.sync_from_spools()
+    assert final.issues == []
+    for i in range(18):
+        assert mat.get_session("codex", "env_win_1", f"sid_conc_{i:03d}") is not None
+    assert len(ids) == 18
+    rebuilt = mat.rebuild_from_spools()
+    assert rebuilt.rebuilt is True
+    assert rebuilt.ingested_count == 21
