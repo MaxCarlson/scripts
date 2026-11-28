@@ -188,3 +188,109 @@ def test_observed_session_event_does_not_fabricate_native_created_at(tmp_path: P
     assert sess is not None
     assert sess.created_at is None
     assert sess.first_observed_at == "2026-11-19T10:00:01Z"
+
+
+def test_incremental_spool_sync_preserves_authority_and_handles_changes(tmp_path: Path, monkeypatch) -> None:
+    """Verify incremental sync skips unchanged files while detecting appends, duplicates, truncations, and replacements."""
+    import json
+
+    from agent_continuity import events as events_mod
+
+    home = tmp_path / "state_inc"
+    mat = SQLiteMaterializer(home)
+
+    ev1 = EventEnvelope(
+        event_id="evt_inc_1",
+        event_schema_version=1,
+        event_type=EventType.SESSION_OBSERVED.value,
+        provider="codex",
+        environment_id="env_win_1",
+        native_session_id="sid_inc_1",
+        source_timestamp="2026-11-27T10:00:00Z",
+        observed_timestamp="2026-11-27T10:00:01Z",
+        source_adapter_version="2.3.0",
+        payload={"first_observed_at": "2026-11-27T10:00:01Z", "last_seen_at": "2026-11-27T10:00:01Z"},
+    )
+    p1 = append_event(home, ev1)
+    first = mat.sync_from_spools()
+    assert first.ingested_count == 1
+    assert first.total_spool_events == 1
+
+    # Unchanged warm sync must NOT re-read/re-parse ev1's JSON file
+    parse_calls = 0
+    orig_read = events_mod._read_and_validate_spool_file
+
+    def _counting_read(path: Path, *, size: int, max_event_bytes: int):
+        nonlocal parse_calls
+        parse_calls += 1
+        return orig_read(path, size=size, max_event_bytes=max_event_bytes)
+
+    monkeypatch.setattr(events_mod, "_read_and_validate_spool_file", _counting_read)
+
+    warm = mat.sync_from_spools()
+    assert warm.ingested_count == 0
+    assert warm.skipped_duplicates == 1
+    assert warm.total_spool_events == 1
+    assert parse_calls == 0
+
+    # Concurrent append: only the newly appended file is parsed
+    ev2 = EventEnvelope(
+        event_id="evt_inc_2",
+        event_schema_version=1,
+        event_type=EventType.SESSION_OBSERVED.value,
+        provider="codex",
+        environment_id="env_win_1",
+        native_session_id="sid_inc_2",
+        source_timestamp="2026-11-27T10:00:02Z",
+        observed_timestamp="2026-11-27T10:00:03Z",
+        source_adapter_version="2.3.0",
+        payload={"first_observed_at": "2026-11-27T10:00:03Z", "last_seen_at": "2026-11-27T10:00:03Z"},
+    )
+    p2 = append_event(home, ev2)
+    inc = mat.sync_from_spools()
+    assert inc.ingested_count == 1
+    assert inc.skipped_duplicates == 1
+    assert inc.total_spool_events == 2
+    assert parse_calls == 1
+
+    # Rotated/copied duplicate file with same event_id is parsed and deduplicated cleanly
+    rotated = p2.with_name("rotated_copy_evt_inc_2.json")
+    rotated.write_text(p2.read_text(encoding="utf-8"), encoding="utf-8")
+    dup_res = mat.sync_from_spools()
+    assert dup_res.ingested_count == 0
+    assert dup_res.skipped_duplicates == 3
+    assert parse_calls == 2
+
+    # Truncated existing file (size=0) is NOT silently skipped; produces SpoolIssue
+    p1.write_text("", encoding="utf-8")
+    trunc_res = mat.sync_from_spools()
+    assert len(trunc_res.issues) == 1
+    assert "Zero-byte" in trunc_res.issues[0].reason
+    assert parse_calls == 3
+
+    # Replaced existing file with a new event_id is detected and ingested
+    ev3 = EventEnvelope(
+        event_id="evt_inc_3",
+        event_schema_version=1,
+        event_type=EventType.SESSION_OBSERVED.value,
+        provider="codex",
+        environment_id="env_win_1",
+        native_session_id="sid_inc_3",
+        source_timestamp="2026-11-27T10:00:04Z",
+        observed_timestamp="2026-11-27T10:00:05Z",
+        source_adapter_version="2.3.0",
+        payload={"first_observed_at": "2026-11-27T10:00:05Z", "last_seen_at": "2026-11-27T10:00:05Z"},
+    )
+    p1.write_text(json.dumps(ev3.to_dict()), encoding="utf-8")
+    rep_res = mat.sync_from_spools()
+    assert rep_res.ingested_count == 1
+    assert mat.get_session("codex", "env_win_1", "sid_inc_3") is not None
+
+    # Full rebuild recovers cleanly and repopulates fingerprints
+    rebuilt = mat.rebuild_from_spools()
+    assert rebuilt.rebuilt is True
+    assert rebuilt.ingested_count == 2
+    parse_calls_before_warm = parse_calls
+    post_rebuild_warm = mat.sync_from_spools()
+    assert post_rebuild_warm.ingested_count == 0
+    assert parse_calls == parse_calls_before_warm

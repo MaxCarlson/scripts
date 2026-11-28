@@ -13,7 +13,12 @@ from typing import Any
 
 from .environment import assert_sqlite_writer_allowed
 from .errors import ContinuityError, ErrorCode
-from .events import SpoolIssue, discover_spool_roots, read_spool_events
+from .events import (
+    SpoolIssue,
+    discover_spool_roots,
+    read_spool_events,
+    read_spool_events_incremental,
+)
 from .identifiers import normalize_path_canonical, normalize_repo_identity, now_utc_iso
 from .models import (
     AssociationRecord,
@@ -48,6 +53,40 @@ class SyncResult:
             "db_path": self.db_path,
             "rebuilt": self.rebuilt,
         }
+
+
+_FINGERPRINTS_KEY = "spool_file_fingerprints_v1"
+
+
+def _load_fingerprints(conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
+    row = conn.execute(
+        "SELECT value FROM schema_metadata WHERE key = ?",
+        (_FINGERPRINTS_KEY,),
+    ).fetchone()
+    if row is None or not row[0]:
+        return {}
+    try:
+        raw = json.loads(row[0])
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, tuple[int, int]] = {}
+    for k, v in raw.items():
+        if isinstance(k, str) and isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) for x in v):
+            result[k] = (v[0], v[1])
+    return result
+
+
+def _save_fingerprints(conn: sqlite3.Connection, fingerprints: dict[str, tuple[int, int]]) -> None:
+    encoded = json.dumps(
+        {k: [v[0], v[1]] for k, v in fingerprints.items()},
+        separators=(",", ":"),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES (?, ?)",
+        (_FINGERPRINTS_KEY, encoded),
+    )
 
 
 class SQLiteMaterializer:
@@ -85,9 +124,17 @@ class SQLiteMaterializer:
         with closing(self._connect_rw()) as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                fingerprints = _load_fingerprints(conn)
                 for event, spool_file, checksum in items:
                     if self._apply_event_in_tx(conn, event, spool_file=spool_file, checksum=checksum):
                         applied_count += 1
+                    if spool_file:
+                        try:
+                            st = Path(spool_file).stat(follow_symlinks=False)
+                            fingerprints[spool_file] = (int(st.st_size), int(st.st_mtime_ns))
+                        except OSError:
+                            pass
+                _save_fingerprints(conn, fingerprints)
                 conn.commit()
                 return applied_count
             except Exception as exc:
@@ -102,14 +149,33 @@ class SQLiteMaterializer:
                 ) from exc
 
     def sync_from_spools(self, extra_roots: list[Path] | None = None) -> SyncResult:
-        """Ingest any unmaterialized events from configured spool roots."""
+        """Ingest any new or modified events from configured spool roots incrementally."""
         roots = discover_spool_roots(self.home_dir, extra_roots=extra_roots)
-        scan = read_spool_events(roots, optional_roots={self.home_dir / "events"})
-        ingested = 0
-        skipped = 0
+        optional_roots = {self.home_dir / "events"}
+        known_fingerprints: dict[str, tuple[int, int]] = {}
+        can_use_ro_fast_path = False
 
-        if not scan.records and not self.db_path.exists():
-            # Avoid creating empty SQLite if there are zero events yet unless writer wants schema
+        if self.db_path.exists():
+            ro_conn = self._connect_ro()
+            if ro_conn is not None:
+                try:
+                    with closing(ro_conn):
+                        if get_schema_version(ro_conn) == SCHEMA_VERSION:
+                            known_fingerprints = _load_fingerprints(ro_conn)
+                            can_use_ro_fast_path = True
+                except sqlite3.Error:
+                    known_fingerprints = {}
+                    can_use_ro_fast_path = False
+
+        scan = read_spool_events_incremental(
+            roots,
+            known_fingerprints=known_fingerprints,
+            optional_roots=optional_roots,
+        )
+        ingested = 0
+        skipped = scan.unchanged_count
+
+        if not scan.total_files and not self.db_path.exists():
             return SyncResult(
                 ingested_count=0,
                 skipped_duplicates=0,
@@ -119,35 +185,19 @@ class SQLiteMaterializer:
                 rebuilt=False,
             )
 
-        if self.db_path.exists():
-            ro_conn = self._connect_ro()
-            if ro_conn is not None:
-                try:
-                    with closing(ro_conn):
-                        if get_schema_version(ro_conn) == SCHEMA_VERSION:
-                            if not scan.records:
-                                return SyncResult(
-                                    ingested_count=0,
-                                    skipped_duplicates=0,
-                                    total_spool_events=0,
-                                    issues=scan.issues,
-                                    db_path=str(self.db_path),
-                                    rebuilt=False,
-                                )
-                            ingested_ids = {
-                                row[0] for row in ro_conn.execute("SELECT event_id FROM ingested_events").fetchall()
-                            }
-                            if all(rec.envelope.event_id in ingested_ids for rec in scan.records):
-                                return SyncResult(
-                                    ingested_count=0,
-                                    skipped_duplicates=len(scan.records),
-                                    total_spool_events=len(scan.records),
-                                    issues=scan.issues,
-                                    db_path=str(self.db_path),
-                                    rebuilt=False,
-                                )
-                except sqlite3.Error:
-                    pass
+        if (
+            can_use_ro_fast_path
+            and not scan.records
+            and len(scan.current_fingerprints) == len(known_fingerprints)
+        ):
+            return SyncResult(
+                ingested_count=0,
+                skipped_duplicates=scan.unchanged_count,
+                total_spool_events=scan.total_files,
+                issues=scan.issues,
+                db_path=str(self.db_path),
+                rebuilt=False,
+            )
 
         with closing(self._connect_rw()) as conn:
             try:
@@ -162,6 +212,7 @@ class SQLiteMaterializer:
                         ingested += 1
                     else:
                         skipped += 1
+                _save_fingerprints(conn, scan.current_fingerprints)
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('last_sync_at', ?)",
                     (now_utc_iso(),),
@@ -180,7 +231,7 @@ class SQLiteMaterializer:
         return SyncResult(
             ingested_count=ingested,
             skipped_duplicates=skipped,
-            total_spool_events=len(scan.records),
+            total_spool_events=scan.total_files,
             issues=scan.issues,
             db_path=str(self.db_path),
             rebuilt=False,
@@ -202,6 +253,7 @@ class SQLiteMaterializer:
             conn = sqlite3.connect(str(staging), timeout=5.0)
             ensure_schema(conn)
             conn.execute("BEGIN IMMEDIATE")
+            rebuilt_fps: dict[str, tuple[int, int]] = {}
             for rec in scan.records:
                 if self._apply_event_in_tx(
                     conn,
@@ -212,6 +264,12 @@ class SQLiteMaterializer:
                     ingested += 1
                 else:
                     skipped += 1
+                try:
+                    st = rec.file_path.stat(follow_symlinks=False)
+                    rebuilt_fps[str(rec.file_path)] = (int(st.st_size), int(st.st_mtime_ns))
+                except OSError:
+                    pass
+            _save_fingerprints(conn, rebuilt_fps)
             now = now_utc_iso()
             conn.execute(
                 "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('last_rebuild_at', ?)",
