@@ -242,3 +242,12 @@
 - [x] Run final full-module xdist qualification (506 passed), scripts_help (66 passed, 1 skipped), terminal_launcher (78 passed), Ruff, version consistency, targeted help-registry validation, and diff hygiene.
 - [x] Review the task-only diff and record unsupported provider/runtime capabilities and unrelated registry validation failures.
 - [x] Commit and push LLMD-57 feature branch at `793046e0`; no main merge or deployment.
+
+## v2.5.0 final integration qualification
+
+- [x] Integrate native allocation and spool consistency corrections; preserve the production Codex/AGY qualification gate and no-retry behavior after uncertain allocation.
+- [x] Review registry mutation, runtime/session lock ordering, spool dependency ordering, and full/incremental publication visibility.
+- [x] Reconcile current `origin/main` into the LLMD feature branch only.
+- [x] Verify LLMD-62 replacement, exact-session resume, historical portability, restoration ownership, and CLI compatibility with guarded execution-path tests.
+- [x] Run final guarded `agent_continuity`, `terminal_launcher`, and `scripts_help` qualification plus Ruff, version consistency, registry validation, and diff hygiene.
+- [x] Record that guarded provider substitutes do not qualify live Codex/AGY behavior; keep those production mechanisms disabled pending explicit live qualification.
