@@ -527,10 +527,37 @@ class DispatcherService:
             (conversation["gui_id"],),
         )
 
-    def _hold_slot_lock(self, slot_id: str):
+    def _hold_slot_lock(self, slot_id: str, *, wait_for_metadata_contention: bool = False):
         if (str(self.home_dir.resolve()), slot_id) in _HELD_SLOT_LOCKS.get():
             return contextlib.nullcontext()
-        return _slot_runtime_lock(self.home_dir, slot_id, blocking=False)
+        if not wait_for_metadata_contention:
+            return _slot_runtime_lock(self.home_dir, slot_id, blocking=False)
+
+        @contextlib.contextmanager
+        def _guarded_slot_operation():
+            lock_context = _slot_runtime_lock(self.home_dir, slot_id, blocking=False)
+            try:
+                lock_context.__enter__()
+            except ContinuityError:
+                slot = self.get_slot_by_id(slot_id)
+                current = slot.get("current") if slot else None
+                if current:
+                    observed = self.observe_runtime_session(
+                        current["provider"], current["environment_id"], current["native_session_id"]
+                    )
+                    if observed is not None and getattr(observed, "status", None) == "in_use":
+                        raise ContinuityError(
+                            ErrorCode.INVALID_INPUT,
+                            f"Agent slot {slot_id} has an exactly observed active provider session.",
+                        ) from None
+                lock_context = _slot_runtime_lock(self.home_dir, slot_id, blocking=True)
+                lock_context.__enter__()
+            try:
+                yield
+            finally:
+                lock_context.__exit__(None, None, None)
+
+        return _guarded_slot_operation()
 
     def _hold_session_lock(self, provider: str, environment_id: str, session_id: str):
         lock_name = _session_lock_name(provider, environment_id, session_id)
@@ -1702,7 +1729,9 @@ class DispatcherService:
                         raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch was already resolved or failed.")
                 current_slot = self._slot(conversation["gui_id"], slot["slot_id"])
             with contextlib.ExitStack() as held_locks:
-                    held_locks.enter_context(self._hold_slot_lock(current_slot["slot_id"]))
+                    held_locks.enter_context(
+                        self._hold_slot_lock(current_slot["slot_id"], wait_for_metadata_contention=True)
+                    )
                     if not launch_id and self._row(
                         "SELECT 1 FROM dispatcher_pending_launches WHERE slot_id = ? AND status = 'pending' LIMIT 1",
                         (current_slot["slot_id"],),

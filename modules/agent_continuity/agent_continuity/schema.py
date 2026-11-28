@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 
 from .errors import ContinuityError, ErrorCode
 from .identifiers import now_utc_iso
@@ -285,7 +286,20 @@ def configure_connection(conn: sqlite3.Connection, *, read_only: bool = False) -
     if not read_only:
         mode_row = conn.execute("PRAGMA journal_mode;").fetchone()
         if not mode_row or str(mode_row[0]).casefold() != "wal":
-            conn.execute("PRAGMA journal_mode = WAL;")
+            deadline = time.monotonic() + 5.0
+            while True:
+                try:
+                    conn.execute("PRAGMA journal_mode = WAL;")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if not any(word in str(exc).casefold() for word in ("locked", "busy")):
+                        raise
+                    mode_row = conn.execute("PRAGMA journal_mode;").fetchone()
+                    if mode_row and str(mode_row[0]).casefold() == "wal":
+                        break
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.025)
 
 
 def get_schema_version(conn: sqlite3.Connection) -> int | None:
@@ -310,36 +324,36 @@ def ensure_schema(conn: sqlite3.Connection) -> int:
     """Initialize or migrate the SQLite schema to SCHEMA_VERSION."""
     configure_connection(conn, read_only=False)
     current = get_schema_version(conn)
-    if current is None:
-        conn.executescript(f"BEGIN IMMEDIATE;\n{_DDL_V1}\nCOMMIT;")
-        now = now_utc_iso()
-        with conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('schema_version', ?)",
-                (str(SCHEMA_VERSION),),
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('initialized_at', ?)",
-                (now,),
-            )
-        return SCHEMA_VERSION
-    if current in {1, 2}:
-        conn.executescript(_DDL_V1)
-        now = now_utc_iso()
-        with conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('schema_version', ?)",
-                (str(SCHEMA_VERSION),),
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('migrated_at', ?)",
-                (now,),
-            )
-        return SCHEMA_VERSION
-    if current > SCHEMA_VERSION:
+    if current is not None and current > SCHEMA_VERSION:
         raise ContinuityError(
             ErrorCode.REGISTRY_REBUILD_REQUIRED,
             f"Database schema version {current} is newer than supported version {SCHEMA_VERSION}.",
             {"db_version": current, "supported_version": SCHEMA_VERSION},
         )
-    return current
+    if current == SCHEMA_VERSION:
+        return SCHEMA_VERSION
+
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            conn.executescript(f"BEGIN IMMEDIATE;\n{_DDL_V1}\nCOMMIT;")
+            now = now_utc_iso()
+            key = "initialized_at" if current is None else "migrated_at"
+            with conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('schema_version', ?)",
+                    (str(SCHEMA_VERSION),),
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_metadata(key, value) VALUES (?, ?)",
+                    (key, now),
+                )
+            return SCHEMA_VERSION
+        except sqlite3.OperationalError as exc:
+            if not any(word in str(exc).casefold() for word in ("locked", "busy")):
+                raise
+            if get_schema_version(conn) == SCHEMA_VERSION:
+                return SCHEMA_VERSION
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.025)

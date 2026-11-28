@@ -49,6 +49,7 @@ _BOOTSTRAP_PROMPT = "Session initialization only. Reply READY and await further 
 _BOOTSTRAP_TIMEOUT_SECONDS = 180
 _NATIVE_ARG_COMMANDS = {"continue", "start", "switch", "review", "return", "last", "open"}
 _COLOR_MODE: ContextVar[str] = ContextVar("llmd_color_mode", default="auto")
+_get_terminal_size = shutil.get_terminal_size
 _STARTUP_PROGRESS: ContextVar[bool] = ContextVar("llmd_startup_progress", default=False)
 _STARTUP_STARTED: ContextVar[float | None] = ContextVar("llmd_startup_started", default=None)
 
@@ -1860,9 +1861,9 @@ def _switch_to_existing_agent(
     selector_color = color_enabled(_current_color_mode(), is_tty=output_stream.isatty(), stream=output_stream)
     action, selected = select_item(
         rows, title=f"LLMD — Switch agent in {source['gui_alias']}",
-        render_line=lambda row: _agent_selector_line(row, shutil.get_terminal_size((100, 24)).columns,
+        render_line=lambda row: _agent_selector_line(row, _get_terminal_size((100, 24)).columns,
                                                      enabled=selector_color),
-        header=lambda: _agent_selector_line({}, shutil.get_terminal_size((100, 24)).columns, header=True,
+        header=lambda: _agent_selector_line({}, _get_terminal_size((100, 24)).columns, header=True,
                                              enabled=selector_color),
         input_stream=input_stream, output_stream=output_stream, filter_key="search_text",
         color_mode=_current_color_mode(),
@@ -2358,7 +2359,7 @@ def _run_picker(dispatcher: DispatcherService, args: argparse.Namespace, input_s
     picker_color = color_enabled(getattr(args, "color", "auto"), is_tty=output_stream.isatty(),
                                  stream=output_stream)
     action, item = select_item(items, title="LLMD — Resume Agent",
-        render_line=lambda row: _continue_picker_line(row, shutil.get_terminal_size((100, 24)).columns,
+        render_line=lambda row: _continue_picker_line(row, _get_terminal_size((100, 24)).columns,
                                                      enabled=picker_color),
         input_stream=input_stream, output_stream=output_stream, filter_key="search_text",
         color_mode=getattr(args, "color", "auto"))
@@ -2791,7 +2792,7 @@ def _render_listing(
     result: dict[str, Any], stream: TextIO, color: str, *, dispatcher: DispatcherService | None = None,
 ) -> None:
     use_color = color_enabled(color, is_tty=stream.isatty(), stream=stream)
-    width = shutil.get_terminal_size((100, 24)).columns
+    width = _get_terminal_size((100, 24)).columns
     all_rows = (result.get("slots", []) if "conversations" not in result else
                 [row for conversation in result["conversations"] for row in conversation.get("slots", [])])
     longest_session = max((display_width(str(row.get("current_session_id") or
