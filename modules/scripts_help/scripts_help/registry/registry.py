@@ -305,7 +305,7 @@ REGISTRY: dict = {
                 "path": "modules/agent_continuity",
                 "desc": "Manage Codex, AGY, and Claude sessions with portable launch context, session instructions, profiles, one-time prompts, reproducible exit summaries, workspace save/restore, checkpoints, and recovery queue",
                 "help_cmd": ["llmd", "--help"],
-                "version": "2.5.0",
+                "version": "2.5.1",
             },
             {
                 "name": "run_tests.py",

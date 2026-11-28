@@ -108,7 +108,7 @@ def _make_slot(
     session_id: str = "01a21ca1-528f-7e33-8024-bc784553a2fd",
     env_id: str = "env_win_test",
     cwd: str = "C:/work/repo",
-    git_commit: str = "abc123",
+    git_commit: str = "a" * 40,
     settings: dict | None = None,
     topology: WorkspaceTopologyRequest | None = None,
     metadata: WorkspaceSlotMetadata | None = None,
@@ -262,11 +262,11 @@ def test_revalidation_preserves_cross_gui_transfer_and_marks_stale_evidence(tmp_
     )
     store = CheckpointStore(tmp_path / "state")
     chk = store.create_checkpoint(
-        [_make_slot(slot_id="slot_x", gui_id="gui_old", session_id=sid, cwd=str(worktree), git_commit="c1")],
+        [_make_slot(slot_id="slot_x", gui_id="gui_old", session_id=sid, cwd=str(worktree), git_commit="a" * 40)],
         observers=obs,
     )
 
-    transferred = _make_slot(slot_id="slot_x", gui_id="gui_new", session_id=sid, cwd=str(worktree), git_commit="c2")
+    transferred = _make_slot(slot_id="slot_x", gui_id="gui_new", session_id=sid, cwd=str(worktree), git_commit="b" * 40)
     report = revalidate_checkpoint(chk, current_slots=[transferred])
     assert report.entries[0].cross_gui_transferred is True
     assert report.entries[0].current_gui_id == "gui_new"
@@ -277,6 +277,34 @@ def test_revalidation_preserves_cross_gui_transfer_and_marks_stale_evidence(tmp_
     missing_report = revalidate_checkpoint(chk, current_slots=[transferred])
     assert missing_report.entries[0].can_restore is False
     assert "stale_worktree_missing" in missing_report.entries[0].reasons
+
+
+def test_malformed_historical_commit_is_not_verified_or_used_for_stale_revision(tmp_path: Path) -> None:
+    sid = "01a21ca1-528f-7e33-8024-bc784553a2fd"
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    observer = RuntimeDiscovery(
+        environment_id="env_win_test",
+        process_enumerator=_CountingEnumerator((
+            ProcessRecord(
+                identity=process_identity_from_windows_filetime(1111, 134000000000000000),
+                parent_pid=500,
+                image_name="codex.exe",
+                argv=("codex", "resume", sid),
+            ),
+        )),
+    )
+    checkpoint = CheckpointStore(tmp_path / "state").create_checkpoint(
+        [_make_slot(slot_id="slot_legacy", session_id=sid, cwd=str(worktree), git_commit="main")],
+        observers=observer,
+    )
+    entry = checkpoint.sessions[0]
+    assert entry.worktree.git_commit is None
+    assert WorkspaceWorktreeEvidence.from_dict(entry.worktree.to_dict()).git_commit is None
+
+    current = _make_slot(slot_id="slot_legacy", session_id=sid, cwd=str(worktree), git_commit="c" * 40)
+    report = revalidate_checkpoint(checkpoint, current_slots=[current])
+    assert "stale_workspace_revision_changed" not in report.entries[0].reasons
 
 
 def test_restoration_queue_dedup_concurrent_claim_and_rebuild_preserves_unresolved(tmp_path: Path) -> None:

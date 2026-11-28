@@ -107,6 +107,29 @@ def test_exact_terminal_launch_queries_use_identity_index_and_return_uncapped_ma
     assert any("idx_terminal_launch_identity" in str(row) for row in plan)
 
 
+def test_malformed_historical_terminal_commit_is_omitted_from_read_models(tmp_path: Path) -> None:
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    terminal_id = str(uuid4())
+    record = _record(dispatcher, terminal_id, "malformed-commit")
+    record["git_commit"] = "feature-branch"
+
+    recorded = dispatcher.record_terminal_launch(record)
+    assert recorded["git_commit"] == "feature-branch"
+    assert dispatcher.list_terminal_launches(terminal_id)[0]["git_commit"] is None
+    assert dispatcher.list_recent_terminal_launches()[0]["git_commit"] is None
+    assert dispatcher.latest_terminal_launch_for_identity(
+        slot_id=record["slot_id"],
+        provider=record["provider"],
+        environment_id=record["environment_id"],
+        native_session_id=record["native_session_id"],
+    )["git_commit"] is None
+    assert dispatcher.list_terminal_launches_for_session_identity(
+        provider=record["provider"],
+        environment_id=record["environment_id"],
+        native_session_id=record["native_session_id"],
+    )[0]["git_commit"] is None
+
+
 def test_concurrent_terminal_launches_keep_distinct_history_records(tmp_path: Path) -> None:
     home = tmp_path / "registry"
     terminal_id = str(uuid4())
@@ -229,11 +252,24 @@ def test_wsl_git_context_uses_recorded_distribution_and_argv_paths(monkeypatch) 
 
     def fake_run(argv, **kwargs):
         calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "/work/repo\n/work/repo/.git\n/work/repo/.git\nmain\n" + "c" * 40 + "\n", "")
+        command = argv[argv.index("git") + 1:]
+        if "--show-toplevel" in command:
+            output = "/work/repo\n/work/repo/.git\n/work/repo/.git\n"
+        elif "--show-object-format=storage" in command:
+            output = "sha1\n"
+        elif "symbolic-ref" in command:
+            output = "main\n"
+        elif "--verify" in command:
+            output = "c" * 40 + "\n"
+        else:
+            pytest.fail(f"unexpected Git query: {command}")
+        return subprocess.CompletedProcess(argv, 0, output, "")
 
     monkeypatch.setattr(dispatcher_cli.subprocess, "run", fake_run)
     context = _git_launch_context(DispatcherService(home_dir="unused"), "wsl:Ubuntu", "/work/repo with spaces")
-    assert calls[0][:7] == ["C:/Windows/wsl.exe", "--distribution", "Ubuntu", "--exec", "git", "-C", "/work/repo with spaces"]
+    assert len(calls) == 4
+    assert all(call[:7] == ["C:/Windows/wsl.exe", "--distribution", "Ubuntu", "--exec", "git", "-C", "/work/repo with spaces"]
+               for call in calls)
     assert context == {"git_repository": "/work/repo", "git_worktree": "/work/repo", "git_branch": "main", "git_commit": "c" * 40}
 
 
@@ -345,7 +381,19 @@ def test_provider_launch_records_start_exact_session_git_context_and_exit(tmp_pa
         commands.append(list(argv))
         if Path(str(argv[0])).name.casefold() == "git.exe" or str(argv[0]).casefold() == "git":
             repo = str(tmp_path / "repo")
-            return subprocess.CompletedProcess(argv, 0, f"{repo}\n{repo}\\.git\n{repo}\\.git\nmain\n{'b' * 40}\n", "")
+            command = argv[3:]
+            if "--show-toplevel" in command:
+                output = f"{repo}\n{repo}\\.git\n{repo}\\.git\n"
+            elif "--show-object-format=storage" in command:
+                output = "sha1\n"
+            elif "symbolic-ref" in command:
+                output = "main\n"
+            elif "--verify" in command:
+                output = "b" * 40 + "\n"
+            else:
+                output = ""
+                return subprocess.CompletedProcess(argv, 1, output, "unexpected query")
+            return subprocess.CompletedProcess(argv, 0, output, "")
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(dispatcher_cli.subprocess, "run", fake_run)
@@ -357,7 +405,7 @@ def test_provider_launch_records_start_exact_session_git_context_and_exit(tmp_pa
     )
 
     assert result == 0
-    assert len(commands) == 2
+    assert len(commands) == 5
     rows = dispatcher.list_terminal_launches(terminal_id)
     assert len(rows) == 1
     assert rows[0]["status"] == "exited"

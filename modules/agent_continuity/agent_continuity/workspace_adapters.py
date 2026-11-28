@@ -14,7 +14,12 @@ from typing import Any, Protocol
 
 from .errors import ContinuityError, ErrorCode
 from .identifiers import generate_id
-from .launch_context import VERIFIED_CAPABILITIES, provider_settings_argv, resolve_portable_launch_context
+from .launch_context import (
+    VERIFIED_CAPABILITIES,
+    is_full_commit_object_id,
+    provider_settings_argv,
+    resolve_portable_launch_context,
+)
 from .runtime_discovery import (
     ManagedAssociationState,
     ManagedLaunchAssociation,
@@ -411,7 +416,8 @@ class DispatcherWorkspaceAdapter:
             git_repository=str(recent["git_repository"]) if recent and recent.get("git_repository") else None,
             git_worktree=str(recent["git_worktree"]) if recent and recent.get("git_worktree") else None,
             git_branch=str(recent["git_branch"]) if recent and recent.get("git_branch") else None,
-            git_commit=str(recent["git_commit"]) if recent and recent.get("git_commit") else None,
+            git_commit=(str(recent["git_commit"]) if recent and is_full_commit_object_id(recent.get("git_commit"))
+                        else None),
         )
         topology = None
         if recent and (recent.get("launch_id") or recent.get("terminal_session_id")):

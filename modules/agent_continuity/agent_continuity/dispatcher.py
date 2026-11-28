@@ -19,6 +19,7 @@ from typing import Any
 from .environment import environment_is_locally_owned, load_or_create_environment, resolve_environment_selector
 from .errors import ContinuityError, ErrorCode
 from .identifiers import generate_id, normalize_path_canonical, normalize_repo_identity, now_utc_iso
+from .launch_context import is_full_commit_object_id
 from .models import EventEnvelope, EventType
 from .service import ADAPTER_VERSION, SCHEMA_EVENT_VERSION, ContinuityService
 
@@ -390,6 +391,8 @@ class DispatcherService:
         )
         for row in rows:
             row["settings"] = json.loads(row.pop("settings_json") or "{}")
+            if not is_full_commit_object_id(row.get("git_commit")):
+                row["git_commit"] = None
         return rows
 
     def list_recent_terminal_launches(self, *, limit: int = 20) -> list[dict[str, Any]]:
@@ -404,6 +407,8 @@ class DispatcherService:
         )
         for row in rows:
             row["settings"] = json.loads(row.pop("settings_json") or "{}")
+            if not is_full_commit_object_id(row.get("git_commit")):
+                row["git_commit"] = None
         return rows
 
     def latest_terminal_launch_for_identity(
@@ -422,6 +427,8 @@ class DispatcherService:
         if row is None:
             return None
         row["settings"] = json.loads(row.pop("settings_json") or "{}")
+        if not is_full_commit_object_id(row.get("git_commit")):
+            row["git_commit"] = None
         return row
 
     def list_terminal_launches_for_session_identity(
@@ -439,6 +446,8 @@ class DispatcherService:
         )
         for row in rows:
             row["settings"] = json.loads(row.pop("settings_json") or "{}")
+            if not is_full_commit_object_id(row.get("git_commit")):
+                row["git_commit"] = None
         return rows
 
     def _gui(self, identifier: str, *, state_already_synced: bool = False) -> dict[str, Any]:

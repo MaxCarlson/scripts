@@ -1020,30 +1020,55 @@ def _git_launch_context(dispatcher: DispatcherService, environment_id: str, cwd:
     target_cwd = cwd or (None if target.runtime_kind == "wsl" and runtime == "windows" else os.getcwd())
     if not target_cwd:
         return {"git_repository": None, "git_worktree": None, "git_branch": None, "git_commit": None}
-    argv = ["git", "-C", target_cwd, "rev-parse", "--path-format=absolute", "--show-toplevel",
-            "--git-dir", "--git-common-dir", "--abbrev-ref", "HEAD", "HEAD"]
+    prefix = ["git", "-C", target_cwd]
     if target.runtime_kind == "wsl" and runtime == "windows":
         if not target.distro:
             return {"git_repository": None, "git_worktree": None, "git_branch": None, "git_commit": None}
         wsl = shutil.which("wsl.exe") or shutil.which("wsl")
         if not wsl:
             return {"git_repository": None, "git_worktree": None, "git_branch": None, "git_commit": None}
-        argv = [wsl, "--distribution", target.distro, "--exec", *argv]
+        prefix = [wsl, "--distribution", target.distro, "--exec", *prefix]
     elif target.runtime_kind != runtime:
         return {"git_repository": None, "git_worktree": None, "git_branch": None, "git_commit": None}
-    try:
-        result = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                timeout=3, check=False)
-    except (OSError, subprocess.SubprocessError):
-        result = None
-    values = (result.stdout.splitlines() if result is not None and result.returncode == 0 else [])
-    if len(values) < 5:
+
+    deadline = time.monotonic() + 3.0
+
+    def query_git(*arguments: str) -> subprocess.CompletedProcess[str] | None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            return subprocess.run(
+                [*prefix, *arguments], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=remaining, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    topology = query_git("rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir")
+    values = topology.stdout.splitlines() if topology is not None and topology.returncode == 0 else []
+    if len(values) != 3 or not all(values):
         return {"git_repository": None, "git_worktree": None, "git_branch": None, "git_commit": None}
-    worktree, git_dir, common_dir, branch, commit = values[:5]
+    worktree, _git_dir, common_dir = values
     normalized_common = common_dir.replace("\\", "/").rstrip("/")
     repository = normalized_common[:-5] if normalized_common.casefold().endswith("/.git") else worktree
+
+    branch_result = query_git("symbolic-ref", "--quiet", "--short", "HEAD")
+    branch = None
+    if branch_result is not None and branch_result.returncode == 0:
+        branch_value = branch_result.stdout.strip()
+        branch = branch_value or None
+
+    format_result = query_git("rev-parse", "--show-object-format=storage")
+    object_format = format_result.stdout.strip() if format_result is not None and format_result.returncode == 0 else None
+    oid_lengths = {"sha1": 40, "sha256": 64}
+    expected_length = oid_lengths.get(object_format or "")
+    commit_result = query_git("rev-parse", "--verify", "HEAD^{commit}") if expected_length else None
+    commit_value = commit_result.stdout.strip() if commit_result is not None and commit_result.returncode == 0 else ""
+    commit = commit_value if len(commit_value) == expected_length and all(c in "0123456789abcdefABCDEF" for c in commit_value) else None
+
     return {"git_repository": repository, "git_worktree": worktree,
-            "git_branch": branch if branch != "HEAD" else None, "git_commit": commit}
+            "git_branch": branch, "git_commit": commit}
 
 
 def _safe_launch_settings(

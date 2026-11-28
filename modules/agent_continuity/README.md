@@ -54,7 +54,7 @@ Provider switches and workspace restoration resolve exact repository/worktree ob
 
 The qualified six-direction matrix uses guarded Codex, AGY, and Claude substitutes. Resource snapshots retain exact resource IDs, revisions, and byte digests, while workflow content is delivered through session-specific additive initialization where supported. Provider-loaded context, context surviving compaction/resume, and Claude workflow initialization remain unverified or unsupported; inherited Claude workflow initialization is rejected before provider invocation.
 
-## Session-specific instructions and native allocation (LLMD v2.5.0 candidate)
+## Session-specific instructions and native allocation (LLMD v2.5.1 corrective release)
 
 `start`, `switch` to a new session, and `review` of a new reviewer accept repeatable `-I/--instructions-file` (the older `--instruction-file` remains valid). Paths resolve from the effective launch workspace. LLMD records ordered canonical paths, stable path identities, and exact content digests; it does not store instruction text. Exact-session resume never replays initialization. If a saved source changed or disappeared, LLMD refuses to submit a partial payload; `-Y/--replace-instructions` explicitly authorizes changed bytes or a replacement set. Changing workflow selection preserves independently selected custom files.
 

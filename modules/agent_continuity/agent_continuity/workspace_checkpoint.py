@@ -17,6 +17,7 @@ from typing import Any, Protocol
 from .errors import ContinuityError, ErrorCode
 from .events import atomic_write_json
 from .identifiers import generate_id, normalize_path_canonical, now_utc_iso
+from .launch_context import is_full_commit_object_id
 from .runtime_discovery import (
     AttachmentState,
     EvidenceAvailability,
@@ -144,6 +145,10 @@ class WorkspaceWorktreeEvidence:
     git_branch: str | None = None
     git_commit: str | None = None
 
+    def __post_init__(self) -> None:
+        if not is_full_commit_object_id(self.git_commit):
+            object.__setattr__(self, "git_commit", None)
+
     def primary_cwd(self) -> str | None:
         return self.effective_cwd or self.native_cwd or self.requested_cwd or self.git_worktree
 
@@ -162,6 +167,7 @@ class WorkspaceWorktreeEvidence:
     def from_dict(cls, data: Mapping[str, Any] | None) -> WorkspaceWorktreeEvidence:
         if not data:
             return cls()
+        git_commit = data.get("git_commit")
         return cls(
             requested_cwd=str(data["requested_cwd"]) if data.get("requested_cwd") is not None else None,
             effective_cwd=str(data["effective_cwd"]) if data.get("effective_cwd") is not None else None,
@@ -169,7 +175,7 @@ class WorkspaceWorktreeEvidence:
             git_repository=str(data["git_repository"]) if data.get("git_repository") is not None else None,
             git_worktree=str(data["git_worktree"]) if data.get("git_worktree") is not None else None,
             git_branch=str(data["git_branch"]) if data.get("git_branch") is not None else None,
-            git_commit=str(data["git_commit"]) if data.get("git_commit") is not None else None,
+            git_commit=str(git_commit) if is_full_commit_object_id(git_commit) else None,
         )
 
 
@@ -976,9 +982,9 @@ def revalidate_checkpoint(
                 if not current_slot.authorization_valid:
                     reasons.append("authorization_revoked")
                 if (
-                    entry.worktree.git_commit
+                    is_full_commit_object_id(entry.worktree.git_commit)
                     and current_slot.worktree is not None
-                    and current_slot.worktree.git_commit
+                    and is_full_commit_object_id(current_slot.worktree.git_commit)
                     and current_slot.worktree.git_commit != entry.worktree.git_commit
                 ):
                     reasons.append("stale_workspace_revision_changed")

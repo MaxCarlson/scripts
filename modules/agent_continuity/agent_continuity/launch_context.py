@@ -45,6 +45,15 @@ _PERMISSION_RANK = {
 }
 
 
+def is_full_commit_object_id(value: Any, object_format: str | None = None) -> bool:
+    """Accept only full Git object IDs; Git's supported storage formats use 40 or 64 hex digits."""
+    if not isinstance(value, str):
+        return False
+    expected = {"sha1": 40, "sha256": 64}.get((object_format or "").casefold())
+    valid_lengths = {expected} if expected else {40, 64}
+    return len(value) in valid_lengths and all(character in "0123456789abcdefABCDEF" for character in value)
+
+
 def _path_status(path: str, runtime_identity: Mapping[str, Any]) -> tuple[str, str | None]:
     """Check host paths locally; defer WSL path existence to the provider-runtime validator."""
     if runtime_identity.get("runtime_kind") == "wsl":
@@ -116,9 +125,20 @@ def resolve_portable_launch_context(
     """Normalize safe context while retaining unsupported/conflicting items in preview."""
     provider = destination_provider.casefold()
     supported = (capabilities or {}).get(provider, frozenset())
+    repositories: list[dict[str, Any]] = []
+    invalid_commits: list[Any] = []
+    for repository in source.get("repositories", ()):
+        if not isinstance(repository, Mapping):
+            continue
+        normalized = dict(repository)
+        commit = normalized.get("commit")
+        if commit is not None and not is_full_commit_object_id(commit, normalized.get("object_format")):
+            invalid_commits.append(commit)
+            normalized.pop("commit", None)
+        repositories.append(normalized)
     context = PortableLaunchContext(
         provider=source.get("provider"),
-        repositories=tuple(source.get("repositories", ())),
+        repositories=tuple(repositories),
         working_directory=source.get("working_directory"),
         explicit_directory_override=source.get("explicit_directory_override"),
         authorized_directories=tuple(source.get("authorized_directories", ())),
@@ -150,6 +170,11 @@ def resolve_portable_launch_context(
             items.append(ContextItem("repository", dict(repo), status, reason))
         else:
             items.append(ContextItem("repository", dict(repo), "preserved"))
+    for commit in invalid_commits:
+        items.append(ContextItem(
+            "repository_commit", commit, "unsupported",
+            "Stored value is not a full Git commit object ID; it was omitted from portable identity metadata.",
+        ))
     for directory in context.authorized_directories:
         status, reason = _path_status(directory, context.runtime_identity)
         items.append(ContextItem("authorized_directory", directory, status, reason))
