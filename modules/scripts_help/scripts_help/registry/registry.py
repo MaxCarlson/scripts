@@ -19,6 +19,13 @@ REGISTRY: dict = {
         "desc": "Copy, paste, diff, and modify clipboard contents",
         "items": [
             {
+                "name": "clipboard_tools (module)",
+                "path": "modules/clipboard_tools",
+                "desc": "Clipboard commands: concise cld, full cldd, and pairwise comp/compd comparisons",
+                "help_cmd": ["cld", "--help"],
+                "version": "2.0.0",
+            },
+            {
                 "name": "clip_tools (module)",
                 "path": "modules/clip_tools",
                 "desc": "Unified CLI for all clipboard ops: append, diff, replace-block, copy, paste, run",
@@ -42,7 +49,7 @@ REGISTRY: dict = {
             {
                 "name": "clipboard_diff.py",
                 "path": "pyscripts/clipboard_diff.py",
-                "desc": "Diff current clipboard against a file with colored unified diff output",
+                "desc": "Legacy full clipboard-vs-file diff implementation, exposed as cldd",
                 "help_cmd": ["python", "pyscripts/clipboard_diff.py", "--help"],
                 "version": "0.1.0",
             },

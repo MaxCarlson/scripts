@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-
 EXIT_EQUAL = 0
 EXIT_DIFFERENT = 1
 EXIT_ERROR = 2
@@ -223,4 +222,71 @@ def compare_clipboard_to_file(
         context_lines=context_lines,
         from_label=f"file: {path}",
         to_label="clipboard",
+    )
+
+
+def compare_files(
+    first_path: Path | str,
+    second_path: Path | str,
+    *,
+    strict: bool = False,
+    ignore_trailing_newline: bool = False,
+    encoding: str = "utf-8",
+    context_lines: int = 3,
+) -> ComparisonResult:
+    """Read and compare two files using the canonical text comparison rules.
+
+    For this operation, ``file_*`` and ``clipboard_*`` result fields represent
+    the first and second file respectively.
+    """
+    first = Path(first_path)
+    second = Path(second_path)
+    texts: list[str] = []
+    for path in (first, second):
+        try:
+            texts.append(path.read_bytes().decode(encoding))
+        except OSError as exc:
+            return _file_error_result(f"Could not read file '{path}': {exc}", encoding, strict, ignore_trailing_newline)
+        except UnicodeDecodeError as exc:
+            return _file_error_result(
+                f"Encoding error decoding '{path}' as {encoding} at byte {exc.start}: "
+                f"{exc.reason}. Try --encoding with the file's actual encoding.",
+                encoding,
+                strict,
+                ignore_trailing_newline,
+            )
+
+    return compare_texts(
+        texts[0],
+        texts[1],
+        strict=strict,
+        ignore_trailing_newline=ignore_trailing_newline,
+        encoding=encoding,
+        context_lines=context_lines,
+        from_label=f"file: {first}",
+        to_label=f"file: {second}",
+    )
+
+
+def _file_error_result(
+    error: str,
+    encoding: str,
+    strict: bool,
+    ignore_trailing_newline: bool,
+) -> ComparisonResult:
+    return ComparisonResult(
+        equal=False,
+        exit_code=EXIT_ERROR,
+        strict=strict,
+        ignore_trailing_newline=ignore_trailing_newline,
+        encoding=encoding,
+        file_chars=0,
+        clipboard_chars=0,
+        file_lines=0,
+        clipboard_lines=0,
+        line_ending_mismatch=False,
+        trailing_newline_mismatch=False,
+        similarity_ratio=0.0,
+        diff_lines=(),
+        error=error,
     )

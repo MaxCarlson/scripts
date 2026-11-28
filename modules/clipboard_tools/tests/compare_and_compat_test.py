@@ -48,6 +48,16 @@ def test_compare_clipboard_to_file_empty_and_encoding_diagnostics(tmp_path: Path
     assert "encoding error" in (enc_res.error or "").lower()
 
 
+def test_compare_files_reads_and_compares_both_text_files(tmp_path: Path):
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_bytes(b"alpha\r\n")
+    second.write_bytes(b"alpha\n")
+
+    assert compare.compare_files(first, second).equal is True
+    assert compare.compare_files(first, second, strict=True).equal is False
+
+
 def test_cld_main_check_exit_codes(tmp_path: Path, monkeypatch):
     target = tmp_path / "doc.txt"
     target.write_bytes(b"line1\nline2\n")
