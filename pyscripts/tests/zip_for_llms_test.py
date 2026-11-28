@@ -22,6 +22,9 @@ from zip_for_llms import (
     # NEW size-tree helpers
     compute_filtered_dir_sizes,
     render_size_tree,
+    build_preview,
+    Exclusion,
+    main,
 )
 
 # ================================================================
@@ -842,3 +845,117 @@ def test_render_auto_top_n_includes_ancestors(temp_test_dir: Path):
     assert "test_repo/" in txt
     # data/ or deep/ should appear depending on random fill, but at least one child line must exist
     assert any(seg in txt for seg in ("data/", "deep/", "src/"))
+
+
+def test_preview_selection_matches_zip_and_text(tmp_path: Path, monkeypatch):
+    from zip_for_llms import _selected_files
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "a.txt").write_text("hello", encoding="utf-8")
+    (root / "drop.log").write_text("ignored", encoding="utf-8")
+    (root / "keep.log").write_text("kept", encoding="utf-8")
+    (root / "binary.bin").write_bytes(b"\xff\x00")
+    rules = Exclusion(set(), {".log"}, set(), [], ["keep.log"])
+    expected = sorted(p.relative_to(root).as_posix() for p in _selected_files(root, rules))
+    preview = build_preview(root, rules)
+    assert [x["path"] for x in preview["included_files"]] == expected
+    zip_path = tmp_path / "out.zip"
+    zip_folder(str(root), str(zip_path), set(), {".log"}, set(), [], ["keep.log"], None, [], False, False, False)
+    with zipfile.ZipFile(zip_path) as archive:
+        assert sorted(x for x in archive.namelist() if x != "folder_structure.txt") == expected
+    text_path = tmp_path / "out.txt"
+    text_file_mode(str(root), str(text_path), set(), {".log"}, set(), [], ["keep.log"], False, False, False)
+    body = text_path.read_text(encoding="utf-8")
+    assert "-- File: a.txt --" in body and "-- File: keep.log --" in body
+    assert "-- File: drop.log --" not in body
+
+
+def test_preview_json_does_not_mutate_or_run_gemini(tmp_path: Path, monkeypatch, capsys):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "é.txt").write_text("hello", encoding="utf-8")
+    (root / "binary.bin").write_bytes(b"\xff\x00")
+    output = tmp_path / "missing" / "out"
+    monkeypatch.setattr("zip_for_llms.run_gemini_analysis", lambda **_: pytest.fail("Gemini called"))
+    monkeypatch.setattr("zip_for_llms.prepare_analysis_workspace", lambda **_: pytest.fail("workspace created"))
+    monkeypatch.setattr("zip_for_llms.subprocess.run", lambda *_args, **_kwargs: pytest.fail("Gemini subprocess called"))
+    before = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*"))
+    assert main([str(root), "-d", "-j", "-G", "-o", str(output)]) == 0
+    import json
+    result = json.loads(capsys.readouterr().out)
+    after = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*"))
+    assert before == after
+    assert result["statistics"]["included_file_count"] == 2
+    assert [item["path"] for item in result["included_files"]] == ["binary.bin", "é.txt"]
+    assert not result["included_files"][0]["readable_text"]
+    assert result["statistics"]["readable_text_file_count"] == 1
+    assert result["modes"]["zip"] == str(output.with_suffix(".zip"))
+
+
+def test_preview_reports_pruning_and_flatten_collisions(tmp_path: Path):
+    root = tmp_path / "repo"
+    (root / "one").mkdir(parents=True)
+    (root / "two").mkdir()
+    (root / "hidden").mkdir()
+    (root / "hidden" / "secret.txt").write_text("secret")
+    (root / "one" / "Same.txt").write_text("1")
+    (root / "two" / "same.txt").write_text("2")
+    (root / "empty").mkdir()
+    report = build_preview(root, Exclusion({"hidden"}, set(), set(), [], []), flatten=True)
+    assert report["pruned_directories"] == ["hidden"]
+    assert report["statistics"]["excluded_file_count"] == 0
+    assert "empty" in report["included_directories"]
+    assert report["flatten_collisions"] == [{
+        "destination": "same.txt", "sources": ["one/Same.txt", "two/same.txt"]
+    }]
+
+
+def test_preview_applies_preset_glob_and_trim_estimate(tmp_path: Path, capsys):
+    root = tmp_path / "repo"
+    (root / "build-cache").mkdir(parents=True)
+    (root / "build-cache" / "ignore.pyc").write_bytes(b"x")
+    (root / ".pytest_tmp_root").mkdir()
+    (root / ".pytest_tmp_root" / "generated.py").write_text("generated")
+    (root / "src").mkdir()
+    (root / "src" / "keep.py").write_text("x" * 50)
+    (root / "src" / "ignore.pyc").write_bytes(b"x" * 200)
+    (root / "src" / "skip.txt").write_text("removed by glob")
+    rules = Exclusion(
+        set(PRESETS["python"]["dirs"]) | {"build-*"},
+        set(PRESETS["python"]["exts"]), set(), ["src/skip.*"], [],
+    )
+    report = build_preview(root, rules, max_size=0, preset="python")
+    assert [item["path"] for item in report["included_files"]] == ["src/keep.py"]
+    assert set(report["pruned_directories"]) == {"build-cache", ".pytest_tmp_root"}
+    assert report["zip_trimmed_files"] == ["src/keep.py"]
+    assert report["zip_files_after_size_trim_estimate"] == []
+    assert {item["path"]: item["reason"] for item in report["excluded_files"]} == {
+        "src/ignore.pyc": "excluded extension", "src/skip.txt": "removed by pattern"
+    }
+
+    assert main([str(root), "-j", "-P", "python", "-x", "build-*"]) == 0
+    import json
+    cli_report = json.loads(capsys.readouterr().out)
+    assert cli_report["preset"] == "python"
+    assert "src/ignore.pyc" not in [item["path"] for item in cli_report["included_files"]]
+    assert "build-cache" in cli_report["pruned_directories"]
+    assert ".pytest_tmp_root" in cli_report["pruned_directories"]
+
+
+def test_preview_keeps_unreadable_selected_files_with_error(tmp_path: Path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    locked = root / "locked.txt"
+    locked.write_text("contents")
+    original_read_bytes = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path == locked:
+            raise PermissionError("access denied")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    report = build_preview(root, Exclusion(set(), set(), set(), [], []))
+    assert report["included_files"] == [{
+        "path": "locked.txt", "size_bytes": 8, "readable_text": False, "error": "access denied"
+    }]

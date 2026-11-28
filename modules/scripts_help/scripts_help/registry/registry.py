@@ -317,9 +317,8 @@ REGISTRY: dict = {
             {
                 "name": "zip_for_llms.py",
                 "path": "pyscripts/zip_for_llms.py",
-                "desc": "Package repo for LLM: Gemini analysis, presets, size reporting",
+                "desc": "Preview and package repo for LLM: filters, presets, JSON reports, size reporting",
                 "help_cmd": ["python", "pyscripts/zip_for_llms.py", "--help"],
-                "version": "0.8.0",
             },
             {
                 "name": "repo_processor.py",
