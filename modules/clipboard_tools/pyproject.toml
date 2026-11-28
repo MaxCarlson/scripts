@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clipboard_tools"
-version = "2.0.0"
+version = "2.1.0"
 description = "Clipboard command suite with multi-buffer support and tmux/Windows bridge."
 authors = [
     {name = "Scripts Repo"}

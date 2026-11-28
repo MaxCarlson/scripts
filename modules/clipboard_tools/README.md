@@ -1,11 +1,11 @@
-<!-- version: 2.0.0 -->
+<!-- version: 2.1.0 -->
 # clipboard_tools
 
 Clipboard command suite with multi-buffer storage, concise and detailed comparisons, terminal capture (`cb2c`/`cb2cf`), and tmux → Windows clipboard bridging.
 
 ## Install and verify
 
-Run `python setup.py -f -v` from the scripts checkout whose commands should change. Version 2.0.0 changes console scripts, so a full reinstall regenerates both the virtual-environment commands and repository `bin/` proxies.
+Run `python setup.py -r -f -v` from the scripts checkout whose commands should change to reinstall repository packages and regenerate local launchers without changing user PATH or shell profiles. Version 2.1.0 includes the compare output changes.
 
 In PowerShell, check `Get-Command cld,cldd,comp,compd -All`. For `comp`, the scripts checkout's `bin\comp.cmd` must appear before `C:\Windows\System32\comp.exe`. Confirm the active Python imports this checkout with `python -c "import clipboard_tools; print(clipboard_tools.__file__)"`.
 

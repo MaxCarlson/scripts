@@ -223,8 +223,10 @@ def test_comp_fd_reports_no_matches(tmp_path: Path, monkeypatch, capfd, cli):
 
 def test_console_scripts_keep_legacy_diff_and_register_new_commands():
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
-    scripts = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["scripts"]
+    project = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    scripts = project["project"]["scripts"]
 
+    assert project["project"]["version"] == "2.1.0"
     assert scripts["cld"] == "clipboard_tools.entrypoints:clipboard_summary_main"
     assert scripts["cldd"] == "clipboard_tools.entrypoints:clipboard_diff_main"
     assert scripts["comp"] == "clipboard_tools.entrypoints:compare_files_main"
