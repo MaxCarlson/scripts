@@ -16,7 +16,7 @@ from .environment import (
     resolve_home_dir,
 )
 from .errors import ContinuityError, ErrorCode
-from .events import append_event, discover_spool_roots, read_spool_events
+from .events import discover_spool_roots, read_spool_events
 from .identifiers import (
     generate_id,
     generate_workflow_id,
@@ -105,12 +105,7 @@ class ContinuityService:
     def _emit_and_materialize(self, events: list[EventEnvelope]) -> None:
         if not events:
             return
-        items: list[tuple[EventEnvelope, str | None, str]] = []
-        for ev in events:
-            spool_path = append_event(self.home_dir, ev)
-            items.append((ev, str(spool_path), ""))
-        if self._can_write_sqlite():
-            self.materializer.ingest_events(items)
+        self.materializer.publish_events(events, materialize=self._can_write_sqlite())
 
     def _ensure_environment_event(
         self,

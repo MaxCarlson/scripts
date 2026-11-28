@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -357,3 +358,196 @@ def test_concurrent_empty_registry_prepare_start_and_equal_timestamp_dependencie
     with pytest.raises(ContinuityError, match="unresolved pending launch"):
         disp2.attach_session(gui="EqGUI", name="Alpha", provider="codex", session_id="sid-eq", apply=True)
     t.join(timeout=5.0)
+
+
+def test_emit_and_materialize_barrier_concurrent_sync_rebuild_and_lifecycle_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agent_continuity.materializer as mat_mod
+    from agent_continuity.events import append_event, read_spool_events
+    from agent_continuity.models import EventEnvelope, EventType
+
+    home = tmp_path / "pub_barrier"
+    svc = ContinuityService(home)
+    ts = "2026-11-27T13:00:00.000000Z"
+    env_id = "env_pub_1"
+    gui_id = "gui_pub_1"
+    slot_id = "slot_pub_1"
+
+    batch = [
+        EventEnvelope(
+            event_id="evt_pub_env",
+            event_schema_version=1,
+            event_type=EventType.ENVIRONMENT_REGISTERED.value,
+            provider=None,
+            environment_id=env_id,
+            native_session_id=None,
+            source_timestamp=ts,
+            observed_timestamp=ts,
+            source_adapter_version="2.1.3",
+            payload={"environment_id": env_id, "runtime_kind": "windows", "label": "Win"},
+        ),
+        EventEnvelope(
+            event_id="evt_pub_gui",
+            event_schema_version=1,
+            event_type=EventType.DISPATCHER_GUI_REGISTERED.value,
+            provider=None,
+            environment_id=env_id,
+            native_session_id=None,
+            source_timestamp=ts,
+            observed_timestamp=ts,
+            source_adapter_version="2.1.3",
+            payload={"gui_id": gui_id, "alias": "PubGUI", "alias_key": "pubgui"},
+        ),
+        EventEnvelope(
+            event_id="evt_pub_slot",
+            event_schema_version=1,
+            event_type=EventType.DISPATCHER_SLOT_CREATED.value,
+            provider=None,
+            environment_id=env_id,
+            native_session_id=None,
+            source_timestamp=ts,
+            observed_timestamp=ts,
+            source_adapter_version="2.1.3",
+            payload={"slot_id": slot_id, "gui_id": gui_id, "name": "Worker", "name_key": "worker"},
+        ),
+        EventEnvelope(
+            event_id="evt_pub_launch",
+            event_schema_version=1,
+            event_type=EventType.DISPATCHER_LAUNCH_REQUESTED.value,
+            provider="codex",
+            environment_id=env_id,
+            native_session_id=None,
+            source_timestamp=ts,
+            observed_timestamp=ts,
+            source_adapter_version="2.1.3",
+            payload={"launch_id": "launch_pub_1", "slot_id": slot_id, "cwd": str(tmp_path)},
+        ),
+    ]
+
+    first_written = threading.Event()
+    allow_rest = threading.Event()
+    real_append = append_event
+    seen_counts: list[int] = []
+
+    def _gated_append(h: Path, ev: EventEnvelope) -> Path:
+        p = real_append(h, ev)
+        if ev.event_id == "evt_pub_env":
+            first_written.set()
+            assert allow_rest.wait(timeout=5.0)
+        return p
+
+    monkeypatch.setattr(mat_mod, "append_event", _gated_append)
+    pub_thread = threading.Thread(target=lambda: svc._emit_and_materialize(batch))  # noqa: SLF001
+    pub_thread.start()
+    assert first_written.wait(timeout=2.0)
+
+    # Concurrent sync_from_spools and rebuild_from_spools must serialize behind _writer_lock
+    # rather than observing the partial 1-event spool state.
+    sync_res_holder: list[Any] = []
+    rebuild_res_holder: list[Any] = []
+
+    def _sync_worker() -> None:
+        res = svc.materializer.sync_from_spools()
+        seen_counts.append(res.total_spool_events)
+        sync_res_holder.append(res)
+
+    def _rebuild_worker() -> None:
+        res = svc.materializer.rebuild_from_spools()
+        seen_counts.append(res.total_spool_events)
+        rebuild_res_holder.append(res)
+
+    sync_t = threading.Thread(target=_sync_worker)
+    rebuild_t = threading.Thread(target=_rebuild_worker)
+    sync_t.start()
+    rebuild_t.start()
+    time.sleep(0.15)
+    # Neither concurrent reader/writer has finished before the batch finishes publishing
+    assert sync_res_holder == []
+    assert rebuild_res_holder == []
+
+    allow_rest.set()
+    pub_thread.join(timeout=5.0)
+    sync_t.join(timeout=5.0)
+    rebuild_t.join(timeout=5.0)
+    monkeypatch.undo()
+
+    assert seen_counts == [4, 4]
+    assert DispatcherService(svc).list_pending_launches()[0]["launch_id"] == "launch_pub_1"
+
+    # Interrupted publication mid-batch leaves valid prefix recoverable via sync & rebuild
+    home_int = tmp_path / "pub_interrupted"
+    svc_int = ContinuityService(home_int)
+    batch_int = batch[:3] + [batch[3]]
+
+    def _fail_on_last(h: Path, ev: EventEnvelope) -> Path:
+        if ev.event_id == "evt_pub_launch":
+            raise OSError("simulated_disk_interrupt")
+        return real_append(h, ev)
+
+    monkeypatch.setattr(mat_mod, "append_event", _fail_on_last)
+    with pytest.raises(OSError, match="simulated_disk_interrupt"):
+        svc_int._emit_and_materialize(batch_int)  # noqa: SLF001
+    monkeypatch.undo()
+
+    recovered_sync = svc_int.materializer.sync_from_spools()
+    assert recovered_sync.issues == []
+    assert recovered_sync.ingested_count == 3
+    recovered_rebuild = svc_int.materializer.rebuild_from_spools()
+    assert recovered_rebuild.issues == []
+    assert recovered_rebuild.ingested_count == 3
+
+    # Dependency rank never reorders distinct timestamps and preserves (ts, event_id) within same tier
+    home_order = tmp_path / "order_chk"
+    e1 = EventEnvelope(
+        event_id="evt_01_req",
+        event_schema_version=1,
+        event_type=EventType.DISPATCHER_LAUNCH_REQUESTED.value,
+        provider="codex",
+        environment_id=env_id,
+        native_session_id=None,
+        source_timestamp="2026-11-27T13:00:00.000001Z",
+        observed_timestamp="2026-11-27T13:00:00.000001Z",
+        source_adapter_version="2.1.3",
+        payload={"launch_id": "l1", "slot_id": slot_id},
+    )
+    e2 = EventEnvelope(
+        event_id="evt_02_gui",
+        event_schema_version=1,
+        event_type=EventType.DISPATCHER_GUI_REGISTERED.value,
+        provider=None,
+        environment_id=env_id,
+        native_session_id=None,
+        source_timestamp="2026-11-27T13:00:00.000002Z",
+        observed_timestamp="2026-11-27T13:00:00.000002Z",
+        source_adapter_version="2.1.3",
+        payload={"gui_id": "g2", "alias": "G2", "alias_key": "g2"},
+    )
+    e3 = EventEnvelope(
+        event_id="evt_03_state_a",
+        event_schema_version=1,
+        event_type=EventType.DISPATCHER_SLOT_STATE_CHANGED.value,
+        provider=None,
+        environment_id=env_id,
+        native_session_id=None,
+        source_timestamp="2026-11-27T13:00:00.000003Z",
+        observed_timestamp="2026-11-27T13:00:00.000003Z",
+        source_adapter_version="2.1.3",
+        payload={"slot_id": slot_id, "state": "inactive"},
+    )
+    e4 = EventEnvelope(
+        event_id="evt_04_state_b",
+        event_schema_version=1,
+        event_type=EventType.DISPATCHER_SLOT_STATE_CHANGED.value,
+        provider=None,
+        environment_id=env_id,
+        native_session_id=None,
+        source_timestamp="2026-11-27T13:00:00.000003Z",
+        observed_timestamp="2026-11-27T13:00:00.000003Z",
+        source_adapter_version="2.1.3",
+        payload={"slot_id": slot_id, "state": "active"},
+    )
+    for ev in (e4, e2, e1, e3):
+        append_event(home_order, ev)
+    ordered = [r.envelope.event_id for r in read_spool_events([home_order / "events"]).records]
+    assert ordered == ["evt_01_req", "evt_02_gui", "evt_03_state_a", "evt_04_state_b"]

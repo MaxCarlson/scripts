@@ -7,15 +7,16 @@ import os
 import secrets
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .environment import assert_sqlite_writer_allowed
 from .errors import ContinuityError, ErrorCode
-from .events import SpoolIssue, discover_spool_roots, read_spool_events
+from .events import SpoolIssue, append_event, discover_spool_roots, read_spool_events
 from .identifiers import normalize_path_canonical, normalize_repo_identity, now_utc_iso
 from .models import (
     AssociationRecord,
@@ -52,6 +53,9 @@ class SyncResult:
         }
 
 
+_HELD_WRITER_LOCKS: ContextVar[frozenset[str]] = ContextVar("ac_held_writer_locks", default=frozenset())
+
+
 class SQLiteMaterializer:
     """Manages the derived SQLite query index from durable environment-isolated events."""
 
@@ -62,7 +66,12 @@ class SQLiteMaterializer:
 
     @contextmanager
     def _writer_lock(self) -> Iterator[None]:
-        """Serialize SQLite write transactions and atomic rebuilds across processes."""
+        """Serialize multi-event spool publication, SQLite writes, and atomic rebuilds across processes."""
+        key = str(self.home_dir.resolve())
+        held = _HELD_WRITER_LOCKS.get()
+        if key in held:
+            yield
+            return
         lock_path = self.home_dir / ".index.sqlite.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         stream = lock_path.open("a+b")
@@ -91,9 +100,11 @@ class SQLiteMaterializer:
                 import fcntl
 
                 fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            token = _HELD_WRITER_LOCKS.set(held | {key})
             try:
                 yield
             finally:
+                _HELD_WRITER_LOCKS.reset(token)
                 if os.name == "nt":
                     import msvcrt
 
@@ -107,6 +118,21 @@ class SQLiteMaterializer:
                         fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
         finally:
             stream.close()
+
+    def publish_events(
+        self,
+        events: Sequence[EventEnvelope],
+        *,
+        materialize: bool = True,
+    ) -> list[tuple[EventEnvelope, str, str]]:
+        """Atomically publish a batch of spool events and optionally materialize under writer exclusion."""
+        if not events:
+            return []
+        with self._writer_lock():
+            items = [(ev, str(append_event(self.home_dir, ev)), "") for ev in events]
+            if materialize:
+                self.ingest_events(items)
+            return items
 
     def _connect_rw(self, path: Path | None = None) -> sqlite3.Connection:
         target = path or self.db_path
