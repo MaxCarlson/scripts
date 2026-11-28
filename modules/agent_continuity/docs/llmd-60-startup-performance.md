@@ -28,10 +28,10 @@ Measured via read-only inspection and disposable copies of `C:\Users\mcarls\.age
 ## 2. Incremental Registry Synchronization ([events.py](../agent_continuity/events.py), [materializer.py](../agent_continuity/materializer.py))
 
 - **Fingerprint Identity & Race-Free Binding**:
-  - `_read_and_validate_spool_file` opens each spool file once (`rb`), takes `os.fstat(fh.fileno())` before and after `fh.read()`, rejects concurrent mid-read mutations, validates JSON/schema, computes SHA-256 `checksum`, and binds `(st_size, st_mtime_ns, st_ctime_ns)` directly to the validated bytes.
-  - Checking `(size, mtime_ns, ctime_ns)` catches same-size replacements even when `mtime_ns` is preserved (while staying consistent across Windows `os.scandir` `DirEntry.stat()` and `os.fstat()`).
-- **Per-Row Derived Table (No Whole-Map JSON Serialization)**:
-  - `SQLiteMaterializer` stores fingerprints in `spool_file_fingerprints` (primary key `spool_file`) inside the same SQLite transaction as `ingest_events`, `sync_from_spools`, and `rebuild_from_spools`.
+  - `_read_and_validate_spool_file` opens each spool file once (`rb`), compares `os.fstat(fh.fileno())` before and after `fh.read()` against `os.stat(path, follow_symlinks=False)` while `fh` is still open across `(st_size, st_mtime_ns, st_ctime_ns, st_ino, st_dev)`, rejects concurrent mid-read or path-replacement mutations, validates JSON/schema, computes SHA-256 `checksum`, and binds the 5-tuple fingerprint directly to the validated bytes.
+  - When `st_ino == 0` (or file identity cannot be established), readers conservatively decline caching rather than trusting weak metadata.
+- **Per-Row Derived Table & Writer Exclusion (No Whole-Map JSON Serialization)**:
+  - `SQLiteMaterializer` stores `(spool_file, size, mtime_ns, ctime_ns, ino, dev, checksum, event_id)` in `spool_file_fingerprints` inside the same SQLite transaction as `ingest_events`, `sync_from_spools`, and `rebuild_from_spools`, and serializes mutating/rebuild operations under a cross-process `.index.sqlite.lock` (`_writer_lock`) so `rebuild_from_spools` never unlinks live SQLite `-wal`/`-shm` sidecars while writers are active.
   - Unchanged warm `sync_from_spools()` returns from the read-only fast path with 0 file opens and 0 JSON parses; incremental appends update only the new row(s) in `O(K)`.
 - **Immutable-Event Assumption & Full Verification/Recovery**:
   - Spool files under `events/<environment_id>/` are assumed immutable once written by `append_event`.

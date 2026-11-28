@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
+from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
+import pytest
+
+from agent_continuity.errors import ContinuityError, ErrorCode
 from agent_continuity.events import append_event, discover_spool_roots, read_spool_events
 from agent_continuity.materializer import SQLiteMaterializer
 from agent_continuity.models import EventEnvelope, EventType
@@ -383,10 +391,10 @@ def test_incremental_sync_same_size_preserved_mtime_concurrent_writers_and_repai
     p_tx = append_event(home, ev_tx)
     orig_apply = mat._apply_event_in_tx
 
-    def _boom_apply(conn, event, *, spool_file=None, checksum=""):
+    def _boom_apply(conn, event, *, spool_file=None, checksum="", **kwargs):
         if event.event_id == "evt_tx_fail":
             raise RuntimeError("simulated_tx_interruption")
-        return orig_apply(conn, event, spool_file=spool_file, checksum=checksum)
+        return orig_apply(conn, event, spool_file=spool_file, checksum=checksum, **kwargs)
 
     mat._apply_event_in_tx = _boom_apply  # type: ignore[method-assign]
     with pytest.raises(ContinuityError, match="simulated_tx_interruption"):
@@ -429,3 +437,213 @@ def test_incremental_sync_same_size_preserved_mtime_concurrent_writers_and_repai
     rebuilt = mat.rebuild_from_spools()
     assert rebuilt.rebuilt is True
     assert rebuilt.ingested_count == 21
+
+
+def test_checksum_conflict_legacy_empty_handle_race_and_rebuild_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    mat = SQLiteMaterializer(home)
+
+    ev1 = EventEnvelope(
+        event_id="evt_conflict_001",
+        event_schema_version=1,
+        event_type=EventType.SESSION_OBSERVED.value,
+        provider="codex",
+        environment_id="env_win_1",
+        native_session_id="sid_conflict_001",
+        source_timestamp="2026-11-27T01:00:00Z",
+        observed_timestamp="2026-11-27T01:00:00Z",
+        source_adapter_version="2.3.0",
+        payload={
+            "first_observed_at": "2026-11-27T01:00:00Z",
+            "last_seen_at": "2026-11-27T01:00:00Z",
+            "title": "Original Title",
+            "cwd": str(tmp_path),
+        },
+    )
+    p1 = append_event(home, ev1)
+    first_sync = mat.sync_from_spools()
+    assert first_sync.issues == []
+    assert first_sync.ingested_count == 1
+
+    # 1. Same event_id with modified content in a second spool file -> checksum conflict
+    ev_modified = EventEnvelope(
+        event_id="evt_conflict_001",
+        event_schema_version=1,
+        event_type=EventType.SESSION_OBSERVED.value,
+        provider="codex",
+        environment_id="env_win_1",
+        native_session_id="sid_conflict_001",
+        source_timestamp="2026-11-27T01:00:00Z",
+        observed_timestamp="2026-11-27T01:00:00Z",
+        source_adapter_version="2.3.0",
+        payload={
+            "first_observed_at": "2026-11-27T01:00:00Z",
+            "last_seen_at": "2026-11-27T01:00:00Z",
+            "title": "Tampered Title",
+            "cwd": str(tmp_path),
+        },
+    )
+    env_dir = p1.parent
+    conflict_file = env_dir / "9999-conflict.json"
+    conflict_file.write_text(json.dumps(ev_modified.to_dict()), encoding="utf-8")
+
+    conflict_sync = mat.sync_from_spools()
+    assert any(
+        issue.file_path == str(conflict_file) and "conflicting checksum" in issue.reason.lower()
+        for issue in conflict_sync.issues
+    )
+    with closing(mat._connect_rw()) as conn:  # noqa: SLF001
+        cached = conn.execute(
+            "SELECT 1 FROM spool_file_fingerprints WHERE spool_file = ?",
+            (str(conflict_file),),
+        ).fetchone()
+    assert cached is None
+
+    with pytest.raises(ContinuityError) as exc_info:
+        mat.ingest_events([(ev_modified, None, "")])
+    assert exc_info.value.code == ErrorCode.ASSOCIATION_CONFLICT
+    conflict_file.unlink()
+
+    # 2. Legacy ingested_events row with empty checksum ("")
+    with closing(mat._connect_rw()) as conn:  # noqa: SLF001
+        conn.execute(
+            "UPDATE ingested_events SET checksum = '' WHERE event_id = ?",
+            ("evt_conflict_001",),
+        )
+        conn.execute("DELETE FROM spool_file_fingerprints")
+        conn.commit()
+
+    legacy_sync = mat.sync_from_spools()
+    assert legacy_sync.issues == []
+    assert legacy_sync.skipped_duplicates >= 1
+    with closing(mat._connect_rw()) as conn:  # noqa: SLF001
+        row = conn.execute(
+            "SELECT checksum FROM ingested_events WHERE event_id = ?",
+            ("evt_conflict_001",),
+        ).fetchone()
+        assert row is not None and row[0] == ""
+        conn.execute("DELETE FROM spool_file_fingerprints")
+        conn.commit()
+
+    verified_sync = mat.sync_from_spools(verify_checksums=True)
+    assert any(
+        "empty checksum" in issue.reason.lower()
+        for issue in verified_sync.issues
+    )
+    with closing(mat._connect_rw()) as conn:  # noqa: SLF001
+        cached_legacy = conn.execute(
+            "SELECT 1 FROM spool_file_fingerprints WHERE spool_file = ?",
+            (str(p1),),
+        ).fetchone()
+    assert cached_legacy is None
+
+    # Restore valid checksum before testing handle/path stat mismatch & st_ino==0
+    mat.rebuild_from_spools()
+
+    # 3a. Identical-stat replacement during read/stat boundary (different st_ino on path stat)
+    ev_race = EventEnvelope(
+        event_id="evt_race_001",
+        event_schema_version=1,
+        event_type=EventType.SESSION_OBSERVED.value,
+        provider="codex",
+        environment_id="env_win_1",
+        native_session_id="sid_race_001",
+        source_timestamp="2026-11-27T01:05:00Z",
+        observed_timestamp="2026-11-27T01:05:00Z",
+        source_adapter_version="2.3.0",
+        payload={
+            "first_observed_at": "2026-11-27T01:05:00Z",
+            "last_seen_at": "2026-11-27T01:05:00Z",
+            "cwd": str(tmp_path),
+        },
+    )
+    p_race = append_event(home, ev_race)
+    real_os_stat = os.stat
+
+    def _clone_stat(st: Any, *, st_ino: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            st_size=st.st_size,
+            st_mtime_ns=st.st_mtime_ns,
+            st_ctime_ns=st.st_ctime_ns,
+            st_birthtime_ns=getattr(st, "st_birthtime_ns", st.st_ctime_ns),
+            st_ino=st_ino,
+            st_dev=st.st_dev,
+        )
+
+    def _spoof_ino_stat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        st = real_os_stat(path, *args, **kwargs)
+        if Path(path) == p_race:
+            return _clone_stat(st, st_ino=(st.st_ino or 1) + 999999)
+        return st
+
+    monkeypatch.setattr("agent_continuity.events.os.stat", _spoof_ino_stat)
+    race_sync = mat.sync_from_spools()
+    monkeypatch.undo()
+    assert any(
+        issue.file_path == str(p_race) and "concurrent modification" in issue.reason.lower()
+        for issue in race_sync.issues
+    )
+    with closing(mat._connect_rw()) as conn:  # noqa: SLF001
+        cached_race = conn.execute(
+            "SELECT 1 FROM spool_file_fingerprints WHERE spool_file = ?",
+            (str(p_race),),
+        ).fetchone()
+    assert cached_race is None
+
+    # 3b. st_ino == 0 on both fstat and os.stat -> ingests cleanly but declines caching
+    real_os_fstat = os.fstat
+
+    def _zero_ino_stat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        st = real_os_stat(path, *args, **kwargs)
+        if Path(path) == p_race:
+            return _clone_stat(st, st_ino=0)
+        return st
+
+    def _zero_ino_fstat(fd: int) -> Any:
+        st = real_os_fstat(fd)
+        return _clone_stat(st, st_ino=0)
+
+    monkeypatch.setattr("agent_continuity.events.os.stat", _zero_ino_stat)
+    monkeypatch.setattr("agent_continuity.events.os.fstat", _zero_ino_fstat)
+    zero_sync = mat.sync_from_spools()
+    monkeypatch.undo()
+    assert zero_sync.issues == []
+    assert zero_sync.ingested_count == 1
+    with closing(mat._connect_rw()) as conn:  # noqa: SLF001
+        cached_zero = conn.execute(
+            "SELECT 1 FROM spool_file_fingerprints WHERE spool_file = ?",
+            (str(p_race),),
+        ).fetchone()
+    assert cached_zero is None
+
+    # 4. rebuild_from_spools holds _writer_lock on .index.sqlite.lock
+    lock_entered = threading.Event()
+    release_lock = threading.Event()
+    rebuild_done = threading.Event()
+
+    def _hold_writer_lock() -> None:
+        with mat._writer_lock():  # noqa: SLF001
+            lock_entered.set()
+            release_lock.wait(timeout=5.0)
+
+    holder = threading.Thread(target=_hold_writer_lock)
+    holder.start()
+    assert lock_entered.wait(timeout=2.0)
+
+    rebuild_result: list[Any] = []
+
+    def _run_rebuild() -> None:
+        rebuild_result.append(mat.rebuild_from_spools())
+        rebuild_done.set()
+
+    rebuilder = threading.Thread(target=_run_rebuild)
+    rebuilder.start()
+    assert not rebuild_done.wait(timeout=0.15)
+    release_lock.set()
+    holder.join(timeout=5.0)
+    rebuilder.join(timeout=5.0)
+    assert rebuild_done.is_set()
+    assert rebuild_result[0].rebuilt is True
+    assert rebuild_result[0].ingested_count == 2

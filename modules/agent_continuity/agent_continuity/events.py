@@ -37,7 +37,7 @@ class SpoolRecord:
     envelope: EventEnvelope
     file_path: Path
     checksum: str
-    fingerprint: tuple[int, int, int] = (0, 0, 0)
+    fingerprint: tuple[int, int, int, int, int] | None = None
 
 
 @dataclass(slots=True)
@@ -135,13 +135,31 @@ def discover_spool_roots(home_dir: Path, extra_roots: list[Path] | None = None) 
     return roots
 
 
+def _stat_tuple(st: os.stat_result) -> tuple[int, int, int, int, int]:
+    # On Windows, os.stat() reports ftCreationTime as st_ctime_ns while os.fstat()
+    # reports NTFS ChangeTime as st_ctime_ns; st_birthtime_ns matches across both.
+    birth_ns = getattr(st, "st_birthtime_ns", None)
+    ctime_ns = (
+        int(birth_ns)
+        if (os.name == "nt" and birth_ns is not None)
+        else int(getattr(st, "st_ctime_ns", 0))
+    )
+    return (
+        int(st.st_size),
+        int(st.st_mtime_ns),
+        ctime_ns,
+        int(getattr(st, "st_ino", 0)),
+        int(getattr(st, "st_dev", 0)),
+    )
+
+
 def _scan_spool_entries(
     spool_roots: list[Path],
     *,
     optional_roots: set[Path] | None = None,
-) -> tuple[list[tuple[Path, int, int, int]], list[SpoolIssue]]:
-    """Collect `(path, size, mtime_ns, ctime_ns)` for candidate `*.json` spool files via `os.scandir`."""
-    entries: list[tuple[Path, int, int, int]] = []
+) -> tuple[list[tuple[Path, tuple[int, int, int, int, int]]], list[SpoolIssue]]:
+    """Collect `(path, (size, mtime_ns, ctime_ns, ino, dev))` for candidate `*.json` spool files."""
+    entries: list[tuple[Path, tuple[int, int, int, int, int]]] = []
     issues: list[SpoolIssue] = []
     optional_keys = {str(p) for p in (optional_roots or set())}
 
@@ -158,17 +176,12 @@ def _scan_spool_entries(
                 continue
             try:
                 st = entry.stat(follow_symlinks=False)
+                if int(getattr(st, "st_ino", 0)) == 0:
+                    st = os.stat(entry.path, follow_symlinks=False)
             except OSError as exc:
                 issues.append(SpoolIssue(entry.path, f"Unreadable event file metadata: {exc}"))
                 continue
-            entries.append(
-                (
-                    Path(entry.path),
-                    int(st.st_size),
-                    int(st.st_mtime_ns),
-                    int(getattr(st, "st_ctime_ns", 0)),
-                )
-            )
+            entries.append((Path(entry.path), _stat_tuple(st)))
 
     for root in spool_roots:
         try:
@@ -210,23 +223,24 @@ def _read_and_validate_spool_file(
                 )
             raw_bytes = fh.read(max_event_bytes + 1)
             st2 = os.fstat(fh.fileno())
-        st_path = os.stat(path, follow_symlinks=False)
+            st_path = os.stat(path, follow_symlinks=False)
     except OSError as exc:
         return None, SpoolIssue(str(path), f"Unreadable event file: {exc}")
 
     if len(raw_bytes) > max_event_bytes:
         return None, SpoolIssue(str(path), f"Oversized event file ({len(raw_bytes)} > {max_event_bytes} bytes)")
 
-    fd1 = (int(st1.st_size), int(st1.st_mtime_ns), int(getattr(st1, "st_ino", 0)))
-    fd2 = (int(st2.st_size), int(st2.st_mtime_ns), int(getattr(st2, "st_ino", 0)))
+    fd1 = _stat_tuple(st1)
+    fd2 = _stat_tuple(st2)
+    path_fp = _stat_tuple(st_path)
     if (
         fd1 != fd2
+        or int(getattr(st1, "st_ctime_ns", 0)) != int(getattr(st2, "st_ctime_ns", 0))
+        or fd1 != path_fp
         or len(raw_bytes) != int(st1.st_size)
-        or int(st_path.st_size) != int(st1.st_size)
-        or int(st_path.st_mtime_ns) != int(st1.st_mtime_ns)
     ):
         return None, SpoolIssue(str(path), "Concurrent modification detected while reading event file")
-    fp1 = (int(st_path.st_size), int(st_path.st_mtime_ns), int(getattr(st_path, "st_ctime_ns", 0)))
+    fp1: tuple[int, int, int, int, int] | None = fd1 if fd1[3] != 0 else None
 
     try:
         raw_text = raw_bytes.decode("utf-8")
@@ -290,7 +304,7 @@ def read_spool_events(
     """
     entries, issues = _scan_spool_entries(spool_roots, optional_roots=optional_roots)
     records: list[SpoolRecord] = []
-    for path, _size, _mtime_ns, _ctime_ns in entries:
+    for path, _fp in entries:
         rec, issue = _read_and_validate_spool_file(path, max_event_bytes=max_event_bytes)
         if issue is not None:
             issues.append(issue)
@@ -304,22 +318,21 @@ def read_spool_events(
 def read_spool_events_incremental(
     spool_roots: list[Path],
     *,
-    known_fingerprints: Mapping[str, tuple[int, int, int]] | None = None,
+    known_fingerprints: Mapping[str, tuple[int, int, int, int, int]] | None = None,
     optional_roots: set[Path] | None = None,
     max_event_bytes: int = MAX_EVENT_FILE_BYTES,
     verify_checksums: bool = False,
 ) -> IncrementalSpoolScanResult:
-    """Read only new or modified spool files whose `(size, mtime_ns, ctime_ns)` is not in `known_fingerprints`."""
+    """Read only new or modified spool files whose `(size, mtime_ns, ctime_ns, ino, dev)` is not in `known_fingerprints`."""
     entries, issues = _scan_spool_entries(spool_roots, optional_roots=optional_roots)
     known = known_fingerprints or {}
     records: list[SpoolRecord] = []
     unchanged = 0
     current_keys: set[str] = set()
 
-    for path, size, mtime_ns, ctime_ns in entries:
+    for path, fp in entries:
         key = str(path)
-        fp = (size, mtime_ns, ctime_ns)
-        if not verify_checksums and known.get(key) == fp:
+        if not verify_checksums and fp[3] != 0 and known.get(key) == fp:
             unchanged += 1
             current_keys.add(key)
             continue
