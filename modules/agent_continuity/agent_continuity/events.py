@@ -121,6 +121,31 @@ def discover_spool_roots(home_dir: Path, extra_roots: list[Path] | None = None) 
     return roots
 
 
+_EVENT_DEPENDENCY_RANK: dict[str, int] = {
+    "environment.registered": 0,
+    "workflow.registered": 10,
+    "dispatcher.gui_registered": 10,
+    "gui_conversation.linked": 20,
+    "dispatcher.slot_created": 20,
+    "session.registered": 20,
+    "session.observed": 20,
+    "dispatcher.slot_state_changed": 30,
+    "dispatcher.session_activated": 30,
+    "dispatcher.launch_requested": 30,
+    "dispatcher.slots_transitioned": 30,
+    "dispatcher.launch_resolved": 40,
+    "dispatcher.launch_failed": 40,
+    "dispatcher.terminal_launch_recorded": 40,
+    "session.status_changed": 40,
+    "candidate.rejected": 40,
+    "workflow.archived": 40,
+}
+
+
+def _event_dependency_rank(event_type: str) -> int:
+    return _EVENT_DEPENDENCY_RANK.get(event_type, 50)
+
+
 def read_spool_events(
     spool_roots: list[Path],
     *,
@@ -222,5 +247,5 @@ def read_spool_events(
                 )
             )
 
-    records.sort(key=lambda r: (r.envelope.observed_timestamp, r.envelope.event_id))
+    records.sort(key=lambda r: (r.envelope.observed_timestamp, _event_dependency_rank(r.envelope.event_type), r.envelope.event_id))
     return SpoolScanResult(records=records, issues=issues, spool_roots=spool_roots)

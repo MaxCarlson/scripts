@@ -867,7 +867,7 @@ class DispatcherService:
                 if pending:
                     raise ContinuityError(ErrorCode.INVALID_INPUT,
                                           "A launch is already pending for this agent; inspect `llmd pending` before retrying.")
-            with contextlib.ExitStack() as held_locks:
+                with contextlib.ExitStack() as held_locks:
                     held_locks.enter_context(self._hold_slot_lock(slot["slot_id"]))
                     if current:
                         held_locks.enter_context(self._hold_session_lock(
@@ -982,7 +982,7 @@ class DispatcherService:
                     if pending:
                         raise ContinuityError(ErrorCode.INVALID_INPUT,
                                               "A launch is already pending for this agent; inspect `llmd pending` before retrying.")
-            with contextlib.ExitStack() as held_locks:
+                with contextlib.ExitStack() as held_locks:
                     if latest_slot:
                         held_locks.enter_context(self._hold_slot_lock(latest_slot["slot_id"]))
                         if current:

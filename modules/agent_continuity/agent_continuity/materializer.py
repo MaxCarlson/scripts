@@ -6,7 +6,9 @@ import json
 import os
 import secrets
 import sqlite3
-from contextlib import closing
+import time
+from collections.abc import Iterator
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -58,6 +60,54 @@ class SQLiteMaterializer:
         self.db_path = home_dir / "index.sqlite"
         self.allow_unsafe_cross_os = allow_unsafe_cross_os
 
+    @contextmanager
+    def _writer_lock(self) -> Iterator[None]:
+        """Serialize SQLite write transactions and atomic rebuilds across processes."""
+        lock_path = self.home_dir / ".index.sqlite.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        stream = lock_path.open("a+b")
+        try:
+            stream.seek(0, os.SEEK_END)
+            if stream.tell() == 0:
+                stream.write(b"\0")
+                stream.flush()
+            if os.name == "nt":
+                import msvcrt
+
+                deadline = time.monotonic() + 10.0
+                while True:
+                    try:
+                        stream.seek(0)
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise ContinuityError(
+                                ErrorCode.MATERIALIZER_FAILED,
+                                "Timed out waiting for SQLite materializer writer lock.",
+                            ) from None
+                        time.sleep(0.01)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    import msvcrt
+
+                    with suppress(OSError):
+                        stream.seek(0)
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    with suppress(OSError):
+                        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        finally:
+            stream.close()
+
     def _connect_rw(self, path: Path | None = None) -> sqlite3.Connection:
         target = path or self.db_path
         assert_sqlite_writer_allowed(target, allow_unsafe_cross_os=self.allow_unsafe_cross_os)
@@ -82,7 +132,7 @@ class SQLiteMaterializer:
         if not items:
             return 0
         applied_count = 0
-        with closing(self._connect_rw()) as conn:
+        with self._writer_lock(), closing(self._connect_rw()) as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 for event, spool_file, checksum in items:
@@ -151,8 +201,10 @@ class SQLiteMaterializer:
                 except sqlite3.Error:
                     pass
 
-        with closing(self._connect_rw()) as conn:
+        with self._writer_lock(), closing(self._connect_rw()) as conn:
             try:
+                # Re-scan under writer exclusion so partial multi-file spool writes cannot race sync.
+                scan = read_spool_events(roots, optional_roots={self.home_dir / "events"})
                 conn.execute("BEGIN IMMEDIATE")
                 for rec in scan.records:
                     if self._apply_event_in_tx(
@@ -192,7 +244,6 @@ class SQLiteMaterializer:
         """Rebuild index.sqlite atomically from scratch by replaying all durable spool events."""
         assert_sqlite_writer_allowed(self.db_path, allow_unsafe_cross_os=self.allow_unsafe_cross_os)
         roots = discover_spool_roots(self.home_dir, extra_roots=extra_roots)
-        scan = read_spool_events(roots, optional_roots={self.home_dir / "events"})
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         staging = self.db_path.with_name(f".index.sqlite.rebuild.{os.getpid()}.{secrets.token_hex(4)}.tmp")
@@ -200,71 +251,73 @@ class SQLiteMaterializer:
         skipped = 0
 
         conn: sqlite3.Connection | None = None
-        try:
-            conn = sqlite3.connect(str(staging), timeout=5.0)
-            ensure_schema(conn)
-            conn.execute("BEGIN IMMEDIATE")
-            for rec in scan.records:
-                if self._apply_event_in_tx(
-                    conn,
-                    rec.envelope,
-                    spool_file=str(rec.file_path),
-                    checksum=rec.checksum,
-                ):
-                    ingested += 1
-                else:
-                    skipped += 1
-            now = now_utc_iso()
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('last_rebuild_at', ?)",
-                (now,),
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('last_sync_at', ?)",
-                (now,),
-            )
-            conn.commit()
-            # Switch staging DB out of WAL before replacing target so no orphan -wal/-shm are needed
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-            conn.execute("PRAGMA journal_mode = DELETE;")
-            integrity = conn.execute("PRAGMA integrity_check;").fetchone()
-            if not integrity or integrity[0] != "ok":
+        with self._writer_lock():
+            scan = read_spool_events(roots, optional_roots={self.home_dir / "events"})
+            try:
+                conn = sqlite3.connect(str(staging), timeout=5.0)
+                ensure_schema(conn)
+                conn.execute("BEGIN IMMEDIATE")
+                for rec in scan.records:
+                    if self._apply_event_in_tx(
+                        conn,
+                        rec.envelope,
+                        spool_file=str(rec.file_path),
+                        checksum=rec.checksum,
+                    ):
+                        ingested += 1
+                    else:
+                        skipped += 1
+                now = now_utc_iso()
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('last_rebuild_at', ?)",
+                    (now,),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('last_sync_at', ?)",
+                    (now,),
+                )
+                conn.commit()
+                # Switch staging DB out of WAL before replacing target so no orphan -wal/-shm are needed
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                conn.execute("PRAGMA journal_mode = DELETE;")
+                integrity = conn.execute("PRAGMA integrity_check;").fetchone()
+                if not integrity or integrity[0] != "ok":
+                    raise ContinuityError(
+                        ErrorCode.MATERIALIZER_FAILED,
+                        f"Rebuilt database failed integrity_check: {integrity}",
+                    )
+                conn.close()
+                conn = None
+
+                # Clean stale WAL/SHM sidecars for target before atomic replacement
+                for suffix in ("-wal", "-shm"):
+                    sidecar = Path(f"{self.db_path}{suffix}")
+                    sidecar.unlink(missing_ok=True)
+                os.replace(staging, self.db_path)
+
+                # Re-open briefly to restore WAL mode on the live index
+                with closing(self._connect_rw(self.db_path)) as live:
+                    live.execute("PRAGMA journal_mode = WAL;")
+            except Exception as exc:
+                if conn is not None:
+                    try:
+                        conn.rollback()
+                        conn.close()
+                    except sqlite3.Error:
+                        pass
+                try:
+                    staging.unlink(missing_ok=True)
+                    for suffix in ("-wal", "-shm"):
+                        Path(f"{staging}{suffix}").unlink(missing_ok=True)
+                except OSError:
+                    pass
+                if isinstance(exc, ContinuityError):
+                    raise
                 raise ContinuityError(
                     ErrorCode.MATERIALIZER_FAILED,
-                    f"Rebuilt database failed integrity_check: {integrity}",
-                )
-            conn.close()
-            conn = None
-
-            # Clean stale WAL/SHM sidecars for target before atomic replacement
-            for suffix in ("-wal", "-shm"):
-                sidecar = Path(f"{self.db_path}{suffix}")
-                sidecar.unlink(missing_ok=True)
-            os.replace(staging, self.db_path)
-
-            # Re-open briefly to restore WAL mode on the live index
-            with closing(self._connect_rw(self.db_path)) as live:
-                live.execute("PRAGMA journal_mode = WAL;")
-        except Exception as exc:
-            if conn is not None:
-                try:
-                    conn.rollback()
-                    conn.close()
-                except sqlite3.Error:
-                    pass
-            try:
-                staging.unlink(missing_ok=True)
-                for suffix in ("-wal", "-shm"):
-                    Path(f"{staging}{suffix}").unlink(missing_ok=True)
-            except OSError:
-                pass
-            if isinstance(exc, ContinuityError):
-                raise
-            raise ContinuityError(
-                ErrorCode.MATERIALIZER_FAILED,
-                f"Atomic rebuild failed: {exc}",
-                {"db_path": str(self.db_path)},
-            ) from exc
+                    f"Atomic rebuild failed: {exc}",
+                    {"db_path": str(self.db_path)},
+                ) from exc
 
         return SyncResult(
             ingested_count=ingested,

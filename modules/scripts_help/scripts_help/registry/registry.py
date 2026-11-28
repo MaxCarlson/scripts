@@ -298,7 +298,7 @@ REGISTRY: dict = {
                 "path": "modules/agent_continuity",
                 "desc": "Manage Codex, AGY, and Claude Code sessions with action defaults, exact resume, terminal history, and responsive output",
                 "help_cmd": ["llmd", "--help"],
-                "version": "2.1.2",
+                "version": "2.1.3",
             },
             {
                 "name": "run_tests.py",

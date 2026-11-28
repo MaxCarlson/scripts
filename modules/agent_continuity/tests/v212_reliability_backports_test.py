@@ -230,3 +230,130 @@ def test_cross_process_slot_contention_bounded_wait_and_recovery(tmp_path: Path)
     finally:
         long_proc.kill()
         long_proc.wait(timeout=2.0)
+
+
+def test_concurrent_empty_registry_prepare_start_and_equal_timestamp_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_continuity.events import append_event
+    from agent_continuity.materializer import SQLiteMaterializer
+    from agent_continuity.models import EventEnvelope, EventType
+
+    # 1. Concurrent empty-registry prepare_start reserves exactly one pending launch
+    home = tmp_path / "empty_reg"
+    barrier = threading.Barrier(4)
+
+    def _run_prepare(idx: int) -> str:
+        svc = ContinuityService(home)
+        disp = DispatcherService(svc)
+        barrier.wait(timeout=5.0)
+        try:
+            disp.prepare_start(gui="RaceGUI", name="AgentOne", provider="codex", apply=True)
+            return "reserved"
+        except ContinuityError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        outcomes = list(pool.map(_run_prepare, range(4)))
+
+    assert outcomes.count("reserved") == 1
+    assert all(code == "reserved" or code == "invalid_input" for code in outcomes)
+    disp_ro = DispatcherService(ContinuityService(home))
+    assert len(disp_ro.list_pending_launches()) == 1
+
+    # 2. Equal-timestamp dependencies with adversarial event_ids + interrupted .tmp. publication
+    home2 = tmp_path / "equal_ts_reg"
+    ts = "2026-11-27T12:00:00.000000Z"
+    env_id = "env_eq_1"
+    gui_id = "gui_eq_1"
+    slot_id = "slot_eq_1"
+    events = [
+        EventEnvelope(
+            event_id="evt_zzz_env",
+            event_schema_version=1,
+            event_type=EventType.ENVIRONMENT_REGISTERED.value,
+            provider=None,
+            environment_id=env_id,
+            native_session_id=None,
+            source_timestamp=ts,
+            observed_timestamp=ts,
+            source_adapter_version="2.1.3",
+            payload={"environment_id": env_id, "runtime_kind": "windows", "label": "Win"},
+        ),
+        EventEnvelope(
+            event_id="evt_yyy_gui",
+            event_schema_version=1,
+            event_type=EventType.DISPATCHER_GUI_REGISTERED.value,
+            provider=None,
+            environment_id=env_id,
+            native_session_id=None,
+            source_timestamp=ts,
+            observed_timestamp=ts,
+            source_adapter_version="2.1.3",
+            payload={"gui_id": gui_id, "alias": "EqGUI", "alias_key": "eqgui"},
+        ),
+        EventEnvelope(
+            event_id="evt_xxx_slot",
+            event_schema_version=1,
+            event_type=EventType.DISPATCHER_SLOT_CREATED.value,
+            provider=None,
+            environment_id=env_id,
+            native_session_id=None,
+            source_timestamp=ts,
+            observed_timestamp=ts,
+            source_adapter_version="2.1.3",
+            payload={"slot_id": slot_id, "gui_id": gui_id, "name": "Alpha", "name_key": "alpha"},
+        ),
+        EventEnvelope(
+            event_id="evt_aaa_launch",
+            event_schema_version=1,
+            event_type=EventType.DISPATCHER_LAUNCH_REQUESTED.value,
+            provider="codex",
+            environment_id=env_id,
+            native_session_id=None,
+            source_timestamp=ts,
+            observed_timestamp=ts,
+            source_adapter_version="2.1.3",
+            payload={"launch_id": "launch_eq_1", "slot_id": slot_id, "cwd": str(tmp_path)},
+        ),
+    ]
+    for ev in events:
+        append_event(home2, ev)
+    # Interrupted temporary spool file must be ignored cleanly during sync and rebuild
+    (home2 / "events" / env_id / ".tmp.9999.partial.json").write_text("{truncated", encoding="utf-8")
+
+    mat = SQLiteMaterializer(home2)
+    synced = mat.sync_from_spools()
+    assert synced.issues == []
+    assert synced.ingested_count == 4
+    rebuilt = mat.rebuild_from_spools()
+    assert rebuilt.rebuilt is True
+    assert rebuilt.issues == []
+    assert rebuilt.ingested_count == 4
+
+    # 3. Unknown liveness falls back to bounded lock acquisition (succeeds on short contention, not claimed inactive)
+    disp2 = DispatcherService(ContinuityService(home2))
+    lock_held = threading.Event()
+
+    def _short_meta() -> None:
+        with disp2._hold_slot_lock(slot_id):  # noqa: SLF001
+            lock_held.set()
+            time.sleep(0.15)
+
+    t = threading.Thread(target=_short_meta)
+    t.start()
+    assert lock_held.wait(timeout=2.0)
+    monkeypatch.setattr(
+        disp2,
+        "observe_runtime_session",
+        lambda *args, **kwargs: _make_observation(
+            liveness=ProcessLiveness.UNKNOWN,
+            known_liveness=ProcessLiveness.UNKNOWN,
+            match_status=MatchStatus.NOT_OBSERVED,
+            attachment=AttachmentState.UNKNOWN,
+        ),
+    )
+    # Pending launch blocks attach after acquiring slot lock cleanly (did not fail on UNKNOWN observation)
+    with pytest.raises(ContinuityError, match="unresolved pending launch"):
+        disp2.attach_session(gui="EqGUI", name="Alpha", provider="codex", session_id="sid-eq", apply=True)
+    t.join(timeout=5.0)
