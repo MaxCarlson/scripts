@@ -27,3 +27,6 @@
 - [x] Report only actually observed runtime worker receipts and exercise missing/unexpected receipt rejection.
 - [x] Preflight native pytest addopts, prevent ambient xdist/basetemp overrides, reject remote execution, and verify the effective temporary root in pytest.
 - [x] Promote unhandled thread-exception warnings to fatal and verify real serial/xdist subprocess failures.
+- [x] Fetch current Scripts main and reconcile the accepted integration candidate.
+- [x] Correct the serial mock receipt shape and pass the complete managed-validator suite on canonical main.
+- [x] Push and synchronize the authorized Scripts main integration while preserving unrelated checkout state.

@@ -67,3 +67,23 @@ ambient serial controls, remote-transport rejection, and missing/unexpected
 worker receipts; the existing exact 12-worker provenance subprocess also
 passed. Ruff and `git diff --check` passed. Earlier 12/16-worker fan-out and
 timing evidence is reused; no timing series was repeated.
+
+## Canonical integration — 2026-11-27
+
+Fetched Scripts main at `25680ef9057dd22d09946012947fc7351b4b8e8b` and verified
+the accepted feature head descended from it. Fast-forwarded the primary main
+checkout through the qualified candidate and the test-fixture correction to
+`fb1e19598d0f23061d72c911129d38de83fa73e9`; pushed that revision to `origin/main`.
+
+The first complete managed-validator run exposed five mocked serial receipts
+that predated the required `worker_id: "main"` field. Updated the mock receipt
+helper, reran the suite on the primary checkout, and got **24 passed in 47.85s**.
+Command:
+
+`C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest scripts_setup\tests\managed_validation_test.py -p no:cacheprovider -o addopts= -q --basetemp C:\Users\mcarls\AppData\Local\Packages\sandbox.{43320dd8-cac6-4882-aeff-54f91bfc87ac}\AC\Temp\scripts-managed-validator-main-63c8a385c8ba4a518874a023183a53a5`
+
+Import provenance resolved `scripts_setup.selective_validation` from the
+primary checkout. Existing unrelated primary-checkout modifications and
+untracked paths were preserved. The previously detected editable-install
+mismatch for the `development-ledger` consumer remains; the shared environment
+was not modified and provenance enforcement was not bypassed.
