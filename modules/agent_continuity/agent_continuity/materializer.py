@@ -245,8 +245,54 @@ class SQLiteMaterializer:
         assert_sqlite_writer_allowed(target, allow_unsafe_cross_os=self.allow_unsafe_cross_os)
         target.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(target), timeout=5.0)
-        ensure_schema(conn)
+        try:
+            conn.row_factory = sqlite3.Row
+            current = get_schema_version(conn)
+            if current is not None and current < SCHEMA_VERSION and target == self.db_path:
+                self._guard_schema_transition(conn, current)
+            ensure_schema(conn)
+        except BaseException:
+            conn.close()
+            raise
         return conn
+
+    def _guard_schema_transition(self, conn: sqlite3.Connection, current_schema: int) -> None:
+        """Refuse schema migration while lifecycle ownership or old writers remain uncertain."""
+        from .deployment_compatibility import count_active_llmd_writers, evaluate_deployment_preflight
+        from .runtime_discovery import PsutilProcessEnumerator
+
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        pending_launches: int | None = None
+        if "dispatcher_pending_launches" in tables:
+            pending_launches = conn.execute(
+                "SELECT COUNT(*) FROM dispatcher_pending_launches WHERE status = 'pending'"
+            ).fetchone()[0]
+        open_terminal_launches: int | None = None
+        if "dispatcher_terminal_launches" in tables:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(dispatcher_terminal_launches)")}
+            if "launch_exited_at" in columns:
+                open_terminal_launches = conn.execute(
+                    "SELECT COUNT(*) FROM dispatcher_terminal_launches WHERE launch_exited_at IS NULL"
+                ).fetchone()[0]
+        inventory = PsutilProcessEnumerator().enumerate_processes()
+        process_state = inventory.availability.value
+        active_writers = count_active_llmd_writers(inventory, current_pid=os.getpid())
+        preflight = evaluate_deployment_preflight(
+            current_schema=current_schema,
+            target_schema=SCHEMA_VERSION,
+            pending_launches=pending_launches,
+            open_terminal_launches=open_terminal_launches,
+            process_enumeration=process_state,
+            active_writers=active_writers,
+        )
+        if not preflight["ready"]:
+            raise ContinuityError(
+                ErrorCode.REGISTRY_UPGRADE_BLOCKED,
+                "Registry schema upgrade was refused because existing writer or lifecycle ownership is active or uncertain. "
+                + " ".join(preflight["blockers"]),
+                {"current_schema": current_schema, "target_schema": SCHEMA_VERSION,
+                 "blockers": preflight["blockers"]},
+            )
 
     def _connect_ro(self) -> sqlite3.Connection | None:
         if not self.db_path.exists():
@@ -464,6 +510,14 @@ class SQLiteMaterializer:
 
         conn: sqlite3.Connection | None = None
         with self._writer_lock():
+            existing = self._connect_ro()
+            if existing is not None:
+                try:
+                    current_schema = get_schema_version(existing)
+                    if current_schema is not None and current_schema < SCHEMA_VERSION:
+                        self._guard_schema_transition(existing, current_schema)
+                finally:
+                    existing.close()
             scan = read_spool_events(roots, optional_roots={self.home_dir / "events"})
             issues = list(scan.issues)
             try:
@@ -1924,6 +1978,7 @@ class SQLiteMaterializer:
                 "supported_schema_version": SCHEMA_VERSION,
                 "integrity": "not_initialized",
                 "counts": {},
+                "lifecycle_ownership": {"pending_launches": None, "open_terminal_launches": None},
                 "last_sync_at": None,
                 "last_rebuild_at": None,
             }
@@ -1939,6 +1994,19 @@ class SQLiteMaterializer:
             counts = {}
             for table in ("workflows", "gui_conversations", "environments", "sessions", "associations", "ingested_events"):
                 counts[table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            pending_launches = None
+            if "dispatcher_pending_launches" in tables:
+                pending_launches = conn.execute(
+                    "SELECT COUNT(*) FROM dispatcher_pending_launches WHERE status = 'pending'"
+                ).fetchone()[0]
+            open_terminal_launches = None
+            if "dispatcher_terminal_launches" in tables:
+                launch_columns = {row[1] for row in conn.execute("PRAGMA table_info(dispatcher_terminal_launches)")}
+                if "launch_exited_at" in launch_columns:
+                    open_terminal_launches = conn.execute(
+                        "SELECT COUNT(*) FROM dispatcher_terminal_launches WHERE launch_exited_at IS NULL"
+                    ).fetchone()[0]
             return {
                 "db_exists": True,
                 "db_path": str(self.db_path),
@@ -1946,6 +2014,10 @@ class SQLiteMaterializer:
                 "supported_schema_version": SCHEMA_VERSION,
                 "integrity": integrity_row[0] if integrity_row else "unknown",
                 "counts": counts,
+                "lifecycle_ownership": {
+                    "pending_launches": pending_launches,
+                    "open_terminal_launches": open_terminal_launches,
+                },
                 "last_sync_at": meta.get("last_sync_at"),
                 "last_rebuild_at": meta.get("last_rebuild_at"),
             }

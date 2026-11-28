@@ -2331,7 +2331,9 @@ class DispatcherService:
         return {"action": "launch-failed", "applied": apply, "summary": "Marked pending launch as failed.",
                 "details": {"launch_id": launch_id, "status": "failed"}, "events": [event.to_dict()]}
 
-    def recover_captured_launch(self, *, gui: str, name: str, apply: bool = False) -> dict[str, Any]:
+    def recover_captured_launch(
+        self, *, gui: str, name: str, apply: bool = False, require_stopped: bool = False,
+    ) -> dict[str, Any]:
         """Resolve a pending launch only when its exact bootstrap session ID was durably captured."""
         conversation = self._row("SELECT * FROM dispatcher_gui_conversations WHERE alias_key = ? OR gui_id = ?",
                                  (gui.strip().casefold(), gui.strip()))
@@ -2405,6 +2407,8 @@ class DispatcherService:
         if env is None or not environment_is_locally_owned(self.home_dir, env):
             raise ContinuityError(ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE,
                 "Recovery refused because runtime ownership cannot be established for this host and environment.")
+        if require_stopped:
+            self._require_stopped_pending_session(pending["provider"], env.environment_id, session_id)
         if not apply:
             return {"action": "recover", "applied": False, "status": "preview",
                     "summary": f"Would associate captured {pending['provider']} session {session_id} and resolve pending launch {pending['launch_id']}; no provider will be launched.",
@@ -2416,6 +2420,8 @@ class DispatcherService:
             if latest is None:
                 raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch changed concurrently; inspect `llmd doctor` and retry recovery.")
             captured_now = self._with_captured_bootstrap_id(latest)
+            if require_stopped:
+                self._require_stopped_pending_session(latest["provider"], latest["environment_id"], session_id)
             if provenance in {"claude_transcript_recovery", "claude_exact_runtime_process"}:
                 adapter = self.continuity.adapters.get("claude")
                 if (captured_now.get("reserved_session_id") != session_id
@@ -2533,6 +2539,11 @@ class DispatcherService:
                     observed_timestamp=(base + timedelta(microseconds=index + 1)).isoformat(timespec="microseconds").replace("+00:00", "Z"))
                     for index, event in enumerate(events)]
                 self.continuity._emit_and_materialize(events)
+        if require_stopped:
+            self._reconcile_interrupted_terminal_launches(
+                slot_id=slot["slot_id"], provider=pending["provider"],
+                environment_id=env.environment_id, session_id=session_id,
+            )
         return {"action": "recover", "applied": True, "status": "recovered",
                 "summary": f"Associated exact {pending['provider']} session {session_id} and resolved pending launch. No provider was launched.",
                 "details": {"launch_id": pending["launch_id"], "session_id": session_id,
@@ -2544,6 +2555,63 @@ class DispatcherService:
                                     "native_allocation_persisted" if native_allocation_recovery else "provider_captured"
                                 )
                             )}}
+
+    def _reconcile_interrupted_terminal_launches(
+        self, *, slot_id: str, provider: str, environment_id: str, session_id: str,
+    ) -> None:
+        """Close only open terminal records for this exact, already-proven stopped session."""
+        rows = self._rows(
+            """SELECT * FROM dispatcher_terminal_launches
+               WHERE slot_id = ? AND provider = ? AND environment_id = ? AND native_session_id = ?
+                 AND launch_exited_at IS NULL ORDER BY launch_started_at, launch_id""",
+            (slot_id, provider, environment_id, session_id),
+        )
+        for row in rows:
+            record = dict(row)
+            record["launch_exited_at"] = now_utc_iso()
+            record["status"] = "interrupted"
+            record["exit_code"] = None
+            self.record_terminal_launch(record)
+
+    def _has_open_terminal_launch(self, *, slot_id: str, provider: str, environment_id: str, session_id: str) -> bool:
+        return self._row(
+            """SELECT 1 FROM dispatcher_terminal_launches
+               WHERE slot_id = ? AND provider = ? AND environment_id = ? AND native_session_id = ?
+                 AND launch_exited_at IS NULL LIMIT 1""",
+            (slot_id, provider, environment_id, session_id),
+        ) is not None
+
+    def _require_stopped_pending_session(self, provider: str, environment_id: str, session_id: str) -> None:
+        """Require complete runtime enumeration and a non-running exact pending identity."""
+        from .runtime_discovery import EvidenceAvailability, MatchStatus, ProcessLiveness
+
+        observation = self.observe_runtime_session(provider, environment_id, session_id)
+        if observation is None:
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "Pending session process enumeration is unavailable; recovery and resume were not attempted.",
+            )
+        if (
+            getattr(observation, "process_availability", None) is not EvidenceAvailability.COMPLETE
+            or getattr(observation, "identity_conflict", True)
+            or getattr(observation, "evidence_conflict", True)
+            or getattr(observation, "process_session_match", None) is not MatchStatus.NOT_OBSERVED
+        ):
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "Pending session process evidence is incomplete or conflicting; recovery and resume were not attempted.",
+            )
+        liveness = getattr(observation, "process_liveness", None)
+        if liveness is ProcessLiveness.RUNNING:
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "Pending session is already running; it was not recovered or resumed.",
+            )
+        if liveness not in {ProcessLiveness.EXITED, ProcessLiveness.NOT_OBSERVED}:
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "Pending session liveness is unknown or ambiguous; recovery and resume were not attempted.",
+            )
 
     def record_process_observation(
         self, *, slot_id: str, launch_id: str | None, return_code: int, outcome: str,

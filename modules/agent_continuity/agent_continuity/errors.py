@@ -23,6 +23,7 @@ class ErrorCode:
     EVENT_SPOOL_UNAVAILABLE = "event_spool_unavailable"
     MATERIALIZER_FAILED = "materializer_failed"
     REGISTRY_REBUILD_REQUIRED = "registry_rebuild_required"
+    REGISTRY_UPGRADE_BLOCKED = "registry_upgrade_blocked"
     CROSS_ENVIRONMENT_UNAVAILABLE = "cross_environment_unavailable"
 
     INVALID_INPUT = "invalid_input"

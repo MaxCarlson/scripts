@@ -217,6 +217,9 @@ def build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------
     doctor_p = sub.add_parser("doctor", parents=[common], help="Diagnose storage, spools, SQLite index, and providers.")
     doctor_p.add_argument("-v", "--verbose", action="store_true", help="Show detailed capability and path diagnostics.")
+    doctor_p.add_argument("-P", "--target-package-version", help="Package version proposed for a read-only upgrade preflight.")
+    doctor_p.add_argument("-S", "--target-schema-version", type=int,
+                          help="Registry schema proposed for a read-only upgrade preflight.")
 
     # ------------------------------------------------------------------
     # `agents hooks ...`
@@ -396,6 +399,15 @@ def _render_doctor_text(report: dict[str, Any], *, verbose: bool) -> None:
         f"SQLite DB:     {db['db_path']} (exists={db['db_exists']}, "
         f"schema={db['schema_version']}, integrity={db['integrity']})"
     )
+    installation = report.get("installation", {})
+    print(f"LLMD package:  {installation.get('package_version', 'unknown')} ({installation.get('package_root', 'unknown')})")
+    if installation.get("status") != "ok":
+        print(f"Command paths: {installation.get('guidance', 'conflicting executable paths detected')}")
+    preflight = report.get("deployment_preflight")
+    if preflight is not None:
+        print(f"Upgrade check: {'ready' if preflight['ready'] else 'blocked'} ({preflight['kind']})")
+        for blocker in preflight.get("blockers", []):
+            print(f"  - {blocker}")
     spools = report["spools"]
     print(f"Event spools:  {spools['valid_event_count']} valid event(s), {spools['issue_count']} issue(s)")
     if verbose:
@@ -404,6 +416,10 @@ def _render_doctor_text(report: dict[str, Any], *, verbose: bool) -> None:
         if db.get("counts"):
             counts_str = ", ".join(f"{k}={v}" for k, v in db["counts"].items())
             print(f"  row counts:  {counts_str}")
+        print(f"  invoked CLI: {installation.get('invoked_executable', 'unknown')}")
+        print(f"  imported from: {installation.get('imported_module', 'unknown')}")
+        for command, candidates in installation.get("path_candidates", {}).items():
+            print(f"  PATH {command}: {len(candidates)} candidate(s)")
     print("Providers:")
     for name, p in report["providers"].items():
         inst = p["installation"]
@@ -653,7 +669,10 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             return 0
 
     elif args.command == "doctor":
-        res = svc.diagnose()
+        res = svc.diagnose(
+            target_package_version=args.target_package_version,
+            target_schema_version=args.target_schema_version,
+        )
         if json_mode:
             _print_json({"ok": True, **res})
         else:

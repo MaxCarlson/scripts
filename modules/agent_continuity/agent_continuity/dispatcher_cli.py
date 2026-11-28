@@ -5322,12 +5322,12 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
                 and (args.provider is None or row["provider"] == args.provider)
                 and (environment_id is None or row["environment_id"] == environment_id)
             ]
-            if len(candidates) != 1:
+            if len(candidates) > 1 or (not candidates and slot.get("current") is not None):
                 raise ContinuityError(
                     ErrorCode.INVALID_INPUT,
                     "Exact provider/session/environment is not in this slot's history.",
                 )
-            target = candidates[0]
+            target = candidates[0] if candidates else None
         else:
             target = _resolve_historical_session(
                 dispatcher, gui=args.gui, name=args.agent_name,
@@ -5335,11 +5335,59 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
                 environment_id=environment_id,
             ) if (args.provider or args.session_id or environment_id) else slot["current"]
         expected_current = _session_identity(slot)
+        recovered_pending = None
+        recovery_applied = False
         if target is None:
-            raise ContinuityError(ErrorCode.INVALID_INPUT, "This slot has no selected session; use `llmd start`.")
+            if slot.get("current") is not None:
+                raise ContinuityError(ErrorCode.INVALID_INPUT, "This slot has no selected session; use `llmd start`.")
+            recovery_gui = slot["gui_alias"]
+            recovery = dispatcher.recover_captured_launch(gui=recovery_gui, name=slot["slot_id"], apply=False)
+            pending = dispatcher.get_pending_launch(recovery["details"]["launch_id"])
+            provider = pending["provider"]
+            session_id = recovery["details"]["session_id"]
+            if ((args.provider and args.provider != provider)
+                    or (args.session_id and args.session_id != session_id)
+                    or (environment_id and environment_id != pending["environment_id"])):
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                      "Pending launch identity does not match the requested provider/session/environment.")
+            if slot["state"] == "completed":
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                      "Completed agents require an explicit lifecycle change before resumption.")
+            if slot["state"] == "inactive" and not args.reactivate:
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                      "This agent is inactive; pass --reactivate to confirm its lifecycle change.")
+            dispatcher._require_stopped_pending_session(provider, pending["environment_id"], session_id)
+            if args.apply:
+                applied_recovery = dispatcher.recover_captured_launch(
+                    gui=recovery_gui, name=slot["slot_id"], apply=True, require_stopped=True,
+                )
+                if not applied_recovery.get("applied") or applied_recovery.get("status") != "recovered":
+                    raise ContinuityError(
+                        ErrorCode.INVALID_INPUT,
+                        "Pending launch recovery changed concurrently or was already resolved; inspect the selected session before retrying.",
+                    )
+                slot = dispatcher.get_slot(gui=recovery_gui, name=slot["slot_id"])
+                target = slot["current"]
+                expected_current = _session_identity(slot)
+                recovery_applied = True
+            else:
+                target = {
+                    "provider": provider,
+                    "environment_id": pending["environment_id"],
+                    "native_session_id": session_id,
+                    "cwd_native": pending.get("cwd"),
+                }
+                recovered_pending = recovery
         target_identity = (target["provider"], target["environment_id"], target["native_session_id"])
+        open_terminal_launch = dispatcher._has_open_terminal_launch(
+            slot_id=slot["slot_id"], provider=target_identity[0],
+            environment_id=target_identity[1], session_id=target_identity[2],
+        )
+        reconcile_terminal_launch = recovery_applied or open_terminal_launch
         if args.apply:
             _guard_current_session_change(dispatcher, expected_current, target_identity)
+            if reconcile_terminal_launch:
+                dispatcher._require_stopped_pending_session(*target_identity)
         if slot["state"] == "completed":
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Completed agents require an explicit lifecycle change before resumption.")
         effective_cwd = args.cwd or target.get("cwd_native") or _current_native_cwd(dispatcher, target)
@@ -5363,8 +5411,19 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
         if target_identity != expected_current:
             if not args.apply:
                 result = {"action": "continue", "applied": False, "slot": slot,
-                          "summary": f"Dry-run: would select historical {target['provider']} session {target['native_session_id']}.",
+                          "summary": (
+                              f"Dry-run: would perform exact pending-session recovery for {target['provider']} "
+                              f"session {target['native_session_id']}, then resume it."
+                              if recovered_pending else
+                              f"Dry-run: would select historical {target['provider']} session {target['native_session_id']}."
+                          ),
                           "launch_preview": preview}
+                if recovered_pending:
+                    result["recovery"] = {
+                        "status": recovered_pending["status"],
+                        "launch_id": recovered_pending["details"]["launch_id"],
+                        "session_id": recovered_pending["details"]["session_id"],
+                    }
         else:
             result = {"action": "continue", "applied": False, "slot": slot,
                       "summary": "Dry-run: pass -a/--apply to resume the selected session.",
@@ -5378,6 +5437,14 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
                 expected_current=expected_current, check_current=True, reactivate=args.reactivate,
                 apply=True, provenance="dispatcher_reuse",
             )
+            if reconcile_terminal_launch:
+                dispatcher._require_stopped_pending_session(*target_identity)
+                if open_terminal_launch:
+                    dispatcher._reconcile_interrupted_terminal_launches(
+                        slot_id=slot["slot_id"], provider=target_identity[0],
+                        environment_id=target_identity[1], session_id=target_identity[2],
+                    )
+                dispatcher._require_stopped_pending_session(*target_identity)
             current_slot = dispatcher.get_slot_by_id(slot["slot_id"])
             return _run_pane(dispatcher, slot_id=current_slot["slot_id"], launch_id=None,
                              input_stream=input_stream, output_stream=output_stream,

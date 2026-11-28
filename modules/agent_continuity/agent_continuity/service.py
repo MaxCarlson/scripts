@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.metadata
+import os
+import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1007,13 +1011,65 @@ class ContinuityService:
         )
         return out
 
-    def diagnose(self) -> dict[str, Any]:
+    def diagnose(
+        self, *, target_package_version: str | None = None, target_schema_version: int | None = None,
+    ) -> dict[str, Any]:
         """Collect read-only diagnostic state across storage, environment, and providers."""
+        from . import __version__
+        from .deployment_compatibility import (
+            cli_path_candidates,
+            count_active_llmd_writers,
+            evaluate_deployment_preflight,
+            installation_resolution,
+        )
+
         local_env = load_or_create_environment(self.home_dir, persist=False)
         spool_roots = discover_spool_roots(self.home_dir)
         scan = read_spool_events(spool_roots, optional_roots={self.home_dir / "events"})
         db_snap = self.materializer.get_diagnostics_snapshot()
         can_write = self._can_write_sqlite()
+
+        invoked = shutil.which(Path(sys.argv[0]).name) if sys.argv else None
+        invoked = invoked or (sys.argv[0] if sys.argv else None)
+        try:
+            installed_package_version = importlib.metadata.version("agent-continuity")
+        except importlib.metadata.PackageNotFoundError:
+            installed_package_version = __version__
+        installation = installation_resolution(
+            executable=invoked,
+            module_path=__file__,
+            path_candidates=cli_path_candidates(),
+        )
+        installation.update({
+            "python_executable": str(Path(sys.executable).resolve()),
+            "package_version": installed_package_version,
+            "module_version": __version__,
+            "version_mismatch": installed_package_version != __version__,
+            "package_root": str(Path(__file__).resolve().parent.parent),
+        })
+
+        deployment_preflight = None
+        if target_schema_version is not None:
+            process_state = "not_required"
+            active_writers: int | None = 0
+            current_schema = db_snap.get("schema_version")
+            if current_schema is not None and target_schema_version > current_schema:
+                from .runtime_discovery import PsutilProcessEnumerator
+
+                inventory = PsutilProcessEnumerator().enumerate_processes()
+                process_state = inventory.availability.value
+                active_writers = count_active_llmd_writers(inventory, current_pid=os.getpid())
+            ownership = db_snap.get("lifecycle_ownership") or {}
+            deployment_preflight = evaluate_deployment_preflight(
+                current_schema=current_schema,
+                target_schema=target_schema_version,
+                pending_launches=ownership.get("pending_launches"),
+                open_terminal_launches=ownership.get("open_terminal_launches"),
+                process_enumeration=process_state,
+                active_writers=active_writers,
+            )
+            deployment_preflight["current_package_version"] = installed_package_version
+            deployment_preflight["target_package_version"] = target_package_version
 
         providers_report: dict[str, Any] = {}
         for name, adapter in sorted(self.adapters.items()):
@@ -1029,6 +1085,19 @@ class ContinuityService:
         if db_snap["db_exists"] and db_snap["integrity"] != "ok":
             status = "error"
             warnings.append(f"SQLite integrity check returned: {db_snap['integrity']}. Run `agents rebuild -a`.")
+        if installation["status"] != "ok":
+            status = "degraded" if status == "ok" else status
+            warnings.append(installation["guidance"])
+        if installation["version_mismatch"]:
+            status = "degraded" if status == "ok" else status
+            warnings.append(
+                f"Installed distribution version {installed_package_version} differs from imported module version {__version__}."
+            )
+        if deployment_preflight is not None and not deployment_preflight["ready"]:
+            status = "degraded" if status == "ok" else status
+            warnings.extend(deployment_preflight["blockers"])
+        if deployment_preflight is not None:
+            warnings.extend(deployment_preflight.get("warnings", []))
 
         return {
             "status": status,
@@ -1037,6 +1106,8 @@ class ContinuityService:
             "environment": local_env.to_dict(),
             "sqlite_writer_allowed": can_write,
             "database": db_snap,
+            "installation": installation,
+            "deployment_preflight": deployment_preflight,
             "spools": {
                 "roots": [str(r) for r in spool_roots],
                 "valid_event_count": len(scan.records),
