@@ -548,3 +548,147 @@ def test_real_parallel_pytest_records_exact_worker_provenance(tmp_path: Path) ->
     assert len(set(worker_temps)) == len(expected_workers)
     assert all(Path(path).is_relative_to(Path(result["temp_root"]) / "pytest") for path in worker_temps)
     assert Path(result["temp_root"]).is_relative_to(external_temp)
+
+
+@pytest.mark.parametrize("workers", [0, 2])
+def test_real_pytest_subprocess_fails_on_unhandled_thread_exception(tmp_path: Path, workers: int) -> None:
+    if workers:
+        pytest.importorskip("xdist")
+    repo_root, target_spec = make_target(tmp_path)
+    target_root = repo_root / target_spec["working_directory"]
+    (target_root / "tests" / "test_thread_failure.py").write_text(
+        "import threading\n"
+        "def test_unhandled_thread_exception_is_fatal():\n"
+        "    thread = threading.Thread(target=lambda: (_ for _ in ()).throw(RuntimeError('thread exploded')))\n"
+        "    thread.start()\n"
+        "    thread.join()\n",
+        encoding="utf-8",
+    )
+    target_spec["selective_validation"]["imports"] = [{
+        "module": "consumer_pkg", "expected_root": "consumer_pkg",
+    }]
+
+    result = run_selective_target(
+        repo_root,
+        "consumer",
+        target_spec,
+        node_ids=[],
+        files=["tests/test_thread_failure.py"],
+        modules=[],
+        python_executable=sys.executable,
+        temporary_root=tmp_path / "evidence",
+        reuse_evidence=False,
+        workers=workers,
+    )
+
+    assert result["status"] == "failed", result
+    assert result["exit_code"] != 0
+    assert "PytestUnhandledThreadExceptionWarning" in result["failure_evidence"]
+    assert result["runtime_worker_ids"] == (
+        ["main"] if workers == 0 else ["main", "gw0", "gw1"]
+    )
+
+
+def test_serial_mode_filters_ambient_xdist_and_basetemp_configuration(tmp_path: Path) -> None:
+    repo_root, target_spec = make_target(tmp_path)
+    target_root = repo_root / target_spec["working_directory"]
+    (target_root / "pyproject.toml").write_text(
+        '[project]\nname="consumer-pkg"\n\n[tool.pytest.ini_options]\n'
+        'addopts = "-q -nauto --dist=each --max-worker-restart=5 --basetemp=shared"\n',
+        encoding="utf-8",
+    )
+    previous = os.environ.get("PYTEST_ADDOPTS")
+    os.environ["PYTEST_ADDOPTS"] = "-d --basetemp=ambient"
+    target_spec["selective_validation"]["imports"] = [{
+        "module": "consumer_pkg", "expected_root": "consumer_pkg",
+    }]
+    try:
+        result = run_selective_target(
+            repo_root, "consumer", target_spec,
+            node_ids=["tests/test_api.py::test_api"], files=[], modules=[],
+            python_executable=sys.executable,
+            temporary_root=tmp_path / "isolated-runs",
+            reuse_evidence=False,
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("PYTEST_ADDOPTS", None)
+        else:
+            os.environ["PYTEST_ADDOPTS"] = previous
+
+    assert result["status"] == "passed", result
+    assert result["runtime_worker_ids"] == ["main"]
+    command = result["command"]
+    assert "-n" not in command and "--dist=each" not in command
+    assert Path(command[command.index("--basetemp") + 1]) == Path(result["temp_root"]) / "pytest"
+
+
+def test_configuration_preflight_rejects_ambient_remote_transport(tmp_path: Path) -> None:
+    repo_root, target_spec = make_target(tmp_path)
+    target_spec["selective_validation"]["imports"] = [{
+        "module": "consumer_pkg", "expected_root": "consumer_pkg",
+    }]
+    previous = os.environ.get("PYTEST_ADDOPTS")
+    os.environ["PYTEST_ADDOPTS"] = "--tx=ssh=example.invalid"
+    try:
+        result = run_selective_target(
+            repo_root, "consumer", target_spec,
+            node_ids=["tests/test_api.py::test_api"], files=[], modules=[],
+            python_executable=sys.executable,
+            temporary_root=tmp_path / "isolated-runs",
+            reuse_evidence=False,
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("PYTEST_ADDOPTS", None)
+        else:
+            os.environ["PYTEST_ADDOPTS"] = previous
+
+    assert result["status"] == "blocked"
+    assert result["stage"] == "configuration-preflight"
+    assert "remote or repeated xdist" in result["error"]
+    assert result["command"] == []
+    assert result["runtime_worker_ids"] == []
+
+
+@pytest.mark.parametrize(
+    ("tamper", "observed_ids", "error_fragment"),
+    [
+        ("missing", ["main", "gw1"], "runtime worker receipts were"),
+        ("unexpected", ["main", "gw0", "gw1", "rogue"], "runtime worker receipts were"),
+    ],
+)
+def test_parallel_report_lists_actual_receipts_after_tampering(
+    tmp_path: Path, monkeypatch, tamper: str, observed_ids: list[str], error_fragment: str,
+) -> None:
+    pytest.importorskip("xdist")
+    repo_root, target_spec = make_target(tmp_path)
+    target_root = repo_root / target_spec["working_directory"]
+    (target_root / "tests" / "conftest.py").write_text(
+        "import json, os\nfrom pathlib import Path\nimport pytest\n"
+        "@pytest.hookimpl(trylast=True)\n"
+        "def pytest_sessionfinish(session):\n"
+        "    mode = os.environ.get('SCRIPTS_TEST_RECEIPT_TAMPER')\n"
+        "    if not mode or hasattr(session.config, 'workerinput'):\n        return\n"
+        "    root = Path(os.environ['SCRIPTS_SELECTIVE_PROVENANCE_EVIDENCE'])\n"
+        "    if mode == 'missing':\n        (root / 'gw0.json').unlink()\n"
+        "    elif mode == 'unexpected':\n        (root / 'rogue.json').write_text(json.dumps({'worker_id': 'rogue'}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    target_spec["selective_validation"]["imports"] = [{
+        "module": "consumer_pkg", "expected_root": "consumer_pkg",
+    }]
+    monkeypatch.setenv("SCRIPTS_TEST_RECEIPT_TAMPER", tamper)
+
+    result = run_selective_target(
+        repo_root, "consumer", target_spec,
+        node_ids=[], files=["tests/test_api.py", "tests/test_other.py"], modules=[],
+        python_executable=sys.executable,
+        temporary_root=tmp_path / "isolated-runs",
+        reuse_evidence=False,
+        workers=2,
+    )
+
+    assert result["status"] == "failed", result
+    assert result["runtime_worker_ids"] == observed_ids
+    assert error_fragment in " ".join(result["runtime_provenance_errors"])

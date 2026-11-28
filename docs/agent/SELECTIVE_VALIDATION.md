@@ -22,6 +22,15 @@ requested worker count and are reusable only when the existing evidence rules
 match the selection, worker count, interpreter, imports, dependencies and
 unchanged source inputs.
 
+Before pytest starts, the selected interpreter's native configuration is
+discovered. Safe `addopts` are retained, while worker-count, distribution,
+restart and `basetemp` overrides are owned by the validator. Remote transports
+and loop-on-failure modes are rejected. The running pytest process confirms its
+effective `basetemp` is the isolated run path. In serial and parallel modes,
+`PytestUnhandledThreadExceptionWarning` is fatal. `runtime_worker_ids` lists
+only receipts actually observed; it can be shorter than the requested worker
+set when receipt validation fails.
+
 Parallelize only reviewed selections whose tests and external resources are
 safe to isolate. Tests sharing fixed ports, databases, subprocess lifecycles or
 services should remain serial until their contracts demonstrate isolation.

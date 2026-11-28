@@ -46,3 +46,24 @@ provenance correctly rejected it and the environment was left unchanged. Its
 blocked receipt remains local under `docs/test-results/selective/` and is not a
 source commit. A lightweight serial Toolkit invocation and Scripts wrapper were
 also run concurrently; both exited 0 with isolated evidence.
+
+## Reliability corrections — 2026-11-27
+
+The feature branch was reconciled with Scripts main
+(`25680ef9057dd22d09946012947fc7351b4b8e8b`) in isolated merge
+`af0715f0e78f862ba808b4723b642d88d07423ba`. A final fetch confirmed the
+current remote main is the same revision. The selective-validator changes do
+not overlap the incoming CLI updates.
+
+The validator now discovers native pytest configuration with the selected
+interpreter, keeps safe `addopts`, removes runner-owned worker/temp controls,
+rejects remote/repeated xdist options, and checks the effective pytest temp
+root at runtime. Unhandled thread-exception warnings are fatal in serial and
+xdist runs. `runtime_worker_ids` lists parsed runtime receipts, including
+partial receipts in failed test runs, and does not synthesize requested IDs.
+
+Focused regressions passed: six tests covering serial/xdist thread failures,
+ambient serial controls, remote-transport rejection, and missing/unexpected
+worker receipts; the existing exact 12-worker provenance subprocess also
+passed. Ruff and `git diff --check` passed. Earlier 12/16-worker fan-out and
+timing evidence is reused; no timing series was repeated.

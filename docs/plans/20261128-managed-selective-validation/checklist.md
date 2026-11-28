@@ -24,3 +24,6 @@
 - [x] Exercise the helper subprocess at 12 workers and public wrapper at 12 and 16 workers using synthetic consumers.
 - [x] Compare serial/12/16 elapsed time and record worker process fan-out plus the lack of peak-memory sampling.
 - [x] Keep the stale editable-environment block as local evidence; do not alter the installed environment.
+- [x] Report only actually observed runtime worker receipts and exercise missing/unexpected receipt rejection.
+- [x] Preflight native pytest addopts, prevent ambient xdist/basetemp overrides, reject remote execution, and verify the effective temporary root in pytest.
+- [x] Promote unhandled thread-exception warnings to fatal and verify real serial/xdist subprocess failures.
