@@ -7,4 +7,4 @@
 - [x] Cover concurrent recovery, interrupted terminal-launch publication, unknown process enumeration, stale reservation, selected-session conflict, running session, and cwd/workflow metadata preservation.
 - [x] Implement runtime transition guards for normal writes and rebuild, version-aware preflight, install resolution diagnostics, and exact stopped-session recovery. Native allocation remains disabled.
 - [x] Run focused tests, applicable full module/help tests, Ruff, and diff checks.
-- [ ] Commit/push qualified task branch and report 2.5.2 readiness without merge/deployment.
+- [x] Commit/push qualified task branch and report 2.5.2 readiness without merge/deployment.
