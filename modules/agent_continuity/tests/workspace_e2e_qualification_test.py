@@ -604,7 +604,7 @@ def test_real_managed_relay_grouped_restoration_and_failure_modes(tmp_path: Path
         supports_exact_session = True
 
         def build_pane_command(self, request: RestoreLaunchRequest) -> tuple[str, ...]:
-            return (sys.executable, "-c", "import time; time.sleep(0.2)")
+            return (sys.executable, "-c", "import time; time.sleep(2.0)")
 
     launcher = TerminalLauncherRestoreAdapter(
         backend=backend,
@@ -2010,6 +2010,10 @@ def test_monotonic_reservation_transitions_nonzero_exit_and_queue_boundary(
                 idx += 2
             else:
                 idx += 1
+        # This scenario validates nonzero exit reconciliation, so ensure the
+        # relay's durable exit receipt exists before the restore result is read.
+        for proc in spawned:
+            proc.wait(timeout=15.0)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     class _PositiveThenNonzeroBuilder:

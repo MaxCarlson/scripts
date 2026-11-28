@@ -6,14 +6,22 @@ import json
 import os
 import secrets
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .environment import assert_sqlite_writer_allowed
 from .errors import ContinuityError, ErrorCode
-from .events import SpoolIssue, discover_spool_roots, read_spool_events
+from .events import (
+    MAX_EVENT_FILE_BYTES,
+    SpoolIssue,
+    _stat_tuple,
+    compute_event_checksum,
+    discover_spool_roots,
+    read_spool_events,
+    read_spool_events_incremental,
+)
 from .identifiers import normalize_path_canonical, normalize_repo_identity, now_utc_iso
 from .models import (
     AssociationRecord,
@@ -50,6 +58,104 @@ class SyncResult:
         }
 
 
+_FINGERPRINTS_DDL = """
+CREATE TABLE IF NOT EXISTS spool_file_fingerprints (
+    spool_file TEXT PRIMARY KEY,
+    size INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL,
+    ctime_ns INTEGER NOT NULL,
+    ino TEXT NOT NULL,
+    dev TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    event_id TEXT NOT NULL
+)
+"""
+
+
+def _ensure_fingerprints_table(conn: sqlite3.Connection) -> None:
+    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(spool_file_fingerprints)").fetchall()}
+    if cols and not {"ino", "dev"}.issubset(cols):
+        conn.execute("DROP TABLE spool_file_fingerprints")
+    conn.execute(_FINGERPRINTS_DDL)
+
+
+def _load_fingerprints(conn: sqlite3.Connection) -> dict[str, tuple[int, int, int, int, int]]:
+    rows = conn.execute(
+        "SELECT spool_file, size, mtime_ns, ctime_ns, ino, dev FROM spool_file_fingerprints"
+    ).fetchall()
+    return {
+        str(row[0]): (int(row[1]), int(row[2]), int(row[3]), int(row[4]), int(row[5]))
+        for row in rows
+    }
+
+
+def _upsert_fingerprint(
+    conn: sqlite3.Connection,
+    *,
+    spool_file: str,
+    fingerprint: tuple[int, int, int, int, int],
+    checksum: str,
+    event_id: str,
+) -> None:
+    if fingerprint[3] == 0:
+        return
+    conn.execute(
+        """INSERT OR REPLACE INTO spool_file_fingerprints(
+               spool_file, size, mtime_ns, ctime_ns, ino, dev, checksum, event_id
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            spool_file,
+            fingerprint[0],
+            fingerprint[1],
+            fingerprint[2],
+            str(fingerprint[3]),
+            str(fingerprint[4]),
+            checksum,
+            event_id,
+        ),
+    )
+
+
+def _bind_spool_file_fingerprint(
+    spool_file: str,
+    expected_event_id: str,
+    expected_checksum: str,
+) -> tuple[tuple[int, int, int, int, int], str] | None:
+    """Bind `(size, mtime_ns, ctime_ns, ino, dev)` to the exact bytes matching `expected_event_id`."""
+    path = Path(spool_file)
+    try:
+        with path.open("rb") as fh:
+            st1 = os.fstat(fh.fileno())
+            if st1.st_size <= 0 or st1.st_size > MAX_EVENT_FILE_BYTES:
+                return None
+            raw = fh.read(MAX_EVENT_FILE_BYTES + 1)
+            st2 = os.fstat(fh.fileno())
+            st_path = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    fd1 = _stat_tuple(st1)
+    fd2 = _stat_tuple(st2)
+    path_fp = _stat_tuple(st_path)
+    if (
+        fd1 != fd2
+        or int(getattr(st1, "st_ctime_ns", 0)) != int(getattr(st2, "st_ctime_ns", 0))
+        or fd1 != path_fp
+        or len(raw) != int(st1.st_size)
+        or fd1[3] == 0
+    ):
+        return None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("event_id") != expected_event_id:
+        return None
+    actual_checksum = compute_event_checksum(data)
+    if expected_checksum and actual_checksum != expected_checksum:
+        return None
+    return fd1, actual_checksum
+
+
 class SQLiteMaterializer:
     """Manages the derived SQLite query index from durable environment-isolated events."""
 
@@ -57,6 +163,55 @@ class SQLiteMaterializer:
         self.home_dir = home_dir
         self.db_path = home_dir / "index.sqlite"
         self.allow_unsafe_cross_os = allow_unsafe_cross_os
+
+    @contextmanager
+    def _writer_lock(self, *, timeout_seconds: float = 10.0):
+        """Cross-process writer exclusion protecting index.sqlite and WAL/SHM sidecars."""
+        import time
+
+        lock_path = self.home_dir / ".index.sqlite.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + timeout_seconds
+        stream = lock_path.open("a+b")
+        try:
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        stream.seek(0)
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if time.monotonic() >= deadline:
+                        raise ContinuityError(
+                            ErrorCode.MATERIALIZER_FAILED,
+                            f"Timed out waiting for SQLite materializer writer lock {lock_path}.",
+                            {"db_path": str(self.db_path)},
+                        ) from exc
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    import msvcrt
+
+                    try:
+                        stream.seek(0)
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                    except OSError:
+                        pass
+                else:
+                    import fcntl
+
+                    with suppress(OSError):
+                        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        finally:
+            stream.close()
 
     def _connect_rw(self, path: Path | None = None) -> sqlite3.Connection:
         target = path or self.db_path
@@ -82,12 +237,25 @@ class SQLiteMaterializer:
         if not items:
             return 0
         applied_count = 0
-        with closing(self._connect_rw()) as conn:
+        with self._writer_lock(), closing(self._connect_rw()) as conn:
             try:
+                _ensure_fingerprints_table(conn)
                 conn.execute("BEGIN IMMEDIATE")
                 for event, spool_file, checksum in items:
-                    if self._apply_event_in_tx(conn, event, spool_file=spool_file, checksum=checksum):
+                    effective_checksum = checksum or compute_event_checksum(event.to_dict())
+                    if self._apply_event_in_tx(conn, event, spool_file=spool_file, checksum=effective_checksum):
                         applied_count += 1
+                    if spool_file:
+                        bound = _bind_spool_file_fingerprint(spool_file, event.event_id, effective_checksum)
+                        if bound is not None:
+                            fp, actual_cs = bound
+                            _upsert_fingerprint(
+                                conn,
+                                spool_file=spool_file,
+                                fingerprint=fp,
+                                checksum=actual_cs,
+                                event_id=event.event_id,
+                            )
                 conn.commit()
                 return applied_count
             except Exception as exc:
@@ -101,15 +269,40 @@ class SQLiteMaterializer:
                     {"event_id": last_ev.event_id, "event_type": last_ev.event_type},
                 ) from exc
 
-    def sync_from_spools(self, extra_roots: list[Path] | None = None) -> SyncResult:
-        """Ingest any unmaterialized events from configured spool roots."""
+    def sync_from_spools(
+        self,
+        extra_roots: list[Path] | None = None,
+        *,
+        verify_checksums: bool = False,
+    ) -> SyncResult:
+        """Ingest any new or modified events from configured spool roots incrementally."""
         roots = discover_spool_roots(self.home_dir, extra_roots=extra_roots)
-        scan = read_spool_events(roots, optional_roots={self.home_dir / "events"})
-        ingested = 0
-        skipped = 0
+        optional_roots = {self.home_dir / "events"}
+        known_fingerprints: dict[str, tuple[int, int, int, int, int]] = {}
+        can_use_ro_fast_path = False
 
-        if not scan.records and not self.db_path.exists():
-            # Avoid creating empty SQLite if there are zero events yet unless writer wants schema
+        if self.db_path.exists() and not verify_checksums:
+            ro_conn = self._connect_ro()
+            if ro_conn is not None:
+                try:
+                    with closing(ro_conn):
+                        if get_schema_version(ro_conn) == SCHEMA_VERSION:
+                            known_fingerprints = _load_fingerprints(ro_conn)
+                            can_use_ro_fast_path = True
+                except sqlite3.Error:
+                    known_fingerprints = {}
+                    can_use_ro_fast_path = False
+
+        scan = read_spool_events_incremental(
+            roots,
+            known_fingerprints=known_fingerprints,
+            optional_roots=optional_roots,
+            verify_checksums=verify_checksums,
+        )
+        ingested = 0
+        skipped = scan.unchanged_count
+
+        if not scan.total_files and not self.db_path.exists():
             return SyncResult(
                 ingested_count=0,
                 skipped_duplicates=0,
@@ -119,49 +312,52 @@ class SQLiteMaterializer:
                 rebuilt=False,
             )
 
-        if self.db_path.exists():
-            ro_conn = self._connect_ro()
-            if ro_conn is not None:
-                try:
-                    with closing(ro_conn):
-                        if get_schema_version(ro_conn) == SCHEMA_VERSION:
-                            if not scan.records:
-                                return SyncResult(
-                                    ingested_count=0,
-                                    skipped_duplicates=0,
-                                    total_spool_events=0,
-                                    issues=scan.issues,
-                                    db_path=str(self.db_path),
-                                    rebuilt=False,
-                                )
-                            ingested_ids = {
-                                row[0] for row in ro_conn.execute("SELECT event_id FROM ingested_events").fetchall()
-                            }
-                            if all(rec.envelope.event_id in ingested_ids for rec in scan.records):
-                                return SyncResult(
-                                    ingested_count=0,
-                                    skipped_duplicates=len(scan.records),
-                                    total_spool_events=len(scan.records),
-                                    issues=scan.issues,
-                                    db_path=str(self.db_path),
-                                    rebuilt=False,
-                                )
-                except sqlite3.Error:
-                    pass
+        deleted_keys = set(known_fingerprints) - scan.current_keys
+        if can_use_ro_fast_path and not scan.records and not deleted_keys:
+            return SyncResult(
+                ingested_count=0,
+                skipped_duplicates=scan.unchanged_count,
+                total_spool_events=scan.total_files,
+                issues=scan.issues,
+                db_path=str(self.db_path),
+                rebuilt=False,
+            )
 
-        with closing(self._connect_rw()) as conn:
+        issues = list(scan.issues)
+        with self._writer_lock(), closing(self._connect_rw()) as conn:
             try:
+                _ensure_fingerprints_table(conn)
                 conn.execute("BEGIN IMMEDIATE")
                 for rec in scan.records:
-                    if self._apply_event_in_tx(
-                        conn,
-                        rec.envelope,
-                        spool_file=str(rec.file_path),
-                        checksum=rec.checksum,
-                    ):
-                        ingested += 1
-                    else:
-                        skipped += 1
+                    try:
+                        if self._apply_event_in_tx(
+                            conn,
+                            rec.envelope,
+                            spool_file=str(rec.file_path),
+                            checksum=rec.checksum,
+                            verify_checksums=verify_checksums,
+                        ):
+                            ingested += 1
+                        else:
+                            skipped += 1
+                    except ContinuityError as exc:
+                        if exc.code in {ErrorCode.ASSOCIATION_CONFLICT, ErrorCode.MATERIALIZER_FAILED}:
+                            issues.append(SpoolIssue(str(rec.file_path), str(exc)))
+                            continue
+                        raise
+                    if rec.fingerprint is not None:
+                        _upsert_fingerprint(
+                            conn,
+                            spool_file=str(rec.file_path),
+                            fingerprint=rec.fingerprint,
+                            checksum=rec.checksum,
+                            event_id=rec.envelope.event_id,
+                        )
+                if deleted_keys:
+                    conn.executemany(
+                        "DELETE FROM spool_file_fingerprints WHERE spool_file = ?",
+                        [(k,) for k in deleted_keys],
+                    )
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('last_sync_at', ?)",
                     (now_utc_iso(),),
@@ -180,17 +376,18 @@ class SQLiteMaterializer:
         return SyncResult(
             ingested_count=ingested,
             skipped_duplicates=skipped,
-            total_spool_events=len(scan.records),
-            issues=scan.issues,
+            total_spool_events=scan.total_files,
+            issues=issues,
             db_path=str(self.db_path),
             rebuilt=False,
         )
 
     def rebuild_from_spools(self, extra_roots: list[Path] | None = None) -> SyncResult:
-        """Rebuild index.sqlite atomically from scratch by replaying all durable spool events."""
+        """Rebuild index.sqlite atomically from scratch under writer lock by replaying all durable spool events."""
         assert_sqlite_writer_allowed(self.db_path, allow_unsafe_cross_os=self.allow_unsafe_cross_os)
         roots = discover_spool_roots(self.home_dir, extra_roots=extra_roots)
         scan = read_spool_events(roots, optional_roots={self.home_dir / "events"})
+        issues = list(scan.issues)
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         staging = self.db_path.with_name(f".index.sqlite.rebuild.{os.getpid()}.{secrets.token_hex(4)}.tmp")
@@ -198,77 +395,93 @@ class SQLiteMaterializer:
         skipped = 0
 
         conn: sqlite3.Connection | None = None
-        try:
-            conn = sqlite3.connect(str(staging), timeout=5.0)
-            ensure_schema(conn)
-            conn.execute("BEGIN IMMEDIATE")
-            for rec in scan.records:
-                if self._apply_event_in_tx(
-                    conn,
-                    rec.envelope,
-                    spool_file=str(rec.file_path),
-                    checksum=rec.checksum,
-                ):
-                    ingested += 1
-                else:
-                    skipped += 1
-            now = now_utc_iso()
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('last_rebuild_at', ?)",
-                (now,),
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('last_sync_at', ?)",
-                (now,),
-            )
-            conn.commit()
-            # Switch staging DB out of WAL before replacing target so no orphan -wal/-shm are needed
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-            conn.execute("PRAGMA journal_mode = DELETE;")
-            integrity = conn.execute("PRAGMA integrity_check;").fetchone()
-            if not integrity or integrity[0] != "ok":
+        with self._writer_lock():
+            try:
+                conn = sqlite3.connect(str(staging), timeout=5.0)
+                ensure_schema(conn)
+                _ensure_fingerprints_table(conn)
+                conn.execute("BEGIN IMMEDIATE")
+                for rec in scan.records:
+                    try:
+                        if self._apply_event_in_tx(
+                            conn,
+                            rec.envelope,
+                            spool_file=str(rec.file_path),
+                            checksum=rec.checksum,
+                        ):
+                            ingested += 1
+                        else:
+                            skipped += 1
+                    except ContinuityError as exc:
+                        if exc.code in {ErrorCode.ASSOCIATION_CONFLICT, ErrorCode.MATERIALIZER_FAILED}:
+                            issues.append(SpoolIssue(str(rec.file_path), str(exc)))
+                            continue
+                        raise
+                    if rec.fingerprint is not None:
+                        _upsert_fingerprint(
+                            conn,
+                            spool_file=str(rec.file_path),
+                            fingerprint=rec.fingerprint,
+                            checksum=rec.checksum,
+                            event_id=rec.envelope.event_id,
+                        )
+                now = now_utc_iso()
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('last_rebuild_at', ?)",
+                    (now,),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('last_sync_at', ?)",
+                    (now,),
+                )
+                conn.commit()
+                # Switch staging DB out of WAL before replacing target so no orphan -wal/-shm are needed
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                conn.execute("PRAGMA journal_mode = DELETE;")
+                integrity = conn.execute("PRAGMA integrity_check;").fetchone()
+                if not integrity or integrity[0] != "ok":
+                    raise ContinuityError(
+                        ErrorCode.MATERIALIZER_FAILED,
+                        f"Rebuilt database failed integrity_check: {integrity}",
+                    )
+                conn.close()
+                conn = None
+
+                # Clean stale WAL/SHM sidecars for target under writer exclusion before atomic replacement
+                for suffix in ("-wal", "-shm"):
+                    sidecar = Path(f"{self.db_path}{suffix}")
+                    sidecar.unlink(missing_ok=True)
+                os.replace(staging, self.db_path)
+
+                # Re-open briefly to restore WAL mode on the live index
+                with closing(self._connect_rw(self.db_path)) as live:
+                    live.execute("PRAGMA journal_mode = WAL;")
+            except Exception as exc:
+                if conn is not None:
+                    try:
+                        conn.rollback()
+                        conn.close()
+                    except sqlite3.Error:
+                        pass
+                try:
+                    staging.unlink(missing_ok=True)
+                    for suffix in ("-wal", "-shm"):
+                        Path(f"{staging}{suffix}").unlink(missing_ok=True)
+                except OSError:
+                    pass
+                if isinstance(exc, ContinuityError):
+                    raise
                 raise ContinuityError(
                     ErrorCode.MATERIALIZER_FAILED,
-                    f"Rebuilt database failed integrity_check: {integrity}",
-                )
-            conn.close()
-            conn = None
-
-            # Clean stale WAL/SHM sidecars for target before atomic replacement
-            for suffix in ("-wal", "-shm"):
-                sidecar = Path(f"{self.db_path}{suffix}")
-                sidecar.unlink(missing_ok=True)
-            os.replace(staging, self.db_path)
-
-            # Re-open briefly to restore WAL mode on the live index
-            with closing(self._connect_rw(self.db_path)) as live:
-                live.execute("PRAGMA journal_mode = WAL;")
-        except Exception as exc:
-            if conn is not None:
-                try:
-                    conn.rollback()
-                    conn.close()
-                except sqlite3.Error:
-                    pass
-            try:
-                staging.unlink(missing_ok=True)
-                for suffix in ("-wal", "-shm"):
-                    Path(f"{staging}{suffix}").unlink(missing_ok=True)
-            except OSError:
-                pass
-            if isinstance(exc, ContinuityError):
-                raise
-            raise ContinuityError(
-                ErrorCode.MATERIALIZER_FAILED,
-                f"Atomic rebuild failed: {exc}",
-                {"db_path": str(self.db_path)},
-            ) from exc
+                    f"Atomic rebuild failed: {exc}",
+                    {"db_path": str(self.db_path)},
+                ) from exc
 
         return SyncResult(
             ingested_count=ingested,
             skipped_duplicates=skipped,
             total_spool_events=len(scan.records),
-            issues=scan.issues,
+            issues=issues,
             db_path=str(self.db_path),
             rebuilt=True,
         )
@@ -299,12 +512,27 @@ class SQLiteMaterializer:
         *,
         spool_file: str | None = None,
         checksum: str = "",
+        verify_checksums: bool = False,
     ) -> bool:
         existing = conn.execute(
             "SELECT checksum FROM ingested_events WHERE event_id = ?",
             (event.event_id,),
         ).fetchone()
         if existing is not None:
+            stored_checksum = str(existing[0] or "")
+            effective_checksum = checksum or compute_event_checksum(event.to_dict())
+            if stored_checksum and effective_checksum and stored_checksum != effective_checksum:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Conflicting checksum for event {event.event_id!r}.",
+                    {"event_id": event.event_id, "spool_file": spool_file},
+                )
+            if verify_checksums and not stored_checksum:
+                raise ContinuityError(
+                    ErrorCode.MATERIALIZER_FAILED,
+                    f"Legacy event {event.event_id!r} has empty checksum; integrity unverified.",
+                    {"event_id": event.event_id, "spool_file": spool_file},
+                )
             return False
 
         p = event.payload

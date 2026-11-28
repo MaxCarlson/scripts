@@ -1976,6 +1976,7 @@ class DispatcherService:
         reactivate: bool = False,
         defer_reactivate: bool = False,
         expected_current: tuple[str, str, str] | None = None,
+        state_already_synced: bool = False,
         apply: bool = False,
     ) -> dict[str, Any]:
         """Atomically plan/register a GUI and slot and request one new launch."""
@@ -1984,7 +1985,8 @@ class DispatcherService:
         if not gui_name or len(gui_name) > 120 or not agent_name or len(agent_name) > 120:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "GUI and agent names must contain 1–120 characters.")
         provider_name = self.continuity._validate_provider(provider)
-        self._sync()
+        if not state_already_synced:
+            self._sync()
         local_env = load_or_create_environment(self.home_dir, persist=apply)
         env = resolve_environment_selector(environment_selector, self.materializer.list_environments(), local_env)
         if provider_name == "claude" and env.runtime_kind == "wsl":

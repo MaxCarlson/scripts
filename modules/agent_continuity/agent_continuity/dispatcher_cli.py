@@ -4660,6 +4660,11 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
     native_args = getattr(args, "native_args", [])
     original_native_args = list(native_args)
     native_args = _resolve_profile_invocation(dispatcher, args, native_args)
+    if args.command == "start" and getattr(args, "gui", None) and getattr(args, "agent_name", None):
+        # Profile resolution looked up this exact slot and synchronized the registry.
+        # _start consumes that snapshot, while prepare_start still synchronizes again
+        # under the mutation lock before applying its selection checks.
+        args._llmd_registry_synced = True
     args.native_args = native_args
     _PROFILE_ARGV.set(tuple(native_args[:len(native_args) - len(original_native_args)]))
     allow_native_unknown = bool(getattr(args, "allow_native_unknown", False))
@@ -5117,7 +5122,9 @@ def _start(
     input_stream: TextIO,
     output_stream: TextIO,
 ) -> int:
-    dispatcher._sync()
+    state_already_synced = bool(getattr(args, "_llmd_registry_synced", False))
+    if not state_already_synced:
+        dispatcher._sync()
     gui_row = dispatcher._row(
         "SELECT gui_id, alias FROM dispatcher_gui_conversations WHERE alias_key = ?", (args.gui.strip().casefold(),)
     )
@@ -5217,6 +5224,7 @@ def _start(
         environment_selector=launch_environment_selector,
         reactivate=args.reactivate,
         expected_current=expected_current,
+        state_already_synced=state_already_synced,
         apply=args.apply,
     )
     if args.apply:

@@ -1001,6 +1001,34 @@ def test_invocation_settings_override_profile_without_cross_launch_persistence(t
     assert dispatcher.get_profile("safe")["settings"]["sandbox"] == "workspace-write"
 
 
+def test_start_reuses_cli_sync_for_prepare_preview(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.create_gui("GUI", apply=True)
+    dispatcher.create_slot(gui="GUI", name="Agent", apply=True)
+
+    calls = 0
+    original_sync = DispatcherService._sync
+
+    def counted_sync(self):
+        nonlocal calls
+        calls += 1
+        return original_sync(self)
+
+    monkeypatch.setattr(DispatcherService, "_sync", counted_sync)
+    parser = build_parser()
+    output = StringIO()
+    result = dispatch(
+        parser.parse_args(["-H", str(home), "start", "GUI", "Agent", "-p", "codex", "-d", "-j"]),
+        parser,
+        input_stream=StringIO(),
+        output_stream=output,
+    )
+
+    assert result == 0
+    assert calls == 1
+
+
 def test_workflow_type_cli_is_default_apply_and_json_lists_identity_metadata(tmp_path):
     home = tmp_path / "registry"
     parser = build_parser()
