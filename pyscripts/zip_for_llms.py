@@ -49,7 +49,7 @@ The module also exposes:
 """
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 import argparse
 import json
@@ -504,6 +504,8 @@ def text_file_mode(
                 _print_header("Flattening files...")
             staging_root = flatten_directory(source_dir, exclusion, name_by_path=name_by_path, verbose=verbose)
 
+        content_exclusion = Exclusion(set(), set(), set(), [], []) if flatten else exclusion
+
         # Walk staging root for file contents (prune excluded dirs entirely)
         for r, dirs, files in os.walk(staging_root):
             root_path = Path(r)
@@ -523,7 +525,7 @@ def text_file_mode(
             for f in files:
                 p = root_path / f
                 rel = _relpath(p, staging_root)
-                if exclusion.file_is_excluded(rel):
+                if content_exclusion.file_is_excluded(rel):
                     # Only print skip if not under an already-excluded dir (we pruned, but be safe)
                     parent_rel = _relpath(p.parent, staging_root)
                     if verbose and not exclusion.dir_is_excluded(parent_rel):
@@ -588,7 +590,9 @@ def zip_folder(
         if flatten:
             if verbose:
                 _print_header("Flattening files...")
-            flat_staging_root = flatten_directory(staging_root, exclusion, name_by_path=name_by_path, verbose=verbose)
+            flat_staging_root = flatten_directory(
+                staging_root, Exclusion(set(), set(), set(), [], []), name_by_path=name_by_path, verbose=verbose
+            )
             # Replace staging_root with the flattened one for zipping
             staging_root = flat_staging_root
 
@@ -1026,10 +1030,15 @@ def build_preview(
         max_bytes = max_size * 1024 * 1024
         remaining = sum(int(item["size_bytes"] or 0) for item in zip_files)
         preferences_set = set(preferences or [])
-        while remaining > max_bytes and zip_files:
-            preferred = [item for item in zip_files if Path(str(item["path"])).suffix in preferences_set]
-            candidates = preferred or zip_files
-            victim = max(candidates, key=lambda item: (int(item["size_bytes"] or 0), str(item["path"]).casefold()))
+        preferred = [item for item in zip_files if Path(str(item["path"])).suffix in preferences_set]
+        other = [item for item in zip_files if Path(str(item["path"])).suffix not in preferences_set]
+        def ordering(item):
+            path = str(item["path"])
+            return -int(item["size_bytes"] or 0), path.casefold(), path
+        removals = sorted(preferred, key=ordering) + sorted(other, key=ordering)
+        for victim in removals:
+            if remaining <= max_bytes:
+                break
             zip_files.remove(victim)
             remaining -= int(victim["size_bytes"] or 0)
             trimmed.append(str(victim["path"]))
@@ -1106,12 +1115,13 @@ def _preview_tree(source_dir: Path, report: Dict[str, object]) -> str:
 
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Preview and package a repo for LLMs; optionally run Gemini analysis.")
-    p.add_argument("source", help="Source folder to package")
+    p.add_argument("source", nargs="?", help="Source folder to package (defaults to current folder in TUI mode)")
     p.add_argument("-o", "--output", "-O", help="Output base path (no extension needed)", default=None)
 
     p.add_argument("-f", "--file-mode", action="store_true", help="Write consolidated text file")
     p.add_argument("-z", "--zip-mode", action="store_true", help="Write zip file")
     p.add_argument("-d", "--dry-run", "--preview", action="store_true", help="Preview selection without creating outputs")
+    p.add_argument("-i", "--tui", action="store_true", help="Open the interactive packaging TUI")
     p.add_argument("-l", "--list-files", action="store_true", help="List selected files and sizes in preview")
     p.add_argument("-E", "--list-excluded", action="store_true", help="List excluded files and reasons in preview")
     p.add_argument("-j", "--json", action="store_true", help="Print deterministic JSON preview")
@@ -1151,6 +1161,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     args = p.parse_args(argv)
+
+    if args.source is None:
+        if args.tui:
+            args.source = str(Path.cwd())
+        else:
+            p.error("source is required unless --tui is used")
 
     source_dir = Path(args.source).resolve()
     if not source_dir.is_dir():
@@ -1230,6 +1246,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         actual_text = output_dir / (base_name + ".txt")
     elif run_zip_mode:
         actual_zip = output_dir / (base_name + ".zip")
+
+    if args.tui:
+        from llm_packaging.tui import TuiState, launch_tui
+        state = TuiState(
+            source=source_dir, output_base=output_path.with_suffix("") if output_path.suffix else output_path,
+            mode="both" if actual_text and actual_zip else "text" if actual_text else "zip",
+            preset=args.preset, dry_run=args.dry_run,
+            exclude_dirs=final_exclude_dirs, exclude_exts=final_exclude_exts,
+            exclude_files=final_exclude_files, remove_patterns=final_remove_patterns,
+            keep_patterns=final_keep_patterns, flatten=args.flatten, name_by_path=args.name_by_path,
+            max_size=args.max_size, preferences=preferences,
+            async_scan=True,
+        )
+        return launch_tui(state)
 
     preview_mode = args.dry_run or args.list_files or args.list_excluded or args.json
     if preview_mode:

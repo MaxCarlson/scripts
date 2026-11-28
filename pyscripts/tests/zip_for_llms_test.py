@@ -959,3 +959,114 @@ def test_preview_keeps_unreadable_selected_files_with_error(tmp_path: Path, monk
     assert report["included_files"] == [{
         "path": "locked.txt", "size_bytes": 8, "readable_text": False, "error": "access denied"
     }]
+
+
+def test_inventory_is_metadata_only_and_lazily_scans_unpruned_directories(tmp_path: Path, monkeypatch):
+    from llm_packaging.selection import Inventory
+
+    root = tmp_path / "repo"
+    (root / "hidden").mkdir(parents=True)
+    (root / "hidden" / "inside.txt").write_text("secret")
+    (root / "visible.txt").write_text("visible")
+    inventory = Inventory(root)
+    first = inventory.snapshot(Exclusion({"hidden"}, set(), set(), [], []))
+    assert first.selected_files == 1
+    assert first.pruned_directories == 1
+
+    monkeypatch.setattr(Path, "read_bytes", lambda *_: pytest.fail("metadata snapshot read file content"))
+    second = inventory.snapshot(Exclusion(set(), set(), set(), [], []))
+    assert second.selected_files == 2
+    assert second.selected_bytes == len("secret") + len("visible")
+    assert second.generation == first.generation + 1
+
+
+def test_tui_headless_navigation_filters_and_dry_run(tmp_path: Path):
+    from llm_packaging.tui import TuiState, render_virtual_screen
+
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "a.py").write_text("pass")
+    state = TuiState(root, tmp_path / "out", dry_run=True, exclude_dirs=set(), exclude_exts=set(), exclude_files=set())
+    initial_bytes = state.snapshot.selected_bytes
+    assert state.screen == "settings"
+    assert state.process_key(10)
+    assert state.process_key(ord("g"))
+    assert state.screen == "groups"
+    assert state.groups()
+    assert state.process_key(27)
+    assert state.process_key(10)
+    assert state.process_key(258)
+    assert state.process_key(10)
+    assert state.screen == "review"
+    assert "Dry-run" in "\n".join(render_virtual_screen(state))
+    assert state.process_key(ord("y"))
+    assert not (tmp_path / "out.zip").exists()
+    assert state.snapshot.selected_bytes == initial_bytes
+
+
+def test_tui_filter_rules_update_snapshot_and_support_undo_redo(tmp_path: Path):
+    from llm_packaging.tui import TuiState
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "keep.log").write_text("data")
+    state = TuiState(root, tmp_path / "out", exclude_dirs=set(), exclude_exts=set(), exclude_files=set())
+    state.add_rule("extension", ".log")
+    assert state.snapshot.selected_files == 0
+    state.screen = "filters"
+    assert state.process_key(ord("u"))
+    assert state.snapshot.selected_files == 1
+    assert state.process_key(ord("y"))
+    assert state.snapshot.selected_files == 0
+    assert any(kind == "extension" and origin == "user" for kind, _, origin in state.active_rules())
+
+
+def test_tui_cli_allows_omitted_source_and_passes_dry_run(tmp_path: Path, monkeypatch):
+    import llm_packaging.tui as tui
+
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+    monkeypatch.setattr(tui, "launch_tui", lambda state: captured.setdefault("state", state) and 0)
+    assert main(["-i", "-d", "-o", str(tmp_path / "not-created" / "package")]) == 0
+    state = captured["state"]
+    assert state.source == Path.cwd()
+    assert state.dry_run
+    assert not (tmp_path / "not-created").exists()
+
+
+def test_tui_requires_review_and_rejects_flatten_collisions(tmp_path: Path):
+    from llm_packaging.tui import TuiState
+
+    root = tmp_path / "repo"
+    (root / "a").mkdir(parents=True)
+    (root / "b").mkdir()
+    (root / "a" / "same.txt").write_text("one")
+    (root / "b" / "same.txt").write_text("two")
+    state = TuiState(root, tmp_path / "out", mode="zip", exclude_dirs=set(),
+                     exclude_exts=set(), exclude_files=set(), flatten=True)
+    state.screen = "review"
+    assert state.process_key(ord("y"))
+    assert state.screen == "review"
+    assert not (tmp_path / "out.zip").exists()
+    assert "Resolve projection conflicts" in state.message
+
+
+def test_tui_async_scan_publishes_snapshot_after_worker_finishes(tmp_path: Path):
+    import time
+    from llm_packaging.tui import TuiState
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "one.py").write_text("pass")
+    state = TuiState(root, tmp_path / "out", exclude_dirs=set(), exclude_exts=set(),
+                     exclude_files=set(), async_scan=True)
+    try:
+        assert state.scan_pending
+        deadline = time.monotonic() + 2
+        while state.scan_pending and time.monotonic() < deadline:
+            state.poll_worker()
+            time.sleep(0.01)
+        assert not state.scan_pending
+        assert state.snapshot.selected_files == 1
+    finally:
+        state.close()

@@ -1,4 +1,4 @@
-<!-- version: 0.3.0 -->
+<!-- version: 0.4.0 -->
 # zip_for_llms.py
 
 Preview and package the selected files in a repository for LLM analysis. The
@@ -39,3 +39,20 @@ estimates based on readable UTF-8 source bytes; they do not model the tokenizer
 of a particular LLM. Binary and non-UTF-8 files remain selected for ZIP output
 but are excluded from the consolidated-text token estimate. Excluded directory
 contents are not enumerated for preview counts.
+
+## Interactive packaging
+
+```powershell
+python pyscripts/zip_for_llms.py -i
+python pyscripts/zip_for_llms.py . -i -f -P python
+python pyscripts/zip_for_llms.py . -i -z -x tests
+python pyscripts/zip_for_llms.py . -i -d
+```
+
+The interactive workflow starts with source/output and mode settings, then lets
+you inspect the selected tree, edit filters, discover repeated patterns, and
+review destinations before generation. Press `Y` in review to generate; an
+existing destination requires a second `Y`. `--dry-run` disables generation.
+Filtering uses a cached metadata inventory and does not read file contents
+until a writer is explicitly run. If the terminal UI cannot initialize, the
+command exits with an error and does not fall through to packaging.

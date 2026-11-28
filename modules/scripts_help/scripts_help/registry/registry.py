@@ -317,7 +317,7 @@ REGISTRY: dict = {
             {
                 "name": "zip_for_llms.py",
                 "path": "pyscripts/zip_for_llms.py",
-                "desc": "Preview and package repo for LLM: filters, presets, JSON reports, size reporting",
+                "desc": "Interactive and CLI LLM packaging with filters, presets, previews, and JSON reports",
                 "help_cmd": ["python", "pyscripts/zip_for_llms.py", "--help"],
             },
             {
