@@ -36,9 +36,16 @@ class CommandEntry:
     distribution: str | None = None
     entry_point: str | None = None
     version: str | None = None
+    is_alias: bool = False
+    alias_of: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if not data["is_alias"]:
+            data.pop("is_alias")
+        if not data["alias_of"]:
+            data.pop("alias_of")
+        return data
 
 
 @dataclass(frozen=True)
@@ -180,6 +187,8 @@ def _load_manifest_commands(repo_root: Path, descriptions: dict[str, str]) -> li
                 distribution=info.get("distribution"),
                 entry_point=info.get("entry_point"),
                 version=info.get("version"),
+                is_alias=bool(info.get("is_alias", False)),
+                alias_of=info.get("alias_of"),
             )
         )
     return entries
@@ -222,8 +231,12 @@ def _load_pyproject_console_scripts(
         project_desc_m = re.search(r'''(?m)^\s*description\s*=\s*["']([^"']*)["']''', proj_sec)
         project_desc = project_desc_m.group(1).strip() if project_desc_m else ""
         command_descriptions: dict[str, str] = {}
+        command_metadata: dict[str, dict[str, Any]] = {}
         try:
             project_data = tomllib.loads(text)
+            raw_metadata = project_data.get("tool", {}).get("scripts_help", {}).get("commands", {})
+            if isinstance(raw_metadata, dict):
+                command_metadata = {str(name): value for name, value in raw_metadata.items() if isinstance(value, dict)}
             raw_descriptions = (
                 project_data.get("tool", {}).get("scripts_help", {}).get("descriptions", {})
             )
@@ -263,6 +276,8 @@ def _load_pyproject_console_scripts(
                     distribution=dist,
                     entry_point=target,
                     version=ver,
+                    is_alias=bool(command_metadata.get(cmd, {}).get("is_alias", False)),
+                    alias_of=command_metadata.get(cmd, {}).get("alias_of"),
                 )
             )
     return entries

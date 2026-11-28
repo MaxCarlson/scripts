@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import sys
 import tomllib
+from io import StringIO
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import pytest
+from rich.console import Console
 
 from clipboard_tools import compare_cli, entrypoints
 
@@ -63,6 +65,118 @@ def test_comp_compares_every_unordered_file_pair(tmp_path: Path, capfd, cli):
     output = capfd.readouterr().out
     assert "one.txt" in output and "two.txt" in output and "three.txt" in output
     assert output.count(": Different -") == 3
+
+
+def test_comp_numbers_pairs_and_reports_file_and_pair_totals(tmp_path: Path, capfd, cli):
+    files = [tmp_path / name for name in ("one.txt", "two.txt", "three.txt")]
+    for path in files:
+        path.write_text("same", encoding="utf-8")
+
+    assert cli.compare_files_main([*(str(path) for path in files)]) == 0
+    output = capfd.readouterr().out
+    assert "Summary (3 pairs across 3 files):" in output
+    assert "[1/3]" in output
+    assert "[2/3]" in output
+    assert "[3/3]" in output
+
+
+def test_comp_limit_hides_rows_but_checks_every_pair(tmp_path: Path, capfd, cli):
+    first, second, third = (tmp_path / name for name in ("one.txt", "two.txt", "three.txt"))
+    first.write_text("same", encoding="utf-8")
+    second.write_text("same", encoding="utf-8")
+    third.write_text("different", encoding="utf-8")
+
+    assert cli.compare_files_main(["-n", "1", str(first), str(second), str(third)]) == 1
+    output = capfd.readouterr().out
+    assert "[1/3]" in output
+    assert "[2/3]" not in output
+    assert "2 more pairs omitted (use -n 0 to show all)" in output
+
+
+def test_comp_zero_limit_shows_every_pair(tmp_path: Path, capfd, cli):
+    files = [tmp_path / name for name in ("one.txt", "two.txt", "three.txt")]
+    for path in files:
+        path.write_text("same", encoding="utf-8")
+
+    assert cli.compare_files_main([*(str(path) for path in files), "-n", "0"]) == 0
+    output = capfd.readouterr().out
+    assert all(f"[{index}/3]" in output for index in range(1, 4))
+    assert "pairs omitted" not in output
+
+
+def test_compd_limit_applies_to_summary_rows_and_keeps_all_diffs(tmp_path: Path, capfd, cli):
+    first, second, third = (tmp_path / name for name in ("one.txt", "two.txt", "three.txt"))
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    third.write_text("third", encoding="utf-8")
+
+    assert cli.compare_files_main(
+        ["-n", "1", str(first), str(second), str(third)], detailed=True
+    ) == 1
+    output = capfd.readouterr().out
+    assert output.count("--- ") == 3
+    assert output.count("+++ ") == 3
+    assert "[1/3]" in output
+    assert "[2/3]" not in output
+    assert "2 more pairs omitted" in output
+
+
+def test_path_color_map_is_deterministic_in_first_appearance_order(cli, tmp_path: Path):
+    first = str(tmp_path / "first.txt")
+    second = str(tmp_path / "second.txt")
+
+    colors = cli._path_color_map([first, second, first])
+    again = cli._path_color_map([first, second, first])
+
+    assert colors == again
+    assert colors[first] != colors[second]
+    assert list(colors) == [first, second]
+
+
+def test_path_mentions_reuse_colors_and_no_color_returns_plain_text(cli, tmp_path: Path):
+    first = str(tmp_path / "first.txt")
+    second = str(tmp_path / "second.txt")
+    colors = cli._path_color_map([first, second])
+
+    styled = cli._colorize_paths(f"{first} vs {second}: {first}", colors, enabled=True)
+    plain = cli._colorize_paths(f"{first} vs {second}: {first}", colors, enabled=False)
+
+    assert [span.style for span in styled.spans] == [colors[first], colors[second], colors[first]]
+    assert plain.spans == []
+
+
+@pytest.mark.parametrize(
+    ("tty", "no_color", "flag", "expected"),
+    [(False, False, False, False), (True, True, False, False), (True, False, True, False), (True, False, False, True)],
+)
+def test_comp_color_gate_respects_tty_environment_and_flag(
+    cli, monkeypatch, tty, no_color, flag, expected
+):
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: tty)
+    if no_color:
+        monkeypatch.setenv("NO_COLOR", "1")
+    else:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+
+    assert cli._color_enabled(no_color=flag) is expected
+
+
+def test_comp_no_color_flag_suppresses_rich_styles(tmp_path: Path, monkeypatch, cli):
+    first, second = tmp_path / "one.txt", tmp_path / "two.txt"
+    first.write_text("one", encoding="utf-8")
+    second.write_text("two", encoding="utf-8")
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    buffer = StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=buffer, force_terminal=True, color_system="standard"))
+
+    assert cli.compare_files_main(["-C", str(first), str(second)]) == 1
+    assert "\x1b[" not in buffer.getvalue()
+
+    buffer.seek(0)
+    buffer.truncate(0)
+    assert cli.compare_files_main(["-C", str(first), str(second)], detailed=True) == 1
+    assert "\x1b[" not in buffer.getvalue()
 
 
 def test_compd_places_all_details_before_final_summary(tmp_path: Path, capfd, cli):
@@ -126,6 +240,9 @@ def test_repo_launcher_manifest_discovers_comparison_commands():
     assert commands["comp"].distribution == "clipboard_tools"
     assert commands["compd"].distribution == "clipboard_tools"
     assert commands["cldd"].entry_point == "clipboard_tools.entrypoints:clipboard_diff_main"
+    assert commands["otc"].is_alias is True
+    assert commands["otc"].alias_of is None
+    assert commands["flatten"].kind == "python_file"
 
 
 @pytest.mark.parametrize(

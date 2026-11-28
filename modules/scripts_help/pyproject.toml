@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "scripts_help"
-version = "2.0.1"
+version = "3.0.0"
 # Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.md):
 # 0.1.0 — initial release: interactive help browser, version-staleness checks
 # 0.2.0 — added: AI drift-update offer in cli + post-install hook; glow/README viewer in program info
@@ -13,6 +13,7 @@ version = "2.0.1"
 # 0.5.0 — structure-first TUI, live search/args, README/Git/files viewers, root launcher
 # 2.0.0 — curated ag default, readable help descriptions, full inventory and definition views
 # 2.0.1 — restore module command summaries for manifest-backed ag entries
+# 3.0.0 — metadata-driven ag/fg/mg/xg inventory views
 description = "Interactive help browser for the scripts repository."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,6 +22,15 @@ dependencies = []
 [project.scripts]
 scripts-help = "scripts_help.cli:main"
 ag = "scripts_help.ag:main"
+fg = "scripts_help.ag:full_main"
+mg = "scripts_help.ag:module_main"
+xg = "scripts_help.ag:all_main"
+
+[tool.scripts_help.descriptions]
+ag = "Search abbreviated registered commands and curated shell aliases."
+fg = "Search full descriptive repository commands and registered scripts."
+mg = "Search installed module console commands."
+xg = "Search all repository commands and curated live shell aliases/functions."
 
 [tool.hatch.build.targets.wheel]
 packages = ["scripts_help"]
