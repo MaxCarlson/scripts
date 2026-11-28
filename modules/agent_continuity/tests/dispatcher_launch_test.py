@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from agent_continuity.dispatcher_cli import (
     _native_argv,
     _run_pane,
     build_parser,
+    dispatch,
 )
 from agent_continuity.errors import ContinuityError, ErrorCode
 from agent_continuity.models import EnvironmentInfo, EventEnvelope, EventType
@@ -363,6 +365,312 @@ def _dispatcher_with_session(tmp_path, *, provider="codex", session_id="session-
     return dispatcher, dispatcher.list_slots(gui="AgentImprovement")[0]
 
 
+@pytest.mark.parametrize(
+    ("source_provider", "destination_provider"),
+    [("codex", "agy"), ("agy", "codex"), ("codex", "claude"),
+     ("claude", "codex"), ("agy", "claude"), ("claude", "agy")],
+)
+def test_cross_provider_execution_preserves_portable_context_and_destination_preferences(
+    tmp_path, monkeypatch, source_provider, destination_provider,
+):
+    from uuid import uuid4
+
+    repository_root = tmp_path / "repository-root"
+    source_cwd = tmp_path / "nested" / "source-worktree"
+    extra_root = tmp_path / "authorized-extra"
+    destination_cwd = tmp_path / "destination-worktree"
+    repository_root.mkdir()
+    source_cwd.parent.mkdir(parents=True)
+    for directory in (extra_root, destination_cwd):
+        directory.mkdir(parents=True)
+    subprocess.run(["git", "init", "-b", "main", str(repository_root)], check=True,
+                   capture_output=True, text=True)
+    for key, value in (("user.name", "LLMD Test"), ("user.email", "llmd-test@example.invalid")):
+        subprocess.run(["git", "-C", str(repository_root), "config", key, value], check=True,
+                       capture_output=True, text=True)
+    (repository_root / "tracked.txt").write_text("portable worktree\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository_root), "add", "tracked.txt"], check=True,
+                   capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repository_root), "commit", "-m", "seed portable worktree"],
+                   check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repository_root), "worktree", "add", "-b", "feature/portable-context",
+                    str(source_cwd)], check=True, capture_output=True, text=True)
+    (extra_root / "authorized.txt").write_text("second repository\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-b", "extra/portable-context", str(extra_root)], check=True,
+                   capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(extra_root), "config", "user.name", "LLMD Test"], check=True,
+                   capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(extra_root), "config", "user.email", "llmd-test@example.invalid"],
+                   check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(extra_root), "add", "authorized.txt"], check=True,
+                   capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(extra_root), "commit", "-m", "seed authorized repository"],
+                   check=True, capture_output=True, text=True)
+    source_session = str(uuid4()) if source_provider == "claude" else f"{source_provider}-source"
+    destination_session = str(uuid4()) if destination_provider == "claude" else f"{destination_provider}-selected"
+    dispatcher, slot = _dispatcher_with_session(
+        tmp_path, provider=source_provider, session_id=source_session, cwd=str(source_cwd),
+    )
+    environment = next(env for env in dispatcher.materializer.list_environments()
+                       if env.environment_id == slot["current_environment_id"])
+    source_profile_settings = {
+        "model": "source-only-model", "reasoning_effort": "high",
+        "additional_directories": [str(extra_root)],
+    }
+    if source_provider == "codex":
+        source_profile_settings["no_alt_screen"] = True
+    source_profile = dispatcher.create_profile(
+        name="portable-source", provider=source_provider, runtime_kind=environment.runtime_kind,
+        settings=source_profile_settings, apply=True,
+    )
+    dispatcher.assign_profile(gui="AgentImprovement", agent="AgentPerf",
+                              profile=source_profile["details"]["profile_id"], apply=True)
+    dispatcher.attach_session(
+        gui="AgentImprovement", name="AgentPerf", provider=destination_provider,
+        session_id=destination_session, cwd=str(destination_cwd), apply=True,
+    )
+    selected = dispatcher.get_slot(gui="AgentImprovement", name="AgentPerf")
+    invoked = []
+
+    def guarded_provider(argv, **kwargs):
+        invoked.append((list(argv), kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.detect_runtime_kind", lambda: environment.runtime_kind)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", guarded_provider)
+    from agent_continuity.dispatcher_cli import _launch_preview
+
+    preview = _launch_preview(
+        dispatcher, destination_provider, destination_session, environment.environment_id,
+        None, ["--model", "destination-preferred-model"], source_slot_id=selected["slot_id"],
+        expected_source=(source_provider, environment.environment_id, source_session),
+    )
+    assert preview["cwd"] == str(source_cwd)
+    assert Path(preview["portable_launch_context"]["repositories"][0]["worktree"]).resolve() == source_cwd.resolve()
+    assert preview["portable_launch_context"]["repositories"][0]["branch"] == "feature/portable-context"
+    assert any(Path(repo["worktree"]).resolve() == extra_root.resolve()
+               for repo in preview["portable_launch_context"]["repositories"])
+    assert "destination-preferred-model" in preview["argv"]
+
+    dispatcher.attach_session(
+        gui="AgentImprovement", name="AgentPerf", provider=source_provider,
+        session_id=source_session, environment_selector=environment.environment_id, apply=True,
+    )
+    parser = build_parser()
+    result = dispatch(parser.parse_args([
+        "-H", str(dispatcher.home_dir), "switch", "-g", "AgentImprovement", "-n", "AgentPerf",
+        "-p", destination_provider, "-r", "-a", "--", "--model", "destination-preferred-model",
+    ]), parser, input_stream=StringIO(), output_stream=StringIO())
+
+    assert result == 0
+    assert len(invoked) == 1
+    argv, process_options = invoked[0]
+    assert process_options["cwd"] == str(source_cwd)
+    assert "destination-preferred-model" in argv
+    assert "source-only-model" not in argv
+    if destination_provider in {"codex", "claude"}:
+        assert argv[argv.index("--add-dir") + 1] == str(extra_root)
+    else:
+        settings = json.loads(argv[argv.index("--settings") + 1])
+        assert settings["additional_directories"] == [str(extra_root)]
+    if destination_provider == "codex":
+        assert "model_reasoning_effort=high" in argv
+    elif destination_provider == "claude":
+        assert argv[argv.index("--effort") + 1] == "high"
+    else:
+        assert json.loads(argv[argv.index("--settings") + 1])["effort"] == "high"
+    saved_context = dispatcher.get_portable_launch_context(
+        slot_id=selected["slot_id"], provider=destination_provider,
+        environment_id=environment.environment_id,
+        session_id=destination_session,
+    )
+    assert saved_context["provider"] == destination_provider
+    assert saved_context["working_directory"] == str(source_cwd)
+    assert saved_context["semantic_settings"]["reasoning_effort"] == "high"
+    assert saved_context["authorized_directories"] == [str(extra_root)]
+    assert saved_context["destination_preferences"][destination_provider]["model"] == "destination-preferred-model"
+    assert saved_context["destination_preferences"][source_provider]["model"] == "source-only-model"
+
+    dispatcher.clear_profile(gui="AgentImprovement", agent="AgentPerf", apply=True)
+    roundtrip_result = dispatch(parser.parse_args([
+        "-H", str(dispatcher.home_dir), "switch", "-g", "AgentImprovement", "-n", "AgentPerf",
+        "-p", source_provider, "-r", "-a",
+    ]), parser, input_stream=StringIO(), output_stream=StringIO())
+    assert roundtrip_result == 0
+    roundtrip_argv, roundtrip_options = invoked[1]
+    assert roundtrip_options["cwd"] == str(source_cwd)
+    if source_provider == "agy":
+        roundtrip_settings = json.loads(roundtrip_argv[roundtrip_argv.index("--settings") + 1])
+        assert roundtrip_settings["model"] == "source-only-model"
+        assert roundtrip_settings["model"] != "destination-preferred-model"
+    else:
+        assert "source-only-model" in roundtrip_argv
+        assert "destination-preferred-model" not in roundtrip_argv
+    if source_provider == "codex":
+        assert "model_reasoning_effort=high" in roundtrip_argv
+        assert roundtrip_argv[roundtrip_argv.index("--add-dir") + 1] == str(extra_root)
+        assert "--no-alt-screen" in roundtrip_argv
+    elif source_provider == "claude":
+        assert roundtrip_argv[roundtrip_argv.index("--effort") + 1] == "high"
+        assert roundtrip_argv[roundtrip_argv.index("--add-dir") + 1] == str(extra_root)
+    else:
+        roundtrip_settings = json.loads(roundtrip_argv[roundtrip_argv.index("--settings") + 1])
+        assert roundtrip_settings["effort"] == "high"
+        assert roundtrip_settings["additional_directories"] == [str(extra_root)]
+
+    explicit_result = dispatch(parser.parse_args([
+        "-H", str(dispatcher.home_dir), "continue", "-g", "AgentImprovement", "-n", "AgentPerf",
+        "-p", destination_provider, "-i", destination_session, "-C", str(destination_cwd), "-a", "--",
+        "--model", "destination-preferred-model",
+    ]), parser, input_stream=StringIO(), output_stream=StringIO())
+    assert explicit_result == 0
+    assert invoked[2][1]["cwd"] == str(destination_cwd)
+
+
+def test_review_and_return_execute_with_session_bound_portable_context(tmp_path, monkeypatch):
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.create_gui("ReviewGUI", apply=True)
+    dispatcher.create_slot(gui="ReviewGUI", name="Implementer", apply=True)
+    repository = tmp_path / "review-repository"
+    extra = tmp_path / "review-authorized"
+    repository.mkdir()
+    extra.mkdir()
+    dispatcher.attach_session(
+        gui="ReviewGUI", name="Implementer", provider="codex", session_id="codex-original",
+        cwd=str(repository), apply=True,
+    )
+    original = dispatcher.get_slot(gui="ReviewGUI", name="Implementer")
+    environment_id = original["current"]["environment_id"]
+    profile = dispatcher.create_profile(
+        name="review-source", provider="codex", runtime_kind="windows", apply=True,
+        settings={"model": "implementer-model", "reasoning_effort": "high",
+                  "additional_directories": [str(extra)]},
+    )
+    dispatcher.assign_profile(gui="ReviewGUI", agent="Implementer", profile=profile["details"]["profile_id"], apply=True)
+    dispatcher.create_slot(gui="ReviewGUI", name="Reviewer", apply=True)
+    dispatcher.attach_session(
+        gui="ReviewGUI", name="Reviewer", provider="agy", session_id="agy-reviewer",
+        environment_selector=environment_id, cwd=str(repository), apply=True,
+    )
+    dispatcher.set_slot_state(gui="ReviewGUI", name="Reviewer", state="inactive", apply=True)
+    invoked = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.detect_runtime_kind", lambda: "windows")
+    monkeypatch.setattr(
+        "agent_continuity.dispatcher_cli._run_provider_process",
+        lambda argv, **kwargs: invoked.append((list(argv), kwargs)) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    parser = build_parser()
+
+    assert dispatch(parser.parse_args([
+        "-H", str(dispatcher.home_dir), "review", "-g", "ReviewGUI", "-n", "Implementer",
+        "-R", "Reviewer", "-p", "agy", "-a",
+    ]), parser, input_stream=StringIO(""), output_stream=StringIO()) == 0
+    assert len(invoked) == 1
+    review_settings = json.loads(invoked[0][0][invoked[0][0].index("--settings") + 1])
+    assert review_settings["effort"] == "high"
+    assert review_settings["additional_directories"] == [str(extra)]
+    assert "implementer-model" not in invoked[0][0]
+    reviewer = dispatcher.get_slot(gui="ReviewGUI", name="Reviewer")
+    review_snapshot = dispatcher.get_portable_launch_context(
+        slot_id=reviewer["slot_id"], provider="agy", environment_id=environment_id,
+        session_id="agy-reviewer",
+    )
+    assert review_snapshot["destination_preferences"]["codex"]["model"] == "implementer-model"
+
+    dispatcher.clear_profile(gui="ReviewGUI", agent="Implementer", apply=True)
+    assert dispatch(parser.parse_args([
+        "-H", str(dispatcher.home_dir), "return", "-g", "ReviewGUI", "-n", "Implementer", "-a",
+    ]), parser, input_stream=StringIO(""), output_stream=StringIO()) == 0
+    assert len(invoked) == 2
+    return_argv = invoked[1][0]
+    assert "implementer-model" in return_argv
+    assert return_argv[return_argv.index("--add-dir") + 1] == str(extra)
+    assert "model_reasoning_effort=high" in return_argv
+
+
+def test_portable_filesystem_permission_never_allows_destination_broadening(tmp_path, monkeypatch):
+    from agent_continuity.errors import ContinuityError
+
+    directory = tmp_path / "repo"
+    directory.mkdir()
+    dispatcher, source_slot = _dispatcher_with_session(
+        tmp_path, provider="agy", session_id="agy-source", cwd=str(directory),
+    )
+    environment = next(env for env in dispatcher.materializer.list_environments()
+                       if env.environment_id == source_slot["current_environment_id"])
+    profile = dispatcher.create_profile(
+        name="restricted-source", provider="agy", runtime_kind=environment.runtime_kind,
+        settings={"sandbox": True, "reasoning_effort": "high"}, apply=True,
+    )
+    dispatcher.assign_profile(gui="AgentImprovement", agent="AgentPerf",
+                              profile=profile["details"]["profile_id"], apply=True)
+    dispatcher.attach_session(
+        gui="AgentImprovement", name="AgentPerf", provider="codex", session_id="codex-target",
+        cwd=str(directory), apply=True,
+    )
+    target = dispatcher.get_slot(gui="AgentImprovement", name="AgentPerf")
+    invoked = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.detect_runtime_kind", lambda: environment.runtime_kind)
+    monkeypatch.setattr(
+        "agent_continuity.dispatcher_cli._run_provider_process",
+        lambda argv, **kwargs: invoked.append((list(argv), kwargs)) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    with pytest.raises(ContinuityError, match="Portable launch context"):
+        _run_pane(
+            dispatcher, slot_id=target["slot_id"], launch_id=None, input_stream=StringIO(""),
+            output_stream=StringIO(), native_args=["--sandbox", "danger-full-access"],
+            expected_session_identity=("codex", environment.environment_id, "codex-target"),
+        )
+    assert invoked == []
+
+    assert invoked == []
+
+
+def test_portable_context_refuses_windows_to_wsl_identity_change_before_provider_spawn(tmp_path, monkeypatch):
+    directory = tmp_path / "windows-repository"
+    directory.mkdir()
+    dispatcher, source_slot = _dispatcher_with_session(
+        tmp_path, provider="codex", session_id="codex-windows", cwd=str(directory),
+    )
+    source_environment_id = source_slot["current_environment_id"]
+    wsl_environment = EnvironmentInfo(
+        environment_id="wsl_ubuntu_portable_test", runtime_kind="wsl", distro="Ubuntu",
+        hostname="test", label="Ubuntu", created_at="2026-11-27T00:00:00Z",
+        last_seen_at="2026-11-27T00:00:00Z",
+    )
+    environment_event = EventEnvelope(
+        event_id="evt_portable_wsl_environment", event_schema_version=1,
+        event_type=EventType.ENVIRONMENT_REGISTERED.value, provider=None,
+        environment_id=wsl_environment.environment_id, native_session_id=None,
+        source_timestamp=wsl_environment.created_at, observed_timestamp=wsl_environment.created_at,
+        source_adapter_version="test", payload=wsl_environment.to_dict(),
+    )
+    dispatcher.continuity._emit_and_materialize([environment_event])
+    dispatcher.attach_session(
+        gui="AgentImprovement", name="AgentPerf", provider="agy", session_id="agy-wsl-session",
+        environment_selector=wsl_environment.environment_id, cwd="/home/test/project", apply=True,
+    )
+    target = dispatcher.get_slot(gui="AgentImprovement", name="AgentPerf")
+    invoked = []
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.detect_runtime_kind", lambda: "windows")
+    monkeypatch.setattr(
+        "agent_continuity.dispatcher_cli._run_provider_process",
+        lambda argv, **kwargs: invoked.append((list(argv), kwargs)) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    with pytest.raises(ContinuityError, match="Portable launch context"):
+        _run_pane(
+            dispatcher, slot_id=target["slot_id"], launch_id=None, input_stream=StringIO(""),
+            output_stream=StringIO(), expected_session_identity=("agy", wsl_environment.environment_id, "agy-wsl-session"),
+            transition_source={
+                "slot_id": source_slot["slot_id"],
+                "expected_source": ("codex", source_environment_id, "codex-windows"),
+            },
+        )
+    assert invoked == []
+
+
 def test_windows_resume_uses_provider_adapter_arguments_and_executable(tmp_path, monkeypatch):
     dispatcher, slot = _dispatcher_with_session(tmp_path)
     dispatcher.continuity.adapters["codex"] = FakeAdapter(r"C:\Program Files\Codex\codex.exe")
@@ -523,7 +831,11 @@ def test_post_exit_option_four_reuses_opposite_provider_without_creating_slot(
 
 
 def test_post_exit_option_four_requires_explicit_confirmation_before_new_provider_bootstrap(tmp_path, monkeypatch):
-    dispatcher, slot = _dispatcher_with_session(tmp_path, provider="codex", session_id="codex-current")
+    cwd = tmp_path / "Project With Spaces"
+    cwd.mkdir()
+    dispatcher, slot = _dispatcher_with_session(
+        tmp_path, provider="codex", session_id="codex-current", cwd=str(cwd),
+    )
     outputs = iter((
         SimpleNamespace(returncode=0, stdout="", stderr=""),
         SimpleNamespace(returncode=0,
@@ -661,7 +973,9 @@ def test_new_agy_launch_bootstraps_captures_associates_then_resumes_exact_sessio
 
 
 def test_bootstrap_capture_failure_is_durable_and_does_not_retry_or_replace_current(tmp_path, monkeypatch):
-    dispatcher, slot = _dispatcher_with_session(tmp_path, session_id="old-current")
+    cwd = tmp_path / "Project With Spaces"
+    cwd.mkdir()
+    dispatcher, slot = _dispatcher_with_session(tmp_path, session_id="old-current", cwd=str(cwd))
     launch = dispatcher.begin_launch(gui="AgentImprovement", name="AgentPerf", provider="agy", apply=True)
     calls = []
     monkeypatch.setattr("agent_continuity.dispatcher_cli._bootstrap_native_argv", lambda *a, **k: ["fake-agy"])

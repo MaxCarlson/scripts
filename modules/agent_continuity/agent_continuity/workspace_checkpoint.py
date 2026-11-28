@@ -52,6 +52,9 @@ ALLOWED_LAUNCH_SETTINGS: frozenset[str] = frozenset(
         "search",
         "add_dirs",
         "profile",
+        "no_alt_screen",
+        "no_daemon",
+        "strict_config",
     }
 )
 
@@ -644,6 +647,14 @@ def sanitize_launch_settings(settings: Mapping[str, Any] | None) -> dict[str, An
                 raise ContinuityError(
                     ErrorCode.INVALID_INPUT,
                     "Launch setting 'search' must be a boolean.",
+                    {"key": key},
+                )
+            sanitized[key] = value
+        elif key in {"no_alt_screen", "no_daemon", "strict_config"}:
+            if not isinstance(value, bool):
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    f"Launch setting {key!r} must be a boolean.",
                     {"key": key},
                 )
             sanitized[key] = value

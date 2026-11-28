@@ -31,7 +31,7 @@ from .environment import (
 )
 from .errors import ContinuityError, ErrorCode
 from .identifiers import generate_id, now_utc_iso
-from .launch_context import VERIFIED_CAPABILITIES, resolve_portable_launch_context
+from .launch_context import VERIFIED_CAPABILITIES, provider_settings_argv, resolve_portable_launch_context
 from .terminal_format import (
     clip_display,
     color_enabled,
@@ -1103,9 +1103,31 @@ def _validate_cwd_override(dispatcher: DispatcherService, environment_id: str, c
 
 
 def _launch_preview(dispatcher: DispatcherService, provider: str, session_id: str, environment_id: str,
-                    cwd: str | None, native_args: Sequence[str], *, allow_native_unknown: bool = False) -> dict[str, Any]:
+                    cwd: str | None, native_args: Sequence[str], *, allow_native_unknown: bool = False,
+                    source_slot_id: str | None = None,
+                    expected_source: tuple[str, str, str | None] | None = None) -> dict[str, Any]:
     environment = _resolve_environment(dispatcher, environment_id)
     environment_id = environment.environment_id
+    slot_ref = dispatcher._row(
+        """SELECT slot_id FROM agent_slot_activations
+           WHERE provider = ? AND environment_id = ? AND native_session_id = ?
+           ORDER BY sequence DESC LIMIT 1""",
+        (provider, environment_id, session_id),
+    )
+    preview_context = None
+    portability_preview: list[dict[str, Any]] = []
+    if slot_ref or source_slot_id:
+        slot = dispatcher.get_slot_by_id(source_slot_id or slot_ref["slot_id"])
+        transition_source = None
+        if source_slot_id and (expected_source is not None or not slot_ref or source_slot_id != slot_ref["slot_id"]):
+            transition_source = {"slot_id": source_slot_id,
+                                 "expected_source": expected_source or _session_identity(slot)}
+        native_args, portable_cwd, preview_context, portability_preview = _portable_invocation(
+            dispatcher, slot=slot, destination_provider=provider, destination_environment_id=environment_id,
+            destination_session_id=session_id, native_args=native_args, cwd_override=cwd,
+            transition_source=transition_source, fail_on_material_conflict=False,
+        )
+        cwd = portable_cwd or cwd
     argv = _native_argv(dispatcher, provider, session_id, environment_id=environment_id, cwd=cwd,
                         native_args=native_args, allow_native_unknown=allow_native_unknown)
     requested = _requested_permission_settings(provider, native_args, allow_unknown=allow_native_unknown)
@@ -1144,8 +1166,8 @@ def _launch_preview(dispatcher: DispatcherService, provider: str, session_id: st
         "permission_settings": {"requested": requested, "verified_effective": None,
                                 "verification": "Provider enforcement is not observed by a launch preview."},
         "requested_settings": _safe_launch_settings(provider, native_args, allow_unknown=allow_native_unknown),
-        "portable_launch_context": dataclasses.asdict(portable),
-        "portability_preview": [dataclasses.asdict(item) for item in portability],
+        "portable_launch_context": preview_context or dataclasses.asdict(portable),
+        "portability_preview": portability_preview or [dataclasses.asdict(item) for item in portability],
         "unknown_native_authorization": {"enabled": allow_native_unknown,
                                          "options": _unknown_native_option_names(provider, native_args)},
         "process_environment": "inherited for this invocation; no environment overrides are persisted",
@@ -1184,10 +1206,22 @@ def _render_launch_preview(preview: dict[str, Any], stream: TextIO, color: str |
 
 
 def _new_launch_preview(dispatcher: DispatcherService, provider: str, environment_id: str, cwd: str | None,
-                        native_args: Sequence[str], *, allow_native_unknown: bool = False) -> dict[str, Any]:
+                        native_args: Sequence[str], *, allow_native_unknown: bool = False,
+                        source_slot_id: str | None = None) -> dict[str, Any]:
     requested = _requested_permission_settings(provider, native_args, allow_unknown=allow_native_unknown)
     environment = _resolve_environment(dispatcher, environment_id)
     environment_id = environment.environment_id
+    portable_context = None
+    portability_preview: list[dict[str, Any]] = []
+    if source_slot_id:
+        source_slot = dispatcher.get_slot_by_id(source_slot_id)
+        native_args, portable_cwd, portable_context, portability_preview = _portable_invocation(
+            dispatcher, slot=source_slot, destination_provider=provider,
+            destination_environment_id=environment_id, destination_session_id=None,
+            native_args=native_args, cwd_override=cwd, transition_source=None,
+            fail_on_material_conflict=False,
+        )
+        cwd = portable_cwd or cwd
     if provider == "claude":
         executable = _native_argv(dispatcher, provider, None, environment_id=environment_id, cwd=cwd,
                                   native_args=native_args, allow_native_unknown=allow_native_unknown)
@@ -1240,13 +1274,360 @@ def _new_launch_preview(dispatcher: DispatcherService, provider: str, environmen
         "permission_settings": {"requested": requested, "verified_effective": None,
                                 "verification": "Provider enforcement is not observed by a launch preview."},
         "requested_settings": safe_settings,
-        "portable_launch_context": dataclasses.asdict(launch_context),
-        "portability_preview": [dataclasses.asdict(item) for item in portability],
+        "portable_launch_context": portable_context or dataclasses.asdict(launch_context),
+        "portability_preview": portability_preview or [dataclasses.asdict(item) for item in portability],
         "unknown_native_authorization": {"enabled": allow_native_unknown,
                                          "options": _unknown_native_option_names(provider, native_args)},
         "process_environment": "inherited for this invocation; no environment overrides are persisted",
         "profile": _PROFILE_CONTEXT.get(),
     }
+
+
+def _portable_source_slot(
+    dispatcher: DispatcherService,
+    slot: dict[str, Any],
+    *,
+    destination_identity: tuple[str, str, str | None],
+    transition_source: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    if transition_source:
+        source_slot = dispatcher.get_slot_by_id(transition_source["slot_id"])
+        expected = transition_source.get("expected_source")
+        history = source_slot.get("history", [])
+        current = source_slot.get("current")
+        source = current if expected and current and (
+            current["provider"], current["environment_id"], current["native_session_id"]
+        ) == expected else next((item for item in reversed(history) if expected and (
+            item["provider"], item["environment_id"], item["native_session_id"]
+        ) == expected), None)
+        return (source_slot, source) if source else None
+
+    history = slot.get("history", [])
+    destination_provider, destination_environment, destination_session = destination_identity
+    destination_index = next((index for index in range(len(history) - 1, -1, -1)
+                              if (history[index]["provider"], history[index]["environment_id"],
+                                  history[index]["native_session_id"])
+                              == (destination_provider, destination_environment, destination_session)),
+                             len(history))
+    if destination_index < len(history) - 1:
+        source = history[-1]
+    else:
+        source = next((history[index] for index in range(destination_index - 1, -1, -1)
+                       if history[index]["provider"] != destination_provider), None)
+    return (slot, source) if source else None
+
+
+def _merge_agy_portable_settings(native_args: Sequence[str], portable_settings: Mapping[str, Any]) -> list[str]:
+    """Merge normalized portable values into AGY's single managed JSON settings object."""
+    explicit: dict[str, Any] = {}
+    cleaned: list[str] = []
+    insert_at: int | None = None
+    index = 0
+    while index < len(native_args):
+        token = native_args[index]
+        option, equals, inline = token.partition("=")
+        if option == "--settings":
+            if insert_at is None:
+                insert_at = len(cleaned)
+            if equals:
+                raw = inline
+            elif index + 1 < len(native_args):
+                index += 1
+                raw = native_args[index]
+            else:
+                cleaned.append(token)
+                index += 1
+                continue
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                cleaned.extend((token, raw))
+            else:
+                explicit.update(parsed)
+        else:
+            cleaned.append(token)
+        index += 1
+    merged = {**dict(portable_settings), **explicit}
+    if merged:
+        pair = ["--settings", json.dumps(merged, ensure_ascii=False, separators=(",", ":"))]
+        at = len(cleaned) if insert_at is None else insert_at
+        cleaned[at:at] = pair
+    return cleaned
+
+
+def _portable_invocation(
+    dispatcher: DispatcherService,
+    *,
+    slot: dict[str, Any],
+    destination_provider: str,
+    destination_environment_id: str,
+    destination_session_id: str | None,
+    native_args: Sequence[str],
+    cwd_override: str | None,
+    transition_source: dict[str, Any] | None,
+    fail_on_material_conflict: bool = True,
+) -> tuple[list[str], str | None, dict[str, Any] | None, list[dict[str, Any]]]:
+    explicit_cwd_override = cwd_override
+    recent_launches = dispatcher.list_recent_terminal_launches(limit=1000)
+    destination_record = next((item for item in recent_launches
+                               if item.get("slot_id") == slot["slot_id"]
+                               and item.get("provider") == destination_provider
+                               and item.get("environment_id") == destination_environment_id
+                               and item.get("native_session_id") == destination_session_id
+                               and destination_session_id is not None), None)
+    if destination_record is not None:
+        recorded = dict(destination_record.get("settings") or {})
+        explicit_keys = _native_setting_keys(destination_provider, native_args)
+        key_alias = {"provider_profile": "provider_profile", "reasoning_effort": "reasoning_effort"}
+        portable_settings = {key: value for key, value in recorded.items()
+                             if key_alias.get(key, key) not in explicit_keys}
+        explicit_settings = _safe_launch_settings(destination_provider, native_args)
+        if recorded.get("additional_directories"):
+            portable_settings["additional_directories"] = list(dict.fromkeys(
+                [*recorded["additional_directories"], *explicit_settings.get("additional_directories", [])]
+            ))
+        restored_args = provider_settings_argv(destination_provider, portable_settings)
+        if destination_provider == "agy" and restored_args:
+            parsed = json.loads(restored_args[1]) if restored_args[0] == "--settings" else {}
+            effective_args = _merge_agy_portable_settings(native_args, parsed)
+        else:
+            effective_args = [*native_args, *restored_args]
+        restored_cwd = cwd_override or destination_record.get("effective_cwd")
+        if fail_on_material_conflict:
+            _validate_additional_directories(dispatcher, destination_provider, destination_environment_id, effective_args)
+        return effective_args, restored_cwd, None, []
+
+    source_pair = _portable_source_slot(
+        dispatcher, slot,
+        destination_identity=(destination_provider, destination_environment_id, destination_session_id),
+        transition_source=transition_source,
+    )
+    if source_pair is None:
+        return list(native_args), cwd_override, None, []
+    source_slot, source_session = source_pair
+    source_provider = source_session["provider"]
+    if source_provider == destination_provider:
+        return list(native_args), cwd_override, None, []
+
+    source_environment_id = source_session["environment_id"]
+    source_environment = _resolve_environment(dispatcher, source_environment_id)
+    destination_environment = _resolve_environment(dispatcher, destination_environment_id)
+    source_native = dispatcher.materializer.get_session(
+        source_provider, source_environment_id, source_session["native_session_id"]
+    )
+    source_profile: dict[str, Any] = {}
+    source_profile_cwd: str | None = None
+    profile_context = _PROFILE_CONTEXT.get() or {}
+    if source_slot.get("profile_id") and profile_context.get("source") != "bypassed":
+        profile = dispatcher.get_profile(source_slot["profile_id"])
+        if profile.get("status") == "active" and profile.get("provider") == source_provider:
+            source_profile = dict(profile.get("settings") or {})
+            source_profile_cwd = profile.get("cwd")
+
+    launch_record = next((item for item in recent_launches
+                          if item.get("slot_id") == source_slot["slot_id"]
+                          and item.get("provider") == source_provider
+                          and item.get("environment_id") == source_environment_id
+                          and item.get("native_session_id") == source_session["native_session_id"]), None)
+    recorded_settings = dict(launch_record.get("settings") or {}) if launch_record else {}
+    source_settings = {**source_profile, **recorded_settings}
+    explicit_settings = _safe_launch_settings(destination_provider, native_args)
+    saved_source_context = dispatcher.get_portable_launch_context(
+        slot_id=source_slot["slot_id"], provider=source_provider,
+        environment_id=source_environment_id, session_id=source_session["native_session_id"],
+    )
+    if saved_source_context:
+        saved_semantics = dict(saved_source_context.get("semantic_settings") or {})
+        source_settings.update({
+            "reasoning_effort": saved_semantics.get("reasoning_effort", source_settings.get("reasoning_effort")),
+            "sandbox": saved_semantics.get("filesystem", source_settings.get("sandbox")),
+            "approval_policy": saved_semantics.get("approval", source_settings.get("approval_policy")),
+            "search": saved_semantics.get("search", source_settings.get("search")),
+            "additional_directories": list(saved_source_context.get("authorized_directories")
+                                            or source_settings.get("additional_directories", [])),
+        })
+        for key, value in (saved_source_context.get("terminal_settings") or {}).items():
+            source_settings.setdefault(key, value)
+    source_cwd = ((source_native.cwd_native if source_native else None)
+                  or (launch_record.get("effective_cwd") if launch_record else None)
+                  or (saved_source_context or {}).get("working_directory")
+                  or source_profile_cwd)
+    git = _git_launch_context(dispatcher, source_environment_id, source_cwd)
+    repositories = [{key.removeprefix("git_"): value for key, value in git.items() if value is not None}]
+    if launch_record:
+        repositories = [{
+            key: launch_record.get(field)
+            for key, field in (("root", "git_repository"), ("worktree", "git_worktree"),
+                               ("branch", "git_branch"), ("commit", "git_commit"))
+            if launch_record.get(field) is not None
+        }]
+    known_worktrees = {str(repo.get("worktree")) for repo in repositories if repo.get("worktree")}
+    for authorized_directory in source_settings.get("additional_directories", ()):
+        additional_git = _git_launch_context(dispatcher, source_environment_id, str(authorized_directory))
+        if additional_git.get("git_repository") is None:
+            continue
+        additional_repo = {
+            key.removeprefix("git_"): value for key, value in additional_git.items() if value is not None
+        }
+        worktree = str(additional_repo.get("worktree") or "")
+        if worktree and worktree not in known_worktrees:
+            repositories.append(additional_repo)
+            known_worktrees.add(worktree)
+    source_context = dict(saved_source_context or {
+        "provider": source_provider,
+        "repositories": repositories,
+        "working_directory": source_cwd,
+        "explicit_directory_override": launch_record.get("requested_cwd") if launch_record else None,
+        "authorized_directories": source_settings.get("additional_directories", []),
+        "runtime_identity": {"environment_id": source_environment_id,
+                             "runtime_kind": source_environment.runtime_kind, "distro": source_environment.distro},
+        "workflow_type": source_slot.get("workflow_type"),
+        "logical_agent_identity": f"{source_slot['slot_id']}:{source_slot['name']}",
+        "terminal_settings": {key: source_settings[key] for key in
+                              ("no_alt_screen", "no_daemon", "strict_config") if key in source_settings},
+        "instructions": None,
+        "semantic_settings": {
+            key: value for key, value in (
+                ("reasoning_effort", source_settings.get("reasoning_effort")),
+                ("filesystem", source_settings.get("sandbox")
+                 if source_provider in {"codex", "agy"} else None),
+                ("approval", source_settings.get("approval_policy")),
+                ("search", source_settings.get("search")),
+            ) if value is not None
+        },
+        "destination_preferences": {},
+    })
+    source_context.update({
+        "provider": source_provider,
+        "workflow_type": source_context.get("workflow_type") or source_slot.get("workflow_type"),
+        "logical_agent_identity": source_context.get("logical_agent_identity")
+                                  or f"{source_slot['slot_id']}:{source_slot['name']}",
+        "destination_filesystem": explicit_settings.get("sandbox"),
+    })
+    destination_preferences = {
+        key: dict(value) for key, value in (source_context.get("destination_preferences") or {}).items()
+    }
+    source_preferences = dict(destination_preferences.get(source_provider, {}))
+    for key in ("model", "provider_profile"):
+        if source_settings.get(key) is not None:
+            source_preferences.setdefault(key, source_settings[key])
+    if source_preferences:
+        destination_preferences[source_provider] = source_preferences
+    source_context["destination_preferences"] = destination_preferences
+    portable, items = resolve_portable_launch_context(
+        source_context, destination_provider, capabilities=VERIFIED_CAPABILITIES,
+        destination_runtime={"environment_id": destination_environment_id,
+                             "runtime_kind": destination_environment.runtime_kind,
+                             "distro": destination_environment.distro},
+    )
+    preview_items = [dataclasses.asdict(item) for item in items]
+    conflicts = [item for item in items if item.status == "conflicting"]
+    material_unsupported = [item for item in items if item.status == "unsupported"
+                            and item.key in {"filesystem", "approval", "network"}]
+    if fail_on_material_conflict and (conflicts or material_unsupported):
+        details = [dataclasses.asdict(item) for item in (*conflicts, *material_unsupported)]
+        raise ContinuityError(
+            ErrorCode.INVALID_INPUT,
+            "Portable launch context has incompatible or unsupported material settings; resolve the preview before launching.",
+            {"portability_preview": details},
+        )
+
+    # Explicit destination options remain authoritative. Source model/profile preferences
+    # are provider-specific and are intentionally never copied across providers.
+    effective_settings: dict[str, Any] = {}
+    destination_keys = _native_setting_keys(destination_provider, native_args)
+    source_semantics = dict(portable.semantic_settings)
+    for key, value in source_semantics.items():
+        if key == "reasoning_effort" and "reasoning_effort" not in destination_keys:
+            effective_settings["reasoning_effort"] = value
+        elif key == "filesystem" and destination_provider == "codex" and "sandbox" not in destination_keys:
+            effective_settings["sandbox"] = value
+        elif key == "approval" and destination_provider == "codex" and "approval_policy" not in destination_keys:
+            effective_settings["approval_policy"] = value
+        elif key == "search" and destination_provider == "codex" and "search" not in destination_keys:
+            effective_settings["search"] = value
+    for key in ("model", "provider_profile"):
+        if explicit_settings.get(key) is None:
+            preference = portable.destination_preferences.get(destination_provider, {}).get(key)
+            if preference is not None:
+                effective_settings[key] = preference
+    if destination_provider == "codex":
+        for key in ("no_alt_screen", "no_daemon", "strict_config"):
+            if key not in explicit_settings and portable.terminal_settings.get(key) is not None:
+                effective_settings[key] = portable.terminal_settings[key]
+    source_directories = list(portable.authorized_directories)
+    destination_directories = explicit_settings.get("additional_directories", [])
+    additional_directories = list(dict.fromkeys(
+        directory for directory in source_directories if directory not in destination_directories
+    ))
+    if additional_directories:
+        effective_settings["additional_directories"] = additional_directories
+    portable_args = provider_settings_argv(destination_provider, effective_settings)
+    if destination_provider == "agy" and portable_args:
+        portable_settings = json.loads(portable_args[1]) if portable_args[0] == "--settings" else {}
+        merged_args = _merge_agy_portable_settings(native_args, portable_settings)
+    else:
+        merged_args = [*native_args, *portable_args]
+    if portable.working_directory and not cwd_override:
+        cwd_override = portable.working_directory
+    if fail_on_material_conflict:
+        _validate_additional_directories(dispatcher, destination_provider, destination_environment_id, merged_args)
+    portable_snapshot = dataclasses.asdict(portable)
+    portable_snapshot["schema_version"] = 1
+    portable_snapshot["provider"] = destination_provider
+    portable_snapshot["working_directory"] = cwd_override or portable.working_directory
+    portable_snapshot["explicit_directory_override"] = (
+        explicit_cwd_override or portable.explicit_directory_override
+    )
+    portable_snapshot["runtime_identity"] = {
+        "environment_id": destination_environment_id,
+        "runtime_kind": destination_environment.runtime_kind,
+        "distro": destination_environment.distro,
+    }
+    portable_snapshot["authorized_directories"] = list(dict.fromkeys(
+        [*portable.authorized_directories, *explicit_settings.get("additional_directories", [])]
+    ))
+    normalized_settings = dict(portable.semantic_settings)
+    for source_key, target_key in (
+        ("reasoning_effort", "reasoning_effort"), ("sandbox", "filesystem"),
+        ("approval_policy", "approval"), ("search", "search"),
+    ):
+        if explicit_settings.get(source_key) is not None:
+            normalized_settings[target_key] = explicit_settings[source_key]
+    if effective_settings.get("sandbox") is not None:
+        normalized_settings["filesystem"] = effective_settings["sandbox"]
+    if effective_settings.get("approval_policy") is not None:
+        normalized_settings["approval"] = effective_settings["approval_policy"]
+    if effective_settings.get("reasoning_effort") is not None:
+        normalized_settings["reasoning_effort"] = effective_settings["reasoning_effort"]
+    if effective_settings.get("search") is not None:
+        normalized_settings["search"] = effective_settings["search"]
+    portable_snapshot["semantic_settings"] = normalized_settings
+    terminal_settings = dict(portable.terminal_settings)
+    terminal_settings.update({key: explicit_settings[key] for key in
+                              ("no_alt_screen", "no_daemon", "strict_config") if key in explicit_settings})
+    portable_snapshot["terminal_settings"] = terminal_settings
+    preferences = {key: dict(value) for key, value in portable.destination_preferences.items()}
+    destination_preferences = dict(preferences.get(destination_provider, {}))
+    for key in ("model", "provider_profile"):
+        if explicit_settings.get(key) is not None:
+            destination_preferences[key] = explicit_settings[key]
+    if destination_preferences:
+        preferences[destination_provider] = destination_preferences
+    portable_snapshot["destination_preferences"] = preferences
+    if explicit_cwd_override:
+        explicit_git = _git_launch_context(dispatcher, destination_environment_id, explicit_cwd_override)
+        if explicit_git.get("git_repository") is not None:
+            portable_snapshot["repositories"] = [
+                dict(repository) for repository in portable_snapshot.get("repositories", ())
+            ]
+            explicit_repo = {
+                key.removeprefix("git_"): value for key, value in explicit_git.items() if value is not None
+            }
+            existing = {str(repo.get("worktree")) for repo in portable_snapshot.get("repositories", ())
+                        if repo.get("worktree")}
+            if explicit_repo.get("worktree") and str(explicit_repo["worktree"]) not in existing:
+                portable_snapshot.setdefault("repositories", []).append(explicit_repo)
+    return merged_args, cwd_override, portable_snapshot, preview_items
 
 
 def _bootstrap_native_argv(
@@ -1482,6 +1863,24 @@ def _run_pane_locked(
         pane_id=pane_id,
         consume=False,
     )
+    portable_context_snapshot: dict[str, Any] | None = None
+    if not reservation_id:
+        native_args, portable_cwd, portable_context_snapshot, _portability_preview = _portable_invocation(
+            dispatcher,
+            slot=slot,
+            destination_provider=provider,
+            destination_environment_id=environment_id,
+            destination_session_id=session_id,
+            native_args=native_args,
+            cwd_override=cwd_override,
+            transition_source=transition_source,
+        )
+        if portable_cwd and cwd_override is None:
+            cwd_override = portable_cwd
+            if launch_id:
+                cwd = portable_cwd
+                process_cwd = (None if target_environment and target_environment.runtime_kind == "wsl"
+                               and detect_runtime_kind() == "windows" else cwd)
     _validated_native_args(provider, native_args, allow_unknown=allow_native_unknown)
     bootstrap_cwd = cwd
     if cwd_override is not None:
@@ -1504,14 +1903,85 @@ def _run_pane_locked(
     bootstrap_completed = False
     reservation_consumed = False
     workflow_prep = None
-    if launch_id and getattr(dispatcher, "workflow_bridge", None) is not None:
+    inherited_workflow_snapshot: dict[str, Any] | None = None
+    inherited_instruction_path: str | None = None
+    inherited_digests: dict[str, str] = {}
+    inherited_workflow_selection: str | None = None
+    if launch_id:
+        source_slot_id = transition_source.get("slot_id") if transition_source else slot_id
+        source_slot = dispatcher.get_slot_by_id(source_slot_id)
+        expected_source = transition_source.get("expected_source") if transition_source else None
+        source_sessions = [source_slot.get("current"), *reversed(source_slot.get("history", []))]
+        source_session = next((candidate for candidate in source_sessions if candidate and (
+            expected_source is None or (
+                candidate["provider"], candidate["environment_id"], candidate["native_session_id"]
+            ) == expected_source
+        )), None)
+        if source_session:
+            source_context = dispatcher.get_portable_launch_context(
+                slot_id=source_slot_id,
+                provider=source_session["provider"],
+                environment_id=source_session["environment_id"],
+                session_id=source_session["native_session_id"],
+            )
+            if source_context:
+                snapshot = source_context.get("workflow_resource_snapshot")
+                if isinstance(snapshot, dict) and snapshot.get("schema_version") == 1:
+                    inherited_workflow_snapshot = snapshot
+                    inherited_workflow_selection = snapshot.get("selection")
+                    inherited_instruction_path = source_context.get("workflow_custom_instruction_path")
+                    inherited_digests = {
+                        str(resource["id"]): str(resource["sha256"])
+                        for resource in snapshot.get("resources", ())
+                        if isinstance(resource, dict) and resource.get("id") and resource.get("sha256")
+                    }
+        if inherited_workflow_selection is None:
+            inherited_workflow_selection = source_slot.get("workflow_type")
+    selected_workflow = workflow_selection if workflow_selection is not None else (
+        slot.get("workflow_type") or inherited_workflow_selection
+    )
+    if (launch_id and workflow_selection is None and selected_workflow == inherited_workflow_selection
+            and custom_instruction_path is None):
+        custom_instruction_path = inherited_instruction_path
+    expected_workflow_digests = (
+        inherited_digests
+        if launch_id and workflow_selection is None and inherited_workflow_snapshot
+        and selected_workflow == inherited_workflow_snapshot.get("selection")
+        else None
+    )
+    if launch_id and (getattr(dispatcher, "workflow_bridge", None) is not None
+                      or selected_workflow is not None or custom_instruction_path is not None):
         workflow_prep = dispatcher.prepare_new_session_workflow(
             slot_id=slot_id,
             launch_id=launch_id,
             provider=provider,
             environment_id=environment_id,
             bridge=dispatcher.workflow_bridge,
+            workflow_selection=selected_workflow,
+            expected_digests=expected_workflow_digests,
+            custom_instruction_path=custom_instruction_path,
         )
+        if selected_workflow is not None and workflow_prep.get("status") in {"unsupported", "unavailable"}:
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                f"Workflow selection {selected_workflow!r} cannot be delivered to {provider}; resolve the workflow preview before launching.",
+            )
+        if expected_workflow_digests:
+            delivered_digests = {
+                str(resource["id"]): str(resource["sha256"])
+                for resource in (workflow_prep.get("resource_snapshot") or {}).get("resources", ())
+                if isinstance(resource, dict) and resource.get("id") and resource.get("sha256")
+            }
+            changed_resources = [resource_id for resource_id, digest in expected_workflow_digests.items()
+                                 if delivered_digests.get(resource_id) != digest]
+            if changed_resources:
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    "Saved workflow resources changed or are unavailable; no replacement instructions were submitted.",
+                    {"resource_ids": sorted(changed_resources),
+                     "expected_digests": {key: inherited_digests[key] for key in sorted(changed_resources)},
+                     "observed_digests": {key: delivered_digests.get(key) for key in sorted(changed_resources)}},
+                )
     _startup_progress("environment, executable and Git worktree context resolved")
     try:
         if launch_id and provider == "claude":
@@ -1620,6 +2090,7 @@ def _run_pane_locked(
                         environment_id=environment_id,
                         session_id=captured_session_id,
                         provenance=workflow_prep.get("provenance", ()) if workflow_prep else (),
+                        resource_snapshot=workflow_prep.get("resource_snapshot") if workflow_prep else None,
                     )
             except ContinuityError as exc:
                 print(f"Bootstrap created session {captured_session_id}, but LLMD could not persist its ID. Do not retry the launch; inspect provider state and use `llmd attach` with this exact ID if verified.", file=output_stream)
@@ -1782,6 +2253,51 @@ def _run_pane_locked(
             )
         _finish_terminal_launch(dispatcher, terminal_record, exit_code=1, status="spawn_failed")
         raise ContinuityError(ErrorCode.PROVIDER_UNAVAILABLE, f"Failed to launch {provider}: {exc}") from exc
+    if result.returncode == 0 and session_id and (
+        portable_context_snapshot is not None or (workflow_prep and workflow_prep.get("resource_snapshot"))
+    ):
+        if portable_context_snapshot is None:
+            normalized = _safe_launch_settings(provider, native_args)
+            portable_context_snapshot = {
+                "schema_version": 1,
+                "provider": provider,
+                "repositories": [],
+                "working_directory": cwd_override or cwd,
+                "explicit_directory_override": cwd_override,
+                "authorized_directories": list(normalized.get("additional_directories", ())),
+                "runtime_identity": {
+                    "environment_id": environment_id,
+                    "runtime_kind": target_environment.runtime_kind if target_environment else "unknown",
+                    "distro": target_environment.distro if target_environment else None,
+                },
+                "workflow_type": selected_workflow,
+                "logical_agent_identity": f"{slot['slot_id']}:{slot['name']}",
+                "terminal_settings": {
+                    key: normalized[key] for key in ("no_alt_screen", "no_daemon", "strict_config")
+                    if key in normalized
+                },
+                "instructions": None,
+                "semantic_settings": {
+                    key: value for key, value in (
+                        ("reasoning_effort", normalized.get("reasoning_effort")),
+                        ("filesystem", normalized.get("sandbox")),
+                        ("approval", normalized.get("approval_policy")),
+                        ("search", normalized.get("search")),
+                    ) if value is not None
+                },
+                "destination_preferences": {},
+            }
+        if workflow_prep and workflow_prep.get("resource_snapshot"):
+            portable_context_snapshot["workflow_resource_snapshot"] = workflow_prep["resource_snapshot"]
+            if workflow_prep.get("custom_instruction_path"):
+                portable_context_snapshot["workflow_custom_instruction_path"] = workflow_prep["custom_instruction_path"]
+        # Claude's UUID is only a reservation until exact transcript evidence
+        # associates it with the slot. Persist snapshots only after that evidence.
+        if provider != "claude" or launch_id is None:
+            dispatcher.record_portable_launch_context(
+                slot_id=slot_id, provider=provider, environment_id=environment_id,
+                session_id=session_id, snapshot=portable_context_snapshot,
+            )
     _finish_terminal_launch(dispatcher, terminal_record, exit_code=result.returncode,
                             status="exited" if result.returncode == 0 else "abnormal_exit")
     claude_launch_outcome_recorded = False
@@ -1812,6 +2328,11 @@ def _run_pane_locked(
                 )
                 return 1
             if result.returncode == 0:
+                if portable_context_snapshot is not None:
+                    dispatcher.record_portable_launch_context(
+                        slot_id=slot_id, provider=provider, environment_id=environment_id,
+                        session_id=session_id, snapshot=portable_context_snapshot,
+                    )
                 launch_identity = (provider, environment_id, session_id)
                 launch_id = None
         elif claude_reconcile["status"] == "pending_no_transcript":
@@ -2014,7 +2535,8 @@ def _switch_after_exit(
     effective_cwd = destination_cwd or cwd
     if destination_cwd:
         _validate_cwd_override(dispatcher, environment_id, destination_cwd)
-    preview = _new_launch_preview(dispatcher, provider, environment_id, effective_cwd, destination_args)
+    preview = _new_launch_preview(dispatcher, provider, environment_id, effective_cwd, destination_args,
+                                  source_slot_id=slot["slot_id"])
     if destination_args:
         _render_launch_preview(preview, output_stream)
     launch = dispatcher.begin_launch(
@@ -2183,7 +2705,8 @@ def _switch_to_existing_agent(
     if destination_cwd_override:
         _validate_cwd_override(dispatcher, current["environment_id"], destination_cwd_override)
     preview = _launch_preview(dispatcher, current["provider"], current["native_session_id"], current["environment_id"],
-                              destination_cwd_override or destination_cwd, destination_args)
+                              destination_cwd_override or destination_cwd, destination_args,
+                              source_slot_id=source["slot_id"])
     if destination_args:
         _render_launch_preview(preview, output_stream)
     selected_identity = (selected.get("current_provider"), selected.get("current_environment_id"),
@@ -2219,6 +2742,7 @@ def _switch_to_existing_agent(
                      input_stream=input_stream, output_stream=output_stream, show_summary=False,
                      native_args=destination_args, cwd_override=destination_cwd_override,
                      expected_session_identity=destination_identity,
+                     transition_source={"slot_id": source["slot_id"], "expected_source": _session_identity(source)},
                      launcher_terminal_context=launcher_terminal_context)
 
 
@@ -2277,7 +2801,8 @@ def _create_agent_after_exit(
         print("New agent canceled; no slot or provider launch was created.", file=output_stream)
         return 0
     _validate_cwd_override(dispatcher, "local", str(cwd))
-    preview = _new_launch_preview(dispatcher, provider, "local", str(cwd), destination_args)
+    preview = _new_launch_preview(dispatcher, provider, "local", str(cwd), destination_args,
+                                  source_slot_id=source["slot_id"])
     if destination_args:
         _render_launch_preview(preview, output_stream)
     launch = dispatcher.prepare_start(gui=source["gui_alias"], name=name, provider=provider,
@@ -2338,7 +2863,8 @@ def _review(dispatcher: DispatcherService, args: argparse.Namespace,
     create_reviewer = bool(args.new or reviewer_identity is None)
     if create_reviewer:
         preview = _new_launch_preview(dispatcher, args.provider, args.environment or "local", args.cwd, native_args,
-                                      allow_native_unknown=allow_native_unknown)
+                                      allow_native_unknown=allow_native_unknown,
+                                      source_slot_id=original["slot_id"])
         if not args.apply:
             if getattr(args, "json_output", False):
                 print(json.dumps({"action": "review", "applied": False, "launch_preview": preview}, indent=2), file=output_stream)
@@ -2355,7 +2881,8 @@ def _review(dispatcher: DispatcherService, args: argparse.Namespace,
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Reviewer session is already in use.")
         preview = _launch_preview(dispatcher, reviewer_identity[0], reviewer_identity[2], reviewer_identity[1],
                                   args.cwd or _current_native_cwd(dispatcher, reviewer["current"]), native_args,
-                                  allow_native_unknown=allow_native_unknown)
+                                  allow_native_unknown=allow_native_unknown,
+                                  source_slot_id=original["slot_id"])
         if not args.apply:
             if getattr(args, "json_output", False):
                 print(json.dumps({"action": "review", "applied": False, "launch_preview": preview}, indent=2), file=output_stream)
@@ -2400,7 +2927,8 @@ def _review(dispatcher: DispatcherService, args: argparse.Namespace,
     return _run_pane(dispatcher, slot_id=latest["slot_id"], launch_id=None,
                      input_stream=input_stream, output_stream=output_stream,
                      native_args=native_args, cwd_override=args.cwd,
-                     allow_native_unknown=allow_native_unknown)
+                     allow_native_unknown=allow_native_unknown,
+                     transition_source={"slot_id": original["slot_id"], "expected_source": original_identity})
 
 
 def _return(dispatcher: DispatcherService, args: argparse.Namespace,
@@ -2420,7 +2948,8 @@ def _return(dispatcher: DispatcherService, args: argparse.Namespace,
         _validate_cwd_override(dispatcher, original_identity[1], cwd_override)
     preview = _launch_preview(dispatcher, original_identity[0], original_identity[2], original_identity[1],
                               cwd_override or _current_native_cwd(dispatcher, original["current"]), native_args,
-                              allow_native_unknown=allow_native_unknown)
+                              allow_native_unknown=allow_native_unknown,
+                              source_slot_id=reviewer["slot_id"])
     if not args.apply:
         if getattr(args, "json_output", False):
             print(json.dumps({"action": "return", "applied": False, "launch_preview": preview}, indent=2), file=output_stream)
@@ -2442,7 +2971,8 @@ def _return(dispatcher: DispatcherService, args: argparse.Namespace,
     return _run_pane(dispatcher, slot_id=selected["slot_id"], launch_id=None,
                      input_stream=input_stream, output_stream=output_stream,
                      native_args=native_args, cwd_override=cwd_override,
-                     allow_native_unknown=allow_native_unknown)
+                     allow_native_unknown=allow_native_unknown,
+                     transition_source={"slot_id": reviewer["slot_id"], "expected_source": reviewer_identity})
 
 
 @contextlib.contextmanager
@@ -3490,37 +4020,7 @@ def _parse_profile_settings(items: Sequence[str]) -> dict[str, Any]:
 
 
 def _profile_setting_argv(provider: str, settings: dict[str, Any]) -> list[str]:
-    argv: list[str] = []
-    if provider == "codex":
-        for key, option in (("sandbox", "--sandbox"), ("approval_policy", "--ask-for-approval"),
-                            ("model", "--model"), ("provider_profile", "--profile")):
-            if key in settings:
-                argv.extend((option, str(settings[key])))
-        if "reasoning_effort" in settings:
-            argv.extend(("--config", f"model_reasoning_effort={settings['reasoning_effort']}"))
-        for key, option in (("additional_directories", "--add-dir"),
-                            ("enabled_features", "--enable"), ("disabled_features", "--disable")):
-            for value in settings.get(key, []):
-                argv.extend((option, str(value)))
-        for key, option in (("search", "--search"), ("no_alt_screen", "--no-alt-screen"),
-                            ("no_daemon", "--no-daemon"), ("strict_config", "--strict-config"),
-                            ("auto_approval", "--approve-for-me")):
-            if settings.get(key):
-                argv.append(option)
-    elif provider == "agy":
-        mapping = {"model": "model", "reasoning_effort": "effort", "sandbox": "sandbox",
-                   "provider_profile": "agent", "additional_directories": "additional_directories"}
-        managed = {target: settings[key] for key, target in mapping.items() if key in settings}
-        if managed:
-            argv.extend(("--settings", json.dumps(managed, ensure_ascii=False, separators=(",", ":"))))
-    elif provider == "claude":
-        for key, option in (("model", "--model"), ("reasoning_effort", "--effort"),
-                            ("permission_mode", "--permission-mode"), ("provider_profile", "--agent")):
-            if key in settings:
-                argv.extend((option, str(settings[key])))
-        for directory in settings.get("additional_directories", []):
-            argv.extend(("--add-dir", str(directory)))
-    return argv
+    return provider_settings_argv(provider, settings)
 
 
 def _native_setting_keys(provider: str, native_args: Sequence[str]) -> set[str]:
@@ -3605,6 +4105,12 @@ def _resolve_profile_invocation(dispatcher: DispatcherService, args: argparse.Na
     if provider is None:
         provider = selected["provider"]
     if provider != selected["provider"]:
+        if source == "assigned":
+            _PROFILE_CONTEXT.set({"profile_id": selected["profile_id"], "name": selected["name"],
+                                  "revision": selected["revision"], "source": "portable-source",
+                                  "requested_runtime": selected["runtime_kind"],
+                                  "requested_cwd": selected["cwd"], "overridden_settings": []})
+            return list(native_args)
         raise ContinuityError(ErrorCode.INVALID_INPUT,
                               f"Profile {selected['name']!r} is for {selected['provider']}; launch provider is {provider}.")
     if selected["runtime_kind"]:
@@ -3918,12 +4424,13 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
             target_identity = (old["provider"], old["environment_id"], old["native_session_id"])
             if args.apply:
                 _guard_current_session_change(dispatcher, expected_current, target_identity)
-            target_cwd = args.cwd or _current_native_cwd(dispatcher, old)
             if args.cwd:
                 _validate_cwd_override(dispatcher, old["environment_id"], args.cwd)
             preview = _launch_preview(dispatcher, old["provider"], old["native_session_id"],
-                                      old["environment_id"], target_cwd, native_args,
-                                      allow_native_unknown=allow_native_unknown)
+                                      old["environment_id"], args.cwd, native_args,
+                                      allow_native_unknown=allow_native_unknown,
+                                      source_slot_id=current_slot["slot_id"],
+                                      expected_source=expected_current)
             if not args.apply:
                 result = {"action": "switch", "applied": False,
                           "summary": f"Dry-run: would resume historical {old['provider']} session {old['native_session_id']}.",
@@ -3969,6 +4476,7 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
                     dispatcher, args.provider, environment_id,
                     args.cwd or _current_native_cwd(dispatcher, current), native_args,
                     allow_native_unknown=allow_native_unknown,
+                    source_slot_id=current_slot["slot_id"],
                 )
                 if native_args:
                     _render_launch_preview(new_preview, output_stream)
@@ -3982,12 +4490,15 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
                 return _run_pane(dispatcher, slot_id=result["details"]["slot_id"],
                                  launch_id=result["details"]["launch_id"],
                                  input_stream=input_stream, output_stream=output_stream,
-                                 native_args=native_args, allow_native_unknown=allow_native_unknown)
+                                 native_args=native_args, allow_native_unknown=allow_native_unknown,
+                                 workflow_selection=getattr(args, "workflow", None),
+                                 custom_instruction_path=getattr(args, "instruction_file", None))
             else:
                 result["launch_preview"] = _new_launch_preview(
                     dispatcher, args.provider, environment_selector,
                     args.cwd or _current_native_cwd(dispatcher, current), native_args,
-                    allow_native_unknown=allow_native_unknown)
+                    allow_native_unknown=allow_native_unknown,
+                    source_slot_id=current_slot["slot_id"])
                 preview_environment_id = result["launch_preview"]["environment"]["id"]
                 result["details"]["environment_id"] = preview_environment_id
                 for event in result["events"]:
@@ -4262,7 +4773,8 @@ def _start(
     new_preview = _new_launch_preview(dispatcher, args.provider,
                                       environment_id if args.apply else environment_selector, args.cwd,
                                       getattr(args, "native_args", []),
-                                      allow_native_unknown=getattr(args, "allow_native_unknown", False))
+                                      allow_native_unknown=getattr(args, "allow_native_unknown", False),
+                                      source_slot_id=slot["slot_id"] if slot and args.new else None)
     _startup_progress("environment and provider executable discovery completed")
     if args.apply and getattr(args, "native_args", []):
         _render_launch_preview(new_preview, output_stream)
@@ -4284,7 +4796,9 @@ def _start(
                          launch_id=result["details"]["launch_id"],
                          input_stream=input_stream, output_stream=output_stream,
                          native_args=getattr(args, "native_args", []),
-                         allow_native_unknown=getattr(args, "allow_native_unknown", False))
+                         allow_native_unknown=getattr(args, "allow_native_unknown", False),
+                         workflow_selection=getattr(args, "workflow", None),
+                         custom_instruction_path=getattr(args, "instruction_file", None))
     result["launch_preview"] = new_preview
     if not args.apply:
         preview_environment_id = new_preview["environment"]["id"]

@@ -48,6 +48,12 @@ llmd agent-number Project LegacyAgent 12 --source "verified handoff record 2026-
 
 Release review boundaries: persistent profiles are the v2.2.0 slice; workflow types and stable numbering ship together as v2.3.0 because they form checkpoint-ready identity metadata. This branch combines all three for qualification. Checkpoints, runtime discovery, terminal ownership and transfer remain separately owned roadmap work.
 
+## Portable launch context (LLMD v2.4.0 candidate)
+
+Provider switches and workspace restoration resolve exact repository/worktree observations, effective and explicit working directories, authorized additional directories, runtime identity, workflow and logical agent identity, compatible terminal settings, portable instructions, and destination-scoped provider preferences from saved session/workspace records. Common semantic settings are translated only where the destination adapter has verified support. Previews classify values as preserved, translated, restored, unsupported, or conflicting; missing paths and permission broadening block execution. Raw source-provider arguments are never replayed. Unsupported provider-specific options do not erase unrelated portable context.
+
+The qualified six-direction matrix uses guarded Codex, AGY, and Claude substitutes. Resource snapshots retain exact resource IDs, revisions, and byte digests, while workflow content is delivered through session-specific additive initialization where supported. Provider-loaded context, context surviving compaction/resume, and Claude workflow initialization remain unverified or unsupported; inherited Claude workflow initialization is rejected before provider invocation.
+
 ## Named Agent Dispatcher
 
 `llmd` stores local GUI aliases, named agent slots, lifecycle state, pending launches, and ordered session activations in the same durable event spool and rebuildable SQLite index used by `agents`. A local GUI alias does not create a conversation in ChatGPT.

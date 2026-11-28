@@ -13,9 +13,13 @@ from typing import Any, Protocol
 class WorkflowResourceBridge(Protocol):
     """Read-only workflow-instructions/v1 bridge contract."""
 
-    def list_resources(self, provider: str, runtime: str) -> Sequence[Mapping[str, Any]]: ...
+    def list_resources(
+        self, provider: str, runtime: str, *, selection: str = "standard"
+    ) -> Sequence[Mapping[str, Any]]: ...
 
-    def read_resource(self, resource_id: str, revision: str | None = None) -> Mapping[str, Any] | None: ...
+    def read_resource(
+        self, resource_id: str, revision: str | None = None, *, selection: str = "standard"
+    ) -> Mapping[str, Any] | None: ...
 
 
 class LocalAgentBridgeWorkflowAdapter:
@@ -29,25 +33,35 @@ class LocalAgentBridgeWorkflowAdapter:
     ) -> list[dict[str, Any]]:
         from local_agent_bridge.workflow_resources import resolve_workflow_resources
 
-        selected = selection if selection in {"standard", "handoff", "goal", "hybrid"} else "standard"
-        payload = resolve_workflow_resources(selected)
+        payload = resolve_workflow_resources(selection)
+        if payload.get("schema_version") != 1 or payload.get("selection") != selection:
+            raise ValueError("local_agent_bridge returned an unsupported workflow resource schema or selection")
+        entries = payload.get("resources")
+        if not isinstance(entries, list):
+            raise ValueError("local_agent_bridge schema-v1 resources must be an ordered list")
         supported = provider in self.supported_providers and runtime in {"windows", "wsl", "linux", "macos"}
         items: list[dict[str, Any]] = []
-        for entry in payload.get("resources", ()):
-            content = str(entry.get("content") or "")
-            digest = str(entry.get("sha256") or "")
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                raise ValueError("local_agent_bridge schema-v1 resource must be an object")
+            resource_id, content, digest = entry.get("id"), entry.get("content"), entry.get("sha256")
+            if not all(isinstance(value, str) for value in (resource_id, content, digest)):
+                raise ValueError("local_agent_bridge schema-v1 resource requires string id, content, and sha256")
             actual_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
             digest_ok = bool(digest) and actual_digest == digest
             items.append(
                 {
-                    "resource_id": str(entry.get("id") or ""),
+                    "schema_version": 1,
+                    "selection": selection,
+                    "resource_id": resource_id,
                     "revision": digest[:12],
                     "digest": digest if digest_ok else actual_digest,
                     "path": str(entry.get("path") or ""),
-                    "content": content if digest_ok else "",
+                    "content": content if digest_ok else None,
                     "installed": digest_ok,
                     "callable": digest_ok,
-                    "runtime_verified": digest_ok and supported,
+                    # Resolver integrity and provider runtime loading are distinct evidence.
+                    "runtime_verified": False,
                     "supported": supported,
                     "detail": None if digest_ok else "resource digest mismatch",
                 }
@@ -104,10 +118,7 @@ def discover_workflow_resources(
             )
         ]
     try:
-        try:
-            descriptors = list(bridge.list_resources(provider, runtime, selection=selection))  # type: ignore[call-arg]
-        except TypeError:
-            descriptors = list(bridge.list_resources(provider, runtime))
+        descriptors = list(bridge.list_resources(provider, runtime, selection=selection))
     except Exception as exc:
         return [
             ResourceStatus(
@@ -135,7 +146,7 @@ def discover_workflow_resources(
         content = item.get("content")
         if content is None and hasattr(bridge, "read_resource") and installed and callable_flag and supported:
             try:
-                snap = bridge.read_resource(rid, rev or None)
+                snap = bridge.read_resource(rid, rev or None, selection=selection)
                 if snap and snap.get("content") is not None:
                     content = str(snap["content"])
                     snap_digest = str(snap.get("digest") or digest)
@@ -144,6 +155,11 @@ def discover_workflow_resources(
                         installed = False
             except Exception:
                 content = None
+        if content is not None and digest:
+            actual_digest = hashlib.sha256(str(content).encode("utf-8")).hexdigest()
+            if actual_digest != digest:
+                content = None
+                installed = False
         if not supported:
             status = "unsupported"
         elif not installed:
@@ -181,6 +197,7 @@ def prepare_additive_workflow_init(
     resources: Sequence[ResourceStatus],
     selection: str | None = "standard",
     custom_instruction_path: str | None = None,
+    expected_digests: Mapping[str, str] | None = None,
     supported_providers: frozenset[str] = frozenset({"codex", "agy"}),
 ) -> dict[str, Any]:
     """LLMD-51: Prepare one-time additive workflow provenance and prompt for new native sessions only."""
@@ -189,10 +206,13 @@ def prepare_additive_workflow_init(
             "applied": False,
             "status": "skipped_resume",
             "reason": "resume_never_replays_init",
-            "provider_qualified": provider in supported_providers,
+            "provider_qualified": False,
+            "provider_behavior_observed": False,
+            "provider_snapshot_status": "not_observable",
             "prompt_submitted": False,
             "delivery_confirmed": False,
             "provenance": [],
+            "resource_snapshot": None,
             "delivery_prompt": None,
         }
     if selection is None and not custom_instruction_path:
@@ -200,10 +220,13 @@ def prepare_additive_workflow_init(
             "applied": False,
             "status": "untyped_legacy",
             "reason": "untyped legacy slot retains existing initialization behavior",
-            "provider_qualified": provider in supported_providers,
+            "provider_qualified": False,
+            "provider_behavior_observed": False,
+            "provider_snapshot_status": "not_observable",
             "prompt_submitted": False,
             "delivery_confirmed": False,
             "provenance": [],
+            "resource_snapshot": None,
             "delivery_prompt": None,
         }
     effective_selection = selection or "standard"
@@ -213,20 +236,37 @@ def prepare_additive_workflow_init(
             "status": "unsupported",
             "reason": f"provider {provider!r} has no qualified additive workflow initialization surface",
             "provider_qualified": False,
+            "provider_behavior_observed": False,
+            "provider_snapshot_status": "unsupported",
             "prompt_submitted": False,
             "delivery_confirmed": False,
             "provenance": [],
+            "resource_snapshot": None,
             "delivery_prompt": None,
         }
     provenance: list[dict[str, Any]] = []
     prompt_parts: list[str] = []
     blocked: list[dict[str, Any]] = []
-    for r in resources:
+    by_id: dict[str, list[ResourceStatus]] = {}
+    for resource in resources:
+        by_id.setdefault(resource.resource_id, []).append(resource)
+    deduplicated: list[ResourceStatus] = []
+    for resource_id, candidates in by_id.items():
+        digests = {candidate.digest for candidate in candidates}
+        if len(digests) > 1:
+            blocked.append({
+                "resource_id": resource_id,
+                "status": "conflicting",
+                "detail": "duplicate resource identity has different content digests",
+            })
+            continue
+        deduplicated.append(candidates[0])
+    for r in deduplicated:
         if r.status != "available":
             if r.status in {"missing", "changed", "unsupported", "unavailable"}:
                 blocked.append({"resource_id": r.resource_id, "status": r.status, "detail": r.detail})
             continue
-        if not r.content:
+        if r.content is None:
             blocked.append(
                 {
                     "resource_id": r.resource_id,
@@ -248,25 +288,35 @@ def prepare_additive_workflow_init(
         if r.path:
             entry["path"] = r.path
         provenance.append(entry)
-        prompt_parts.append(f"[{r.resource_id}@{r.revision}]\n{r.content.strip()}")
+        prompt_parts.append(f"[{r.resource_id}@{r.revision}]\n{r.content}")
     if custom_instruction_path:
         custom_file = Path(custom_instruction_path)
         if custom_file.is_file():
             raw = custom_file.read_bytes()
             custom_digest = hashlib.sha256(raw).hexdigest()
-            provenance.append(
-                {
-                    "resource_id": f"custom:{custom_file.name}",
-                    "revision": custom_digest[:12],
-                    "digest": custom_digest,
-                    "status": "available",
-                    "selection": effective_selection,
-                    "integrity_verified": True,
-                    "installed": True,
-                    "callable": True,
-                }
-            )
-            prompt_parts.append(f"[custom:{custom_file.name}@{custom_digest[:12]}]\n{raw.decode('utf-8').strip()}")
+            custom_resource_id = f"custom:{custom_file.name}"
+            expected_digest = (expected_digests or {}).get(custom_resource_id)
+            if expected_digest is not None and expected_digest != custom_digest:
+                blocked.append({
+                    "resource_id": custom_resource_id,
+                    "status": "changed",
+                    "detail": "custom instruction file bytes differ from the selected session snapshot",
+                })
+                raw = None
+            if raw is not None:
+                provenance.append(
+                    {
+                        "resource_id": custom_resource_id,
+                        "revision": custom_digest[:12],
+                        "digest": custom_digest,
+                        "status": "available",
+                        "selection": effective_selection,
+                        "integrity_verified": True,
+                        "installed": True,
+                        "callable": True,
+                    }
+                )
+                prompt_parts.append(f"[{custom_resource_id}@{custom_digest[:12]}]\n{raw.decode('utf-8')}")
         else:
             blocked.append(
                 {
@@ -276,17 +326,29 @@ def prepare_additive_workflow_init(
                 }
             )
     delivery_prompt = "\n\n".join(prompt_parts) if prompt_parts else None
+    resource_snapshot = {
+        "schema_version": 1,
+        "selection": effective_selection,
+        "resources": [
+            {"id": entry["resource_id"], "revision": entry["revision"], "sha256": entry["digest"]}
+            for entry in provenance
+        ],
+    }
     return {
         "applied": bool(provenance and delivery_prompt),
         "status": "degraded" if blocked else ("ready" if provenance else "unavailable"),
         "selection": effective_selection,
         "provider": provider,
         "runtime": runtime,
-        "provider_qualified": True,
+        "provider_qualified": False,
+        "delivery_capability": f"{provider}_bootstrap_prompt" if provider in supported_providers else None,
+        "provider_behavior_observed": False,
+        "provider_snapshot_status": "prompt_submitted; effective-loaded-context-unverified",
         "prompt_submitted": False,
         "delivery_confirmed": False,
         "custom_instruction_path": custom_instruction_path,
         "provenance": provenance,
+        "resource_snapshot": resource_snapshot,
         "limitations": blocked,
         "delivery_prompt": delivery_prompt,
     }

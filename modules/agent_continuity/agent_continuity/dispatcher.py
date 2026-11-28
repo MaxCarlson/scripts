@@ -1119,6 +1119,7 @@ class DispatcherService:
             resources=resources,
             selection=selection,
             custom_instruction_path=custom_instruction_path,
+            expected_digests=expected_digests,
         )
         with _mutation_lock(self.home_dir):
             self._sync()
@@ -1134,9 +1135,12 @@ class DispatcherService:
                     "delivery_state": "prepared",
                     "selection": prepared.get("selection"),
                     "provider_qualified": prepared.get("provider_qualified", False),
+                    "provider_behavior_observed": prepared.get("provider_behavior_observed", False),
+                    "provider_snapshot_status": prepared.get("provider_snapshot_status", "not_observable"),
                     "prompt_submitted": False,
                     "delivery_confirmed": False,
                     "provenance": prepared.get("provenance", []),
+                    "resource_snapshot": prepared.get("resource_snapshot"),
                     "limitations": prepared.get("limitations", []),
                 },
             )
@@ -1152,6 +1156,7 @@ class DispatcherService:
         environment_id: str,
         session_id: str | None,
         provenance: Sequence[Mapping[str, Any]],
+        resource_snapshot: Mapping[str, Any] | None = None,
     ) -> None:
         """Record confirmed delivery separately from preparation once provider launch succeeds with evidence."""
         with _mutation_lock(self.home_dir):
@@ -1169,7 +1174,11 @@ class DispatcherService:
                     "delivery_state": "delivered",
                     "prompt_submitted": True,
                     "delivery_confirmed": True,
+                    "provider_qualified": False,
+                    "provider_behavior_observed": False,
+                    "provider_snapshot_status": "prompt submitted; effective loaded context and resume persistence unverified",
                     "provenance": list(provenance),
+                    "resource_snapshot": dict(resource_snapshot or {}),
                     "native_session_id": session_id,
                 },
             )
@@ -2321,6 +2330,61 @@ class DispatcherService:
                          "outcome": outcome, "detail": detail, "native_session_id": native_session_id},
             )
             self.continuity._emit_and_materialize([event])
+
+    def record_portable_launch_context(
+        self,
+        *,
+        slot_id: str,
+        provider: str,
+        environment_id: str,
+        session_id: str,
+        snapshot: Mapping[str, Any],
+    ) -> None:
+        """Persist normalized, non-secret portable context against one exact native session."""
+        if not all(isinstance(value, str) and value for value in (provider, environment_id, session_id)):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Portable context snapshots require exact session identity.")
+        value = dict(snapshot)
+        if value.get("schema_version") != 1 or value.get("provider") != provider:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Portable context snapshot schema or provider identity is invalid.")
+        try:
+            json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Portable context snapshot must contain JSON-safe metadata.") from exc
+        with _mutation_lock(self.home_dir):
+            self._sync()
+            slot = self.get_slot_by_id(slot_id)
+            exact = (provider, environment_id, session_id)
+            if not any((item["provider"], item["environment_id"], item["native_session_id"]) == exact
+                       for item in slot.get("history", [])):
+                raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                      "Portable context snapshot does not match this slot's session history.")
+            event = self._event(
+                EventType.DISPATCHER_PROCESS_OBSERVED,
+                environment_id=environment_id,
+                provider=provider,
+                session_id=session_id,
+                payload={"slot_id": slot_id, "outcome": "portable_context_snapshot", "return_code": 0,
+                         "native_session_id": session_id, "portable_context_snapshot": value},
+            )
+            self.continuity._emit_and_materialize([event])
+
+    def get_portable_launch_context(
+        self, *, slot_id: str, provider: str, environment_id: str, session_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the newest snapshot only for the exact slot/provider/environment/native session."""
+        row = self._row(
+            """SELECT payload_json FROM activity_events
+               WHERE event_type = ? AND provider = ? AND environment_id = ? AND native_session_id = ?
+                 AND json_extract(payload_json, '$.slot_id') = ?
+                 AND json_extract(payload_json, '$.outcome') = 'portable_context_snapshot'
+               ORDER BY observed_timestamp DESC, event_id DESC LIMIT 1""",
+            (EventType.DISPATCHER_PROCESS_OBSERVED.value, provider, environment_id, session_id, slot_id),
+        )
+        if row is None:
+            return None
+        payload = json.loads(row["payload_json"])
+        snapshot = payload.get("portable_context_snapshot")
+        return dict(snapshot) if isinstance(snapshot, dict) else None
 
     def open_request(self, *, gui: str, cwd_override: str | None = None) -> dict[str, Any]:
         """Build ordered dispatcher-side pane records; terminal geometry belongs to terminal_launcher."""

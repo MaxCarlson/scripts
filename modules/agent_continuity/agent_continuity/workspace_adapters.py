@@ -14,7 +14,7 @@ from typing import Any, Protocol
 
 from .errors import ContinuityError, ErrorCode
 from .identifiers import generate_id
-from .launch_context import provider_settings_argv
+from .launch_context import VERIFIED_CAPABILITIES, provider_settings_argv, resolve_portable_launch_context
 from .runtime_discovery import (
     ManagedAssociationState,
     ManagedLaunchAssociation,
@@ -38,7 +38,8 @@ from .workspace_lifecycle import (
 from .workspace_ownership import ReservationSlotExecutionGuard, RestorationReservationStore
 
 _PROVIDER_ALLOWED_SETTINGS: dict[str, frozenset[str]] = {
-    "codex": frozenset({"model", "sandbox", "approval_policy", "reasoning_effort", "search", "add_dirs", "profile"}),
+    "codex": frozenset({"model", "sandbox", "approval_policy", "reasoning_effort", "search", "add_dirs", "profile",
+                        "no_alt_screen", "no_daemon", "strict_config"}),
     "claude": frozenset({"model", "effort", "permission_mode", "add_dirs"}),
     "agy": frozenset({"model", "effort", "sandbox", "add_dirs"}),
 }
@@ -75,6 +76,10 @@ class DispatcherLike(Protocol):
     def current_working_directory(self, slot: dict[str, Any]) -> str: ...
 
     def list_recent_terminal_launches(self, *, limit: int = 20) -> list[dict[str, Any]]: ...
+
+    def get_portable_launch_context(
+        self, *, slot_id: str, provider: str, environment_id: str, session_id: str,
+    ) -> dict[str, Any] | None: ...
 
 
 class DispatcherLaunchCommandBuilder(Protocol):
@@ -127,38 +132,6 @@ def validate_provider_launch_settings(
     return sanitized
 
 
-def provider_settings_argv(provider: str, settings: Mapping[str, Any]) -> list[str]:
-    """Encode validated checkpoint settings for the exact destination provider."""
-    argv: list[str] = []
-    if provider == "codex":
-        for key, option in (("model", "--model"), ("sandbox", "--sandbox"),
-                            ("approval_policy", "--ask-for-approval"), ("profile", "--profile")):
-            if settings.get(key) is not None:
-                argv.extend([option, str(settings[key])])
-        if settings.get("reasoning_effort"):
-            argv.extend(["--config", f"model_reasoning_effort={settings['reasoning_effort']}"])
-        if settings.get("search"):
-            argv.append("--search")
-        for path in settings.get("add_dirs", settings.get("additional_directories", [])):
-            argv.extend(["--add-dir", str(path)])
-    elif provider == "claude":
-        for key, option in (("model", "--model"), ("effort", "--effort"),
-                            ("permission_mode", "--permission-mode")):
-            if settings.get(key) is not None:
-                argv.extend([option, str(settings[key])])
-        for path in settings.get("add_dirs", settings.get("additional_directories", [])):
-            argv.extend(["--add-dir", str(path)])
-    elif provider == "agy":
-        mapped = {"additional_directories" if key == "add_dirs" else key: settings[key]
-                  for key in ("model", "effort", "reasoning_effort", "sandbox", "agent", "add_dirs",
-                              "additional_directories") if key in settings}
-        if "reasoning_effort" in mapped:
-            mapped["effort"] = mapped.pop("reasoning_effort")
-        if mapped:
-            argv.extend(["--settings", json.dumps(mapped, ensure_ascii=False, separators=(",", ":"))])
-    return argv
-
-
 class DispatcherWorkspaceAdapter:
     """Read-only adapter translating DispatcherService slots and launches into WorkspaceSlotInput."""
 
@@ -186,6 +159,62 @@ class DispatcherWorkspaceAdapter:
                     if getattr(env, "environment_id", None) == environment_id:
                         return str(getattr(env, "runtime_kind", "unknown"))
         return "unknown"
+
+    def _resolve_portable_context(
+        self, *, slot_id: str, provider: str, environment_id: str, session_id: str, runtime_kind: str,
+    ) -> tuple[Any | None, dict[str, Any], bool]:
+        """Resolve exact-session normalized context for workspace capture and managed restoration."""
+        getter = getattr(self.dispatcher, "get_portable_launch_context", None)
+        if not callable(getter):
+            return None, {}, True
+        try:
+            snapshot = getter(
+                slot_id=slot_id, provider=provider, environment_id=environment_id, session_id=session_id,
+            )
+        except Exception:
+            return None, {}, False
+        if snapshot is None:
+            return None, {}, True
+        if snapshot.get("schema_version") != 1 or snapshot.get("provider") != provider:
+            return None, {}, False
+        environment = next((item for item in self.dispatcher.materializer.list_environments()
+                            if getattr(item, "environment_id", None) == environment_id), None)
+        destination_runtime = {
+            "environment_id": environment_id,
+            "runtime_kind": runtime_kind,
+            "distro": getattr(environment, "distro", None),
+        }
+        context, items = resolve_portable_launch_context(
+            snapshot, provider, capabilities=VERIFIED_CAPABILITIES, destination_runtime=destination_runtime,
+        )
+        blocking = any(item.status == "conflicting" for item in items) or any(
+            item.status == "unsupported" and item.key in {"filesystem", "approval", "network"}
+            for item in items
+        )
+        if blocking:
+            return context, {}, False
+        settings: dict[str, Any] = {}
+        preferences = dict(context.destination_preferences.get(provider, {}))
+        for key in ("model", "provider_profile"):
+            if preferences.get(key) is not None:
+                settings["profile" if key == "provider_profile" and provider == "codex" else key] = preferences[key]
+        semantic_map = {
+            "reasoning_effort": "reasoning_effort" if provider == "codex" else "effort",
+            "filesystem": "sandbox",
+            "approval": "approval_policy",
+            "search": "search",
+        }
+        supported = VERIFIED_CAPABILITIES.get(provider, frozenset())
+        for key, value in context.semantic_settings.items():
+            if key in supported and key in semantic_map:
+                settings[semantic_map[key]] = value
+        if context.authorized_directories:
+            settings["add_dirs"] = list(context.authorized_directories)
+        if provider == "codex":
+            for key in ("no_alt_screen", "no_daemon", "strict_config"):
+                if key in context.terminal_settings:
+                    settings[key] = context.terminal_settings[key]
+        return context, settings, True
 
     def _recent_by_exact_identity(self) -> dict[tuple[str, str, str, str], dict[str, Any]]:
         recent_by_identity: dict[tuple[str, str, str, str], dict[str, Any]] = {}
@@ -331,9 +360,28 @@ class DispatcherWorkspaceAdapter:
             agent_number=int(slot["agent_number"]) if slot.get("agent_number") is not None else None,
         )
         runtime_kind = self._resolve_runtime_kind(str(environment_id))
+        portable_context, portable_settings, portable_authorization = self._resolve_portable_context(
+            slot_id=slot_id, provider=str(provider), environment_id=str(environment_id),
+            session_id=str(native_session_id), runtime_kind=runtime_kind,
+        )
+        if portable_context is not None:
+            cwd = portable_context.explicit_directory_override or portable_context.working_directory or cwd
+            if portable_context.repositories:
+                primary_repository = portable_context.repositories[0]
+                worktree = WorkspaceWorktreeEvidence(
+                    requested_cwd=(portable_context.explicit_directory_override
+                                   or (recent.get("requested_cwd") if recent else None)),
+                    effective_cwd=portable_context.working_directory or cwd,
+                    native_cwd=(recent.get("native_cwd") if recent and recent.get("native_cwd") else None),
+                    git_repository=(str(primary_repository["root"]) if primary_repository.get("root") else worktree.git_repository),
+                    git_worktree=(str(primary_repository["worktree"]) if primary_repository.get("worktree") else worktree.git_worktree),
+                    git_branch=(str(primary_repository["branch"]) if primary_repository.get("branch") else worktree.git_branch),
+                    git_commit=(str(primary_repository["commit"]) if primary_repository.get("commit") else worktree.git_commit),
+                )
         auth_valid = True
         if self._authorization_lookup is not None:
             auth_valid = bool(self._authorization_lookup(slot))
+        auth_valid = auth_valid and portable_authorization
 
         return WorkspaceSlotInput(
             slot_id=slot_id,
@@ -347,7 +395,7 @@ class DispatcherWorkspaceAdapter:
             slot_name=str(slot["name"]) if slot.get("name") is not None else None,
             launch_settings=validate_provider_launch_settings(
                 str(provider),
-                recent.get("settings") if recent else None,
+                {**portable_settings, **(recent.get("settings") if recent else {})},
                 strict=False,
             ),
             worktree=worktree,

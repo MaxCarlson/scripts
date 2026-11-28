@@ -15,7 +15,14 @@ def test_unsupported_setting_does_not_discard_portable_context(tmp_path):
         "repositories": [{"root": str(repo), "worktree": str(repo), "branch": "feature/x"}],
         "working_directory": str(repo),
         "authorized_directories": [str(repo)],
-        "semantic_settings": {"reasoning_effort": "high", "mcp": ["local"]},
+        "semantic_settings": {
+            "reasoning_effort": "high",
+            "filesystem": "read-only",
+            "network": {"outbound": False},
+            "search": True,
+            "context": {"mcp_servers": ["local"]},
+            "mcp": ["local"],
+        },
         "instructions": "Use the project conventions.",
     }
     context, preview = resolve_portable_launch_context(
@@ -25,10 +32,54 @@ def test_unsupported_setting_does_not_discard_portable_context(tmp_path):
     assert context.authorized_directories == (str(repo),)
     assert context.semantic_settings == source["semantic_settings"]
     assert {item.key: item.status for item in preview}["reasoning_effort"] == "translated"
+    assert {item.key: item.status for item in preview}["filesystem"] == "unsupported"
+    assert {item.key: item.status for item in preview}["network"] == "unsupported"
+    assert {item.key: item.status for item in preview}["search"] == "unsupported"
+    assert {item.key: item.status for item in preview}["context"] == "unsupported"
     assert {item.key: item.status for item in preview}["mcp"] == "unsupported"
 
 
-def test_missing_worktree_and_runtime_mismatch_are_conflicts(tmp_path):
+def test_workflow_resource_snapshot_survives_portable_context_resolution():
+    snapshot = {
+        "schema_version": 1,
+        "selection": "hybrid",
+        "resources": [{"id": "workflow.handoff", "revision": "abc123", "sha256": "f" * 64}],
+    }
+    context, _ = resolve_portable_launch_context({
+        "provider": "codex",
+        "workflow_type": "hybrid",
+        "workflow_resource_snapshot": snapshot,
+    }, "agy", capabilities=VERIFIED_CAPABILITIES)
+
+    assert context.workflow_type == "hybrid"
+    assert context.workflow_resource_snapshot == snapshot
+
+
+def test_destination_preview_reports_terminal_and_workflow_context_without_wsl_host_path_probe():
+    context, preview = resolve_portable_launch_context({
+        "provider": "agy",
+        "repositories": [{"root": "/home/agent/repo", "worktree": "/home/agent/repo", "branch": "observed"}],
+        "working_directory": "/home/agent/repo",
+        "explicit_directory_override": "/home/agent/repo",
+        "runtime_identity": {"runtime_kind": "wsl", "distro": "Ubuntu", "environment_id": "wsl-ubuntu"},
+        "workflow_type": "implementation",
+        "logical_agent_identity": "slot-1:Builder",
+        "terminal_settings": {"no_alt_screen": True},
+        "workflow_resource_snapshot": {
+            "schema_version": 1, "selection": "implementation", "resources": [],
+        },
+    }, "codex", capabilities=VERIFIED_CAPABILITIES,
+        destination_runtime={"runtime_kind": "wsl", "distro": "Ubuntu", "environment_id": "wsl-ubuntu"})
+
+    statuses = {item.key: item.status for item in preview}
+    assert context.working_directory == "/home/agent/repo"
+    assert statuses["working_directory"] == "preserved"
+    assert statuses["explicit_directory_override"] == "preserved"
+    assert statuses["terminal:no_alt_screen"] == "preserved"
+    assert statuses["workflow_resource_snapshot"] == "restored"
+
+
+def test_wsl_worktree_path_is_not_host_probed_and_runtime_mismatch_is_conflicting(tmp_path):
     missing = tmp_path / "deleted-worktree"
     context, preview = resolve_portable_launch_context({
         "provider": "agy",
@@ -36,7 +87,9 @@ def test_missing_worktree_and_runtime_mismatch_are_conflicts(tmp_path):
         "runtime_identity": {"runtime_kind": "wsl", "distro": "Ubuntu"},
     }, "codex", destination_runtime={"runtime_kind": "windows", "distro": None})
     assert context.repositories[0]["worktree"] == str(missing)
-    assert sum(item.status == "conflicting" for item in preview) == 2
+    statuses = {item.key: item.status for item in preview}
+    assert statuses["repository"] == "preserved"
+    assert statuses["runtime_identity"] == "conflicting"
 
 
 def test_permission_broadening_is_conflicting_and_unknown_capabilities_are_unsupported():
@@ -48,6 +101,16 @@ def test_permission_broadening_is_conflicting_and_unknown_capabilities_are_unsup
     assert {item.key: item.status for item in preview} == {
         "filesystem": "conflicting", "network": "unsupported",
     }
+
+
+def test_codex_danger_full_access_is_ranked_as_broader_than_workspace_write():
+    _, preview = resolve_portable_launch_context({
+        "provider": "agy",
+        "semantic_settings": {"filesystem": "workspace-write"},
+        "destination_filesystem": "danger-full-access",
+    }, "codex", capabilities=VERIFIED_CAPABILITIES)
+
+    assert {item.key: item.status for item in preview}["filesystem"] == "conflicting"
 
 
 def test_all_six_directional_provider_pairs_preserve_portable_context_and_destination_preferences(tmp_path):

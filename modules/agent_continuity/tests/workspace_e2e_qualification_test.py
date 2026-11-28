@@ -11,6 +11,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from terminal_launcher.backend import LaunchResult, LaunchStatus, TerminalLaunchPlan
+from terminal_launcher.managed import (
+    LaunchSubmissionState,
+    ManagedPaneReservation,
+    ManagedProcessStore,
+)
+from terminal_launcher.managed import (
+    ProcessLiveness as TLProcessLiveness,
+)
+
 from agent_continuity.dispatcher import DispatcherService
 from agent_continuity.environment import detect_runtime_kind
 from agent_continuity.errors import ContinuityError
@@ -43,15 +53,6 @@ from agent_continuity.workspace_cli import (
 from agent_continuity.workspace_lifecycle import (
     RestoreLaunchRequest,
     TopologyRestorer,
-)
-from terminal_launcher.backend import LaunchResult, LaunchStatus, TerminalLaunchPlan
-from terminal_launcher.managed import (
-    LaunchSubmissionState,
-    ManagedPaneReservation,
-    ManagedProcessStore,
-)
-from terminal_launcher.managed import (
-    ProcessLiveness as TLProcessLiveness,
 )
 
 
@@ -112,6 +113,60 @@ def _seed_dispatcher_with_mixed_sessions(home_dir: Path, work_a: Path, work_b: P
         "claude_sid": claude_sid,
         "env_id": codex_slot["current"]["environment_id"],
     }
+
+
+def test_workspace_adapter_resolves_exact_session_portable_settings_into_managed_restore(tmp_path: Path) -> None:
+    worktree = tmp_path / "workspace-root"
+    authorized = tmp_path / "workspace-authorized"
+    worktree.mkdir()
+    authorized.mkdir()
+    dispatcher, ids = _seed_dispatcher_with_mixed_sessions(tmp_path / "registry", worktree, authorized)
+    slot = dispatcher.get_slot_by_id(ids["codex_slot"])
+    runtime_kind = detect_runtime_kind()
+    dispatcher.record_portable_launch_context(
+        slot_id=ids["codex_slot"], provider="codex", environment_id=ids["env_id"],
+        session_id=ids["codex_sid"], snapshot={
+            "schema_version": 1, "provider": "codex",
+            "repositories": [{"root": str(worktree), "worktree": str(worktree), "branch": "feature/workspace"}],
+            "working_directory": str(worktree), "explicit_directory_override": str(worktree),
+            "authorized_directories": [str(authorized)],
+            "runtime_identity": {"environment_id": ids["env_id"], "runtime_kind": runtime_kind, "distro": None},
+            "workflow_type": "implementation", "logical_agent_identity": f"{slot['slot_id']}:alpha-codex",
+            "terminal_settings": {"no_alt_screen": True}, "instructions": None,
+            "semantic_settings": {
+                "reasoning_effort": "high", "filesystem": "workspace-write",
+                "approval": "on-request", "search": True,
+            },
+            "destination_preferences": {"codex": {"model": "portable-workspace-model"}},
+        },
+    )
+
+    candidate = DispatcherWorkspaceAdapter(dispatcher).slot_provider(ids["codex_slot"])
+
+    assert candidate is not None
+    assert candidate.launch_settings == {
+        "model": "portable-workspace-model", "reasoning_effort": "high", "sandbox": "workspace-write",
+        "approval_policy": "on-request", "search": True, "add_dirs": [str(authorized)],
+        "no_alt_screen": True,
+    }
+    assert candidate.worktree.effective_cwd == str(worktree)
+    assert candidate.worktree.git_worktree == str(worktree)
+    restore_request = RestoreLaunchRequest(
+        checkpoint_id="checkpoint-portable", queue_entry_id=None, slot_id=ids["codex_slot"],
+        gui_id=slot["gui_id"], provider="codex", native_session_id=ids["codex_sid"],
+        environment_id=ids["env_id"], runtime_kind=runtime_kind,
+        cwd=candidate.worktree.primary_cwd(), launch_settings=dict(candidate.launch_settings),
+        requested_topology=None, metadata=candidate.metadata, reservation_id="reservation-portable",
+        reservation_token="opaque-test-token", reservation_launch_id="launch-portable",
+        reservation_pane_id="pane-portable",
+    )
+    from agent_continuity.workspace_adapters import canonical_llmd_pane_command
+
+    command = canonical_llmd_pane_command(restore_request, home_dir=dispatcher.home_dir, prefer_installed=False)
+    assert command[command.index("--cwd") + 1] == str(worktree)
+    assert command[command.index("--model") + 1] == "portable-workspace-model"
+    assert command[command.index("--add-dir") + 1] == str(authorized)
+    assert "--no-alt-screen" in command
 
 
 def test_e2e_save_restart_restore_with_real_dispatcher_and_terminal_launcher(tmp_path: Path) -> None:
@@ -936,6 +991,8 @@ def test_durable_ownership_transfer_cross_process_and_competing_launch_blocked(
     """Exercise real _pane_runner.py + cross-process reservation consumption under canonical slot-<slot_id>.lock."""
     import subprocess
 
+    from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
+
     from agent_continuity.restoration_queue import QueueEntryStatus, RestorationQueue
     from agent_continuity.workspace_checkpoint import CheckpointStore
     from agent_continuity.workspace_lifecycle import TopologyRestorer
@@ -944,7 +1001,6 @@ def test_durable_ownership_transfer_cross_process_and_competing_launch_blocked(
         RestorationReservationStore,
         canonical_slot_lock_path,
     )
-    from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
 
     _install_guarded_provider(tmp_path, monkeypatch, "codex")
 
@@ -1133,12 +1189,13 @@ def test_reservation_crash_recovery_delayed_ack_and_partial_grouped_restoration(
     """Verify partial grouped ownership, ambiguous reservation blocking, and incompatible `llmd` fallback."""
     import shutil
 
+    from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
+
     from agent_continuity.restoration_queue import QueueEntryStatus, RestorationQueue
     from agent_continuity.workspace_adapters import canonical_llmd_dispatcher_entrypoint
     from agent_continuity.workspace_checkpoint import CheckpointStore
     from agent_continuity.workspace_lifecycle import TopologyRestorer
     from agent_continuity.workspace_ownership import ReservationOwnershipVerifier, RestorationReservationStore
-    from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
 
     _install_guarded_provider(tmp_path, monkeypatch, "codex")
 

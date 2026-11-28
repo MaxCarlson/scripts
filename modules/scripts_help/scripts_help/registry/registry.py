@@ -296,9 +296,9 @@ REGISTRY: dict = {
             {
                 "name": "llmd / llm-dispatcher (module)",
                 "path": "modules/agent_continuity",
-                "desc": "Manage Codex, AGY, and Claude sessions with persistent launch profiles, typed workflows, stable agent numbers, exact resume, terminal history, workspace save/restore, checkpoints, and recovery queue",
+                "desc": "Manage Codex, AGY, and Claude sessions with portable launch context, profiles, typed workflows, stable agent numbers, exact resume, workspace save/restore, checkpoints, and recovery queue",
                 "help_cmd": ["llmd", "--help"],
-                "version": "2.3.0",
+                "version": "2.4.0",
             },
             {
                 "name": "run_tests.py",
