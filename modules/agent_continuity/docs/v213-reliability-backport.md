@@ -1,0 +1,7 @@
+# Agent Continuity v2.1.3 Reliability Maintenance Backport
+
+- **Base Ancestry**: Branched cleanly from `4ad834c3` (`v2.1.2`, `feature/llmd-claude-lifecycle-corrective-20261127`) onto `feature/llmd-v212-reliability-backports`, independent of the `v2.3.0`/`v2.4.0` feature lines and `MatchStatus.EXACT` restoration changes.
+- **Included Fixes**:
+  1. **Concurrent first-use SQLite WAL & schema initialization** ([schema.py](../agent_continuity/schema.py)): retries `PRAGMA journal_mode = WAL;` and `BEGIN IMMEDIATE` DDL on transient `locked`/`busy` `OperationalError`s and uses `INSERT OR IGNORE` for `initialized_at`/`migrated_at` while keeping `SCHEMA_VERSION = 3`.
+  2. **Metadata-attachment contention & lock-order safety** ([dispatcher.py](../agent_continuity/dispatcher.py)): `attach_session()` acquires `slot-{slot_id}.lock` before `dispatcher.lock` (matching launch/resume lock order to prevent AB-BA deadlocks), uses real `SessionRuntimeObservation` fields (`ProcessLiveness`, `MatchStatus`, `AttachmentState`, `identity_conflict`, `evidence_conflict`) to fail closed on running, unknown, ambiguous, attached, or conflicting runtime evidence, and bounds metadata-contention waits to `1.5s`.
+  3. **Terminal-format test mock correction** ([dispatcher_cli.py](../agent_continuity/dispatcher_cli.py), [terminal_format_test.py](../tests/terminal_format_test.py)): routes CLI width lookups through `_get_terminal_size = shutil.get_terminal_size` and mocks `_get_terminal_size` with `os.terminal_size((..., 24))`.

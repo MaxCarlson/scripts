@@ -1,21 +1,72 @@
-"""Regression tests for v2.1.2 SQLite WAL concurrency and metadata-attachment contention backports."""
+"""Regression tests for v2.1.3 SQLite WAL concurrency, real observation contract, and lock-order safety."""
 
 from __future__ import annotations
 
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from agent_continuity.dispatcher import DispatcherService
+from agent_continuity.dispatcher import DispatcherService, _mutation_lock
 from agent_continuity.errors import ContinuityError
+from agent_continuity.runtime_discovery import (
+    AttachmentState,
+    EvidenceAvailability,
+    EvidenceConfidence,
+    ManagementState,
+    MatchStatus,
+    ProcessLiveness,
+    SessionIdentityState,
+    SessionKey,
+    SessionRuntimeObservation,
+)
 from agent_continuity.schema import SCHEMA_VERSION, ensure_schema, get_schema_version
 from agent_continuity.service import ContinuityService
+
+
+def _make_observation(
+    *,
+    liveness: ProcessLiveness = ProcessLiveness.EXITED,
+    known_liveness: ProcessLiveness = ProcessLiveness.EXITED,
+    match_status: MatchStatus = MatchStatus.NOT_OBSERVED,
+    attachment: AttachmentState = AttachmentState.DETACHED,
+    identity_conflict: bool = False,
+    evidence_conflict: bool = False,
+) -> SessionRuntimeObservation:
+    return SessionRuntimeObservation(
+        key=SessionKey(provider="codex", native_session_id="sid-1", environment_id="env-local"),
+        captured_at=datetime.now(UTC),
+        process_liveness=liveness,
+        known_process_liveness=known_liveness,
+        process_session_match=match_status,
+        session_identity_state=SessionIdentityState.EXACT,
+        interactive_attachment=attachment,
+        attachment_confidence=EvidenceConfidence.EXACT,
+        management=ManagementState.MANAGED,
+        availability=EvidenceAvailability.COMPLETE,
+        process_availability=EvidenceAvailability.COMPLETE,
+        provider_store_availability=EvidenceAvailability.COMPLETE,
+        managed_receipt_availability=EvidenceAvailability.COMPLETE,
+        confidence=EvidenceConfidence.EXACT,
+        provider_session_found=True,
+        provider_activity_at=None,
+        provider_last_turn_at=None,
+        registry_association=True,
+        processes=(),
+        ancestry=(),
+        managed_pane=None,
+        historical_managed_panes=(),
+        identity_conflict=identity_conflict,
+        evidence_conflict=evidence_conflict,
+        evidence=(),
+    )
 
 
 def test_concurrent_first_use_sqlite_wal_initialization(tmp_path: Path) -> None:
@@ -23,7 +74,6 @@ def test_concurrent_first_use_sqlite_wal_initialization(tmp_path: Path) -> None:
     barrier = threading.Barrier(8)
 
     def _init_worker(_: int) -> int:
-        # Use a short connect timeout so concurrent PRAGMA journal_mode=WAL / DDL contention is exercised.
         with closing(sqlite3.connect(str(db_path), timeout=0.05)) as conn:
             barrier.wait(timeout=5.0)
             ver = ensure_schema(conn)
@@ -38,57 +88,145 @@ def test_concurrent_first_use_sqlite_wal_initialization(tmp_path: Path) -> None:
     assert versions == [SCHEMA_VERSION] * 8
 
 
-def test_attach_session_waits_for_metadata_contention_and_rejects_active_runtime(
+def test_attach_session_real_observation_contract_and_lock_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    continuity = ContinuityService(tmp_path / "registry")
+    home = tmp_path / "registry"
+    continuity = ContinuityService(home)
     dispatcher = DispatcherService(continuity)
     dispatcher.create_gui("BackportGUI", apply=True)
     slot = dispatcher.create_slot(gui="BackportGUI", name="Worker", apply=True)
     slot_id = slot["details"]["slot_id"]
     dispatcher.attach_session(gui="BackportGUI", name="Worker", provider="codex", session_id="sid-1", apply=True)
 
-    # 1. Non-runtime metadata holder holds slot lock briefly -> attach_session waits and succeeds
+    # 1. Exited/detached observation + competing lock-order (slot lock -> _mutation_lock) has no AB-BA deadlock
     lock_held = threading.Event()
 
-    def _metadata_holder() -> None:
+    def _slot_then_mutation() -> None:
         with dispatcher._hold_slot_lock(slot_id):  # noqa: SLF001
             lock_held.set()
-            time.sleep(0.25)
+            time.sleep(0.15)
+            with _mutation_lock(home):
+                pass
 
-    holder = threading.Thread(target=_metadata_holder)
+    holder = threading.Thread(target=_slot_then_mutation)
     holder.start()
     assert lock_held.wait(timeout=2.0)
 
-    monkeypatch.setattr(dispatcher, "observe_runtime_session", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        dispatcher,
+        "observe_runtime_session",
+        lambda *args, **kwargs: _make_observation(
+            liveness=ProcessLiveness.EXITED,
+            known_liveness=ProcessLiveness.EXITED,
+            match_status=MatchStatus.NOT_OBSERVED,
+            attachment=AttachmentState.DETACHED,
+        ),
+    )
     attached = dispatcher.attach_session(
         gui="BackportGUI", name="Worker", provider="codex", session_id="sid-2", apply=True
     )
     holder.join(timeout=5.0)
     assert attached["details"]["native_session_id"] == "sid-2"
 
-    # 2. If an active provider session is observed while slot lock is held -> fail closed immediately
+    # 2. Fail closed on running, ambiguous, attached, or conflicting SessionRuntimeObservation
+    blocking_observations = [
+        _make_observation(liveness=ProcessLiveness.RUNNING, match_status=MatchStatus.EXACT),
+        _make_observation(liveness=ProcessLiveness.AMBIGUOUS),
+        _make_observation(known_liveness=ProcessLiveness.RUNNING),
+        _make_observation(match_status=MatchStatus.AMBIGUOUS),
+        _make_observation(attachment=AttachmentState.ATTACHED),
+        _make_observation(identity_conflict=True),
+        _make_observation(evidence_conflict=True),
+    ]
     lock_held2 = threading.Event()
     release_lock2 = threading.Event()
 
-    def _active_holder() -> None:
+    def _hold_slot() -> None:
         with dispatcher._hold_slot_lock(slot_id):  # noqa: SLF001
             lock_held2.set()
             release_lock2.wait(timeout=5.0)
 
-    holder2 = threading.Thread(target=_active_holder)
+    holder2 = threading.Thread(target=_hold_slot)
     holder2.start()
     assert lock_held2.wait(timeout=2.0)
     try:
-        monkeypatch.setattr(
-            dispatcher,
-            "observe_runtime_session",
-            lambda *args, **kwargs: SimpleNamespace(status="in_use"),
-        )
-        with pytest.raises(ContinuityError, match="observed active provider session"):
-            dispatcher.attach_session(
-                gui="BackportGUI", name="Worker", provider="codex", session_id="sid-3", apply=True
-            )
+        for obs in blocking_observations:
+            monkeypatch.setattr(dispatcher, "observe_runtime_session", lambda *args, _obs=obs, **kwargs: _obs)
+            with pytest.raises(ContinuityError, match="observed runtime conflict"):
+                dispatcher.attach_session(
+                    gui="BackportGUI", name="Worker", provider="codex", session_id="sid-3", apply=True
+                )
     finally:
         release_lock2.set()
         holder2.join(timeout=5.0)
+
+
+def test_cross_process_slot_contention_bounded_wait_and_recovery(tmp_path: Path) -> None:
+    home = tmp_path / "registry_xproc"
+    continuity = ContinuityService(home)
+    dispatcher = DispatcherService(continuity)
+    dispatcher.create_gui("CrossProcGUI", apply=True)
+    slot = dispatcher.create_slot(gui="CrossProcGUI", name="Worker", apply=True)
+    slot_id = slot["details"]["slot_id"]
+
+    # 1. Cross-process short metadata holder (0.25s) -> attach_session waits cleanly and succeeds
+    short_proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                "from pathlib import Path\n"
+                "from agent_continuity.dispatcher import _slot_runtime_lock\n"
+                "with _slot_runtime_lock(Path(sys.argv[1]), sys.argv[2], blocking=True):\n"
+                "    print('LOCKED', flush=True)\n"
+                "    time.sleep(0.25)\n"
+            ),
+            str(home),
+            slot_id,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert short_proc.stdout is not None and short_proc.stdout.readline().strip() == "LOCKED"
+        res = dispatcher.attach_session(
+            gui="CrossProcGUI", name="Worker", provider="codex", session_id="sid-xproc-1", apply=True
+        )
+        assert res["details"]["native_session_id"] == "sid-xproc-1"
+    finally:
+        short_proc.wait(timeout=5.0)
+
+    # 2. Long-held cross-process lock (>3s) -> attach_session fails closed within bounded ~1.5s wait
+    long_proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                "from pathlib import Path\n"
+                "from agent_continuity.dispatcher import _slot_runtime_lock\n"
+                "with _slot_runtime_lock(Path(sys.argv[1]), sys.argv[2], blocking=True):\n"
+                "    print('LOCKED', flush=True)\n"
+                "    time.sleep(4.0)\n"
+            ),
+            str(home),
+            slot_id,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert long_proc.stdout is not None and long_proc.stdout.readline().strip() == "LOCKED"
+        t0 = time.monotonic()
+        with pytest.raises(ContinuityError, match="already has an active or launching session"):
+            dispatcher.attach_session(
+                gui="CrossProcGUI", name="Worker", provider="codex", session_id="sid-xproc-2", apply=True
+            )
+        assert (time.monotonic() - t0) < 3.0
+    finally:
+        long_proc.kill()
+        long_proc.wait(timeout=2.0)

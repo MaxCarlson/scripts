@@ -65,11 +65,17 @@ def _probe_existing_lock_file(path: Path) -> str:
 
 
 @contextlib.contextmanager
-def _slot_runtime_lock(home_dir: Path, slot_id: str, *, blocking: bool = False) -> Iterator[None]:
+def _slot_runtime_lock(
+    home_dir: Path,
+    slot_id: str,
+    *,
+    blocking: bool = False,
+    timeout_seconds: float | None = None,
+) -> Iterator[None]:
     """Acquire exclusive runtime ownership of one slot for the current launch/resume."""
     lock_name = _slot_lock_name(slot_id)
     try:
-        with _mutation_lock(home_dir, lock_name=lock_name, blocking=blocking):
+        with _mutation_lock(home_dir, lock_name=lock_name, blocking=blocking, timeout_seconds=timeout_seconds):
             key = (str(home_dir.resolve()), slot_id)
             token = _HELD_SLOT_LOCKS.set(_HELD_SLOT_LOCKS.get() | {key})
             try:
@@ -77,7 +83,7 @@ def _slot_runtime_lock(home_dir: Path, slot_id: str, *, blocking: bool = False) 
             finally:
                 _HELD_SLOT_LOCKS.reset(token)
     except ContinuityError as exc:
-        if not blocking and "already in use" in exc.message:
+        if (not blocking and "already in use" in exc.message) or "Timed out waiting" in exc.message:
             raise ContinuityError(
                 ErrorCode.INVALID_INPUT,
                 f"Agent slot {slot_id} already has an active or launching session.",
@@ -86,10 +92,17 @@ def _slot_runtime_lock(home_dir: Path, slot_id: str, *, blocking: bool = False) 
 
 
 @contextlib.contextmanager
-def _mutation_lock(home_dir: Path, lock_name: str = "dispatcher.lock", *, blocking: bool = True) -> Iterator[None]:
+def _mutation_lock(
+    home_dir: Path,
+    lock_name: str = "dispatcher.lock",
+    *,
+    blocking: bool = True,
+    timeout_seconds: float | None = None,
+) -> Iterator[None]:
     """Serialize sequence allocation and spool appends across dispatcher processes."""
     lock_path = home_dir / lock_name
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    effective_timeout = (timeout_seconds if timeout_seconds is not None else 10.0) if blocking else 0.0
     with lock_path.open("a+b") as stream:
         stream.seek(0, os.SEEK_END)
         if stream.tell() == 0:
@@ -98,7 +111,7 @@ def _mutation_lock(home_dir: Path, lock_name: str = "dispatcher.lock", *, blocki
         if os.name == "nt":
             import msvcrt
 
-            deadline = time.monotonic() + (10.0 if blocking else 0.0)
+            deadline = time.monotonic() + effective_timeout
             while True:
                 try:
                     stream.seek(0)
@@ -119,10 +132,20 @@ def _mutation_lock(home_dir: Path, lock_name: str = "dispatcher.lock", *, blocki
         else:
             import fcntl
 
-            try:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-            except BlockingIOError as exc:
-                raise ContinuityError(ErrorCode.INVALID_INPUT, "Session is already in use.") from exc
+            deadline = time.monotonic() + effective_timeout
+            while True:
+                try:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    if not blocking:
+                        raise ContinuityError(ErrorCode.INVALID_INPUT, "Session is already in use.") from exc
+                    if time.monotonic() >= deadline:
+                        raise ContinuityError(
+                            ErrorCode.METADATA_INACCESSIBLE,
+                            "Timed out waiting for dispatcher registry lock.",
+                        ) from exc
+                    time.sleep(0.02)
             try:
                 yield
             finally:
@@ -527,6 +550,25 @@ class DispatcherService:
             (conversation["gui_id"],),
         )
 
+    @staticmethod
+    def _observation_blocks_slot_wait(observed: Any) -> bool:
+        """Fail closed on running, ambiguous, attached, or conflicting runtime observations."""
+        if observed is None:
+            return False
+        from .runtime_discovery import AttachmentState, MatchStatus, ProcessLiveness
+
+        if getattr(observed, "identity_conflict", False) or getattr(observed, "evidence_conflict", False):
+            return True
+        if getattr(observed, "interactive_attachment", None) == AttachmentState.ATTACHED:
+            return True
+        for attr in ("process_liveness", "known_process_liveness"):
+            if getattr(observed, attr, None) in {
+                ProcessLiveness.RUNNING,
+                ProcessLiveness.AMBIGUOUS,
+            }:
+                return True
+        return getattr(observed, "process_session_match", None) == MatchStatus.AMBIGUOUS
+
     def _hold_slot_lock(self, slot_id: str, *, wait_for_metadata_contention: bool = False):
         if (str(self.home_dir.resolve()), slot_id) in _HELD_SLOT_LOCKS.get():
             return contextlib.nullcontext()
@@ -545,12 +587,13 @@ class DispatcherService:
                     observed = self.observe_runtime_session(
                         current["provider"], current["environment_id"], current["native_session_id"]
                     )
-                    if observed is not None and getattr(observed, "status", None) == "in_use":
+                    if self._observation_blocks_slot_wait(observed):
                         raise ContinuityError(
                             ErrorCode.INVALID_INPUT,
-                            f"Agent slot {slot_id} has an exactly observed active provider session.",
+                            f"Agent slot {slot_id} already has an active or launching session (observed runtime conflict).",
                         ) from None
-                lock_context = _slot_runtime_lock(self.home_dir, slot_id, blocking=True)
+                # Bounded wait avoids indefinite blocking while allowing short metadata holders to finish.
+                lock_context = _slot_runtime_lock(self.home_dir, slot_id, blocking=True, timeout_seconds=1.5)
                 lock_context.__enter__()
             try:
                 yield
@@ -1718,20 +1761,21 @@ class DispatcherService:
                 payload={"launch_id": launch_id, "native_session_id": session}, timestamp=resolved_at,
             ))
         if apply:
-            with _mutation_lock(self.home_dir):
-                self._sync()
-                if launch_id:
-                    pending_now = self._row(
-                        "SELECT * FROM dispatcher_pending_launches WHERE launch_id = ? AND slot_id = ? AND status = 'pending'",
-                        (launch_id, slot["slot_id"]),
-                    )
-                    if pending_now is None:
-                        raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch was already resolved or failed.")
-                current_slot = self._slot(conversation["gui_id"], slot["slot_id"])
+            # Acquire slot lock before _mutation_lock to match launch/resume lock order and prevent AB-BA deadlock.
             with contextlib.ExitStack() as held_locks:
-                    held_locks.enter_context(
-                        self._hold_slot_lock(current_slot["slot_id"], wait_for_metadata_contention=True)
-                    )
+                held_locks.enter_context(
+                    self._hold_slot_lock(slot["slot_id"], wait_for_metadata_contention=True)
+                )
+                with _mutation_lock(self.home_dir):
+                    self._sync()
+                    if launch_id:
+                        pending_now = self._row(
+                            "SELECT * FROM dispatcher_pending_launches WHERE launch_id = ? AND slot_id = ? AND status = 'pending'",
+                            (launch_id, slot["slot_id"]),
+                        )
+                        if pending_now is None:
+                            raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch was already resolved or failed.")
+                    current_slot = self._slot(conversation["gui_id"], slot["slot_id"])
                     if not launch_id and self._row(
                         "SELECT 1 FROM dispatcher_pending_launches WHERE slot_id = ? AND status = 'pending' LIMIT 1",
                         (current_slot["slot_id"],),
