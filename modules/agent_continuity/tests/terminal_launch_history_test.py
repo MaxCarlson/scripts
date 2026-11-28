@@ -71,6 +71,42 @@ def test_terminal_launch_updates_are_immutable_and_rebuildable(tmp_path: Path) -
     assert len(event_files) >= 2
 
 
+def test_exact_terminal_launch_queries_use_identity_index_and_return_uncapped_matches(tmp_path: Path) -> None:
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    terminal_id = str(uuid4())
+    first = _record(dispatcher, terminal_id, "identity-first")
+    second = {
+        **first,
+        "launch_id": "identity-second",
+        "launch_started_at": "2026-11-23T12:01:00+00:00",
+        "pane_id": "pane-second",
+    }
+    dispatcher.record_terminal_launch(first)
+    dispatcher.record_terminal_launch(second)
+
+    latest = dispatcher.latest_terminal_launch_for_identity(
+        slot_id=first["slot_id"],
+        provider=first["provider"],
+        environment_id=first["environment_id"],
+        native_session_id=first["native_session_id"],
+    )
+    matches = dispatcher.list_terminal_launches_for_session_identity(
+        provider=first["provider"],
+        environment_id=first["environment_id"],
+        native_session_id=first["native_session_id"],
+    )
+
+    assert latest is not None and latest["launch_id"] == "identity-second"
+    assert [row["launch_id"] for row in matches] == ["identity-second", "identity-first"]
+    plan = dispatcher._rows(
+        """EXPLAIN QUERY PLAN SELECT launch_id FROM dispatcher_terminal_launches
+           WHERE slot_id=? AND provider=? AND environment_id=? AND native_session_id=?
+           ORDER BY launch_started_at DESC, launch_id DESC LIMIT 1""",
+        (first["slot_id"], first["provider"], first["environment_id"], first["native_session_id"]),
+    )
+    assert any("idx_terminal_launch_identity" in str(row) for row in plan)
+
+
 def test_concurrent_terminal_launches_keep_distinct_history_records(tmp_path: Path) -> None:
     home = tmp_path / "registry"
     terminal_id = str(uuid4())

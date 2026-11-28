@@ -163,6 +163,36 @@ def test_corrupt_and_partial_spool_files_do_not_break_valid_recovery(tmp_path: P
     assert diag["spools"]["issue_count"] == 3
 
 
+def test_spool_recursive_discovery_prunes_repository_local_worktree(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    root = tmp_path / "external-spool"
+    event = EventEnvelope(
+        event_id=f"evt_{uuid4().hex}",
+        event_schema_version=1,
+        event_type=EventType.WORKFLOW_REGISTERED.value,
+        provider=None,
+        environment_id="env-test",
+        native_session_id=None,
+        source_timestamp=datetime.now(UTC).isoformat(),
+        observed_timestamp=datetime.now(UTC).isoformat(),
+        source_adapter_version="test",
+        payload={"workflow_id": "workflow-visible"},
+    )
+    visible = root / "visible" / "event.json"
+    hidden = root / ".worktree" / "short-name" / "event.json"
+    visible.parent.mkdir(parents=True)
+    hidden.parent.mkdir(parents=True)
+    visible.write_text(json.dumps(event.to_dict()), encoding="utf-8")
+    hidden.write_text(json.dumps({**event.to_dict(), "event_id": f"evt_{uuid4().hex}"}), encoding="utf-8")
+
+    result = read_spool_events([root])
+
+    assert [record.envelope.payload["workflow_id"] for record in result.records] == ["workflow-visible"]
+    assert result.issues == []
+
+
 def test_observed_session_event_does_not_fabricate_native_created_at(tmp_path: Path) -> None:
     home = tmp_path / "state"
     mat = SQLiteMaterializer(home)

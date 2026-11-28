@@ -301,6 +301,12 @@ CREATE INDEX IF NOT EXISTS idx_agent_slots_gui_state ON agent_slots(gui_id, stat
 CREATE INDEX IF NOT EXISTS idx_agent_slot_activations_slot ON agent_slot_activations(slot_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_terminal_launch_scope
     ON dispatcher_terminal_launches(terminal_session_id, launch_started_at DESC, launch_id DESC);
+CREATE INDEX IF NOT EXISTS idx_terminal_launch_identity
+    ON dispatcher_terminal_launches(slot_id, provider, environment_id, native_session_id,
+                                    launch_started_at DESC, launch_id DESC);
+CREATE INDEX IF NOT EXISTS idx_terminal_launch_session
+    ON dispatcher_terminal_launches(provider, environment_id, native_session_id,
+                                    launch_started_at DESC, launch_id DESC);
 CREATE INDEX IF NOT EXISTS idx_terminal_launch_recent
     ON dispatcher_terminal_launches(launch_started_at DESC, launch_id DESC);
 """

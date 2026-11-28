@@ -9,6 +9,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from terminal_launcher.managed import (
+    LaunchSubmissionState,
+    ManagedPaneReservation,
+    ManagedProcessStore,
+)
+from terminal_launcher.managed import (
+    ProcessLiveness as TLProcessLiveness,
+)
+
 from agent_continuity.errors import ContinuityError
 from agent_continuity.restoration_queue import (
     ClaimRecoveryEvidence,
@@ -25,6 +34,7 @@ from agent_continuity.runtime_discovery import (
     TerminalLauncherManagedReceiptSource,
     process_identity_from_windows_filetime,
 )
+from agent_continuity.workspace_adapters import merge_restored_launch_settings
 from agent_continuity.workspace_checkpoint import (
     CheckpointStore,
     WorkspaceSlotInput,
@@ -41,14 +51,35 @@ from agent_continuity.workspace_lifecycle import (
     TopologyRestorer,
     WorkspaceCheckpointCoordinator,
 )
-from terminal_launcher.managed import (
-    LaunchSubmissionState,
-    ManagedPaneReservation,
-    ManagedProcessStore,
-)
-from terminal_launcher.managed import (
-    ProcessLiveness as TLProcessLiveness,
-)
+
+
+def test_historical_settings_cannot_override_portable_permissions_or_directories(tmp_path: Path) -> None:
+    approved = str(tmp_path / "authorized")
+    rejected = str(tmp_path / "unapproved")
+    merged = merge_restored_launch_settings(
+        "codex",
+        {"sandbox": "read-only", "add_dirs": [approved]},
+        {"sandbox": "read-only", "add_dirs": [approved], "model": "historical-model"},
+        portable_context_present=True,
+    )
+    assert merged["sandbox"] == "read-only"
+    assert merged["add_dirs"] == [approved]
+    assert merged["model"] == "historical-model"
+
+    with pytest.raises(ContinuityError, match="permission context"):
+        merge_restored_launch_settings(
+            "codex",
+            {"sandbox": "read-only"},
+            {"sandbox": "workspace-write"},
+            portable_context_present=True,
+        )
+    with pytest.raises(ContinuityError, match="not authorized"):
+        merge_restored_launch_settings(
+            "codex",
+            {"sandbox": "read-only", "add_dirs": [approved]},
+            {"sandbox": "read-only", "add_dirs": [rejected]},
+            portable_context_present=True,
+        )
 
 
 class _CountingEnumerator:
@@ -535,7 +566,8 @@ def test_topology_restorer_and_coordinator_save_restore_partial_recovery(tmp_pat
                     pane_id="pane_restored_1",
                     terminal_session_id="term_r1",
                     dispatcher_ownership_acknowledged=True,
-                        association_confirmed=True,
+                    provider_startup_confirmed=True,
+                    association_confirmed=True,
                 )
             return RestoreLaunchOutcome(accepted=False, failure_reason="provider_start_failed")
 

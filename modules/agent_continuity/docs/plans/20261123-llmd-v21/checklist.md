@@ -106,6 +106,26 @@
 - [x] Run focused tests, full module suite, Ruff, and diff checks; inspect integration risk against main without merge/rebase.
 - [x] Commit and push task changes on the existing feature branch; do not merge.
 
+## LLMD-58 — Reproducible exit summary
+
+- [x] Print exact executed GUI/agent/slot/provider/session/cwd after normal, abnormal, and handled interrupted exits, including early managed-bootstrap failures.
+- [x] Generate safely shell-escaped exact-session continue commands from effective profile and invocation settings.
+- [x] Exclude secrets, bootstrap/reservation arguments, and one-time prompts; report non-reproducible settings.
+- [x] Test quoting, permissions, authorized directories, and stale-selection isolation with guarded subprocesses.
+
+## LLMD-59 — One-time prompt delivery
+
+- [x] Verify and register noncolliding clipboard, file, and inline prompt options on supported launch commands (`-Q`, `-F`, `-M`; `-P` remains profile).
+- [x] Implement provider-documented exact-session interactive delivery; reject unsupported mechanisms without keyboard automation.
+- [x] Validate addressed handoffs and multiline Unicode; keep dry-run redacted and avoid persistence/replay after uncertainty.
+- [x] Test exact-once delivery, failure/uncertainty, and bootstrap-turn boundaries with guarded providers.
+
+## LLMD-61 — Worktree path convention
+
+- [x] Standardize future LLMD-created worktrees at repository-root `/.worktree/<short-name>` and ignore the directory; no LLMD worktree provisioner currently creates worktrees.
+- [x] Exclude `.worktree` from LLMD recursive discovery; preserve all currently existing worktrees.
+- [x] Test ignore and discovery behavior without modifying external repository tools.
+
 ## v1.5.2 correctness follow-up
 
 - [x] Keep preview and pending launch on one resolved Windows/WSL environment with omitted and explicit selectors.

@@ -7,9 +7,11 @@ import os
 import signal
 import sqlite3
 import sys
+import threading
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -197,14 +199,21 @@ class ManagedProcessStore:
         self.path = selected_path.resolve()
         self._identity = process_identity_lookup or process_identity
         self._liveness = process_liveness_lookup or process_liveness
+        self._connection_lock = threading.RLock()
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path, timeout=10.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        with self._connection_lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(self.path, timeout=10.0)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys=ON")
+            try:
+                with connection:
+                    yield connection
+            finally:
+                connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as connection:

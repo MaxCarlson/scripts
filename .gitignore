@@ -220,6 +220,7 @@ modules/ytaedl/stars/
 mangadl-auth/
 *-cookies.txt
 .codex
+/.worktree/
 NUL
 
 # Video File Stuff

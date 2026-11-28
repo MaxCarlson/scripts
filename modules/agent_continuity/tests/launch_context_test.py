@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 from agent_continuity.launch_context import (
     VERIFIED_CAPABILITIES,
     provider_settings_argv,
     resolve_portable_launch_context,
 )
+
+
+def test_scripts_repository_ignores_singular_root_worktree_directory():
+    repo_root = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "check-ignore", "-q", ".worktree/llmd-test"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
 
 
 def test_unsupported_setting_does_not_discard_portable_context(tmp_path):
@@ -146,6 +160,7 @@ def test_all_six_directional_provider_pairs_preserve_portable_context_and_destin
     assert provider_settings_argv("codex", {"model": "m", "reasoning_effort": "high"}) == [
         "--model", "m", "--config", "model_reasoning_effort=high",
     ]
+    assert provider_settings_argv("codex", {"search": True}).count("--search") == 1
     assert provider_settings_argv("agy", {"model": "m", "reasoning_effort": "high"})[0] == "--settings"
     assert provider_settings_argv("claude", {"model": "m", "effort": "high"}) == [
         "--model", "m", "--effort", "high",

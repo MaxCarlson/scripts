@@ -79,7 +79,7 @@ def provider_settings_argv(provider: str, settings: Mapping[str, Any]) -> list[s
         for key, option in (("enabled_features", "--enable"), ("disabled_features", "--disable")):
             for value in values.get(key, []):
                 argv.extend((option, str(value)))
-        for key, option in (("search", "--search"), ("no_alt_screen", "--no-alt-screen"),
+        for key, option in (("no_alt_screen", "--no-alt-screen"),
                             ("no_daemon", "--no-daemon"), ("strict_config", "--strict-config"),
                             ("auto_approval", "--approve-for-me")):
             if values.get(key):

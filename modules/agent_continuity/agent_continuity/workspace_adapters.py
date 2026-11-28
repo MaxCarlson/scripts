@@ -77,6 +77,14 @@ class DispatcherLike(Protocol):
 
     def list_recent_terminal_launches(self, *, limit: int = 20) -> list[dict[str, Any]]: ...
 
+    def latest_terminal_launch_for_identity(
+        self, *, slot_id: str, provider: str, environment_id: str, native_session_id: str,
+    ) -> dict[str, Any] | None: ...
+
+    def list_terminal_launches_for_session_identity(
+        self, *, provider: str, environment_id: str, native_session_id: str,
+    ) -> list[dict[str, Any]]: ...
+
     def get_portable_launch_context(
         self, *, slot_id: str, provider: str, environment_id: str, session_id: str,
     ) -> dict[str, Any] | None: ...
@@ -130,6 +138,42 @@ def validate_provider_launch_settings(
                 )
             sanitized = {k: v for k, v in sanitized.items() if k in allowed_for_provider}
     return sanitized
+
+
+def merge_restored_launch_settings(
+    provider: str,
+    portable_settings: Mapping[str, Any],
+    historical_settings: Mapping[str, Any],
+    *,
+    portable_context_present: bool,
+) -> dict[str, Any]:
+    """Merge safe launch settings without letting history override current portable constraints."""
+    portable = validate_provider_launch_settings(provider, portable_settings, strict=False)
+    historical = validate_provider_launch_settings(provider, historical_settings, strict=False)
+    protected = {"sandbox", "approval_policy", "permission_mode", "auto_approval"}
+    conflicts = sorted(
+        key for key in protected
+        if key in portable and key in historical and portable[key] != historical[key]
+    )
+    if conflicts:
+        raise ContinuityError(
+            ErrorCode.INVALID_INPUT,
+            f"Historical launch settings conflict with the portable permission context: {', '.join(conflicts)}.",
+            {"provider": provider, "conflicting_settings": conflicts},
+        )
+    portable_dirs = set(portable.get("add_dirs", ()))
+    historical_dirs = set(historical.get("add_dirs", ()))
+    if portable_context_present and historical_dirs - portable_dirs:
+        raise ContinuityError(
+            ErrorCode.INVALID_INPUT,
+            "Historical additional directories are not authorized by the current portable context.",
+            {"provider": provider, "conflicting_settings": ["add_dirs"]},
+        )
+    return validate_provider_launch_settings(
+        provider,
+        {**historical, **portable},
+        strict=False,
+    )
 
 
 class DispatcherWorkspaceAdapter:
@@ -216,18 +260,32 @@ class DispatcherWorkspaceAdapter:
                     settings[key] = context.terminal_settings[key]
         return context, settings, True
 
-    def _recent_by_exact_identity(self) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    def _recent_by_exact_identity(
+        self, slots: Sequence[Mapping[str, Any]],
+    ) -> dict[tuple[str, str, str, str], dict[str, Any]]:
         recent_by_identity: dict[tuple[str, str, str, str], dict[str, Any]] = {}
-        with contextlib.suppress(Exception):
-            for rec in self.dispatcher.list_recent_terminal_launches(limit=500):
-                sid = rec.get("slot_id")
-                prov = rec.get("provider")
-                nsid = rec.get("native_session_id")
-                env_id = rec.get("environment_id")
-                if all(isinstance(v, str) and v for v in (sid, prov, nsid, env_id)):
-                    key = (str(sid), str(prov), str(nsid), str(env_id))
-                    if key not in recent_by_identity:
-                        recent_by_identity[key] = rec
+        getter = getattr(self.dispatcher, "latest_terminal_launch_for_identity", None)
+        if not callable(getter):
+            return recent_by_identity
+        for slot in slots:
+            current = slot.get("current") if isinstance(slot.get("current"), Mapping) else {}
+            slot_id = slot.get("slot_id")
+            provider = slot.get("current_provider") or current.get("provider")
+            session_id = slot.get("current_session_id") or current.get("native_session_id")
+            environment_id = slot.get("current_environment_id") or current.get("environment_id")
+            if not all(isinstance(value, str) and value for value in (slot_id, provider, session_id, environment_id)):
+                continue
+            try:
+                launch = getter(
+                    slot_id=slot_id,
+                    provider=provider,
+                    environment_id=environment_id,
+                    native_session_id=session_id,
+                )
+            except Exception:
+                continue
+            if launch is not None:
+                recent_by_identity[(slot_id, provider, session_id, environment_id)] = launch
         return recent_by_identity
 
     def list_candidate_slots(
@@ -236,7 +294,6 @@ class DispatcherWorkspaceAdapter:
         gui: str | None = None,
         active_only: bool = True,
     ) -> tuple[WorkspaceSlotInput, ...]:
-        recent_by_identity = self._recent_by_exact_identity()
         guis = self.dispatcher.list_guis(active_only=active_only)
         if gui is not None:
             guis = [
@@ -245,11 +302,19 @@ class DispatcherWorkspaceAdapter:
                 if g.get("gui_id") == gui or str(g.get("alias", "")).casefold() == gui.casefold()
             ]
 
+        slots_by_gui = {
+            str(g["gui_id"]): self.dispatcher.list_slots(gui=str(g["gui_id"]), active_only=active_only)
+            for g in guis
+        }
+        recent_by_identity = self._recent_by_exact_identity(
+            [slot for slots in slots_by_gui.values() for slot in slots]
+        )
+
         inputs: list[WorkspaceSlotInput] = []
         for g in guis:
             gui_id = str(g["gui_id"])
             gui_alias = str(g["alias"]) if g.get("alias") is not None else None
-            for slot in self.dispatcher.list_slots(gui=gui_id, active_only=active_only):
+            for slot in slots_by_gui.get(gui_id, ()):
                 converted = self._slot_dict_to_input(
                     slot,
                     gui_alias=gui_alias,
@@ -265,7 +330,7 @@ class DispatcherWorkspaceAdapter:
             slot = self.dispatcher.get_slot_by_id(slot_id)
         except Exception:
             return None
-        recent_by_identity = self._recent_by_exact_identity()
+        recent_by_identity = self._recent_by_exact_identity([slot])
         return self._slot_dict_to_input(
             slot,
             gui_alias=str(slot["gui_alias"]) if slot.get("gui_alias") is not None else None,
@@ -276,7 +341,11 @@ class DispatcherWorkspaceAdapter:
         """Join DispatcherService terminal-launch history to ManagedLaunchAssociation without inferring pane IDs."""
         associations: list[ManagedLaunchAssociation] = []
         try:
-            launches = self.dispatcher.list_recent_terminal_launches(limit=500)
+            launches = self.dispatcher.list_terminal_launches_for_session_identity(
+                provider=key.provider,
+                environment_id=key.environment_id,
+                native_session_id=key.native_session_id,
+            )
         except Exception:
             return ()
         seen_first = False
@@ -393,10 +462,11 @@ class DispatcherWorkspaceAdapter:
             lifecycle_state=str(slot.get("state", "active")),
             gui_alias=gui_alias or (str(recent["gui_alias"]) if recent and recent.get("gui_alias") else None),
             slot_name=str(slot["name"]) if slot.get("name") is not None else None,
-            launch_settings=validate_provider_launch_settings(
+            launch_settings=merge_restored_launch_settings(
                 str(provider),
-                {**portable_settings, **(recent.get("settings") if recent else {})},
-                strict=False,
+                portable_settings,
+                recent.get("settings") if recent else {},
+                portable_context_present=portable_context is not None,
             ),
             worktree=worktree,
             requested_topology=topology,
@@ -663,17 +733,34 @@ class TerminalLauncherRestoreAdapter:
         startup_timed_out: bool,
     ) -> RestoreLaunchOutcome:
         relay_spawn_ok = bool(rec is not None and getattr(rec, "spawn_acknowledged", False))
-        raw_state = getattr(rec, "state", None)
+        latest_rec = rec
+        raw_state = getattr(latest_rec, "state", None)
         current_liveness = str(getattr(raw_state, "value", raw_state) or "unknown")
+        exit_code = getattr(latest_rec, "exit_code", None)
         ownership_ok = False
+        startup_ok = False
         association_ok = False
+        reservation_state: str | None = None
+        verifier_reason: str | None = None
+
         if relay_spawn_ok and self.ownership_verifier is not None:
             deadline = time.monotonic() + min(max(self.startup_timeout, 0.1), 2.0)
             while True:
                 try:
-                    ownership_ok, association_ok = self.ownership_verifier.verify_ownership(
-                        req, launch_id=launch_id, pane_id=pane_id
-                    )
+                    if hasattr(self.ownership_verifier, "verify_ownership_details"):
+                        details = self.ownership_verifier.verify_ownership_details(
+                            req, launch_id=launch_id, pane_id=pane_id
+                        )
+                        ownership_ok = bool(details.get("dispatcher_ownership_acknowledged", False))
+                        startup_ok = bool(details.get("provider_startup_confirmed", False))
+                        association_ok = bool(details.get("exact_association_confirmed", False))
+                        reservation_state = details.get("reservation_state")
+                        verifier_reason = details.get("reason")
+                    else:
+                        ownership_ok, association_ok = self.ownership_verifier.verify_ownership(
+                            req, launch_id=launch_id, pane_id=pane_id
+                        )
+                        startup_ok = bool(ownership_ok and association_ok)
                 except Exception as exc:
                     if self.reservation_store is not None and req.reservation_id:
                         with contextlib.suppress(Exception):
@@ -691,13 +778,41 @@ class TerminalLauncherRestoreAdapter:
                         spawn_confirmed=relay_spawn_ok,
                         relay_spawn_acknowledged=relay_spawn_ok,
                         dispatcher_ownership_acknowledged=False,
+                        provider_startup_confirmed=False,
                         association_confirmed=False,
                         current_liveness=current_liveness,
                         resumability_confirmed=False,
                         submission_ambiguous=True,
                         geometry_fallback_used=used_fallback,
                     )
-                if ownership_ok or not self.require_dispatcher_ownership or not getattr(req, "reservation_id", None):
+                if self.managed_store is not None:
+                    with contextlib.suppress(Exception):
+                        for cand in self.managed_store.enumerate_processes(launch_id=launch_id):
+                            if getattr(cand, "pane_id", None) == pane_id:
+                                latest_rec = cand
+                                raw_state = getattr(latest_rec, "state", None)
+                                current_liveness = str(getattr(raw_state, "value", raw_state) or "unknown")
+                                exit_code = getattr(latest_rec, "exit_code", None)
+                                break
+                if reservation_state in {"ambiguous", "aborted"}:
+                    break
+                if current_liveness in {"exited", "failed"} and exit_code not in {None, 0}:
+                    break
+                if ownership_ok and startup_ok and association_ok:
+                    if self.managed_store is not None:
+                        time.sleep(0.05)
+                        with contextlib.suppress(Exception):
+                            for cand in self.managed_store.enumerate_processes(launch_id=launch_id):
+                                if getattr(cand, "pane_id", None) == pane_id:
+                                    latest_rec = cand
+                                    raw_state = getattr(latest_rec, "state", None)
+                                    current_liveness = str(getattr(raw_state, "value", raw_state) or "unknown")
+                                    exit_code = getattr(latest_rec, "exit_code", None)
+                                    break
+                    break
+                if (
+                    not self.require_dispatcher_ownership or not getattr(req, "reservation_id", None)
+                ) and (ownership_ok or time.monotonic() >= deadline):
                     break
                 if time.monotonic() >= deadline:
                     break
@@ -720,7 +835,55 @@ class TerminalLauncherRestoreAdapter:
                 spawn_confirmed=False,
                 relay_spawn_acknowledged=False,
                 dispatcher_ownership_acknowledged=False,
+                provider_startup_confirmed=False,
                 association_confirmed=False,
+                current_liveness=current_liveness,
+                resumability_confirmed=False,
+                submission_ambiguous=False,
+                geometry_fallback_used=used_fallback,
+            )
+
+        if reservation_state == "ambiguous":
+            return RestoreLaunchOutcome(
+                accepted=True,
+                launch_id=launch_id,
+                pane_id=pane_id,
+                failure_reason=verifier_reason or "post_consumption_uncertainty",
+                spawn_confirmed=True,
+                relay_spawn_acknowledged=True,
+                dispatcher_ownership_acknowledged=ownership_ok,
+                provider_startup_confirmed=False,
+                association_confirmed=False,
+                current_liveness=current_liveness,
+                resumability_confirmed=False,
+                submission_ambiguous=True,
+                geometry_fallback_used=used_fallback,
+            )
+
+        if exit_code not in {None, 0} or (current_liveness in {"exited", "failed"} and not (startup_ok and association_ok)):
+            fail_reason = (
+                f"provider_nonzero_exit:{exit_code}"
+                if exit_code not in {None, 0}
+                else (verifier_reason or "provider_exited_before_association")
+            )
+            if self.reservation_store is not None and req.reservation_id:
+                with contextlib.suppress(Exception):
+                    self.reservation_store.mark_ambiguous(
+                        req.reservation_id,
+                        reason=fail_reason,
+                        launch_id=launch_id,
+                        pane_id=pane_id,
+                    )
+            return RestoreLaunchOutcome(
+                accepted=True,
+                launch_id=launch_id,
+                pane_id=pane_id,
+                failure_reason=fail_reason,
+                spawn_confirmed=True,
+                relay_spawn_acknowledged=True,
+                dispatcher_ownership_acknowledged=ownership_ok,
+                provider_startup_confirmed=startup_ok,
+                association_confirmed=association_ok,
                 current_liveness=current_liveness,
                 resumability_confirmed=False,
                 submission_ambiguous=False,
@@ -732,7 +895,7 @@ class TerminalLauncherRestoreAdapter:
                 with contextlib.suppress(Exception):
                     self.reservation_store.mark_ambiguous(
                         req.reservation_id,
-                        reason="dispatcher_ownership_unconfirmed",
+                        reason=verifier_reason or "dispatcher_ownership_unconfirmed",
                         launch_id=launch_id,
                         pane_id=pane_id,
                     )
@@ -740,10 +903,11 @@ class TerminalLauncherRestoreAdapter:
                 accepted=True,
                 launch_id=launch_id,
                 pane_id=pane_id,
-                failure_reason="dispatcher_ownership_unconfirmed",
+                failure_reason=verifier_reason or "dispatcher_ownership_unconfirmed",
                 spawn_confirmed=True,
                 relay_spawn_acknowledged=True,
                 dispatcher_ownership_acknowledged=False,
+                provider_startup_confirmed=startup_ok,
                 association_confirmed=association_ok,
                 current_liveness=current_liveness,
                 resumability_confirmed=False,
@@ -755,9 +919,11 @@ class TerminalLauncherRestoreAdapter:
             accepted=True,
             launch_id=launch_id,
             pane_id=pane_id,
+            failure_reason=verifier_reason,
             spawn_confirmed=True,
             relay_spawn_acknowledged=True,
             dispatcher_ownership_acknowledged=ownership_ok,
+            provider_startup_confirmed=startup_ok,
             association_confirmed=association_ok,
             current_liveness=current_liveness,
             resumability_confirmed=False,

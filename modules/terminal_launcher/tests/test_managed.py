@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import sqlite3
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -10,6 +11,19 @@ from pathlib import Path
 from terminal_launcher.backends.windows_terminal import WindowsTerminalBackend
 from terminal_launcher.managed import ManagedProcessState, ManagedProcessStore, ProcessLiveness
 from terminal_launcher.models import PaneSpec, TabSpec, TerminalLaunchPlan
+
+
+def test_managed_store_connection_context_closes_connection(tmp_path):
+    store = ManagedProcessStore(tmp_path / "managed.sqlite3")
+
+    with store._connect() as connection:
+        connection.execute("SELECT 1").fetchone()
+
+    try:
+        connection.execute("SELECT 1")
+    except sqlite3.ProgrammingError:
+        return
+    raise AssertionError("managed store connection remained open after its context")
 
 
 def test_managed_receipts_are_durable_minimal_and_validate_process_creation_time(tmp_path):

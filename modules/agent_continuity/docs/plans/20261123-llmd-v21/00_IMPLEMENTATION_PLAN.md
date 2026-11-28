@@ -365,3 +365,21 @@ Codex `UserPromptSubmit`/`SessionStart` and AGY `PreInvocation` are qualificatio
 **Integration:** Share one resolver and preview result across switch/start/continue/open/review-return, option 4, native-session replacement, and workspace restore. Preview each item as preserved, translated, restored, unsupported, or conflicting and require explicit handling of material incompatibilities before launch. Preserve exact repository/worktree/branch observations, explicit cwd overrides, approved additional roots, runtime identity, workflow/agent identity, compatible terminal settings, portable instructions, and non-secret launch settings.
 
 **Qualification:** Guarded fake providers only; all six directions exercise actual CLI switch/continue invocation, round trips, historical-session reuse, nested worktrees, explicit `-C`, multiple repositories, incompatible options, destination preferences, permission non-broadening, and Windows/WSL boundaries. The affected 87-test set passed with `pytest-xdist -n 4`. Workflow-resource bytes/digests and session-specific delivery have focused end-to-end coverage. Provider-loaded context, resume persistence, and real WSL/provider behavior remain unverified. Keep all LLMD-57 test evidence separate from the v2.3.0 release candidate.
+
+## LLMD-58 — Reproducible provider exit summary
+
+For normal, abnormal, and handled interrupted launches, render the actual executed identity: GUI, agent name and number, immutable slot ID, provider, exact native session ID, and effective cwd. Include a directly copyable `llmd continue` command using platform-appropriate shell escaping. Reconstruct only validated safe settings from the actual invocation and inherited profile, including authorized additional directories; omit secrets, bootstrap/reservation arguments, and one-time prompts. Explicitly list settings that cannot be reproduced and preserve existing lifecycle/uncertainty gates. Never use stale selected-slot state when the executed launch record is available.
+
+**Acceptance:** Disposable provider processes cover zero/nonzero/interrupted exits, profile inheritance, exact session selection, spaces/Unicode in paths, PowerShell and POSIX quoting, authorized directories, secret/transient exclusion, and non-reproducible settings. Parsed resume commands must preserve identity and must not broaden permission settings.
+
+## LLMD-59 — One-time native launch prompt delivery
+
+Add mutually exclusive `-Q/--clipboard-prompt`, `-F/--prompt-file`, and `-M/--prompt` launch inputs. `-P` is already assigned to `--profile`, so clipboard input uses `-Q`. Resolve clipboard/file/inline content once, preserve multiline Unicode, validate addressed handoffs against the exact registered launch target, and deliver only through provider-documented interactive mechanisms for the exact destination session. Dry-run output must never include prompt content. Do not persist raw prompt text or place it in an exit/resume command. If delivery outcome is uncertain, refuse automatic resubmission; if the provider lacks a supported interactive submission API, fail explicitly rather than automate keystrokes.
+
+**Acceptance:** Guarded provider adapters qualify exact-once delivery, Unicode, multiline text, addressed handoff validation, dry-run redaction, file/clipboard errors, exact session correlation, uncertainty without replay, and unsupported-provider refusal. Initial bootstrap optimization is coordinated through the Agent #3 design boundary; no implicit goals or extra model turns are introduced.
+
+## LLMD-61 — Repository-local worktree convention
+
+All new worktrees provisioned by scripts-owned LLMD functionality live at repository-root `/.worktree/<short-name>` using singular `.worktree`. Add a root ignore rule and exclude this directory from recursive repository discovery. Preserve existing worktrees and do not relocate them during execution. Apply the convention only to LLMD provisioning owned by this repository; do not modify tooling owned by other repositories.
+
+**Acceptance:** Path-planning and discovery tests cover nested repositories, existing active worktrees, singular path spelling, ignore behavior, and exclusion from recursive discovery. No existing worktree is moved and no external repository tooling is changed.

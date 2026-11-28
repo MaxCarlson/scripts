@@ -112,6 +112,7 @@ class RestorationReservation:
     consumer_pid: int | None = None
     provider_pid: int | None = None
     dispatcher_ownership_acknowledged: bool = False
+    provider_startup_confirmed: bool = False
     exact_association_confirmed: bool = False
     note: str | None = None
 
@@ -148,6 +149,7 @@ class RestorationReservation:
             consumer_pid=int(data["consumer_pid"]) if data.get("consumer_pid") is not None else None,
             provider_pid=int(data["provider_pid"]) if data.get("provider_pid") is not None else None,
             dispatcher_ownership_acknowledged=bool(data.get("dispatcher_ownership_acknowledged", False)),
+            provider_startup_confirmed=bool(data.get("provider_startup_confirmed", False)),
             exact_association_confirmed=bool(data.get("exact_association_confirmed", False)),
             note=str(data["note"]) if data.get("note") is not None else None,
         )
@@ -178,6 +180,17 @@ class RestorationReservationStore:
 
     def _lease_path(self, slot_id: str) -> Path:
         return self.reservations_dir / f"slot-{slot_id}.lease.json"
+
+    @contextlib.contextmanager
+    def _meta_lock(self, slot_id: str, *, timeout_seconds: float = 1.0) -> Iterator[None]:
+        """Short-lived lock protecting reservation record/active-index files without blocking on provider locks."""
+        with acquire_canonical_slot_lock(
+            self.home_dir,
+            f"rsv-meta-{slot_id}",
+            blocking=True,
+            timeout_seconds=timeout_seconds,
+        ):
+            yield
 
     def get_active_lease(self, slot_id: str) -> dict[str, Any] | None:
         """Read-only inspection of an active preparation lease for `slot_id`."""
@@ -239,8 +252,8 @@ class RestorationReservationStore:
         if lease is not None:
             raise ContinuityError(
                 ErrorCode.ASSOCIATION_CONFLICT,
-                f"Slot {slot_id!r} has an active restoration preparation lease ({lease.get('lease_token')!r}).",
-                {"slot_id": slot_id, "lease_token": lease.get("lease_token"), "pid": lease.get("pid")},
+                f"Slot {slot_id!r} has an active restoration preparation lease.",
+                {"slot_id": slot_id, "pid": lease.get("pid")},
             )
 
     def ensure_slot_available(self, slot_id: str, *, blocking: bool = False) -> None:
@@ -288,7 +301,7 @@ class RestorationReservationStore:
         if int(attempt) < 1:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "attempt must be >= 1.")
 
-        with acquire_canonical_slot_lock(self.home_dir, slot_id, blocking=False):
+        with acquire_canonical_slot_lock(self.home_dir, slot_id, blocking=False), self._meta_lock(slot_id):
             existing = self.get_active_for_slot(slot_id)
             if existing is not None:
                 raise ContinuityError(
@@ -331,7 +344,7 @@ class RestorationReservationStore:
         _require_non_empty(launch_id, "launch_id")
         _require_non_empty(pane_id, "pane_id")
         current = self.get_reservation(reservation_id)
-        with acquire_canonical_slot_lock(self.home_dir, current.slot_id, blocking=True):
+        with acquire_canonical_slot_lock(self.home_dir, current.slot_id, blocking=True), self._meta_lock(current.slot_id):
             latest = self.get_reservation(reservation_id)
             active = self.get_active_for_slot(latest.slot_id)
             if active is None or active.reservation_id != reservation_id:
@@ -345,6 +358,14 @@ class RestorationReservationStore:
                     ErrorCode.ASSOCIATION_CONFLICT,
                     f"Cannot bind launch to reservation {reservation_id!r} in state {latest.state!r}.",
                     {"slot_id": latest.slot_id, "reservation_id": reservation_id, "state": latest.state},
+                )
+            if (latest.launch_id is not None and latest.launch_id != launch_id) or (
+                latest.pane_id is not None and latest.pane_id != pane_id
+            ):
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} is already bound to a different launch/pane identity.",
+                    {"slot_id": latest.slot_id, "reservation_id": reservation_id},
                 )
             updated = RestorationReservation(
                 **{
@@ -387,79 +408,81 @@ class RestorationReservationStore:
         _require_non_empty(launch_id, "launch_id")
         _require_non_empty(pane_id, "pane_id")
 
-        active = self.get_active_for_slot(slot_id)
-        if active is None or active.reservation_id != reservation_id:
-            raise ContinuityError(
-                ErrorCode.ASSOCIATION_CONFLICT,
-                f"Reservation {reservation_id!r} is not the current active reservation for slot {slot_id!r}.",
-                {
-                    "slot_id": slot_id,
-                    "reservation_id": reservation_id,
-                    "active_reservation_id": active.reservation_id if active is not None else None,
-                },
-            )
+        with self._meta_lock(slot_id):
+            active = self.get_active_for_slot(slot_id)
+            if active is None or active.reservation_id != reservation_id:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} is not the current active reservation for slot {slot_id!r}.",
+                    {
+                        "slot_id": slot_id,
+                        "reservation_id": reservation_id,
+                        "active_reservation_id": active.reservation_id if active is not None else None,
+                    },
+                )
 
-        res = self.get_reservation(reservation_id)
-        if res.state not in {"reserved", "submitted"}:
-            raise ContinuityError(
-                ErrorCode.ASSOCIATION_CONFLICT,
-                f"Reservation {reservation_id!r} cannot be consumed from state {res.state!r}.",
-                {"slot_id": slot_id, "reservation_id": reservation_id, "state": res.state},
+            res = self.get_reservation(reservation_id)
+            if res.state not in {"reserved", "submitted"}:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} cannot be consumed from state {res.state!r}.",
+                    {"slot_id": slot_id, "reservation_id": reservation_id, "state": res.state},
+                )
+            if not secrets.compare_digest(res.reservation_token, reservation_token):
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation token mismatch for {reservation_id!r}.",
+                    {"slot_id": slot_id, "reservation_id": reservation_id},
+                )
+            if (
+                res.checkpoint_id != checkpoint_id
+                or res.attempt != int(attempt)
+                or res.queue_entry_id != queue_entry_id
+                or res.slot_id != slot_id
+                or res.provider != provider
+                or res.native_session_id != native_session_id
+                or res.environment_id != environment_id
+            ):
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} identity mismatch.",
+                    {"expected_slot": res.slot_id, "actual_slot": slot_id, "reservation_id": reservation_id},
+                )
+            if require_bound_launch and (res.launch_id is None or res.pane_id is None):
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} has no bound launch_id/pane_id.",
+                    {"slot_id": slot_id, "reservation_id": reservation_id},
+                )
+            if res.launch_id is not None and res.launch_id != launch_id:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} launch_id mismatch.",
+                    {"slot_id": slot_id, "reservation_id": reservation_id},
+                )
+            if res.pane_id is not None and res.pane_id != pane_id:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} pane_id mismatch.",
+                    {"slot_id": slot_id, "reservation_id": reservation_id},
+                )
+            consumed = RestorationReservation(
+                **{
+                    **res.to_dict(),
+                    "launch_id": launch_id,
+                    "pane_id": pane_id,
+                    "state": "consumed",
+                    "consumed_at": now_utc_iso(),
+                    "consumer_pid": consumer_pid or os.getpid(),
+                    "dispatcher_ownership_acknowledged": True,
+                    "provider_startup_confirmed": False,
+                    "exact_association_confirmed": bool(exact_association_confirmed),
+                }
             )
-        if not secrets.compare_digest(res.reservation_token, reservation_token):
-            raise ContinuityError(
-                ErrorCode.ASSOCIATION_CONFLICT,
-                f"Reservation token mismatch for {reservation_id!r}.",
-                {"slot_id": slot_id, "reservation_id": reservation_id},
-            )
-        if (
-            res.checkpoint_id != checkpoint_id
-            or res.attempt != int(attempt)
-            or res.queue_entry_id != queue_entry_id
-            or res.slot_id != slot_id
-            or res.provider != provider
-            or res.native_session_id != native_session_id
-            or res.environment_id != environment_id
-        ):
-            raise ContinuityError(
-                ErrorCode.ASSOCIATION_CONFLICT,
-                f"Reservation {reservation_id!r} identity mismatch.",
-                {"expected_slot": res.slot_id, "actual_slot": slot_id, "reservation_id": reservation_id},
-            )
-        if require_bound_launch and (res.launch_id is None or res.pane_id is None):
-            raise ContinuityError(
-                ErrorCode.ASSOCIATION_CONFLICT,
-                f"Reservation {reservation_id!r} has no bound launch_id/pane_id.",
-                {"slot_id": slot_id, "reservation_id": reservation_id},
-            )
-        if res.launch_id is not None and res.launch_id != launch_id:
-            raise ContinuityError(
-                ErrorCode.ASSOCIATION_CONFLICT,
-                f"Reservation {reservation_id!r} launch_id mismatch.",
-                {"slot_id": slot_id, "reservation_id": reservation_id},
-            )
-        if res.pane_id is not None and res.pane_id != pane_id:
-            raise ContinuityError(
-                ErrorCode.ASSOCIATION_CONFLICT,
-                f"Reservation {reservation_id!r} pane_id mismatch.",
-                {"slot_id": slot_id, "reservation_id": reservation_id},
-            )
-        consumed = RestorationReservation(
-            **{
-                **res.to_dict(),
-                "launch_id": launch_id,
-                "pane_id": pane_id,
-                "state": "consumed",
-                "consumed_at": now_utc_iso(),
-                "consumer_pid": consumer_pid or os.getpid(),
-                "dispatcher_ownership_acknowledged": True,
-                "exact_association_confirmed": bool(exact_association_confirmed),
-            }
-        )
-        atomic_write_json(self._record_path(reservation_id), consumed.to_dict())
-        with contextlib.suppress(OSError):
-            self._active_slot_path(slot_id).unlink(missing_ok=True)
-        return consumed
+            atomic_write_json(self._record_path(reservation_id), consumed.to_dict())
+            with contextlib.suppress(OSError):
+                self._active_slot_path(slot_id).unlink(missing_ok=True)
+            return consumed
 
     def consume_reservation(
         self,
@@ -505,33 +528,79 @@ class RestorationReservationStore:
         *,
         reservation_token: str,
         provider_pid: int | None = None,
+        provider_startup_confirmed: bool | None = None,
         exact_association_confirmed: bool = False,
+        launch_id: str | None = None,
+        pane_id: str | None = None,
     ) -> RestorationReservation:
-        """Record actual provider association separately after reservation consumption (caller holds lock)."""
+        """Record actual provider startup and association separately after consumption (caller holds lock)."""
         _require_non_empty(reservation_id, "reservation_id")
         _require_non_empty(reservation_token, "reservation_token")
-        res = self.get_reservation(reservation_id)
-        if res.state != "consumed" or not res.dispatcher_ownership_acknowledged:
-            raise ContinuityError(
-                ErrorCode.ASSOCIATION_CONFLICT,
-                f"Reservation {reservation_id!r} must be consumed before acknowledging provider association.",
-                {"slot_id": res.slot_id, "reservation_id": reservation_id, "state": res.state},
+        with self._meta_lock(self.get_reservation(reservation_id).slot_id):
+            res = self.get_reservation(reservation_id)
+            if res.state != "consumed" or not res.dispatcher_ownership_acknowledged:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} must be consumed before acknowledging provider association.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id, "state": res.state},
+                )
+            if not secrets.compare_digest(res.reservation_token, reservation_token):
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation token mismatch for {reservation_id!r}.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id},
+                )
+            if launch_id is not None and res.launch_id != launch_id:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} launch_id mismatch on provider association acknowledgment.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id},
+                )
+            if pane_id is not None and res.pane_id != pane_id:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} pane_id mismatch on provider association acknowledgment.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id},
+                )
+            effective_pid = provider_pid if provider_pid is not None else res.provider_pid
+            if (
+                res.exact_association_confirmed
+                and res.provider_pid is not None
+                and effective_pid is not None
+                and int(effective_pid) != int(res.provider_pid)
+            ):
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Reservation {reservation_id!r} already confirmed association with a different provider_pid.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id},
+                )
+            startup_ok = (
+                bool(provider_startup_confirmed)
+                if provider_startup_confirmed is not None
+                else (effective_pid is not None and int(effective_pid) > 0)
             )
-        if not secrets.compare_digest(res.reservation_token, reservation_token):
-            raise ContinuityError(
-                ErrorCode.ASSOCIATION_CONFLICT,
-                f"Reservation token mismatch for {reservation_id!r}.",
-                {"slot_id": res.slot_id, "reservation_id": reservation_id},
+            if startup_ok and (effective_pid is None or int(effective_pid) <= 0):
+                raise ContinuityError(
+                    ErrorCode.INVALID_INPUT,
+                    f"Provider startup confirmation for {reservation_id!r} requires a positive provider_pid.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id},
+                )
+            if exact_association_confirmed and not startup_ok:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Exact provider association for {reservation_id!r} requires confirmed provider startup.",
+                    {"slot_id": res.slot_id, "reservation_id": reservation_id},
+                )
+            updated = RestorationReservation(
+                **{
+                    **res.to_dict(),
+                    "provider_pid": int(effective_pid) if effective_pid is not None else None,
+                    "provider_startup_confirmed": startup_ok,
+                    "exact_association_confirmed": bool(exact_association_confirmed),
+                }
             )
-        updated = RestorationReservation(
-            **{
-                **res.to_dict(),
-                "provider_pid": provider_pid if provider_pid is not None else res.provider_pid,
-                "exact_association_confirmed": bool(exact_association_confirmed),
-            }
-        )
-        atomic_write_json(self._record_path(reservation_id), updated.to_dict())
-        return updated
+            atomic_write_json(self._record_path(reservation_id), updated.to_dict())
+            return updated
 
     def acknowledge_provider_association(
         self,
@@ -539,16 +608,22 @@ class RestorationReservationStore:
         *,
         reservation_token: str,
         provider_pid: int | None = None,
+        provider_startup_confirmed: bool | None = None,
         exact_association_confirmed: bool = False,
+        launch_id: str | None = None,
+        pane_id: str | None = None,
     ) -> RestorationReservation:
-        """Acquire `slot-<slot_id>.lock` and record provider association after consumption."""
+        """Acquire `slot-<slot_id>.lock` and record provider startup/association after consumption."""
         current = self.get_reservation(reservation_id)
         with acquire_canonical_slot_lock(self.home_dir, current.slot_id, blocking=True):
             return self.acknowledge_provider_association_locked(
                 reservation_id,
                 reservation_token=reservation_token,
                 provider_pid=provider_pid,
+                provider_startup_confirmed=provider_startup_confirmed,
                 exact_association_confirmed=exact_association_confirmed,
+                launch_id=launch_id,
+                pane_id=pane_id,
             )
 
     def mark_ambiguous(
@@ -558,13 +633,84 @@ class RestorationReservationStore:
         reason: str,
         launch_id: str | None = None,
         pane_id: str | None = None,
+        timeout_seconds: float = 0.1,
     ) -> RestorationReservation:
-        """Preserve an uncertain reservation without overwriting a newer attempt's active marker."""
+        """Preserve uncertainty in a bounded, non-blocking way even if child holds `slot-<slot_id>.lock`."""
         current = self.get_reservation(reservation_id)
-        with acquire_canonical_slot_lock(self.home_dir, current.slot_id, blocking=True):
-            return self.mark_ambiguous_locked(
-                reservation_id, reason=reason, launch_id=launch_id, pane_id=pane_id,
+        try:
+            with acquire_canonical_slot_lock(
+                self.home_dir,
+                current.slot_id,
+                blocking=True,
+                timeout_seconds=timeout_seconds,
+            ):
+                return self._mark_ambiguous_under_meta_lock(
+                    reservation_id,
+                    reason=reason,
+                    launch_id=launch_id,
+                    pane_id=pane_id,
+                    preserve_consumed=True,
+                )
+        except ContinuityError:
+            return self._mark_ambiguous_under_meta_lock(
+                reservation_id,
+                reason=reason,
+                launch_id=launch_id,
+                pane_id=pane_id,
+                preserve_consumed=True,
             )
+
+    def _mark_ambiguous_under_meta_lock(
+        self,
+        reservation_id: str,
+        *,
+        reason: str,
+        launch_id: str | None = None,
+        pane_id: str | None = None,
+        preserve_consumed: bool = False,
+    ) -> RestorationReservation:
+        current = self.get_reservation(reservation_id)
+        with self._meta_lock(current.slot_id):
+            latest = self.get_reservation(reservation_id)
+            if latest.state == "aborted":
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Cannot mark aborted reservation {reservation_id!r} as ambiguous.",
+                    {"slot_id": latest.slot_id, "reservation_id": reservation_id, "state": latest.state},
+                )
+            if preserve_consumed and latest.state == "consumed":
+                return latest
+            if launch_id is not None and latest.launch_id is not None and latest.launch_id != launch_id:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Stale mark_ambiguous on {reservation_id!r}: launch_id mismatch.",
+                    {"slot_id": latest.slot_id, "reservation_id": reservation_id},
+                )
+            if pane_id is not None and latest.pane_id is not None and latest.pane_id != pane_id:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Stale mark_ambiguous on {reservation_id!r}: pane_id mismatch.",
+                    {"slot_id": latest.slot_id, "reservation_id": reservation_id},
+                )
+            active = self.get_active_for_slot(latest.slot_id)
+            if active is not None and active.reservation_id != reservation_id:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    f"Stale mark_ambiguous on {reservation_id!r}: slot {latest.slot_id!r} has newer active reservation {active.reservation_id!r}.",
+                    {"slot_id": latest.slot_id, "reservation_id": reservation_id},
+                )
+            updated = RestorationReservation(
+                **{
+                    **latest.to_dict(),
+                    "launch_id": launch_id or latest.launch_id,
+                    "pane_id": pane_id or latest.pane_id,
+                    "state": "ambiguous",
+                    "note": reason,
+                }
+            )
+            atomic_write_json(self._record_path(reservation_id), updated.to_dict())
+            atomic_write_json(self._active_slot_path(latest.slot_id), updated.to_dict())
+            return updated
 
     def mark_ambiguous_locked(
         self,
@@ -575,47 +721,53 @@ class RestorationReservationStore:
         pane_id: str | None = None,
     ) -> RestorationReservation:
         """Record uncertainty while the caller retains the canonical slot lock."""
-        latest = self.get_reservation(reservation_id)
-        active = self.get_active_for_slot(latest.slot_id)
-        if active is not None and active.reservation_id != reservation_id:
-            raise ContinuityError(
-                ErrorCode.ASSOCIATION_CONFLICT,
-                f"Stale mark_ambiguous on {reservation_id!r}: slot {latest.slot_id!r} has newer active reservation {active.reservation_id!r}.",
-                {"slot_id": latest.slot_id, "reservation_id": reservation_id},
-            )
-        updated = RestorationReservation(
-            **{
-                **latest.to_dict(),
-                "launch_id": launch_id or latest.launch_id,
-                "pane_id": pane_id or latest.pane_id,
-                "state": "ambiguous",
-                "note": reason,
-            }
+        return self._mark_ambiguous_under_meta_lock(
+            reservation_id,
+            reason=reason,
+            launch_id=launch_id,
+            pane_id=pane_id,
+            preserve_consumed=False,
         )
-        atomic_write_json(self._record_path(reservation_id), updated.to_dict())
-        atomic_write_json(self._active_slot_path(latest.slot_id), updated.to_dict())
-        return updated
 
-    def abort_reservation(self, reservation_id: str, *, reason: str) -> RestorationReservation:
-        """Release an unexecuted reservation without ever removing a newer attempt's active marker."""
+    def abort_reservation(
+        self,
+        reservation_id: str,
+        *,
+        reason: str,
+        timeout_seconds: float = 0.1,
+    ) -> RestorationReservation:
+        """Release an unexecuted reservation without blocking on child lock or removing a newer active marker."""
         current = self.get_reservation(reservation_id)
-        with acquire_canonical_slot_lock(self.home_dir, current.slot_id, blocking=True):
-            latest = self.get_reservation(reservation_id)
-            if latest.state == "consumed":
-                return latest
-            updated = RestorationReservation(
-                **{
-                    **latest.to_dict(),
-                    "state": "aborted",
-                    "note": reason,
-                }
-            )
-            atomic_write_json(self._record_path(reservation_id), updated.to_dict())
-            active = self.get_active_for_slot(latest.slot_id)
-            if active is not None and active.reservation_id == reservation_id:
-                with contextlib.suppress(OSError):
-                    self._active_slot_path(latest.slot_id).unlink(missing_ok=True)
-            return updated
+
+        def _abort_under_meta() -> RestorationReservation:
+            with self._meta_lock(current.slot_id):
+                latest = self.get_reservation(reservation_id)
+                if latest.state == "consumed":
+                    return latest
+                updated = RestorationReservation(
+                    **{
+                        **latest.to_dict(),
+                        "state": "aborted",
+                        "note": reason,
+                    }
+                )
+                atomic_write_json(self._record_path(reservation_id), updated.to_dict())
+                active = self.get_active_for_slot(latest.slot_id)
+                if active is not None and active.reservation_id == reservation_id:
+                    with contextlib.suppress(OSError):
+                        self._active_slot_path(latest.slot_id).unlink(missing_ok=True)
+                return updated
+
+        try:
+            with acquire_canonical_slot_lock(
+                self.home_dir,
+                current.slot_id,
+                blocking=True,
+                timeout_seconds=timeout_seconds,
+            ):
+                return _abort_under_meta()
+        except ContinuityError:
+            return _abort_under_meta()
 
 
 class ReservationSlotExecutionGuard:
@@ -806,8 +958,9 @@ class ReservationSlotExecutionGuard:
                         {"slot_id": slot_id},
                     )
             lease_path.unlink(missing_ok=True)
+            redacted = {k: v for k, v in payload.items() if k != "lease_token"}
             return {
-                **payload,
+                **redacted,
                 "recovered_by": operator_id,
                 "recovery_reason": reason,
                 "recovered_at": now_utc_iso(),
@@ -815,11 +968,122 @@ class ReservationSlotExecutionGuard:
 
 
 class ReservationOwnershipVerifier:
-    """Verify atomic dispatcher ownership transfer via consumed RestorationReservation."""
+    """Verify atomic dispatcher ownership transfer, startup, and exact provider association."""
 
     def __init__(self, home_dir: Path, dispatcher: Any | None = None) -> None:
         self.store = RestorationReservationStore(home_dir)
         self.dispatcher = dispatcher
+
+    def verify_ownership_details(
+        self,
+        request: Any,
+        *,
+        launch_id: str,
+        pane_id: str,
+    ) -> dict[str, Any]:
+        """Return separate ownership, provider startup, and exact association evidence from the attempt reservation."""
+        reservation_id = getattr(request, "reservation_id", None)
+        if not reservation_id:
+            return {
+                "dispatcher_ownership_acknowledged": False,
+                "provider_startup_confirmed": False,
+                "exact_association_confirmed": False,
+                "provider_pid": None,
+                "reservation_state": None,
+                "reason": "missing_reservation_id",
+            }
+        try:
+            res = self.store.get_reservation(reservation_id)
+        except ContinuityError as exc:
+            return {
+                "dispatcher_ownership_acknowledged": False,
+                "provider_startup_confirmed": False,
+                "exact_association_confirmed": False,
+                "provider_pid": None,
+                "reservation_state": None,
+                "reason": f"reservation_lookup_failed:{exc.code.value}",
+            }
+        if (
+            res.slot_id != request.slot_id
+            or res.provider != request.provider
+            or res.native_session_id != request.native_session_id
+            or res.environment_id != request.environment_id
+        ):
+            return {
+                "dispatcher_ownership_acknowledged": False,
+                "provider_startup_confirmed": False,
+                "exact_association_confirmed": False,
+                "provider_pid": None,
+                "reservation_state": res.state,
+                "reason": "reservation_identity_mismatch",
+            }
+        req_checkpoint_id = getattr(request, "checkpoint_id", None)
+        if req_checkpoint_id is not None and res.checkpoint_id != req_checkpoint_id:
+            return {
+                "dispatcher_ownership_acknowledged": False,
+                "provider_startup_confirmed": False,
+                "exact_association_confirmed": False,
+                "provider_pid": None,
+                "reservation_state": res.state,
+                "reason": "checkpoint_mismatch",
+            }
+        req_queue_entry_id = getattr(request, "queue_entry_id", None)
+        if req_queue_entry_id is not None and res.queue_entry_id != req_queue_entry_id:
+            return {
+                "dispatcher_ownership_acknowledged": False,
+                "provider_startup_confirmed": False,
+                "exact_association_confirmed": False,
+                "provider_pid": None,
+                "reservation_state": res.state,
+                "reason": "queue_entry_mismatch",
+            }
+        req_attempt = getattr(request, "attempt", None)
+        if req_attempt is not None and res.attempt != int(req_attempt):
+            return {
+                "dispatcher_ownership_acknowledged": False,
+                "provider_startup_confirmed": False,
+                "exact_association_confirmed": False,
+                "provider_pid": None,
+                "reservation_state": res.state,
+                "reason": "attempt_mismatch",
+            }
+        if res.launch_id is None or res.launch_id != launch_id or res.pane_id is None or res.pane_id != pane_id:
+            return {
+                "dispatcher_ownership_acknowledged": False,
+                "provider_startup_confirmed": False,
+                "exact_association_confirmed": False,
+                "provider_pid": None,
+                "reservation_state": res.state,
+                "reason": "launch_pane_mismatch",
+            }
+        if res.state == "ambiguous":
+            return {
+                "dispatcher_ownership_acknowledged": bool(res.dispatcher_ownership_acknowledged),
+                "provider_startup_confirmed": False,
+                "exact_association_confirmed": False,
+                "provider_pid": res.provider_pid,
+                "reservation_state": "ambiguous",
+                "reason": res.note or "post_consumption_uncertainty",
+            }
+        if res.state != "consumed" or not res.dispatcher_ownership_acknowledged:
+            return {
+                "dispatcher_ownership_acknowledged": False,
+                "provider_startup_confirmed": False,
+                "exact_association_confirmed": False,
+                "provider_pid": res.provider_pid,
+                "reservation_state": res.state,
+                "reason": f"reservation_state:{res.state}",
+            }
+        startup_ok = bool(res.provider_startup_confirmed and res.provider_pid is not None and res.provider_pid > 0)
+        association_ok = bool(startup_ok and res.exact_association_confirmed)
+        return {
+            "dispatcher_ownership_acknowledged": True,
+            "provider_startup_confirmed": startup_ok,
+            "exact_association_confirmed": association_ok,
+            "provider_pid": res.provider_pid,
+            "reservation_state": res.state,
+            "reason": None if association_ok else ("provider_startup_unconfirmed" if not startup_ok else "exact_provider_association_unconfirmed"),
+        }
 
     def verify_ownership(
         self,
@@ -828,43 +1092,7 @@ class ReservationOwnershipVerifier:
         launch_id: str,
         pane_id: str,
     ) -> tuple[bool, bool]:
-        reservation_id = getattr(request, "reservation_id", None)
-        if not reservation_id:
+        details = self.verify_ownership_details(request, launch_id=launch_id, pane_id=pane_id)
+        if details["reservation_state"] == "ambiguous":
             return False, False
-        try:
-            res = self.store.get_reservation(reservation_id)
-        except ContinuityError:
-            return False, False
-        if res.state != "consumed" or not res.dispatcher_ownership_acknowledged:
-            return False, False
-        if (
-            res.slot_id != request.slot_id
-            or res.provider != request.provider
-            or res.native_session_id != request.native_session_id
-            or res.environment_id != request.environment_id
-        ):
-            return False, False
-        req_checkpoint_id = getattr(request, "checkpoint_id", None)
-        if req_checkpoint_id is not None and res.checkpoint_id != req_checkpoint_id:
-            return False, False
-        req_queue_entry_id = getattr(request, "queue_entry_id", None)
-        if req_queue_entry_id is not None and res.queue_entry_id != req_queue_entry_id:
-            return False, False
-        req_attempt = getattr(request, "attempt", None)
-        if req_attempt is not None and res.attempt != int(req_attempt):
-            return False, False
-        if res.launch_id is None or res.launch_id != launch_id:
-            return False, False
-        if res.pane_id is None or res.pane_id != pane_id:
-            return False, False
-        if self.dispatcher is None:
-            return True, bool(res.exact_association_confirmed)
-        try:
-            slot = self.dispatcher.get_slot_by_id(request.slot_id)
-            current = slot.get("current") if isinstance(slot, dict) else None
-            associated = bool(current and (
-                current.get("provider"), current.get("environment_id"), current.get("native_session_id")
-            ) == (request.provider, request.environment_id, request.native_session_id))
-        except Exception:
-            associated = False
-        return True, associated
+        return bool(details["dispatcher_ownership_acknowledged"]), bool(details["exact_association_confirmed"])

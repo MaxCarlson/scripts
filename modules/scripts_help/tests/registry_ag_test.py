@@ -84,6 +84,82 @@ def test_clipboard_registered_tools_have_specific_help_descriptions():
     assert all(e.description != "Clipboard command suite with multi-buffer support and tmux/Windows bridge." for e in clipboard_entries)
 
 
+def test_ag_clip_search_lists_manifest_aliases_with_module_help(tmp_path: Path):
+    repo = tmp_path / "repo"
+    module = repo / "modules" / "clipboard_tools"
+    module.mkdir(parents=True)
+    (module / "pyproject.toml").write_text(
+        '[project]\nname = "clipboard-tools"\nversion = "1.0.0"\n'
+        '[project.scripts]\n'
+        'c2c = "clipboard_tools.entrypoints:copy_main"\n'
+        'otc = "clipboard_tools.entrypoints:output_to_clipboard_main"\n'
+        'rwc = "clipboard_tools.entrypoints:replace_with_clipboard_main"\n'
+        '[tool.scripts_help.descriptions]\n'
+        'c2c = "Copy selected file or path contents to the clipboard."\n'
+        'otc = "Copy command output to the clipboard."\n'
+        'rwc = "Replace the current selection with clipboard contents."\n',
+        encoding="utf-8",
+    )
+    manifest = {
+        "schema_version": 1,
+        "commands": {
+            "c2c": {
+                "name": "c2c",
+                "program_id": "module:clipboard_tools",
+                "kind": "console_script",
+                "source_path": "modules/clipboard_tools",
+                "target": ".venv/Scripts/c2c.exe",
+                "entry_point": "clipboard_tools.entrypoints:copy_main",
+            },
+            "otc": {
+                "name": "otc",
+                "program_id": "module:clipboard_tools",
+                "kind": "console_script",
+                "source_path": "modules/clipboard_tools",
+                "target": ".venv/Scripts/otc.exe",
+                "entry_point": "clipboard_tools.entrypoints:output_to_clipboard_main",
+            },
+            "rwc": {
+                "name": "rwc",
+                "program_id": "module:clipboard_tools",
+                "kind": "console_script",
+                "source_path": "modules/clipboard_tools",
+                "target": ".venv/Scripts/rwc.exe",
+                "entry_point": "clipboard_tools.entrypoints:replace_with_clipboard_main",
+            }
+        },
+    }
+    (repo / "scripts_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    entries = command_registry.load_command_registry(repo)
+    entries.append(
+        command_registry.CommandEntry(
+            name="append_clipboard",
+            program_id="pyscript:pyscripts/append_clipboard.py",
+            invoked_name="append_clipboard",
+            kind="python_file",
+            source="scripts_manifest",
+            target="pyscripts/append_clipboard.py",
+            description="Append clipboard contents to the end of a file.",
+        )
+    )
+
+    matches = ag.search_ag("clip", entries=entries)
+    table = ag._format_table(matches)
+
+    names = {entry.name for entry in matches}
+    assert {"c2c", "otc", "rwc", "append_clipboard"}.issubset(names)
+    assert "Copy selected file or path contents to the clipboard." in table
+    assert "Copy command output to the clipboard." in table
+    assert "Replace the current selection with clipboard contents." in table
+    assert "append_clipboard" in table
+    lines = table.splitlines()
+    assert lines[0].split() == ["Name", "Help"]
+    displayed_names = {line.split("  ", 1)[0].strip() for line in lines[2:]}
+    assert {"c2c", "otc", "rwc", "append_clipboard"}.issubset(displayed_names)
+    assert next(entry for entry in matches if entry.name == "c2c").target == "clipboard_tools.entrypoints:copy_main"
+
+
 def test_ag_search_formatting_shell_inventory_and_silver_searcher_collision(tmp_path: Path, monkeypatch, capsys):
     inv_file = tmp_path / "inv.json"
     inv_file.write_text(

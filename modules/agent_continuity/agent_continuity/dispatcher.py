@@ -406,6 +406,41 @@ class DispatcherService:
             row["settings"] = json.loads(row.pop("settings_json") or "{}")
         return rows
 
+    def latest_terminal_launch_for_identity(
+        self, *, slot_id: str, provider: str, environment_id: str, native_session_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the newest launch for one exact slot/provider/environment/session identity."""
+        if not all(value.strip() for value in (slot_id, provider, environment_id, native_session_id)):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Exact terminal-launch identity fields must be non-empty.")
+        self._sync()
+        row = self._row(
+            """SELECT * FROM dispatcher_terminal_launches
+               WHERE slot_id = ? AND provider = ? AND environment_id = ? AND native_session_id = ?
+               ORDER BY launch_started_at DESC, launch_id DESC LIMIT 1""",
+            (slot_id, provider, environment_id, native_session_id),
+        )
+        if row is None:
+            return None
+        row["settings"] = json.loads(row.pop("settings_json") or "{}")
+        return row
+
+    def list_terminal_launches_for_session_identity(
+        self, *, provider: str, environment_id: str, native_session_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return all exact-session launch associations without a global history cap."""
+        if not all(value.strip() for value in (provider, environment_id, native_session_id)):
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "Exact terminal-session identity fields must be non-empty.")
+        self._sync()
+        rows = self._rows(
+            """SELECT * FROM dispatcher_terminal_launches
+               WHERE provider = ? AND environment_id = ? AND native_session_id = ?
+               ORDER BY launch_started_at DESC, launch_id DESC""",
+            (provider, environment_id, native_session_id),
+        )
+        for row in rows:
+            row["settings"] = json.loads(row.pop("settings_json") or "{}")
+        return rows
+
     def _gui(self, identifier: str) -> dict[str, Any]:
         self._sync()
         raw = identifier.strip()

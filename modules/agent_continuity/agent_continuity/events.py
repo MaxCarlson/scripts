@@ -152,8 +152,17 @@ def read_spool_events(
             issues.append(SpoolIssue(str(root), "Spool root is not a directory"))
             continue
 
+        def fail_walk(error: OSError) -> None:
+            raise error
+
         try:
-            candidates = sorted(root.rglob("*.json"))
+            candidates: list[Path] = []
+            for directory, directories, filenames in os.walk(root, onerror=fail_walk):
+                directories[:] = sorted(name for name in directories if name.casefold() != ".worktree")
+                candidates.extend(
+                    Path(directory) / name for name in filenames if name.casefold().endswith(".json")
+                )
+            candidates.sort()
         except OSError as exc:
             issues.append(SpoolIssue(str(root), f"Failed to list spool root: {exc}"))
             continue

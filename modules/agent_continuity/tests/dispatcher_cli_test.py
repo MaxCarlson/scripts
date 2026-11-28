@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import builtins
 import json
+import subprocess
 import sys
+import time
 import tomllib
 import types
 from argparse import Namespace
@@ -13,11 +15,432 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+
+import agent_continuity.dispatcher_cli as dispatcher_cli
 from agent_continuity.dispatcher import DispatcherService
-from agent_continuity.dispatcher_cli import _open, build_parser, dispatch
+from agent_continuity.dispatcher_cli import (
+    _exact_launched_provider_pid,
+    _format_exit_summary,
+    _native_argv,
+    _open,
+    _prompt_native_arguments,
+    _read_launch_prompt,
+    _run_reserved_provider_process,
+    _validate_addressed_launch_prompt,
+    build_parser,
+    dispatch,
+)
 from agent_continuity.errors import ContinuityError
 from agent_continuity.interactive import filter_items, format_timestamp, select_item
 from agent_continuity.service import ContinuityService
+
+
+def test_restore_startup_evidence_uses_exact_provider_pid_and_launch_ancestry():
+    from types import SimpleNamespace
+
+    from agent_continuity.runtime_discovery import (
+        MatchStatus,
+        ProcessAncestry,
+        ProcessIdentity,
+        ProcessLiveness,
+        SessionIdentityState,
+    )
+
+    launched_wrapper = ProcessIdentity(100, 1_000_000_000)
+    actual_provider = ProcessIdentity(200, 2_000_000_000)
+    observation = SimpleNamespace(
+        process_liveness=ProcessLiveness.RUNNING,
+        process_session_match=MatchStatus.EXACT,
+        session_identity_state=SessionIdentityState.EXACT,
+        identity_conflict=False,
+        evidence_conflict=False,
+        processes=(SimpleNamespace(identity=actual_provider),),
+        ancestry=(ProcessAncestry((launched_wrapper,), ("llmd.exe",), True, False),),
+    )
+
+    assert _exact_launched_provider_pid(observation, launched_wrapper_pid=100) == 200
+    assert _exact_launched_provider_pid(observation, launched_wrapper_pid=999) is None
+    conflicting = SimpleNamespace(
+        process_liveness=observation.process_liveness,
+        process_session_match=observation.process_session_match,
+        session_identity_state=observation.session_identity_state,
+        identity_conflict=False,
+        evidence_conflict=True,
+        processes=observation.processes,
+        ancestry=observation.ancestry,
+    )
+    assert _exact_launched_provider_pid(conflicting, launched_wrapper_pid=100) is None
+
+
+@pytest.mark.parametrize("exit_code", [0, 17])
+def test_reserved_provider_runner_streams_harmless_child_and_reports_its_pid(monkeypatch, capfd, exit_code):
+    from types import SimpleNamespace
+
+    from agent_continuity.runtime_discovery import (
+        MatchStatus,
+        ProcessAncestry,
+        ProcessIdentity,
+        ProcessLiveness,
+        SessionIdentityState,
+    )
+
+    real_popen = subprocess.Popen
+    child = None
+    observations = 0
+
+    class Dispatcher:
+        def observe_runtime_session(self, provider, environment_id, session_id):
+            nonlocal observations
+            observations += 1
+            if observations < 3:
+                return None
+            if child is None or child.poll() is not None:
+                return None
+            identity = ProcessIdentity(child.pid, 2_000_000_000)
+            return SimpleNamespace(
+                process_liveness=ProcessLiveness.RUNNING,
+                process_session_match=MatchStatus.EXACT,
+                session_identity_state=SessionIdentityState.EXACT,
+                identity_conflict=False,
+                evidence_conflict=False,
+                processes=(SimpleNamespace(identity=identity),),
+                ancestry=(ProcessAncestry((), (), False, False),),
+            )
+
+    def spawn(*args, **kwargs):
+        nonlocal child
+        child = real_popen(*args, **kwargs)
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    acknowledged = []
+    result = _run_reserved_provider_process(
+        Dispatcher(),
+        [
+            sys.executable,
+            "-c",
+            f"import sys,time; print('guarded-stream-out',flush=True); "
+            f"print('guarded-stream-err',file=sys.stderr,flush=True); "
+            f"time.sleep(0.45); sys.exit({exit_code})",
+        ],
+        cwd=None,
+        provider="codex",
+        environment_id="local",
+        session_id="guarded-session",
+        on_provider_startup=acknowledged.append,
+    )
+
+    assert result.returncode == exit_code
+    assert acknowledged == [child.pid]
+    captured = capfd.readouterr()
+    assert "guarded-stream-out" in captured.out
+    assert "guarded-stream-err" in captured.err
+
+
+def test_pane_run_consumes_and_acknowledges_exact_harmless_provider_child(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from agent_continuity.dispatcher_cli import _run_pane
+    from agent_continuity.runtime_discovery import (
+        MatchStatus,
+        ProcessAncestry,
+        ProcessIdentity,
+        ProcessLiveness,
+        SessionIdentityState,
+    )
+    from agent_continuity.workspace_ownership import RestorationReservationStore
+
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.register("G", "A", provider="codex", session_id="native-session")
+    slot = dispatcher.get_slot(gui="G", name="A")
+    environment_id = slot["current"]["environment_id"]
+    store = RestorationReservationStore(home)
+    reservation = store.create_reservation(
+        checkpoint_id="checkpoint-dispatcher",
+        queue_entry_id="queue-dispatcher",
+        attempt=3,
+        slot_id=slot["slot_id"],
+        provider="codex",
+        native_session_id="native-session",
+        environment_id=environment_id,
+        operator_id="test",
+    )
+    launch_id, pane_id = "launch-dispatcher", "pane-dispatcher"
+    reservation = store.bind_launch(reservation.reservation_id, launch_id=launch_id, pane_id=pane_id)
+
+    monkeypatch.setattr(
+        "agent_continuity.dispatcher_cli._native_argv",
+        lambda *args, **kwargs: [sys.executable, "-c", "import time; time.sleep(0.35)"],
+    )
+    real_popen = subprocess.Popen
+    child = None
+
+    def spawn(*args, **kwargs):
+        nonlocal child
+        child = real_popen(*args, **kwargs)
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+
+    def observe_runtime_session(provider, observed_environment, session_id):
+        if child is None or child.poll() is not None:
+            return None
+        identity = ProcessIdentity(child.pid, max(1, time.time_ns()))
+        return SimpleNamespace(
+            process_liveness=ProcessLiveness.RUNNING,
+            process_session_match=MatchStatus.EXACT,
+            session_identity_state=SessionIdentityState.EXACT,
+            identity_conflict=False,
+            evidence_conflict=False,
+            processes=(SimpleNamespace(identity=identity),),
+            ancestry=(ProcessAncestry((), (), False, False),),
+        )
+
+    monkeypatch.setattr(dispatcher, "observe_runtime_session", observe_runtime_session)
+    output = StringIO()
+    assert _run_pane(
+        dispatcher,
+        slot_id=slot["slot_id"],
+        launch_id=None,
+        input_stream=StringIO("1\n"),
+        output_stream=output,
+        expected_session_identity=("codex", environment_id, "native-session"),
+        reservation_id=reservation.reservation_id,
+        reservation_token=reservation.reservation_token,
+        checkpoint_id=reservation.checkpoint_id,
+        queue_entry_id=reservation.queue_entry_id,
+        attempt=reservation.attempt,
+        reservation_launch_id=launch_id,
+        pane_id=pane_id,
+    ) == 0
+
+    acknowledged = store.get_reservation(reservation.reservation_id)
+    assert acknowledged.dispatcher_ownership_acknowledged is True
+    assert acknowledged.provider_startup_confirmed is True
+    assert acknowledged.exact_association_confirmed is True
+    assert acknowledged.provider_pid == child.pid
+    assert acknowledged.launch_id == launch_id
+    assert acknowledged.pane_id == pane_id
+    assert "LLMD exit summary - normal (exit 0)" in output.getvalue()
+    assert "Native session: native-session" in output.getvalue()
+
+
+def test_pane_run_reports_abnormal_exit_with_exact_reproducible_session(tmp_path, monkeypatch):
+    from agent_continuity.dispatcher_cli import _run_pane
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("GUI", "Agent", provider="codex", session_id="exact-session")
+    slot = dispatcher.get_slot(gui="GUI", name="Agent")
+    output = StringIO()
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", lambda *args, **kwargs: ["guarded-codex"])
+    monkeypatch.setattr(
+        "agent_continuity.dispatcher_cli._run_provider_process",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 17),
+    )
+
+    assert _run_pane(
+        dispatcher,
+        slot_id=slot["slot_id"],
+        launch_id=None,
+        input_stream=StringIO(),
+        output_stream=output,
+        expected_session_identity=("codex", slot["current"]["environment_id"], "exact-session"),
+    ) == 17
+    summary = output.getvalue()
+    assert "LLMD exit summary - abnormal (exit 17)" in summary
+    assert "Native session: exact-session" in summary
+    assert "llmd' 'continue" in summary
+
+
+def test_pane_run_reports_handled_interrupt_without_claiming_safe_retry(tmp_path, monkeypatch):
+    from agent_continuity.dispatcher_cli import _run_pane
+
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.register("GUI", "Agent", provider="codex", session_id="exact-session")
+    slot = dispatcher.get_slot(gui="GUI", name="Agent")
+    output = StringIO()
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._native_argv", lambda *args, **kwargs: ["guarded-codex"])
+    monkeypatch.setattr(
+        "agent_continuity.dispatcher_cli._run_provider_process",
+        lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        _run_pane(
+            dispatcher,
+            slot_id=slot["slot_id"],
+            launch_id=None,
+            input_stream=StringIO(),
+            output_stream=output,
+            expected_session_identity=("codex", slot["current"]["environment_id"], "exact-session"),
+        )
+    summary = output.getvalue()
+    assert "LLMD exit summary - interrupted (exit 130)" in summary
+    assert "Native session: exact-session" in summary
+    assert "llmd' 'continue" in summary
+
+
+def test_prompt_flags_are_distinct_from_profile_and_native_provider_options():
+    parser = build_parser()
+    for command in ("start", "switch", "continue", "review", "return"):
+        subparser = parser._subparsers._group_actions[0].choices[command]
+        assert "-Q" in subparser._option_string_actions
+        assert "-F" in subparser._option_string_actions
+        assert "-M" in subparser._option_string_actions
+        assert "-P" in subparser._option_string_actions
+
+    args = parser.parse_args(["continue", "-g", "G", "-n", "A", "-Q"])
+    assert args.clipboard_prompt is True
+    assert args.profile is None
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+@pytest.mark.parametrize("resuming", [False, True])
+def test_prompt_native_arguments_are_one_shot_and_interactive(provider, resuming):
+    prompt = "Unicode ☃\r\nsecond line"
+    assert _prompt_native_arguments(provider, prompt, resuming=resuming) == [prompt]
+
+
+@pytest.mark.parametrize("resuming", [False, True])
+def test_agy_prompt_native_arguments_fail_closed_for_managed_bootstrap_flow(resuming):
+    with pytest.raises(ContinuityError, match="managed bootstrap flow"):
+        _prompt_native_arguments("agy", "hello\n世界", resuming=resuming)
+
+
+def test_prompt_file_read_preserves_multiline_unicode_and_does_not_echo(tmp_path):
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_bytes("To-Agent: Agent A\r\n\r\n雪\n".encode())
+    prompt = _read_launch_prompt(prompt_file=prompt_file)
+    assert prompt == "To-Agent: Agent A\r\n\r\n雪\n"
+
+
+def test_clipboard_prompt_reader_preserves_unicode_and_never_logs_content(monkeypatch):
+    prompt = "clipboard ☃\r\nsecond line"
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.shutil.which", lambda name: "pwsh")
+    monkeypatch.setattr(
+        "agent_continuity.dispatcher_cli.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout=prompt.encode("utf-8")),
+    )
+    assert _read_launch_prompt(clipboard=True) == prompt
+
+
+def test_prompt_source_errors_are_redacted_and_utf8_is_required(tmp_path, monkeypatch):
+    malformed = tmp_path / "malformed.txt"
+    malformed.write_bytes(b"\xff\xfe")
+    with pytest.raises(ContinuityError, match="Cannot read UTF-8 prompt file"):
+        _read_launch_prompt(prompt_file=malformed)
+
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.shutil.which", lambda name: None)
+    with pytest.raises(ContinuityError, match="No supported system clipboard reader"):
+        _read_launch_prompt(clipboard=True)
+
+    with pytest.raises(ContinuityError, match="Choose exactly one"):
+        _read_launch_prompt(prompt="hidden-content", clipboard=True)
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+def test_native_resume_command_delivers_prompt_once_to_guarded_child(tmp_path, monkeypatch, provider):
+    from types import SimpleNamespace
+
+    received = tmp_path / "received.json"
+    code = f"import json,sys; open({str(received)!r}, 'w', encoding='utf-8').write(json.dumps(sys.argv[-1], ensure_ascii=False))"
+
+    class GuardedAdapter:
+        def find_executable(self):
+            return sys.executable
+
+        def resolve_resume_command(self, session_id, **kwargs):
+            return SimpleNamespace(argv=[sys.executable, "-c", code, provider, "resume", session_id])
+
+    dispatcher = SimpleNamespace(continuity=SimpleNamespace(adapters={provider: GuardedAdapter()}))
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._resolve_environment",
+                        lambda *args, **kwargs: SimpleNamespace(environment_id="local", runtime_kind="windows", distro=None))
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._validate_additional_directories", lambda *args, **kwargs: None)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.detect_runtime_kind", lambda: "windows")
+    token = dispatcher_cli._ONE_TIME_PROMPT.set("first line\r\nsecond line 雪")
+    try:
+        argv = _native_argv(dispatcher, provider, "session-exact", environment_id="local", cwd=None)
+        assert dispatcher_cli._ONE_TIME_PROMPT.get() is None
+        second_argv = _native_argv(dispatcher, provider, "session-exact", environment_id="local", cwd=None)
+        completed = dispatcher_cli._run_provider_process(argv, check=False)
+    finally:
+        dispatcher_cli._ONE_TIME_PROMPT.reset(token)
+
+    assert completed.returncode == 0
+    assert json.loads(received.read_text(encoding="utf-8")) == "first line\r\nsecond line 雪"
+    assert second_argv[-1] == "session-exact"
+
+
+def test_uncertain_provider_spawn_does_not_replay_consumed_prompt(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    class GuardedAdapter:
+        def find_executable(self):
+            return sys.executable
+
+        def resolve_resume_command(self, session_id, **kwargs):
+            return SimpleNamespace(argv=[sys.executable, "-c", "pass", "codex", "resume", session_id])
+
+    dispatcher = SimpleNamespace(continuity=SimpleNamespace(adapters={"codex": GuardedAdapter()}))
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._resolve_environment",
+                        lambda *args, **kwargs: SimpleNamespace(environment_id="local", runtime_kind="windows", distro=None))
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._validate_additional_directories", lambda *args, **kwargs: None)
+    monkeypatch.setattr("agent_continuity.dispatcher_cli.detect_runtime_kind", lambda: "windows")
+    token = dispatcher_cli._ONE_TIME_PROMPT.set("do not replay")
+    try:
+        first = _native_argv(dispatcher, "codex", "session-exact", environment_id="local", cwd=None)
+        monkeypatch.setattr(
+            "agent_continuity.dispatcher_cli._run_provider_process",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("guarded spawn uncertainty")),
+        )
+        with pytest.raises(OSError, match="guarded spawn uncertainty"):
+            dispatcher_cli._run_provider_process(first, check=False)
+        retry = _native_argv(dispatcher, "codex", "session-exact", environment_id="local", cwd=None)
+    finally:
+        dispatcher_cli._ONE_TIME_PROMPT.reset(token)
+
+    assert first[-1] == "do not replay"
+    assert retry[-1] == "session-exact"
+
+
+def test_dry_run_neither_reads_nor_exposes_prompt_content(tmp_path, monkeypatch):
+    service = DispatcherService(home_dir=tmp_path / "registry")
+    service.register("G", "A", provider="codex", session_id="session-a")
+    parser = build_parser()
+    output = StringIO()
+    monkeypatch.setattr(
+        "agent_continuity.dispatcher_cli._read_launch_prompt",
+        lambda **kwargs: pytest.fail("dry-run must not read prompt source"),
+    )
+    args = parser.parse_args(["-H", str(tmp_path / "registry"), "continue", "-g", "G", "-n", "A",
+                              "--prompt", "never-print-this", "-d"])
+    assert dispatch(args, parser, input_stream=StringIO(), output_stream=output) == 0
+    assert "never-print-this" not in output.getvalue()
+
+
+def test_managed_agy_prompt_is_rejected_before_any_provider_subprocess(tmp_path, monkeypatch):
+    home = tmp_path / "registry"
+    service = DispatcherService(home_dir=home)
+    service.register("G", "A", provider="agy", session_id="agy-session")
+    parser = build_parser()
+    args = parser.parse_args(["-H", str(home), "continue", "-g", "G", "-n", "A", "-M", "send once"])
+    monkeypatch.setattr(
+        "agent_continuity.dispatcher_cli._run_provider_process",
+        lambda *args, **kwargs: pytest.fail("unsupported AGY prompt must fail before subprocess"),
+    )
+    with pytest.raises(ContinuityError, match="managed bootstrap flow"):
+        dispatch(args, parser, input_stream=StringIO(), output_stream=StringIO())
+
+
+def test_addressed_prompt_requires_exact_target_identity():
+    slot = {"slot_id": "slot-a", "name": "Agent A", "agent_number": 7}
+    _validate_addressed_launch_prompt("To-Agent: Agent A\nDo the task", slot=slot)
+    _validate_addressed_launch_prompt("Agent: #7 — Agent A\nDo the task", slot=slot)
+    with pytest.raises(ContinuityError, match="does not match the exact launch target"):
+        _validate_addressed_launch_prompt("To-Agent: Agent B\nDo the task", slot=slot)
+    with pytest.raises(ContinuityError, match="exact agent number cannot be verified"):
+        _validate_addressed_launch_prompt("Agent: #7 — Agent A\nDo the task", slot={**slot, "agent_number": None})
 
 
 class TTYInput(StringIO):
@@ -28,6 +451,43 @@ class TTYInput(StringIO):
 class TTYOutput(StringIO):
     def isatty(self):
         return True
+
+
+@pytest.mark.parametrize("outcome", ["normal", "abnormal", "interrupted"])
+def test_exit_summary_reproduces_exact_safe_context_without_unknown_values(outcome):
+    slot = {
+        "gui_alias": "GUI O'Neil",
+        "name": "Agent #4",
+        "agent_number": 4,
+        "slot_id": "slot-exact-4",
+    }
+    summary = _format_exit_summary(
+        slot=slot,
+        provider="codex",
+        environment_id="env-exact",
+        session_id="session-exact",
+        effective_cwd=r"C:\work tree\feature",
+        native_args=("--sandbox", "read-only", "--model", "safe-model", "--add-dir",
+                     r"C:\authorized context", "--future-secret", "do-not-print"),
+        allow_native_unknown=True,
+        outcome=outcome,
+        exit_code=0 if outcome == "normal" else 17,
+        shell="powershell",
+    )
+
+    assert f"LLMD exit summary - {outcome}" in summary
+    assert "GUI: GUI O'Neil" in summary
+    assert "Agent: Agent #4 (#4)" in summary
+    assert "Native session: session-exact" in summary
+    assert "Effective cwd: C:\\work tree\\feature" in summary
+    assert "& 'llmd' 'continue'" in summary
+    assert "'-S' 'slot-exact-4'" in summary
+    assert "'GUI O''Neil'" in summary
+    assert "'--sandbox' 'read-only'" in summary
+    assert "'--add-dir' 'C:\\authorized context'" in summary
+    assert "'do-not-print'" not in summary
+    assert "sensitive native option" in summary
+    assert "inherited process environment" in summary
 
 
 def test_noninteractive_no_argument_call_shows_help_without_registry_mutation(tmp_path):
@@ -199,7 +659,7 @@ def test_post_consumption_provider_spawn_failure_preserves_reservation_uncertain
     )
     launch_id, pane_id = "launch-test", "pane-test"
     reservation = store.bind_launch(reservation.reservation_id, launch_id=launch_id, pane_id=pane_id)
-    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process",
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_reserved_provider_process",
                         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("guarded spawn failure")))
     with pytest.raises(ContinuityError, match="Failed to launch codex"):
         _run_pane(

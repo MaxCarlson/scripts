@@ -10,6 +10,7 @@ import json
 import ntpath
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -55,6 +56,9 @@ _STARTUP_PROGRESS: ContextVar[bool] = ContextVar("llmd_startup_progress", defaul
 _STARTUP_STARTED: ContextVar[float | None] = ContextVar("llmd_startup_started", default=None)
 _PROFILE_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar("llmd_profile_context", default=None)
 _PROFILE_ARGV: ContextVar[tuple[str, ...]] = ContextVar("llmd_profile_argv", default=())
+_LAUNCH_PROMPT: ContextVar[str | None] = ContextVar("llmd_launch_prompt", default=None)
+_ONE_TIME_PROMPT: ContextVar[str | None] = ContextVar("llmd_one_time_prompt", default=None)
+_MAX_LAUNCH_PROMPT_BYTES = 1_048_576
 
 
 def _current_color_mode() -> str:
@@ -71,6 +75,81 @@ def _startup_progress(message: str) -> None:
 def _run_provider_process(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess:
     """Run only a provider command; tests can replace this without intercepting Git probes."""
     return subprocess.run(argv, **kwargs)
+
+
+def _exact_launched_provider_pid(observation: Any, *, launched_wrapper_pid: int) -> int | None:
+    """Return the provider PID only when exact live session evidence descends from this launch."""
+    from .runtime_discovery import MatchStatus, ProcessLiveness, SessionIdentityState
+
+    if observation is None or getattr(observation, "identity_conflict", True) or getattr(
+        observation, "evidence_conflict", True
+    ):
+        return None
+    if (
+        getattr(observation, "process_liveness", None) is not ProcessLiveness.RUNNING
+        or getattr(observation, "process_session_match", None) is not MatchStatus.EXACT
+        or getattr(observation, "session_identity_state", None)
+        not in {SessionIdentityState.EXACT, SessionIdentityState.RESERVED}
+    ):
+        return None
+    processes = getattr(observation, "processes", ()) or ()
+    ancestry = getattr(observation, "ancestry", ()) or ()
+    if len(processes) != 1 or len(ancestry) != 1:
+        return None
+    process_identity = getattr(processes[0], "identity", None)
+    if process_identity is None or process_identity.pid <= 0:
+        return None
+    ancestry_identities = getattr(ancestry[0], "identities", ()) or ()
+    launch_correlated = process_identity.pid == launched_wrapper_pid or any(
+        identity.pid == launched_wrapper_pid for identity in ancestry_identities
+    )
+    if not launch_correlated:
+        return None
+    if process_identity.pid != launched_wrapper_pid and (
+        not getattr(ancestry[0], "complete", False) or getattr(ancestry[0], "ambiguous", True)
+    ):
+        return None
+    return int(process_identity.pid)
+
+
+def _run_reserved_provider_process(
+    dispatcher: DispatcherService,
+    argv: Sequence[str],
+    *,
+    cwd: str | None,
+    provider: str,
+    environment_id: str,
+    session_id: str,
+    on_provider_startup: Any,
+) -> subprocess.CompletedProcess:
+    """Stream an exact restore launch and acknowledge only an observed provider descendant."""
+    process = subprocess.Popen(argv, cwd=cwd)
+    acknowledged = False
+    try:
+        while True:
+            return_code = process.poll()
+            if return_code is not None:
+                return subprocess.CompletedProcess(argv, return_code)
+            if not acknowledged:
+                observation = dispatcher.observe_runtime_session(provider, environment_id, session_id)
+                provider_pid = _exact_launched_provider_pid(observation, launched_wrapper_pid=process.pid)
+                if provider_pid is not None:
+                    on_provider_startup(provider_pid)
+                    acknowledged = True
+            time.sleep(0.1)
+    except BaseException:
+        # The parent owns the slot/session locks. Stop a child that survived the
+        # console interrupt before those locks are released; its outcome remains
+        # ambiguous and is never retried automatically.
+        with contextlib.suppress(OSError):
+            process.terminate()
+        try:
+            process.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(OSError):
+                process.kill()
+            process.wait()
+        raise
 
 
 def _run_provider_with_progress(
@@ -135,6 +214,14 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
 def _add_execution_options(parser: argparse.ArgumentParser, *, help_text: str = "Execute (compatibility alias; execution is the default).") -> None:
     parser.add_argument("-d", "--dry-run", action="store_true", help="Preview without performing this operation.")
     parser.add_argument("-a", "--apply", action="store_true", help=help_text)
+
+
+def _add_launch_prompt_options(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("-Q", "--clipboard-prompt", action="store_true",
+                       help="Read one prompt from the system clipboard for this launch only.")
+    group.add_argument("-F", "--prompt-file", help="Read one UTF-8 prompt file for this launch only.")
+    group.add_argument("-M", "--prompt", help="Send one prompt for this launch only.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -291,6 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
     last.add_argument("-C", "--cwd", help="Use this working directory for this invocation only.")
     last.add_argument("-U", "--allow-native-unknown", action="store_true",
                       help="Authorize validated generic provider options after `--`.")
+    _add_launch_prompt_options(last)
 
     recent = sub.add_parser("recent", help="Read-only launch history across all terminals.")
     _add_common_options(recent)
@@ -365,6 +453,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("-W", "--workflow", choices=("standard", "handoff", "goal", "hybrid"),
                              help="One-shot workflow instruction selection for a new session.")
         command.add_argument("--instruction-file", help="Optional custom instruction file for a new session.")
+        _add_launch_prompt_options(command)
         _add_execution_options(command)
         if command_name == "start":
             command.add_argument("-N", "--new", action="store_true", help="Start a new native conversation instead of resuming the selected session.")
@@ -396,6 +485,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Require exact provider match before resuming.")
     cont.add_argument("--expected-environment", help="Require exact environment ID match before resuming.")
     cont.add_argument("--expected-session-id", help="Require exact native session ID match before resuming.")
+    _add_launch_prompt_options(cont)
 
     review = sub.add_parser(
         "review", help="Open or resume a reviewer agent linked to an original agent.",
@@ -413,6 +503,7 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("-U", "--allow-native-unknown", action="store_true",
                         help="Authorize validated generic provider options after `--`.")
     review.add_argument("-N", "--new", action="store_true", help="Start a new reviewer conversation instead of resuming its selected session.")
+    _add_launch_prompt_options(review)
     _add_execution_options(review)
 
     returning = sub.add_parser(
@@ -428,6 +519,7 @@ def build_parser() -> argparse.ArgumentParser:
     returning.add_argument("-B", "--no-profile", action="store_true", help="Ignore the slot profile for this invocation.")
     returning.add_argument("-U", "--allow-native-unknown", action="store_true",
                            help="Authorize validated generic provider options after `--`.")
+    _add_launch_prompt_options(returning)
 
     opening = sub.add_parser("open", help="Open active selected sessions through terminal_launcher.")
     _add_common_options(opening)
@@ -470,6 +562,7 @@ def _native_argv(
     native_args: Sequence[str] = (),
     allow_native_unknown: bool = False,
     new_session_id: str | None = None,
+    include_one_time_prompt: bool = True,
 ) -> list[str]:
     validated_native_args = _validated_native_args(provider, native_args, allow_unknown=allow_native_unknown)
     target = _resolve_environment(dispatcher, environment_id)
@@ -496,6 +589,10 @@ def _native_argv(
                                       native_args=validated_native_args).argv
         except ValueError as exc:
             raise ContinuityError(ErrorCode.INVALID_INPUT, str(exc)) from exc
+    prompt = _ONE_TIME_PROMPT.get() if include_one_time_prompt else None
+    if prompt is not None:
+        _ONE_TIME_PROMPT.set(None)
+        provider_args.extend(_prompt_native_arguments(provider, prompt, resuming=session_id is not None))
     if target.runtime_kind == "wsl":
         if not target.distro:
             raise ContinuityError(ErrorCode.CROSS_ENVIRONMENT_UNAVAILABLE, "The selected WSL2 session has no recorded distribution identity.")
@@ -1005,6 +1102,231 @@ def _safe_launch_settings(
         else:
             index += 1
     return safe
+
+
+def _shell_escape_command(argv: Sequence[str], *, shell: str | None = None) -> str:
+    """Format an executable command for a common interactive shell without losing argv boundaries."""
+    selected_shell = shell or ("powershell" if os.name == "nt" else "posix")
+    if selected_shell.casefold() in {"powershell", "pwsh"}:
+        if not argv:
+            return ""
+        executable = "'" + str(argv[0]).replace("'", "''") + "'"
+        escaped = ["'" + str(value).replace("'", "''") + "'" for value in argv[1:]]
+        return "& " + executable + (" " + " ".join(escaped) if escaped else "")
+    if selected_shell.casefold() in {"posix", "bash", "zsh"}:
+        return shlex.join([str(value) for value in argv])
+    raise ValueError(f"Unsupported shell quoting mode: {selected_shell!r}.")
+
+
+def _prompt_native_arguments(provider: str, prompt: str, *, resuming: bool) -> list[str]:
+    """Encode a single prompt only through a documented interactive CLI entrypoint."""
+    if provider in {"codex", "claude"}:
+        return [prompt]
+    if provider == "agy":
+        raise ContinuityError(
+            ErrorCode.RESUME_UNSUPPORTED,
+            "AGY prompt delivery is not supported by LLMD's managed bootstrap flow; no prompt was sent.",
+        )
+    raise ContinuityError(ErrorCode.RESUME_UNSUPPORTED,
+                          f"One-time prompt delivery is unsupported for provider {provider!r}.")
+
+
+def _read_launch_prompt(
+    *,
+    prompt: str | None = None,
+    prompt_file: str | Path | None = None,
+    clipboard: bool = False,
+) -> str:
+    """Read one explicit prompt source without logging, persisting, or normalizing its text."""
+    if sum((prompt is not None, prompt_file is not None, clipboard)) != 1:
+        raise ContinuityError(ErrorCode.INVALID_INPUT, "Choose exactly one one-time prompt source.")
+    if prompt is not None:
+        value = prompt
+    elif prompt_file is not None:
+        try:
+            with Path(prompt_file).open("r", encoding="utf-8", newline="") as stream:
+                value = stream.read(_MAX_LAUNCH_PROMPT_BYTES + 1)
+        except (OSError, UnicodeError) as exc:
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                  f"Cannot read UTF-8 prompt file ({type(exc).__name__}).") from exc
+    else:
+        if os.name == "nt":
+            command = shutil.which("pwsh") or shutil.which("powershell")
+            argv = ([command, "-NoLogo", "-NoProfile", "-Command",
+                     "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); Get-Clipboard -Raw"]
+                    if command else None)
+        elif sys.platform == "darwin":
+            command = shutil.which("pbpaste")
+            argv = [command] if command else None
+        else:
+            command = shutil.which("wl-paste")
+            argv = [command, "--no-newline"] if command else None
+            if argv is None:
+                command = shutil.which("xclip")
+                argv = [command, "-selection", "clipboard", "-out"] if command else None
+        if argv is None:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "No supported system clipboard reader is available.")
+        try:
+            completed = subprocess.run(argv, check=False, capture_output=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ContinuityError(ErrorCode.INVALID_INPUT,
+                                  f"Cannot read the system clipboard ({type(exc).__name__}).") from exc
+        if completed.returncode != 0:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "The system clipboard could not be read.")
+        try:
+            raw = completed.stdout
+            value = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        except UnicodeError as exc:
+            raise ContinuityError(ErrorCode.INVALID_INPUT, "The clipboard prompt is not valid UTF-8 text.") from exc
+    if len(value.encode("utf-8")) > _MAX_LAUNCH_PROMPT_BYTES:
+        raise ContinuityError(ErrorCode.INVALID_INPUT, "One-time prompt exceeds the 1 MiB size limit.")
+    if not value.strip():
+        raise ContinuityError(ErrorCode.INVALID_INPUT, "One-time prompt is empty.")
+    return value
+
+
+def _validate_addressed_launch_prompt(prompt: str, *, slot: Mapping[str, Any]) -> None:
+    """Reject a prompt addressed to a different or unnumbered registered agent."""
+    from .workflows import validate_addressed_handoff
+
+    if not slot.get("slot_id") or not slot.get("name"):
+        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                              "Addressed handoff requires an exact registered launch target.")
+    addressed_header = re.compile(r"^\s*(?:To-Agent|Agent)\s*:", re.IGNORECASE)
+    in_fence = False
+    has_header = False
+    for line in prompt.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence or stripped.startswith(">"):
+            continue
+        if addressed_header.match(line):
+            has_header = True
+            break
+    if not has_header:
+        return
+    identity = {"authority": "managed", "agent_name": slot["name"],
+                "agent_number": slot.get("agent_number"), "slot_id": slot["slot_id"]}
+    result = validate_addressed_handoff(prompt, authoritative_identity=identity)
+    if result.get("outcome") == "unverified_number":
+        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                              "Addressed handoff exact agent number cannot be verified for this launch target.")
+    if not result.get("valid"):
+        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                              "Addressed handoff does not match the exact launch target.")
+
+
+def _load_prompt_for_command(args: argparse.Namespace, dispatcher: DispatcherService) -> str | None:
+    if getattr(args, "command", None) not in {"start", "switch", "continue", "review", "return", "last"}:
+        return None
+    clipboard = bool(getattr(args, "clipboard_prompt", False))
+    prompt_file = getattr(args, "prompt_file", None)
+    prompt_value = getattr(args, "prompt", None)
+    if not clipboard and prompt_file is None and prompt_value is None:
+        return None
+    if args.command == "last" and not getattr(args, "apply", False):
+        raise ContinuityError(ErrorCode.INVALID_INPUT, "Use `llmd last -r` to deliver a one-time prompt.")
+    # Preview must not read, print, or submit prompt contents.
+    if not getattr(args, "apply", False):
+        return None
+    prompt = _read_launch_prompt(prompt=prompt_value, prompt_file=prompt_file, clipboard=clipboard)
+    command = args.command
+    gui = getattr(args, "gui", None)
+    name = (getattr(args, "reviewer_agent", None) if command == "review"
+            else getattr(args, "agent_name", None))
+    if command == "continue" and getattr(args, "slot_id", None):
+        slot = dispatcher.get_slot_by_id(args.slot_id)
+    elif command == "last":
+        slot = None  # The exact terminal launch is validated after the history row is selected.
+    elif gui and name:
+        slot = dispatcher.get_slot(gui=gui, name=name)
+    else:
+        slot = None
+    target_provider = getattr(args, "provider", None)
+    if target_provider is None and slot is not None:
+        current = slot.get("current") or {}
+        target_provider = current.get("provider")
+        if command == "continue" and getattr(args, "session_id", None):
+            historical = next((item for item in reversed(slot.get("history", ()))
+                               if item.get("native_session_id") == args.session_id), None)
+            if historical:
+                target_provider = historical.get("provider")
+    if target_provider == "agy":
+        raise ContinuityError(
+            ErrorCode.RESUME_UNSUPPORTED,
+            "AGY prompt delivery is not supported by LLMD's managed bootstrap flow; no prompt was sent.",
+        )
+    if slot is not None:
+        _validate_addressed_launch_prompt(prompt, slot=slot)
+    elif command != "last" and re.search(r"(?im)^\s*(?:To-Agent|Agent)\s*:", prompt):
+        raise ContinuityError(ErrorCode.INVALID_INPUT,
+                              "Addressed handoff requires an exact registered launch target.")
+    return prompt
+
+
+def _format_exit_summary(
+    *,
+    slot: Mapping[str, Any],
+    provider: str,
+    environment_id: str,
+    session_id: str | None,
+    effective_cwd: str | None,
+    native_args: Sequence[str],
+    allow_native_unknown: bool,
+    outcome: str,
+    exit_code: int,
+    resume_available: bool = True,
+    shell: str | None = None,
+) -> str:
+    """Summarize actual execution identity and emit a safe exact-session resume command."""
+    safe = _safe_launch_settings(provider, native_args, allow_unknown=allow_native_unknown)
+    safe_args = provider_settings_argv(provider, safe)
+    slot_id = str(slot.get("slot_id") or "unknown")
+    gui = str(slot.get("gui_alias") or slot.get("gui_id") or "unknown")
+    agent = str(slot.get("name") or "unknown")
+    number = slot.get("agent_number")
+    agent_label = f"{agent} (#{number})" if number is not None else agent
+    lines = [
+        f"LLMD exit summary - {outcome} (exit {exit_code})",
+        f"GUI: {gui}",
+        f"Agent: {agent_label}",
+        f"Persistent slot: {slot_id}",
+        f"Provider: {provider}",
+        f"Environment: {environment_id}",
+        f"Native session: {session_id or 'unavailable'}",
+        f"Effective cwd: {effective_cwd or 'unavailable'}",
+    ]
+    if session_id and resume_available:
+        command = [
+            "llmd", "continue", "-g", gui, "-n", agent, "-S", slot_id,
+            "-p", provider, "-e", environment_id,
+            "--expected-provider", provider,
+            "--expected-environment", environment_id,
+            "--expected-session-id", session_id,
+            "-i", session_id,
+        ]
+        if effective_cwd:
+            command.extend(("-C", effective_cwd))
+        if safe_args:
+            command.extend(("--", *safe_args))
+        lines.append(f"Continue command ({shell or ('PowerShell' if os.name == 'nt' else 'POSIX shell')}):")
+        lines.append(_shell_escape_command(command, shell=shell))
+    else:
+        lines.append("Continue command: unavailable until exact session identity and attempt state are safe to resume.")
+    non_reproducible = ["inherited process environment"]
+    if safe.get("configuration_keys"):
+        non_reproducible.append("provider-specific configuration overrides")
+    for option in safe.get("unclassified_native_options", ()):
+        if any(word in option.casefold() for word in ("secret", "token", "password", "credential", "api-key")):
+            label = "sensitive native option"
+        else:
+            label = f"native option {option}"
+        if label not in non_reproducible:
+            non_reproducible.append(label)
+    lines.append("Non-reproducible settings: " + ", ".join(non_reproducible) + ".")
+    return "\n".join(lines)
 
 
 def _terminal_launch_record(
@@ -1641,7 +1963,8 @@ def _bootstrap_native_argv(
     """Build a controlled, machine-readable provider invocation that creates one resumable session."""
     if provider not in {"codex", "agy"}:
         raise ContinuityError(ErrorCode.INVALID_INPUT, f"Unsupported bootstrap provider {provider!r}.")
-    argv = _native_argv(dispatcher, provider, None, environment_id=environment_id, cwd=cwd)
+    argv = _native_argv(dispatcher, provider, None, environment_id=environment_id, cwd=cwd,
+                        include_one_time_prompt=False)
     prompt = f"{_BOOTSTRAP_PROMPT}\n\n{workflow_prompt}" if workflow_prompt else _BOOTSTRAP_PROMPT
     if provider == "codex":
         return [*argv, "exec", "--json", "--sandbox", "read-only", prompt]
@@ -1730,30 +2053,36 @@ def _run_pane(
 ) -> int:
     from .dispatcher import _slot_runtime_lock
 
+    prompt = _LAUNCH_PROMPT.get()
+    _LAUNCH_PROMPT.set(None)
+    prompt_token = _ONE_TIME_PROMPT.set(prompt)
     _startup_progress("provider handoff preparation and exact-session validation")
-    with _slot_runtime_lock(dispatcher.home_dir, slot_id, blocking=False):
-        status_or_menu = _run_pane_locked(
-            dispatcher,
-            slot_id=slot_id,
-            launch_id=launch_id,
-            input_stream=input_stream,
-            output_stream=output_stream,
-            transition_source=transition_source,
-            native_args=native_args,
-            cwd_override=cwd_override,
-            expected_session_identity=expected_session_identity,
-            allow_native_unknown=allow_native_unknown,
-            launcher_terminal_context=launcher_terminal_context,
-            workflow_selection=workflow_selection,
-            custom_instruction_path=custom_instruction_path,
-            reservation_id=reservation_id,
-            reservation_token=reservation_token,
-            checkpoint_id=checkpoint_id,
-            queue_entry_id=queue_entry_id,
-            attempt=attempt,
-            reservation_launch_id=reservation_launch_id,
-            pane_id=pane_id,
-        )
+    try:
+        with _slot_runtime_lock(dispatcher.home_dir, slot_id, blocking=False):
+            status_or_menu = _run_pane_locked(
+                dispatcher,
+                slot_id=slot_id,
+                launch_id=launch_id,
+                input_stream=input_stream,
+                output_stream=output_stream,
+                transition_source=transition_source,
+                native_args=native_args,
+                cwd_override=cwd_override,
+                expected_session_identity=expected_session_identity,
+                allow_native_unknown=allow_native_unknown,
+                launcher_terminal_context=launcher_terminal_context,
+                workflow_selection=workflow_selection,
+                custom_instruction_path=custom_instruction_path,
+                reservation_id=reservation_id,
+                reservation_token=reservation_token,
+                checkpoint_id=checkpoint_id,
+                queue_entry_id=queue_entry_id,
+                attempt=attempt,
+                reservation_launch_id=reservation_launch_id,
+                pane_id=pane_id,
+            )
+    finally:
+        _ONE_TIME_PROMPT.reset(prompt_token)
     if isinstance(status_or_menu, int):
         return status_or_menu
     return _run_post_exit_menu(
@@ -1902,7 +2231,26 @@ def _run_pane_locked(
     terminal_record_written = False
     bootstrap_completed = False
     reservation_consumed = False
+    reservation_startup_confirmed = False
     workflow_prep = None
+
+    def emit_exit_summary(outcome: str, exit_code: int, *, resume_available: bool) -> None:
+        output_stream.write(
+            _format_exit_summary(
+                slot=slot,
+                provider=provider,
+                environment_id=environment_id,
+                session_id=session_id,
+                effective_cwd=effective_cwd,
+                native_args=native_args,
+                allow_native_unknown=allow_native_unknown,
+                outcome=outcome,
+                exit_code=exit_code,
+                resume_available=resume_available,
+            )
+            + "\n"
+        )
+
     inherited_workflow_snapshot: dict[str, Any] | None = None
     inherited_instruction_path: str | None = None
     inherited_digests: dict[str, str] = {}
@@ -2034,6 +2382,7 @@ def _run_pane_locked(
                     file=output_stream,
                 )
                 _finish_terminal_launch(dispatcher, terminal_record, exit_code=124, status="interrupted")
+                emit_exit_summary("interrupted", 124, resume_available=False)
                 return 124
             except OSError as exc:
                 _bootstrap_attempt_error(
@@ -2045,6 +2394,7 @@ def _run_pane_locked(
                     file=output_stream,
                 )
                 _finish_terminal_launch(dispatcher, terminal_record, exit_code=1)
+                emit_exit_summary("abnormal", 1, resume_available=False)
                 return 1
             try:
                 captured_session_id = _extract_bootstrap_session_id(provider, bootstrap.stdout or "")
@@ -2069,6 +2419,11 @@ def _run_pane_locked(
                     file=output_stream,
                 )
                 _finish_terminal_launch(dispatcher, terminal_record, exit_code=bootstrap.returncode or 1)
+                emit_exit_summary(
+                    "abnormal" if bootstrap.returncode else "interrupted",
+                    bootstrap.returncode or 1,
+                    resume_available=False,
+                )
                 return bootstrap.returncode or 1
 
             bootstrap_completed = True
@@ -2114,6 +2469,7 @@ def _run_pane_locked(
                 if terminal_record:
                     terminal_record["native_session_id"] = captured_session_id
                 _finish_terminal_launch(dispatcher, terminal_record, exit_code=1)
+                emit_exit_summary("abnormal", 1, resume_available=False)
                 return 1
 
             if transition_source:
@@ -2201,6 +2557,11 @@ def _run_pane_locked(
                 pane_id=pane_id,
             )
             reservation_consumed = bool(reservation_id and consumed is not None)
+            if reservation_id and not reservation_consumed:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    "Restoration reservation was not consumed; provider execution was refused.",
+                )
             if launch_id and provider == "claude":
                 dispatcher.claim_claude_launch(launch_id=launch_id, slot_id=slot_id, session_id=session_id)
             if terminal_record and not terminal_record_written:
@@ -2208,7 +2569,54 @@ def _run_pane_locked(
                 terminal_record_written = True
             _startup_progress("interactive provider handoff")
             _STARTUP_PROGRESS.set(False)
-            result = _run_provider_process(argv, cwd=process_cwd, check=False)
+            if reservation_consumed:
+                from .workspace_ownership import RestorationReservationStore
+
+                reservation_store = RestorationReservationStore(dispatcher.home_dir)
+
+                def acknowledge_provider_startup(provider_pid: int) -> None:
+                    nonlocal reservation_startup_confirmed
+                    if (
+                        consumed is None
+                        or consumed.state != "consumed"
+                        or not consumed.dispatcher_ownership_acknowledged
+                        or consumed.provider_startup_confirmed
+                        or consumed.checkpoint_id != checkpoint_id
+                        or consumed.queue_entry_id != queue_entry_id
+                        or consumed.attempt != attempt
+                        or consumed.slot_id != slot_id
+                        or consumed.provider != provider
+                        or consumed.environment_id != environment_id
+                        or consumed.native_session_id != session_id
+                        or consumed.launch_id != reservation_launch_id
+                        or consumed.pane_id != pane_id
+                    ):
+                        raise ContinuityError(
+                            ErrorCode.ASSOCIATION_CONFLICT,
+                            "Consumed restoration attempt no longer matches the exact provider startup evidence.",
+                        )
+                    reservation_store.acknowledge_provider_association_locked(
+                        reservation_id,
+                        reservation_token=reservation_token,
+                        provider_pid=provider_pid,
+                        provider_startup_confirmed=True,
+                        exact_association_confirmed=True,
+                        launch_id=reservation_launch_id,
+                        pane_id=pane_id,
+                    )
+                    reservation_startup_confirmed = True
+
+                result = _run_reserved_provider_process(
+                    dispatcher,
+                    argv,
+                    cwd=process_cwd,
+                    provider=provider,
+                    environment_id=environment_id,
+                    session_id=session_id,
+                    on_provider_startup=acknowledge_provider_startup,
+                )
+            else:
+                result = _run_provider_process(argv, cwd=process_cwd, check=False)
     except KeyboardInterrupt:
         if reservation_consumed:
             _mark_restoration_execution_uncertain(
@@ -2228,6 +2636,7 @@ def _run_pane_locked(
                                                detail="Provider launch was interrupted; inspect provider state before retrying.",
                                                apply=True)
         _finish_terminal_launch(dispatcher, terminal_record, exit_code=130, status="interrupted")
+        emit_exit_summary("interrupted", 130, resume_available=not reservation_consumed)
         raise
     except ContinuityError as exc:
         if reservation_consumed:
@@ -2237,6 +2646,7 @@ def _run_pane_locked(
             )
         if terminal_record_written:
             _finish_terminal_launch(dispatcher, terminal_record, exit_code=1, status="failed")
+        emit_exit_summary("abnormal", 1, resume_available=not reservation_consumed)
         raise
     except OSError as exc:
         if reservation_consumed:
@@ -2252,6 +2662,7 @@ def _run_pane_locked(
                 session_identity=(provider, environment_id, session_id),
             )
         _finish_terminal_launch(dispatcher, terminal_record, exit_code=1, status="spawn_failed")
+        emit_exit_summary("abnormal", 1, resume_available=not reservation_consumed)
         raise ContinuityError(ErrorCode.PROVIDER_UNAVAILABLE, f"Failed to launch {provider}: {exc}") from exc
     if result.returncode == 0 and session_id and (
         portable_context_snapshot is not None or (workflow_prep and workflow_prep.get("resource_snapshot"))
@@ -2300,6 +2711,11 @@ def _run_pane_locked(
             )
     _finish_terminal_launch(dispatcher, terminal_record, exit_code=result.returncode,
                             status="exited" if result.returncode == 0 else "abnormal_exit")
+    emit_exit_summary(
+        "normal" if result.returncode == 0 else "abnormal",
+        result.returncode,
+        resume_available=not reservation_consumed or reservation_startup_confirmed,
+    )
     claude_launch_outcome_recorded = False
     claude_reconcile: dict[str, Any] | None = None
     if provider == "claude" and launch_id and result.returncode == 0:
@@ -3913,6 +4329,14 @@ def _resume_terminal_launch(
     if not all((provider, environment_id, session_id, slot_id)):
         raise ContinuityError(ErrorCode.INVALID_INPUT, "The latest terminal launch has no safely captured native session ID; use pending/recover/attach safeguards.")
     slot = dispatcher.get_slot_by_id(slot_id)
+    if _LAUNCH_PROMPT.get() is not None and provider == "agy":
+        raise ContinuityError(
+            ErrorCode.RESUME_UNSUPPORTED,
+            "AGY prompt delivery is not supported by LLMD's managed bootstrap flow; no prompt was sent.",
+        )
+    prompt = _LAUNCH_PROMPT.get()
+    if prompt is not None:
+        _validate_addressed_launch_prompt(prompt, slot=slot)
     if launch.get("gui_id") != slot["gui_id"]:
         raise ContinuityError(ErrorCode.INVALID_INPUT, "The recorded GUI identity no longer matches the selected agent slot.")
     identity = (provider, environment_id, session_id)
@@ -3959,6 +4383,7 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
     token = _COLOR_MODE.set(getattr(args, "color", "auto"))
     profile_token = _PROFILE_CONTEXT.set(None)
     profile_argv_token = _PROFILE_ARGV.set(())
+    prompt_token = _LAUNCH_PROMPT.set(None)
     started = time.monotonic()
     startup_enabled = bool(args.command in {"start", "continue", "switch", "review", "return", "last"}
                            and getattr(args, "apply", False) and not getattr(args, "json_output", False))
@@ -3972,6 +4397,7 @@ def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser, *, input
         _STARTUP_PROGRESS.reset(progress_token)
         _PROFILE_ARGV.reset(profile_argv_token)
         _PROFILE_CONTEXT.reset(profile_token)
+        _LAUNCH_PROMPT.reset(prompt_token)
         _COLOR_MODE.reset(token)
 
 
@@ -4177,6 +4603,9 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
         if args.command == "continue" and args.agent_name and not args.gui:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "A GUI is required when an agent is specified.")
     dispatcher = DispatcherService(home_dir=args.home)
+    prompt = _load_prompt_for_command(args, dispatcher)
+    if prompt is not None:
+        _LAUNCH_PROMPT.set(prompt)
     if args.command in {"save", "restore", "checkpoints", "queue"}:
         from .workspace_cli import handle_checkpoints, handle_queue, handle_restore, handle_save
 
