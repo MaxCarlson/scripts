@@ -16,7 +16,7 @@ Implement the compare output improvements, general `flatten` filter, and metadat
 - Use explicit alias metadata, not name-length inference.
 - Treat `-n 0` as show all; comparisons still evaluate every pair.
 - The user confirmed `fg` is a useful command name in their Bash/Zsh setup. The managed POSIX adapter defines the requested function to select the full command view.
-- No PATH mutation and no merge.
+- No global PATH mutation was performed; merge and push were completed at the user's request.
 
 ## Progress
 
@@ -25,13 +25,14 @@ Implement the compare output improvements, general `flatten` filter, and metadat
 - [x] Add regression tests and implement pairwise output changes.
 - [x] Add and test `flatten` CLI.
 - [x] Add metadata-driven ag views and shell adapter support.
-- [ ] Run final focused tests, review diff, commit and push branch.
+- [x] Run final focused tests, review diff, commit and push branch, merge and push main.
 
 ## Verification notes
 
 - Compare plus flatten focused tests: 31 passed.
 - scripts_help registry/view and CLI tests: 59 passed (15 registry/view, 44 CLI).
-- scripts_help CLI tests: 44 passed.
 - Python compile checks passed.
+- Feature branch `codex/clipboard-format-flatten-views-20261127` was pushed; implementation commit `67021002` and final verification update `d304a373` are included.
+- Fast-forward merged to `main` and pushed to `origin/main` at `d304a37380cce5bafd515286deda1cd24bb6302e`.
 - A broader clipboard module test collection was attempted but stopped during collection because the environment lacks the existing `cross_platform.clipboard_utils` package; this is an environment prerequisite, not a failure in the changed compare tests.
 - The root repository setup bootstrap tests were also attempted and two failed because they expected venv re-execution calls that the current environment did not perform; those tests do not cover these changes.

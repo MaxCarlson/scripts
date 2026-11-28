@@ -10,4 +10,4 @@
 - [x] Add alias metadata and registry propagation tests.
 - [x] Implement `ag` views and PowerShell/POSIX adapter behavior with the user-requested `fg` name.
 - [x] Update docs/version metadata and focused validation results.
-- [ ] Review task-only diff; commit and push branch; merge into the authorized base branch.
+- [x] Review task-only diff; commit and push branch; merge into the authorized base branch.
