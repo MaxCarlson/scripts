@@ -437,7 +437,7 @@ def test_in_repository_editable_dependency_content_changes_identity(tmp_path: Pa
 def write_mock_runtime_evidence(command, kwargs, target_root: Path) -> None:
     environment = kwargs["env"]
     evidence_path = Path(environment["SCRIPTS_SELECTIVE_PROVENANCE_EVIDENCE"])
-    evidence_path.write_text(json.dumps({"imports": [{
+    evidence_path.write_text(json.dumps({"worker_id": "main", "imports": [{
         "module": "consumer_pkg",
         "origin": str(target_root / "consumer_pkg" / "__init__.py"),
         "search_locations": [str(target_root / "consumer_pkg")],
