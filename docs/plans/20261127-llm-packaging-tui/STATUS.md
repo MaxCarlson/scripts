@@ -37,10 +37,11 @@ Add an opt-in interactive packaging workflow backed by the same selection snapsh
 ## Verification
 
 - `python -m pytest pyscripts/tests/zip_for_llms_test.py -k 'tui_ or inventory_is_metadata_only or preview_' -q -p no:cacheprovider --basetemp C:\Users\mcarls\src\.llm-tui-pytest` — 11 passed.
-- `python -m pytest pyscripts/tests/zip_for_llms_test.py -q -p no:cacheprovider --basetemp C:\Users\mcarls\src\.llm-tui-pytest` — 51 passed, 1 pre-existing failure (`test_text_file_mode_hierarchy_and_content`, also failing at baseline).
-- `python -m ruff check pyscripts/llm_packaging pyscripts/zip_for_llms.py pyscripts/tests/zip_for_llms_test.py` — passed after removing two unused imports; rerun after final edits.
-- Python AST parsing, CLI help inspection, and `git diff --check` passed before the latest worker/documentation edits; rerun before handoff.
+- `python -m pytest pyscripts/tests/zip_for_llms_test.py -q -p no:cacheprovider --basetemp C:\Users\mcarls\src\.llm-tui-pytest` — 52 passed, 1 pre-existing failure (`test_text_file_mode_hierarchy_and_content`, also failing at baseline).
+- `python -m pytest modules/scripts_help/tests/registry_ag_test.py -q` with `PYTHONPATH=modules/scripts_help` — 15 passed.
+- `python -m ruff check pyscripts/llm_packaging pyscripts/zip_for_llms.py pyscripts/tests/zip_for_llms_test.py` — passed.
+- Python AST parsing, CLI help inspection, and `git diff --check` passed. The last Ruff and diff checks passed after the implementation commit.
 
 ## Next action
 
-Finish focused verification and review the scoped diff. Manual Windows/WSL interactive and large-tree performance qualification remain necessary before calling the full plan complete.
+Manual Windows/WSL interactive and large-tree performance qualification remain necessary before calling the full plan complete. The scoped implementation is committed; publish the feature branch after final review.
