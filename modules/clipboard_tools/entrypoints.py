@@ -94,7 +94,6 @@ def get_clipboard_short_main():
 def set_clipboard_short_main():
     """Cross-platform `scb` entry point: accepts literal text, file path, or stdin."""
     import argparse
-    from pyscripts import copy_to_clipboard as c2c
     from pyscripts import set_clipboard_text as sct
 
     p = argparse.ArgumentParser(prog="scb", description="Set clipboard from file path, literal text, or stdin.")
@@ -140,6 +139,24 @@ def clipboard_diff_main():
     from pyscripts import clipboard_diff as cld
 
     sys.exit(cld.main(sys.argv[1:]))
+
+
+def clipboard_summary_main():
+    from clipboard_tools.compare_cli import clipboard_summary_main as summary_main
+
+    sys.exit(summary_main(sys.argv[1:]))
+
+
+def compare_files_main():
+    from clipboard_tools.compare_cli import compare_main
+
+    sys.exit(compare_main(sys.argv[1:]))
+
+
+def compare_files_detailed_main():
+    from clipboard_tools.compare_cli import compare_detailed_main
+
+    sys.exit(compare_detailed_main(sys.argv[1:]))
 
 
 def append_clipboard_main():
