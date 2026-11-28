@@ -1,17 +1,29 @@
-<!-- version: 1.0.0 -->
+<!-- version: 2.0.0 -->
 # clipboard_tools
 
-Clipboard command suite with multi-buffer storage, stats, strict/normalized file-vs-clipboard comparison (`cld --check`), terminal capture (`cb2c`/`cb2cf`), and tmux → Windows clipboard bridging.
+Clipboard command suite with multi-buffer storage, concise and detailed comparisons, terminal capture (`cb2c`/`cb2cf`), and tmux → Windows clipboard bridging.
+
+## Install and verify
+
+Run `python setup.py -f -v` from the scripts checkout whose commands should change. Version 2.0.0 changes console scripts, so a full reinstall regenerates both the virtual-environment commands and repository `bin/` proxies.
+
+In PowerShell, check `Get-Command cld,cldd,comp,compd -All`. For `comp`, the scripts checkout's `bin\comp.cmd` must appear before `C:\Windows\System32\comp.exe`. Confirm the active Python imports this checkout with `python -c "import clipboard_tools; print(clipboard_tools.__file__)"`.
 
 ## Entry points
 - `c2c` / `c2cd` / `c2cr` / `c2ca` – copy files to clipboard (or `-t`/`--text` for literal text)
 - `gcb` / `scb` – cross-platform get/set clipboard short commands (file path, literal text, or stdin)
 - `pclip` – print clipboard with stats and buffer metadata
 - `rwc` / `rwcp` / `sfcb` – replace file from clipboard (or last cld snapshot); `sfcb` replaces legacy `sfc` alias without shadowing Windows `sfc.exe`
-- `cld`, `apc`, `crx`, `cb2c`, `cb2cf`, `otc`, `otcw`, `otca`, `otcwa`
+- `cld <file>` – summarize whether the clipboard matches a file and which side is larger; use `-s/--strict`, `-z/--trim-trailing-newline`, `-E/--encoding`, and `-k/--check`
+- `cldd <file>` – show the previous full clipboard-vs-file diff and retain the `rwc --from-last-cld` snapshot behavior
+- `comp <file> <file> [...]` – print a concise summary for every unordered file pair; use `comp fd <pattern>` to compare `fd` search results
+- `compd <file> <file> [...]` – show the full diff for every pair, followed by the concise summary; also supports `compd fd <pattern>`
+- `apc`, `crx`, `cb2c`, `cb2cf`, `otc`, `otcw`, `otca`, `otcwa`
 - `tmuxcp` (legacy alias: `tmux2winclip`) – auto-copy tmux buffer to every detected clipboard target
 
 Buffers persist under `CLIPBOARD_STATE_DIR` (else platform defaults) and track chars/lines/words, timestamps, and read counts.
+
+`cld`, `comp`, and `compd` use the existing decoded text character counts for their size summaries. Comparisons normalize line endings by default; `--strict` compares exact text. `comp` and `compd` do not read or change the clipboard. `fd` results are passed internally as a path list, so filenames containing spaces or commas remain intact.
 
 ## `tmuxcp` behavior
 - Reads the active tmux buffer and emits OSC52 so upstream terminals (Termux, kitty, iTerm) receive the data even across SSH hops.

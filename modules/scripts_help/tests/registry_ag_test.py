@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from pathlib import Path
 
-import pytest
 
 from scripts_help import ag, command_registry, shell_integration
 
@@ -79,7 +77,8 @@ def test_clipboard_registered_tools_have_specific_help_descriptions():
     assert c2c.description == "Copy selected file or path contents to the clipboard."
     assert c2c.description != c2c.target
     clipboard_entries = [e for e in entries if e.distribution == "clipboard_tools"]
-    assert len(clipboard_entries) == 21
+    assert len(clipboard_entries) == 24
+    assert {"cld", "cldd", "comp", "compd"} <= {entry.name for entry in clipboard_entries}
     assert all(e.description for e in clipboard_entries)
     assert all(e.description != "Clipboard command suite with multi-buffer support and tmux/Windows bridge." for e in clipboard_entries)
 
@@ -310,7 +309,7 @@ def test_shell_integration_dry_run_apply_idempotent_and_rollback(tmp_path: Path)
     upd = shell_integration.run_integration(target_dir=target_dir, apply=True, shells=("pwsh",))
     assert upd["actions"][0]["status"] == "unchanged" or "# user comment" in ps1.read_text(encoding="utf-8")
 
-    rb = shell_integration.run_integration(target_dir=target_dir, apply=True, rollback=True)
+    shell_integration.run_integration(target_dir=target_dir, apply=True, rollback=True)
     assert "# user comment" in ps1.read_text(encoding="utf-8")
     assert "$myVar = 1" in ps1.read_text(encoding="utf-8")
     assert shell_integration.MANAGED_START not in ps1.read_text(encoding="utf-8")
