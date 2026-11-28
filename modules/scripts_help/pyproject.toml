@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "scripts_help"
-version = "2.0.0"
+version = "2.0.1"
 # Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.md):
 # 0.1.0 — initial release: interactive help browser, version-staleness checks
 # 0.2.0 — added: AI drift-update offer in cli + post-install hook; glow/README viewer in program info
@@ -12,6 +12,7 @@ version = "2.0.0"
 # 0.4.0 — ignore patch-only README drift; summarize actionable help update counts
 # 0.5.0 — structure-first TUI, live search/args, README/Git/files viewers, root launcher
 # 2.0.0 — curated ag default, readable help descriptions, full inventory and definition views
+# 2.0.1 — restore module command summaries for manifest-backed ag entries
 description = "Interactive help browser for the scripts repository."
 readme = "README.md"
 requires-python = ">=3.10"
