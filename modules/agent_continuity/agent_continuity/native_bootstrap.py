@@ -8,6 +8,7 @@ import platform
 import queue
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import threading
@@ -25,6 +26,7 @@ from .models import Provider
 
 MAX_RPC_FRAME_BYTES = 262_144
 MAX_NOTIFICATIONS = 64
+MAX_INTERNAL_QUEUE_ITEMS = 256
 MAX_STDERR_LINES = 32
 MAX_STDERR_LINE_CHARS = 256
 GRACEFUL_SHUTDOWN_WAIT_SECONDS = 0.4
@@ -81,6 +83,7 @@ class NativeSessionAllocation:
     native_session_id: str | None
     persisted: bool
     interactively_resumable: bool
+    requested_context: dict[str, Any] = field(default_factory=dict)
     effective_provider_context: dict[str, Any] = field(default_factory=dict)
     persistence_evidence: dict[str, Any] = field(default_factory=dict)
     notifications: list[dict[str, Any]] = field(default_factory=list)
@@ -175,24 +178,31 @@ def _validate_cwd(raw_cwd: str) -> str:
 def _kill_process_tree(proc: subprocess.Popen[str]) -> str:
     mode = "forced_terminate"
     if proc.poll() is None:
+        if os.name != "nt":
+            with suppress(OSError):
+                os.killpg(proc.pid, signal.SIGTERM)
         with suppress(OSError):
             proc.terminate()
         try:
             proc.wait(timeout=0.25)
         except subprocess.TimeoutExpired:
             mode = "forced_kill"
-            if os.name == "nt":
-                with suppress(OSError, subprocess.SubprocessError):
-                    subprocess.run(
-                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                        capture_output=True,
-                        timeout=1.5,
-                        check=False,
-                    )
-            with suppress(OSError):
-                proc.kill()
-            with suppress(OSError, subprocess.TimeoutExpired):
-                proc.wait(timeout=1.0)
+    if os.name == "nt":
+        with suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=1.5,
+                check=False,
+            )
+    else:
+        with suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    if proc.poll() is None:
+        with suppress(OSError):
+            proc.kill()
+        with suppress(OSError, subprocess.TimeoutExpired):
+            proc.wait(timeout=1.0)
     return mode
 
 
@@ -220,7 +230,8 @@ class _JsonRpcStdioTransport:
         self._cancel_event = cancel_event
         self._deadline = time.monotonic() + self._timeout_seconds
         self._proc: subprocess.Popen[str] | None = None
-        self._lines: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self._lines: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=MAX_INTERNAL_QUEUE_ITEMS)
+        self._stop_pumping = threading.Event()
         self._stderr_lines: deque[str] = deque(maxlen=MAX_STDERR_LINES)
         self._reader_thread: threading.Thread | None = None
         self._stderr_thread: threading.Thread | None = None
@@ -263,25 +274,35 @@ class _JsonRpcStdioTransport:
                 f"Failed to spawn native allocation process {self._argv[0]!r}: {exc}",
             ) from exc
 
+        def _enqueue(item: tuple[str, Any]) -> bool:
+            while not self._stop_pumping.is_set():
+                try:
+                    self._lines.put(item, timeout=0.05)
+                    return True
+                except queue.Full:
+                    continue
+            return False
+
         def _pump_stdout() -> None:
             assert self._proc is not None and self._proc.stdout is not None
             try:
-                while True:
+                while not self._stop_pumping.is_set():
                     raw = self._proc.stdout.readline(MAX_RPC_FRAME_BYTES + 1)
                     if raw == "":
-                        self._lines.put(("eof", None))
+                        _enqueue(("eof", None))
                         return
                     if len(raw.encode("utf-8", errors="replace")) > MAX_RPC_FRAME_BYTES and not raw.endswith("\n"):
-                        self._lines.put(("oversized", len(raw)))
+                        _enqueue(("oversized", len(raw)))
                         return
-                    self._lines.put(("line", raw))
+                    if not _enqueue(("line", raw)):
+                        return
             except Exception as exc:  # pragma: no cover - defensive pipe guard
-                self._lines.put(("err", exc))
+                _enqueue(("err", exc))
 
         def _pump_stderr() -> None:
             assert self._proc is not None and self._proc.stderr is not None
             try:
-                while True:
+                while not self._stop_pumping.is_set():
                     raw = self._proc.stderr.readline(MAX_STDERR_LINE_CHARS * 4)
                     if raw == "":
                         return
@@ -298,6 +319,7 @@ class _JsonRpcStdioTransport:
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self._stop_pumping.set()
         if self._proc is not None:
             if not self._closed_cleanly:
                 self.shutdown_mode = _kill_process_tree(self._proc)
@@ -630,6 +652,25 @@ def _is_live_resume_authorized(
     )
 
 
+def _detect_installed_version(executable: str, *, timeout_seconds: float = 2.0) -> str | None:
+    try:
+        proc = subprocess.run(
+            [executable, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    out = (proc.stdout or "").strip()
+    return out.splitlines()[0].strip() if out else None
+
+
 def _validate_codex_context(
     request: NativeBootstrapRequest,
     resolved_cwd: str,
@@ -645,30 +686,22 @@ def _validate_codex_context(
             f"Codex thread/start returned mismatched cwd {reported_cwd!r} (expected {resolved_cwd!r}).",
         )
     approval_policy = start_result.get("approvalPolicy")
-    if (
-        request.expected_approval_policy is not None
-        and approval_policy is not None
-        and approval_policy != request.expected_approval_policy
-    ):
+    if request.expected_approval_policy is not None and approval_policy != request.expected_approval_policy:
         raise _ProtocolFailure(
             NativeAllocationStatus.FAILED,
             ErrorCode.ASSOCIATION_CONFLICT,
-            f"Codex approvalPolicy {approval_policy!r} conflicts with expected {request.expected_approval_policy!r}.",
+            f"Codex approvalPolicy {approval_policy!r} does not match expected {request.expected_approval_policy!r}.",
         )
     sandbox = start_result.get("sandbox")
     sandbox_type = sandbox.get("type") if isinstance(sandbox, dict) else None
-    if (
-        request.expected_sandbox_type is not None
-        and sandbox_type is not None
-        and sandbox_type != request.expected_sandbox_type
-    ):
+    if request.expected_sandbox_type is not None and sandbox_type != request.expected_sandbox_type:
         raise _ProtocolFailure(
             NativeAllocationStatus.FAILED,
             ErrorCode.ASSOCIATION_CONFLICT,
-            f"Codex sandbox {sandbox_type!r} conflicts with expected {request.expected_sandbox_type!r}.",
+            f"Codex sandbox {sandbox_type!r} does not match expected {request.expected_sandbox_type!r}.",
         )
     return {
-        "cwd": resolved_cwd,
+        "cwd": str(reported_cwd) if isinstance(reported_cwd, str) and reported_cwd.strip() else None,
         "model": start_result.get("model"),
         "model_provider": start_result.get("modelProvider"),
         "approval_policy": approval_policy,
@@ -761,6 +794,12 @@ def _allocate_codex(
     context["user_agent"] = user_agent
     context["thread_path"] = thread_path
 
+    requested_context = {
+        "cwd": resolved_cwd,
+        "model": request.model,
+        "expected_approval_policy": request.expected_approval_policy,
+        "expected_sandbox_type": request.expected_sandbox_type,
+    }
     if not rpc.helper_shutdown_clean:
         return NativeSessionAllocation(
             provider=Provider.CODEX.value,
@@ -768,6 +807,7 @@ def _allocate_codex(
             native_session_id=None,
             persisted=False,
             interactively_resumable=False,
+            requested_context=requested_context,
             effective_provider_context=context,
             persistence_evidence={**shutdown_info, "uncertain_native_session_id": thread_id},
             notifications=notifications,
@@ -794,6 +834,7 @@ def _allocate_codex(
         native_session_id=thread_id,
         persisted=persisted,
         interactively_resumable=resumable,
+        requested_context=requested_context,
         effective_provider_context=context,
         persistence_evidence=evidence,
         notifications=notifications,
@@ -806,11 +847,13 @@ def _allocate_agy(
     resolved_cwd: str,
     which_fn: Callable[[str], str | None],
 ) -> NativeSessionAllocation:
-    argv = (
-        list(request.command_override)
-        if request.command_override
-        else [_resolve_executable("agy", request.executable, which_fn), "acp", "--stdio"]
-    )
+    detected_version: str | None = None
+    if request.command_override:
+        argv = list(request.command_override)
+    else:
+        exe = _resolve_executable("agy", request.executable, which_fn)
+        detected_version = _detect_installed_version(exe)
+        argv = [exe, "acp", "--stdio"]
     with _JsonRpcStdioTransport(
         argv,
         cwd=resolved_cwd,
@@ -826,6 +869,11 @@ def _allocate_agy(
                 f"Unsupported AGY ACP protocolVersion: {proto_ver!r}.",
                 notifications=list(rpc.notifications),
             )
+        agent_info = init_result.get("agentInfo")
+        if detected_version is None and isinstance(agent_info, dict):
+            raw_ver = agent_info.get("version")
+            if isinstance(raw_ver, str) and raw_ver.strip():
+                detected_version = raw_ver.strip()
         session_result = rpc.call(
             "session/new",
             {"cwd": resolved_cwd, "mcpServers": list(request.mcp_servers)},
@@ -855,8 +903,12 @@ def _allocate_agy(
             error_message="AGY ACP session/new response missing non-empty 'sessionId'.",
         )
 
-    proto_str = str(proto_ver if proto_ver is not None else 1)
-    context = {"cwd": resolved_cwd, "protocol_version": proto_ver if proto_ver is not None else 1}
+    requested_context = {"cwd": resolved_cwd, "mcp_server_count": len(request.mcp_servers)}
+    context = {
+        "cwd": resolved_cwd,
+        "protocol_version": proto_ver if proto_ver is not None else 1,
+        "provider_version": detected_version,
+    }
     if not rpc.helper_shutdown_clean:
         return NativeSessionAllocation(
             provider=Provider.AGY.value,
@@ -864,6 +916,7 @@ def _allocate_agy(
             native_session_id=None,
             persisted=False,
             interactively_resumable=False,
+            requested_context=requested_context,
             effective_provider_context=context,
             persistence_evidence={**shutdown_info, "uncertain_native_session_id": session_id},
             notifications=notifications,
@@ -879,7 +932,7 @@ def _allocate_agy(
     evidence.update(shutdown_info)
     resumable = _is_live_resume_authorized(
         provider=Provider.AGY.value,
-        provider_version=f"acp-v{proto_str}",
+        provider_version=detected_version,
         mechanism="agy acp --stdio",
         persisted=persisted,
         qualification=request.live_qualification,
@@ -890,6 +943,7 @@ def _allocate_agy(
         native_session_id=session_id,
         persisted=persisted,
         interactively_resumable=resumable,
+        requested_context=requested_context,
         effective_provider_context=context,
         persistence_evidence=evidence,
         notifications=notifications,
@@ -915,6 +969,7 @@ def _allocate_claude(request: NativeBootstrapRequest, resolved_cwd: str) -> Nati
         native_session_id=session_id,
         persisted=False,
         interactively_resumable=False,
+        requested_context={"cwd": resolved_cwd, "model": request.model},
         effective_provider_context={
             "cwd": resolved_cwd,
             "launch_flag": "--session-id",

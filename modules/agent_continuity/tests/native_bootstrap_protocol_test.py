@@ -14,6 +14,7 @@ from contextlib import closing
 from pathlib import Path
 
 from agent_continuity.native_bootstrap import (
+    MAX_INTERNAL_QUEUE_ITEMS,
     MAX_NOTIFICATIONS,
     MAX_RPC_FRAME_BYTES,
     MAX_STDERR_LINES,
@@ -101,6 +102,8 @@ def test_codex_strict_sequence_exact_persistence_and_bound_qualification(tmp_pat
     assert res_noise.persistence_evidence["rollout_id_verified"] is False
     assert res_noise.persisted is False
     assert res_noise.can_authorize_interactive_resume is False
+    assert res_noise.requested_context["expected_approval_policy"] == "on-request"
+    assert res_noise.effective_provider_context["approval_policy"] == "on-request"
     assert res_noise.prompt_delivery_contract == {
         "requires_bootstrap_model_turn": False,
         "instruction_delivery_performed": False,
@@ -164,7 +167,9 @@ def test_agy_exact_metadata_and_claude_readiness(tmp_path: Path) -> None:
         "    if stage == 'init':\n"
         "        assert msg.get('method') == 'initialize'\n"
         "        stage = 'new'\n"
-        "        print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': {'protocolVersion': 1}}), flush=True)\n"
+        "        print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': {\n"
+        "            'protocolVersion': 1, 'agentInfo': {'name': 'agy', 'version': 'agy 1.5.18'}\n"
+        "        }}), flush=True)\n"
         "    elif stage == 'new':\n"
         "        assert msg.get('method') == 'session/new' and msg['params']['cwd']\n"
         "        stage = 'done'\n"
@@ -172,7 +177,7 @@ def test_agy_exact_metadata_and_claude_readiness(tmp_path: Path) -> None:
     )
     qual = VerifiedLiveQualification(
         provider="agy",
-        provider_version="acp-v1",
+        provider_version="agy 1.5.18",
         runtime_kind=_runtime_kind(),
         mechanism="agy acp --stdio",
         qualified=True,
@@ -207,7 +212,34 @@ def test_agy_exact_metadata_and_claude_readiness(tmp_path: Path) -> None:
         )
     )
     assert res_verified.persisted is True
+    assert res_verified.effective_provider_context["provider_version"] == "agy 1.5.18"
     assert res_verified.can_authorize_interactive_resume is True
+
+    # ACP protocolVersion alone without installed/reported provider version -> never authorizes resume
+    no_ver_script = (
+        "import json, sys\n"
+        "for line in sys.stdin:\n"
+        "    m = json.loads(line)\n"
+        "    res = {'protocolVersion': 1} if m['method'] == 'initialize' else {'sessionId': 'agy-conv-acp-0001'}\n"
+        "    print(json.dumps({'jsonrpc': '2.0', 'id': m['id'], 'result': res}), flush=True)\n"
+    )
+    res_proto_only = allocate_native_session(
+        NativeBootstrapRequest(
+            provider="agy",
+            cwd=str(tmp_path),
+            agy_home=agy_home,
+            live_qualification=VerifiedLiveQualification(
+                provider="agy",
+                provider_version="acp-v1",
+                runtime_kind=_runtime_kind(),
+                mechanism="agy acp --stdio",
+                qualified=True,
+            ),
+            command_override=_py_server_cmd(no_ver_script),
+        )
+    )
+    assert res_proto_only.persisted is True
+    assert res_proto_only.can_authorize_interactive_resume is False
 
     readiness = provider_native_bootstrap_readiness()
     assert readiness["claude"]["safe_to_enable_now"] is True
@@ -216,7 +248,8 @@ def test_agy_exact_metadata_and_claude_readiness(tmp_path: Path) -> None:
 
 
 def test_saturated_stderr_stalled_stdin_descendant_pipes_and_bounds(tmp_path: Path) -> None:
-    # 1. Saturated stderr (>300 KB with ANSI) + >MAX_NOTIFICATIONS does not deadlock or blow memory
+    # 1. Saturated stderr (>300 KB with ANSI) + notification flood (>MAX_INTERNAL_QUEUE_ITEMS)
+    flood_count = MAX_INTERNAL_QUEUE_ITEMS + 64
     noisy_script = (
         "import json, sys\n"
         "for i in range(4000):\n"
@@ -225,7 +258,7 @@ def test_saturated_stderr_stalled_stdin_descendant_pipes_and_bounds(tmp_path: Pa
         "for line in sys.stdin:\n"
         "    m = json.loads(line)\n"
         "    if m.get('method') == 'initialize':\n"
-        "        for n in range(MAX_N := 80):\n"
+        f"        for n in range({flood_count}):\n"
         "            print(json.dumps({'jsonrpc': '2.0', 'method': 'n/tick', 'params': {'i': n}}), flush=True)\n"
         "        print(json.dumps({'jsonrpc': '2.0', 'id': m['id'], 'result': {'protocolVersion': 1}}), flush=True)\n"
         "    elif m.get('method') == 'session/new':\n"
@@ -241,7 +274,7 @@ def test_saturated_stderr_stalled_stdin_descendant_pipes_and_bounds(tmp_path: Pa
     )
     assert noisy_res.status == NativeAllocationStatus.ALLOCATED
     assert len(noisy_res.notifications) == MAX_NOTIFICATIONS
-    assert noisy_res.persistence_evidence["dropped_notifications"] == 80 - MAX_NOTIFICATIONS
+    assert noisy_res.persistence_evidence["dropped_notifications"] == flood_count - MAX_NOTIFICATIONS
     assert len(noisy_res.persistence_evidence["stderr_tail"]) <= MAX_STDERR_LINES
     assert all("\x1b" not in line for line in noisy_res.persistence_evidence["stderr_tail"])
 
@@ -325,6 +358,29 @@ def test_context_validation_unclean_shutdown_cancel_and_concurrent_recovery(tmp_
     )
     assert broad.status == NativeAllocationStatus.FAILED
     assert broad.native_session_id is None
+
+    # 2b. Missing expected permission evidence (omitted approvalPolicy/sandbox) fails closed
+    missing_perm_script = (
+        "import json, sys\n"
+        "for line in sys.stdin:\n"
+        "    m = json.loads(line)\n"
+        "    if m.get('method') == 'initialize':\n"
+        "        print(json.dumps({'jsonrpc': '2.0', 'id': m['id'], 'result': {'userAgent': 'codex'}}), flush=True)\n"
+        "    elif m.get('method') == 'thread/start':\n"
+        "        print(json.dumps({'jsonrpc': '2.0', 'id': m['id'], 'result': {\n"
+        "            'cwd': m['params']['cwd'], 'thread': {'id': 'thr-noperm', 'ephemeral': False}\n"
+        "        }}), flush=True)\n"
+    )
+    missing_perm = allocate_native_session(
+        NativeBootstrapRequest(
+            provider="codex",
+            cwd=str(tmp_path),
+            expected_approval_policy="on-request",
+            command_override=_py_server_cmd(missing_perm_script),
+        )
+    )
+    assert missing_perm.status == NativeAllocationStatus.FAILED
+    assert missing_perm.native_session_id is None
 
     # 3. Non-zero exit on shutdown after returning ID -> UNCERTAIN with uncertain_native_session_id preserved
     dirty_exit_script = (
