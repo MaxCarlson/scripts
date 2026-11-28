@@ -29,6 +29,10 @@ param(
     [string]$TemporaryRoot,
 
     [Parameter()]
+    [ValidateRange(0, 16)]
+    [int]$Workers = 0,
+
+    [Parameter()]
     [switch]$SkipBootstrap,
 
     [Parameter()]
@@ -616,8 +620,12 @@ if ($ListTargets) {
 }
 
 $HasSelectiveSelectors = @($PytestNodeId).Count -gt 0 -or @($PytestFile).Count -gt 0 -or @($PytestModule).Count -gt 0
+$HasParallelWorkers = $Workers -gt 0
 if (-not $Selective -and $HasSelectiveSelectors) {
     throw 'Pytest selectors require -Selective.'
+}
+if (-not $Selective -and $HasParallelWorkers) {
+    throw '-Workers requires -Selective.'
 }
 
 if ($Selective) {
@@ -646,6 +654,7 @@ if ($Selective) {
     foreach ($NodeId in $PytestNodeId) { $SelectiveArguments += @('--node-id', $NodeId) }
     foreach ($File in $PytestFile) { $SelectiveArguments += @('--file', $File) }
     foreach ($ModuleName in $PytestModule) { $SelectiveArguments += @('--module', $ModuleName) }
+    $SelectiveArguments += @('--workers', [string]$Workers)
     if ($ReuseEvidence) { $SelectiveArguments += '--reuse-evidence' }
     if ($TemporaryRoot) { $SelectiveArguments += @('--temporary-root', $TemporaryRoot) }
 

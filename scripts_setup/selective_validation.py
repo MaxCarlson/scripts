@@ -23,6 +23,103 @@ class SelectiveValidationError(RuntimeError):
     """A selection or environment failed closed before pytest execution."""
 
 
+MAX_SELECTIVE_WORKERS = 16
+
+_XDIST_VALUE_OPTIONS = {
+    "-n", "--numprocesses", "--maxprocesses", "--dist",
+    "--max-worker-restart", "--max-slave-restart", "--basetemp", "--rsyncdir",
+}
+_XDIST_FLAG_OPTIONS = {"-d", "--no-rsync"}
+_REMOTE_XDIST_OPTIONS = {"--tx", "--looponfail", "-f", "--rsyncdir", "--no-rsync"}
+
+
+def _worker_id_sort_key(worker_id: str) -> tuple[int, int | str]:
+    if worker_id == "main":
+        return (-1, 0)
+    match = re.fullmatch(r"gw(\d+)", worker_id)
+    if match:
+        return (0, int(match.group(1)))
+    return (1, worker_id)
+
+
+def _native_pytest_addopts(interpreter: str, target_root: Path, selection: list[str], inherited: str | None) -> list[str]:
+    """Read the selected pytest config's addopts using pytest's own discovery."""
+    inherited_options = shlex.split(inherited or "")
+    probe = "\n".join([
+        "import json, pathlib",
+        "from _pytest.config import get_config",
+        "from _pytest.config.findpaths import determine_setup",
+        f"options = json.loads({json.dumps(json.dumps(inherited_options))})",
+        f"selection = json.loads({json.dumps(json.dumps(selection))})",
+        "config = get_config()",
+        "namespace = config._parser.parse_known_args(options)",
+        "rootpath, inipath, inicfg, _ = determine_setup(",
+        "    inifile=namespace.inifilename, override_ini=namespace.override_ini,",
+        "    args=selection, rootdir_cmd_arg=namespace.rootdir or None,",
+        "    invocation_dir=pathlib.Path.cwd(),",
+        ")",
+        "config._rootpath, config._inipath, config._inicfg = rootpath, inipath, inicfg",
+        "config._parser.addini('addopts', 'Extra command line options', 'args')",
+        "print('SCRIPTS_PYTEST_ADDOPTS=' + json.dumps(config.getini('addopts'))) ",
+        "config._ensure_unconfigure()",
+    ])
+    environment = dict(os.environ)
+    for key in ("PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE", "PYTEST_ADDOPTS"):
+        environment.pop(key, None)
+    environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    result = subprocess.run(
+        [interpreter, "-c", probe], cwd=target_root, env=environment,
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise ValueError(f"pytest configuration discovery failed ({result.returncode}): {detail}")
+    marker = "SCRIPTS_PYTEST_ADDOPTS="
+    lines = [line[len(marker):] for line in result.stdout.splitlines() if line.startswith(marker)]
+    if len(lines) != 1:
+        raise ValueError("selected pytest did not return one native addopts configuration result")
+    configured = json.loads(lines[0])
+    if not isinstance(configured, list) or any(not isinstance(value, str) for value in configured):
+        raise ValueError("selected pytest returned an invalid addopts list")
+    return [*configured, *inherited_options]
+
+
+def _pytest_addopts(values: Sequence[str]) -> list[str]:
+    """Remove runner-owned xdist/temp options and reject remote execution modes."""
+    result: list[str] = []
+    index = 0
+    while index < len(values):
+        value = values[index]
+        option = value.split("=", 1)[0]
+        if option in _REMOTE_XDIST_OPTIONS:
+            raise ValueError(f"prohibited remote or repeated xdist execution option: {option}")
+        if value in {"-o", "--override-ini"}:
+            override = values[index + 1] if index + 1 < len(values) else ""
+            if override.split("=", 1)[0].casefold() == "addopts":
+                index += 2
+                continue
+            result.extend((value, override))
+            index += 2
+            continue
+        if value.startswith(("-o", "--override-ini=")):
+            override = value[2:] if value.startswith("-o") else value.split("=", 1)[1]
+            if override.split("=", 1)[0].casefold() == "addopts":
+                index += 1
+                continue
+        if value in _XDIST_FLAG_OPTIONS:
+            index += 1
+            continue
+        if value in _XDIST_VALUE_OPTIONS:
+            index += 2
+            continue
+        if value.startswith(("--numprocesses=", "--maxprocesses=", "--dist=", "--max-worker-restart=", "--max-slave-restart=", "--basetemp=", "--rsyncdir=")) or (value.startswith("-n") and len(value) > 2):
+            index += 1
+            continue
+        result.append(value)
+        index += 1
+    return result
+
+
 def _contained(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -551,6 +648,7 @@ def _provenance_plugin_source(
     forbidden_roots: Sequence[str],
     site_packages: Sequence[str],
     evidence_path: Path,
+    workers: int = 0,
 ) -> str:
     runtime_specs = []
     for spec in import_specs:
@@ -561,6 +659,9 @@ def _provenance_plugin_source(
         "imports": runtime_specs,
         "forbidden_roots": [str((repo_root / item).resolve()) for item in forbidden_roots],
         "evidence_path": str(evidence_path.resolve()),
+        "workers": workers,
+        "expected_workers_path": str((evidence_path.parent / "expected-workers").resolve()),
+        "pytest_basetemp": str((evidence_path.parent / "pytest").resolve()),
     }
     encoded_config = json.dumps(json.dumps(config))
     return f'''\
@@ -572,6 +673,30 @@ from pathlib import Path
 import pytest
 
 _CONFIG = json.loads({encoded_config})
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    if not hasattr(config, "workerinput"):
+        configured_workers = getattr(config.option, "numprocesses", None)
+        if _CONFIG["workers"] and configured_workers != _CONFIG["workers"]:
+            raise pytest.UsageError(
+                "pytest-xdist worker count differs from the explicit selective request: "
+                f"{{configured_workers!r}} vs {{_CONFIG['workers']}}"
+            )
+        if not _CONFIG["workers"] and configured_workers not in (None, 0, "0", "no"):
+            raise pytest.UsageError("serial selective validation cannot use pytest-xdist workers")
+        if _CONFIG["workers"] and getattr(config.option, "dist", None) != "loadfile":
+            raise pytest.UsageError("selective parallel validation requires local loadfile distribution")
+        transports = getattr(config.option, "tx", None) or []
+        if any(not str(transport).startswith("popen") for transport in transports):
+            raise pytest.UsageError("remote pytest-xdist transports are not supported")
+        if getattr(config.option, "rsyncdir", None):
+            raise pytest.UsageError("remote pytest-xdist transports are not supported")
+        if _CONFIG["workers"] and str(getattr(config.option, "maxworkerrestart", None)) != "0":
+            raise pytest.UsageError("selective parallel validation disables pytest-xdist worker restarts")
+        actual_basetemp = getattr(config.option, "basetemp", None)
+        if not actual_basetemp or os.path.normcase(os.path.normpath(str(Path(actual_basetemp).resolve()))) != os.path.normcase(os.path.normpath(_CONFIG["pytest_basetemp"])):
+            raise pytest.UsageError("selective pytest temporary root differs from the isolated run root")
 
 def _inside(path, roots):
     resolved = Path(path).resolve()
@@ -619,11 +744,22 @@ def _observe(spec):
 
 def _write_evidence(payload):
     path = Path(_CONFIG["evidence_path"])
-    temporary = path.with_suffix(path.suffix + ".tmp")
+    if _CONFIG["workers"]:
+        path.mkdir(parents=True, exist_ok=True)
+        path = path / (payload["worker_id"] + ".json")
+    _atomic_write(path, payload)
+
+def _atomic_write(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + "." + str(os.getpid()) + ".tmp")
     temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     os.replace(temporary, path)
 
-def pytest_runtest_setup(item):
+def _worker_id(session):
+    return getattr(session.config, "workerinput", {{}}).get("workerid", "main")
+
+def _runtime_payload(session):
+    worker_id = _worker_id(session)
     identities = []
     errors = []
     for spec in _CONFIG["imports"]:
@@ -633,10 +769,102 @@ def pytest_runtest_setup(item):
     for root in _CONFIG["forbidden_roots"]:
         if Path(root).exists():
             errors.append(f"retired source root is present: {{root}}")
-    _write_evidence({{"imports": identities, "errors": errors}})
-    if errors:
-        pytest.fail("runtime import provenance failed: " + "; ".join(errors), pytrace=False)
+    return {{
+        "worker_id": worker_id,
+        "imports": identities,
+        "errors": errors,
+        "pytest_basetemp": str(getattr(session.config.option, "basetemp", "") or ""),
+    }}
+
+def _record_runtime(session):
+    payload = _runtime_payload(session)
+    _write_evidence(payload)
+    return payload
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_configure_node(node):
+    worker_id = node.workerinput["workerid"]
+    path = Path(_CONFIG["expected_workers_path"])
+    path.mkdir(parents=True, exist_ok=True)
+    _atomic_write(path / (worker_id + ".json"), {{"worker_id": worker_id}})
+
+def pytest_sessionstart(session):
+    payload = _record_runtime(session)
+    if payload["errors"]:
+        pytest.exit("runtime import provenance failed: " + "; ".join(payload["errors"]), returncode=4)
+
+def pytest_runtest_setup(item):
+    payload = _record_runtime(item.session)
+    if payload["errors"]:
+        pytest.fail("runtime import provenance failed: " + "; ".join(payload["errors"]), pytrace=False)
 '''
+
+
+def _collect_parallel_runtime_receipts(
+    evidence_path: Path,
+    expected_workers_path: Path,
+    workers: int,
+    pytest_root: Path,
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    expected_ids: list[str] = []
+    errors: list[str] = []
+    for path in sorted(expected_workers_path.glob("*.json")) if expected_workers_path.is_dir() else []:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            errors.append(f"invalid registered-worker receipt: {path.name}")
+            continue
+        worker_id = payload.get("worker_id") if isinstance(payload, dict) else None
+        if worker_id != path.stem or not isinstance(worker_id, str):
+            errors.append(f"registered-worker identity mismatch: {path.name}")
+            continue
+        expected_ids.append(worker_id)
+    expected_ids.sort(key=_worker_id_sort_key)
+    wanted_ids = [f"gw{index}" for index in range(workers)]
+    if expected_ids != wanted_ids:
+        errors.append(f"pytest-xdist registered workers {expected_ids!r}; expected {wanted_ids!r}")
+
+    reports: dict[str, dict[str, Any]] = {}
+    for path in sorted(evidence_path.glob("*.json")) if evidence_path.is_dir() else []:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            errors.append(f"invalid runtime worker receipt: {path.name}")
+            continue
+        worker_id = payload.get("worker_id") if isinstance(payload, dict) else None
+        if not isinstance(worker_id, str) or worker_id != path.stem:
+            errors.append(f"runtime worker identity mismatch: {path.name}")
+            continue
+        if worker_id in reports:
+            errors.append(f"duplicate runtime worker receipt: {worker_id}")
+            continue
+        reports[worker_id] = payload
+
+    required_ids = ["main", *wanted_ids]
+    if set(reports) != set(required_ids):
+        errors.append(
+            f"runtime worker receipts were {sorted(reports)!r}; expected {required_ids!r}"
+        )
+    expected_root = pytest_root.resolve()
+    worker_temp_roots: list[str] = []
+    for worker_id in wanted_ids:
+        payload = reports.get(worker_id)
+        if payload is None:
+            continue
+        temp_value = payload.get("pytest_basetemp")
+        if not isinstance(temp_value, str) or not temp_value:
+            errors.append(f"worker {worker_id} did not report its pytest temporary root")
+            continue
+        temp_path = Path(temp_value).resolve()
+        try:
+            temp_path.relative_to(expected_root)
+        except ValueError:
+            errors.append(f"worker {worker_id} pytest temporary root escapes run root")
+            continue
+        worker_temp_roots.append(os.path.normcase(os.path.normpath(str(temp_path))))
+    if len(worker_temp_roots) != len(set(worker_temp_roots)):
+        errors.append("pytest-xdist workers reported equivalent temporary roots")
+    return reports, errors
 
 
 def _redact_text(text: str) -> str:
@@ -673,6 +901,7 @@ def _base_report(repo_root: Path, target_name: str, execution_id: str) -> dict[s
         "exit_code": 2,
         "selected": [],
         "command": [],
+        "runtime_worker_ids": [],
         "report_path": None,
         "temp_root": None,
         "failure_evidence": "",
@@ -692,6 +921,7 @@ def run_selective_target(
     command_runner: Callable[..., Any] = subprocess.run,
     reuse_evidence: bool = False,
     temporary_root: Path | None = None,
+    workers: int = 0,
 ) -> dict[str, Any]:
     """Run only selected pytest items for one manifest target, without bootstrap."""
     started = time.monotonic()
@@ -706,8 +936,11 @@ def run_selective_target(
     report["revision"] = _revision(repo_root)
     report["interpreter"] = {"path": str(Path(python_executable).resolve())}
     report["qualification_scope"] = "source-level"
+    report["workers"] = workers
 
     try:
+        if isinstance(workers, bool) or not isinstance(workers, int) or not 0 <= workers <= MAX_SELECTIVE_WORKERS:
+            raise SelectiveValidationError(f"Worker count must be from 0 (serial) to {MAX_SELECTIVE_WORKERS}.")
         if not isinstance(selective, dict):
             raise SelectiveValidationError(f"target {target_name} has no selective_validation contract")
         if not target_relative or not _contained(target_root, repo_root) or not target_root.is_dir():
@@ -730,10 +963,24 @@ def run_selective_target(
             else "source-level"
         )
         pytest_arguments = [str(value) for value in selective.get("pytest_arguments", [])]
+        inherited_addopts = environment.get("PYTEST_ADDOPTS")
+        try:
+            native_addopts = _pytest_addopts(
+                _native_pytest_addopts(python_executable, target_root, selected, inherited_addopts)
+            )
+            pytest_arguments = _pytest_addopts(pytest_arguments)
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
+            report["stage"] = "configuration-preflight"
+            raise SelectiveValidationError(f"pytest configuration preflight failed: {error}") from error
+        environment.pop("PYTEST_ADDOPTS", None)
         command_template = [
             str(Path(python_executable).resolve()), "-m", "pytest", "-p", "<provenance-plugin>",
             *selected, *pytest_arguments, "--rootdir", str(target_root), "--basetemp", "<temp-root>/pytest",
+            "-o", "addopts=" + shlex.join(native_addopts),
         ]
+        if workers:
+            command_template.extend(["-n", str(workers), "--dist=loadfile", "--max-worker-restart=0"])
+        command_template.extend(["-W", "error::pytest.PytestUnhandledThreadExceptionWarning"])
         report["command_template"] = command_template
         revision = report["revision"]
         def snapshot_inputs() -> dict[str, Any]:
@@ -813,6 +1060,13 @@ def run_selective_target(
                     report["reused_from"] = prior["execution_id"]
                     report["pytest_summary"] = prior.get("pytest_summary", "")
                     report["runtime_import_identities"] = prior.get("runtime_import_identities", [])
+                    for field in (
+                        "runtime_imports_by_worker",
+                        "runtime_worker_ids",
+                        "runtime_worker_temp_roots",
+                    ):
+                        if field in prior:
+                            report[field] = prior[field]
                     report["failure_evidence"] = ""
                     report["report_path"] = str(write_run_report(runs_root, report))
                     return report
@@ -830,7 +1084,7 @@ def run_selective_target(
         pytest_root = temp_root / "pytest"
         pytest_root.mkdir()
         plugin_module = f"selective_validation_provenance_{execution_id}"
-        evidence_path = temp_root / "runtime-imports.json"
+        evidence_path = temp_root / ("runtime-imports" if workers else "runtime-imports.json")
         plugin_path = temp_root / f"{plugin_module}.py"
         plugin_path.write_text(
             _provenance_plugin_source(
@@ -840,6 +1094,7 @@ def run_selective_target(
                 selective.get("forbidden_source_roots", []),
                 snapshot["probe"].get("site_packages", []),
                 evidence_path,
+                workers,
             ),
             encoding="utf-8",
         )
@@ -853,7 +1108,11 @@ def run_selective_target(
         command = [
             str(Path(python_executable).resolve()), "-m", "pytest", "-p", plugin_module,
             *selected, *pytest_arguments, "--rootdir", str(target_root), "--basetemp", str(pytest_root),
+            "-o", "addopts=" + shlex.join(native_addopts),
         ]
+        if workers:
+            command.extend(["-n", str(workers), "--dist=loadfile", "--max-worker-restart=0"])
+        command.extend(["-W", "error::pytest.PytestUnhandledThreadExceptionWarning"])
         report["command"] = command
         report["display_command"] = shlex.join(command)
         pytest_started = time.monotonic()
@@ -875,23 +1134,61 @@ def run_selective_target(
             output = (completed.stdout or "") + (completed.stderr or "")
             report["exit_code"] = int(completed.returncode)
             if completed.returncode == 0:
-                try:
-                    runtime_result = json.loads(evidence_path.read_text(encoding="utf-8"))
-                    runtime_imports = runtime_result.get("imports", [])
-                    runtime_errors = list(runtime_result.get("errors", []))
-                except (OSError, json.JSONDecodeError) as error:
-                    runtime_imports = []
-                    runtime_errors = [f"pytest process did not produce runtime provenance evidence: {error}"]
-                runtime_provenance = assess_import_provenance(
-                    repo_root,
-                    target_root,
-                    import_specs,
-                    runtime_imports,
-                    forbidden_roots=selective.get("forbidden_source_roots", []),
-                    site_packages=snapshot["probe"].get("site_packages", []),
-                )
-                runtime_errors.extend(runtime_provenance["errors"])
-                report["runtime_import_identities"] = runtime_provenance["imports"]
+                runtime_errors: list[str] = []
+                worker_import_identities: dict[str, list[dict[str, Any]]] = {}
+                if workers:
+                    receipts, receipt_errors = _collect_parallel_runtime_receipts(
+                        evidence_path, temp_root / "expected-workers", workers, pytest_root
+                    )
+                    runtime_errors.extend(receipt_errors)
+                    for worker_id, runtime_result in receipts.items():
+                        runtime_errors.extend(
+                            f"{worker_id}: {error}" for error in runtime_result.get("errors", [])
+                        )
+                        runtime_provenance = assess_import_provenance(
+                            repo_root,
+                            target_root,
+                            import_specs,
+                            runtime_result.get("imports", []),
+                            forbidden_roots=selective.get("forbidden_source_roots", []),
+                            site_packages=snapshot["probe"].get("site_packages", []),
+                        )
+                        runtime_errors.extend(
+                            f"{worker_id}: {error}" for error in runtime_provenance["errors"]
+                        )
+                        worker_import_identities[worker_id] = runtime_provenance["imports"]
+                    report["runtime_worker_ids"] = sorted(receipts, key=_worker_id_sort_key)
+                    report["runtime_imports_by_worker"] = worker_import_identities
+                    report["runtime_worker_temp_roots"] = {
+                        worker_id: receipts[worker_id].get("pytest_basetemp")
+                        for worker_id in [f"gw{index}" for index in range(workers)]
+                        if worker_id in receipts
+                    }
+                    report["runtime_import_identities"] = worker_import_identities.get("main", [])
+                else:
+                    try:
+                        runtime_result = json.loads(evidence_path.read_text(encoding="utf-8"))
+                        runtime_imports = runtime_result.get("imports", [])
+                        runtime_errors = list(runtime_result.get("errors", []))
+                        runtime_worker_id = runtime_result.get("worker_id")
+                        report["runtime_worker_ids"] = [runtime_worker_id] if isinstance(runtime_worker_id, str) else []
+                        if runtime_worker_id != "main":
+                            runtime_errors.append(
+                                f"pytest runtime receipt worker identity was {runtime_worker_id!r}, expected 'main'"
+                            )
+                    except (OSError, json.JSONDecodeError) as error:
+                        runtime_imports = []
+                        runtime_errors = [f"pytest process did not produce runtime provenance evidence: {error}"]
+                    runtime_provenance = assess_import_provenance(
+                        repo_root,
+                        target_root,
+                        import_specs,
+                        runtime_imports,
+                        forbidden_roots=selective.get("forbidden_source_roots", []),
+                        site_packages=snapshot["probe"].get("site_packages", []),
+                    )
+                    runtime_errors.extend(runtime_provenance["errors"])
+                    report["runtime_import_identities"] = runtime_provenance["imports"]
                 report["runtime_provenance_errors"] = [_redact_text(item) for item in runtime_errors]
                 if runtime_errors:
                     report["status"] = "failed"
@@ -917,6 +1214,19 @@ def run_selective_target(
             else:
                 report["status"] = "failed"
                 report["failure_evidence"] = _failure_evidence(output)
+                if workers:
+                    observed_receipts, _ = _collect_parallel_runtime_receipts(
+                        evidence_path, temp_root / "expected-workers", workers, pytest_root
+                    )
+                    report["runtime_worker_ids"] = sorted(observed_receipts, key=_worker_id_sort_key)
+                else:
+                    try:
+                        observed_receipt = json.loads(evidence_path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        report["runtime_worker_ids"] = []
+                    else:
+                        worker_id = observed_receipt.get("worker_id") if isinstance(observed_receipt, dict) else None
+                        report["runtime_worker_ids"] = [worker_id] if isinstance(worker_id, str) else []
         else:
             report["status"] = "failed"
 
@@ -940,6 +1250,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("-n", "--node-id", action="append", default=[])
     parser.add_argument("-f", "--file", action="append", default=[])
     parser.add_argument("-u", "--module", action="append", default=[])
+    parser.add_argument("--workers", type=int, choices=range(0, MAX_SELECTIVE_WORKERS + 1), default=0)
     parser.add_argument("--reuse-evidence", action="store_true")
     parser.add_argument("--temporary-root", type=Path)
     return parser.parse_args(argv)
@@ -977,6 +1288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             python_executable=args.python_executable,
             reuse_evidence=args.reuse_evidence,
             temporary_root=args.temporary_root,
+            workers=args.workers,
         )
         print(
             f"{target_name}: {result['status'].upper()} "

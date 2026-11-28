@@ -49,10 +49,16 @@ class CommandEntry:
     version: str
     distribution: Optional[str] = None
     entry_point: Optional[str] = None
+    is_alias: bool = False
+    alias_of: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         # Drop None keys for cleaner JSON
+        if not data["is_alias"]:
+            data.pop("is_alias")
+        if not data["alias_of"]:
+            data.pop("alias_of")
         return {k: v for k, v in data.items() if v is not None}
 
 
@@ -228,6 +234,7 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
             if is_transferred_module_dir(mod) or is_shared_module_dir(mod):
                 continue
             pyproject = mod / "pyproject.toml"
+            data: dict[str, Any] = {}
             if pyproject.is_file():
                 try:
                     with pyproject.open("rb") as f:
@@ -253,6 +260,7 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
                 continue
 
             source_rel = str(mod.relative_to(root)).replace("\\", "/")
+            alias_metadata = data.get("tool", {}).get("scripts_help", {}).get("commands", {})
             for script_name, ep in scripts.items():
                 if is_transferred_cli_command(script_name):
                     continue
@@ -267,6 +275,8 @@ def scan_repository_programs(repo_root: Path) -> Dict[str, CommandEntry]:
                     version=dist_version,
                     distribution=dist_name,
                     entry_point=ep,
+                    is_alias=bool(alias_metadata.get(script_name, {}).get("is_alias", False)),
+                    alias_of=alias_metadata.get(script_name, {}).get("alias_of"),
                 ))
 
     # Shared libraries are installed distributions, not repository-owned source modules.

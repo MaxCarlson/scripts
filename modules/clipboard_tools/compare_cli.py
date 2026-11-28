@@ -6,6 +6,7 @@ import argparse
 import itertools
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -23,6 +24,50 @@ from clipboard_tools.compare import (
 
 console = Console(soft_wrap=True)
 stderr = Console(stderr=True, soft_wrap=True)
+
+_PATH_COLORS = (
+    "bright_cyan", "bright_yellow", "bright_magenta", "bright_green",
+    "bright_blue", "bright_red", "cyan", "yellow", "magenta", "green", "blue", "red",
+)
+
+
+def _path_color_map(paths: Sequence[str]) -> dict[str, str]:
+    """Assign stable, distinct colors in first-seen path order."""
+    return {
+        path: _PATH_COLORS[index % len(_PATH_COLORS)]
+        for index, path in enumerate(dict.fromkeys(paths))
+    }
+
+
+def _colorize_paths(value: str, colors: dict[str, str], *, enabled: bool) -> Text:
+    """Style every exact path occurrence with its stable color."""
+    text = Text(value)
+    if not enabled:
+        return text
+    matches: list[tuple[int, int, str]] = []
+    for path in sorted(colors, key=len, reverse=True):
+        start = 0
+        while (index := value.find(path, start)) != -1:
+            if not any(index < end and index + len(path) > begin for begin, end, _ in matches):
+                matches.append((index, index + len(path), path))
+            start = index + len(path)
+    for begin, end, path in sorted(matches):
+        text.stylize(colors[path], begin, end)
+    return text
+
+
+def _color_enabled(*, no_color: bool) -> bool:
+    return not no_color and "NO_COLOR" not in os.environ and sys.stdout.isatty()
+
+
+def _nonnegative_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a non-negative integer") from exc
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return number
 
 
 def get_clipboard() -> str:
@@ -144,13 +189,20 @@ def _make_file_parser(program: str) -> argparse.ArgumentParser:
     parser.add_argument("-z", "--trim-trailing-newline", action="store_true", help="Ignore final newline differences.")
     parser.add_argument("-E", "--encoding", default="utf-8", help="Text encoding (default: utf-8).")
     parser.add_argument("-c", "--context-lines", type=int, default=3, help="Diff context lines (default: 3).")
+    parser.add_argument(
+        "-n", "--limit", type=_nonnegative_int, default=0, metavar="N",
+        help="Show at most N summary rows; 0 shows all (default: 0).",
+    )
+    parser.add_argument("-C", "--no-color", action="store_true", help="Disable color even in a terminal.")
     return parser
 
 
-def _print_diff(result: ComparisonResult) -> None:
+def _print_diff(result: ComparisonResult, *, colors: dict[str, str], color: bool) -> None:
     for line in result.diff_lines:
         if line.startswith(("---", "+++")):
-            console.print(line)
+            console.print(_colorize_paths(line, colors, enabled=color))
+        elif not color:
+            console.print(Text(line))
         elif line.startswith("@@"):
             console.print(Text(line, style="cyan"))
         elif line.startswith("-"):
@@ -178,6 +230,9 @@ def compare_files_main(argv: Sequence[str] | None = None, *, detailed: bool = Fa
         return EXIT_ERROR
 
     comparisons: list[tuple[Path, Path, ComparisonResult]] = []
+    path_strings = [str(path) for path in paths]
+    colors = _path_color_map(path_strings)
+    color = _color_enabled(no_color=args.no_color)
     had_error = False
     any_different = False
     for first, second in itertools.combinations(paths, 2):
@@ -196,20 +251,30 @@ def compare_files_main(argv: Sequence[str] | None = None, *, detailed: bool = Fa
         elif not result.equal:
             any_different = True
         if detailed:
-            console.print(f"\n[bold]{first} vs {second}[/]")
-            _print_diff(result)
+            title = _colorize_paths(f"{first} vs {second}", colors, enabled=color)
+            if color:
+                title.stylize("bold", 0, len(title))
+            console.print()
+            console.print(title)
+            _print_diff(result, colors=colors, color=color)
 
-    console.print("\n[bold]Summary[/]")
-    for first, second, result in comparisons:
-        console.print(
-            format_summary(
-                result,
-                str(first),
-                str(second),
-                first_label=str(first),
-                second_label=str(second),
-            )
+    pair_count = len(comparisons)
+    console.print()
+    console.print(Text(f"Summary ({pair_count} pairs across {len(paths)} files):"))
+    shown = comparisons if args.limit == 0 else comparisons[:args.limit]
+    for index, (first, second, result) in enumerate(shown, start=1):
+        summary = format_summary(
+            result,
+            str(first),
+            str(second),
+            first_label=str(first),
+            second_label=str(second),
         )
+        row = _colorize_paths(f"[{index}/{pair_count}] {summary}", colors, enabled=color)
+        console.print(row)
+    omitted = pair_count - len(shown)
+    if omitted:
+        console.print(f"{omitted} more pairs omitted (use -n 0 to show all)")
 
     if had_error:
         return EXIT_ERROR

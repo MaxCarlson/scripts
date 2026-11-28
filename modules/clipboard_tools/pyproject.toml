@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clipboard_tools"
-version = "2.0.0"
+version = "2.1.0"
 description = "Clipboard command suite with multi-buffer support and tmux/Windows bridge."
 authors = [
     {name = "Scripts Repo"}
@@ -67,6 +67,31 @@ otca = "Append command output to the current clipboard contents."
 otcwa = "Wrap command output and append it to the clipboard."
 tmux2winclip = "Bridge tmux clipboard data to the Windows clipboard."
 tmuxcp = "Copy tmux selection text to the Windows clipboard."
+
+[tool.scripts_help.commands]
+c2c = { is_alias = true }
+c2cd = { is_alias = true, alias_of = "c2c" }
+c2cr = { is_alias = true, alias_of = "c2c" }
+c2ca = { is_alias = true, alias_of = "c2c" }
+pclip = { is_alias = true }
+gcb = { is_alias = true }
+scb = { is_alias = true }
+rwc = { is_alias = true }
+sfcb = { is_alias = true, alias_of = "rwc" }
+rwcp = { is_alias = true, alias_of = "rwc" }
+cld = { is_alias = true }
+cldd = { is_alias = true, alias_of = "cld" }
+comp = { is_alias = true }
+compd = { is_alias = true, alias_of = "comp" }
+apc = { is_alias = true }
+crx = { is_alias = true }
+cb2c = { is_alias = true }
+cb2cf = { is_alias = true, alias_of = "cb2c" }
+otc = { is_alias = true }
+otcw = { is_alias = true, alias_of = "otc" }
+otca = { is_alias = true, alias_of = "otc" }
+otcwa = { is_alias = true, alias_of = "otc" }
+tmuxcp = { is_alias = true, alias_of = "tmux2winclip" }
 
 [tool.setuptools]
 packages = ["clipboard_tools"]

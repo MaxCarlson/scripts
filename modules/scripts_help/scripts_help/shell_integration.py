@@ -76,6 +76,9 @@ def render_pwsh_adapter() -> str:
             "        Remove-Item -LiteralPath $tmpFile -Force -ErrorAction SilentlyContinue",
             "    }",
             "}",
+            "function global:fg { ag --view full @args }",
+            "function global:mg { ag --view module @args }",
+            "function global:xg { ag --view all @args }",
             MANAGED_END,
             "",
         ]
@@ -132,6 +135,9 @@ def render_posix_adapter() -> str:
             '    rm -f "$_ag_tmp" "$_ag_raw" "$_ag_fn_raw"',
             "    return $_ag_rc",
             "}",
+            "fg() { ag --view full \"$@\"; }",
+            "mg() { ag --view module \"$@\"; }",
+            "xg() { ag --view all \"$@\"; }",
             MANAGED_END,
             "",
         ]

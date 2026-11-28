@@ -156,6 +156,17 @@ def _kind_matches(entry_kind: str, requested_type: str | None) -> bool:
     return ek == req
 
 
+def _view_matches(entry: CommandEntry, view: str) -> bool:
+    is_alias = entry.is_alias or entry.kind in ("alias", "shell_alias")
+    if view == "alias":
+        return is_alias
+    if view == "full":
+        return not is_alias and entry.kind not in ("executable", "shell_function")
+    if view == "module":
+        return entry.kind == "console_script"
+    return True
+
+
 def search_ag(
     pattern: str,
     *,
@@ -270,6 +281,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="",
         help="Regex pattern to match command names and help text (default: match all).",
     )
+    parser.add_argument("-V", "--view", choices=("alias", "full", "module", "all"), help="Choose an inventory view.")
     parser.add_argument(
         "-s", "--case-sensitive",
         action="store_true",
@@ -325,9 +337,10 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, default_view: str = "alias") -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    view = args.view or ("all" if args.all or args.executables else default_view)
 
     try:
         repo_root = find_repo_root()
@@ -344,6 +357,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.executables or args.all:
         entries.extend(_discover_path_executables())
+
+    entries = [entry for entry in entries if _view_matches(entry, view)]
 
     matches = search_ag(
         args.pattern,
@@ -391,6 +406,8 @@ def main(argv: list[str] | None = None) -> int:
         print(table)
     else:
         print(f"No commands matched pattern: {args.pattern!r}")
+    if view == "all" and (not inv_path_str or not Path(inv_path_str).is_file()):
+        print("Live shell aliases unavailable; run 'scripts-help integrate --apply'.", file=sys.stderr)
 
     if args.check_collisions and collisions:
         print("\nCollisions detected:", file=sys.stderr)
@@ -398,6 +415,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - [{c.collision_type}] {c.name}: {c.details}", file=sys.stderr)
 
     return 0
+
+
+def full_main(argv: list[str] | None = None) -> int:
+    return main(argv, default_view="full")
+
+
+def module_main(argv: list[str] | None = None) -> int:
+    return main(argv, default_view="module")
+
+
+def all_main(argv: list[str] | None = None) -> int:
+    return main(argv, default_view="all")
 
 
 if __name__ == "__main__":
