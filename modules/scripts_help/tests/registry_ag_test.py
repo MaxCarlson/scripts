@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -79,7 +80,7 @@ def test_clipboard_registered_tools_have_specific_help_descriptions():
     assert c2c.description == "Copy selected file or path contents to the clipboard."
     assert c2c.description != c2c.target
     clipboard_entries = [e for e in entries if e.distribution == "clipboard_tools"]
-    assert len(clipboard_entries) == 21
+    assert len(clipboard_entries) == 24
     assert all(e.description for e in clipboard_entries)
     assert all(e.description != "Clipboard command suite with multi-buffer support and tmux/Windows bridge." for e in clipboard_entries)
 
@@ -158,6 +159,69 @@ def test_ag_clip_search_lists_manifest_aliases_with_module_help(tmp_path: Path):
     displayed_names = {line.split("  ", 1)[0].strip() for line in lines[2:]}
     assert {"c2c", "otc", "rwc", "append_clipboard"}.issubset(displayed_names)
     assert next(entry for entry in matches if entry.name == "c2c").target == "clipboard_tools.entrypoints:copy_main"
+
+
+def test_alias_metadata_and_views_classify_short_and_full_commands(tmp_path: Path, monkeypatch, capsys):
+    repo = tmp_path / "repo"
+    module = repo / "modules" / "clipboard_tools"
+    module.mkdir(parents=True)
+    (module / "pyproject.toml").write_text(
+        '[project]\nname="clipboard_tools"\nversion="1.0"\n[project.scripts]\n'
+        'c2c="clipboard_tools.entrypoints:copy_main"\n'
+        'copy_to_clipboard="clipboard_tools.entrypoints:copy_main"\n'
+        '[tool.scripts_help.commands]\nc2c={is_alias=true}\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(ag, "find_repo_root", lambda: repo)
+    monkeypatch.setattr(ag, "detect_silver_searcher_collision", lambda **_kwargs: None)
+    assert ag.main(["clip"]) == 0
+    alias_output = capsys.readouterr().out
+    assert "c2c" in alias_output
+    assert "copy_to_clipboard" not in alias_output
+
+    assert ag.main(["clip", "--view", "full"]) == 0
+    full_output = capsys.readouterr().out
+    assert "copy_to_clipboard" in full_output
+    assert "c2c" not in full_output
+
+    entries = command_registry.load_command_registry(repo)
+    assert next(item for item in entries if item.name == "c2c").is_alias is True
+
+
+def test_scripts_help_registers_all_view_entrypoints():
+    project = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    scripts = tomllib.loads(project.read_text(encoding="utf-8"))["project"]["scripts"]
+    assert scripts["ag"] == "scripts_help.ag:main"
+    assert scripts["fg"] == "scripts_help.ag:full_main"
+    assert scripts["mg"] == "scripts_help.ag:module_main"
+    assert scripts["xg"] == "scripts_help.ag:all_main"
+
+
+def test_ag_module_and_all_views_include_registered_commands():
+    alias = command_registry.CommandEntry("c2c", "m", "c2c", "console_script", "test", "", is_alias=True)
+    module = command_registry.CommandEntry("module-cli", "m", "module-cli", "console_script", "test", "")
+    script = command_registry.CommandEntry("helper", "p", "helper", "python_file", "test", "")
+    path_tool = command_registry.CommandEntry("unrelated", "x", "unrelated", "executable", "path", "")
+    assert ag._view_matches(alias, "alias")
+    assert ag._view_matches(module, "module")
+    assert ag._view_matches(alias, "module")
+    assert ag._view_matches(script, "all")
+    assert ag._view_matches(path_tool, "all")
+
+
+def test_xg_without_shell_inventory_prints_integration_hint(monkeypatch, capsys):
+    monkeypatch.setattr(ag, "find_repo_root", lambda: None)
+    monkeypatch.setattr(ag, "detect_silver_searcher_collision", lambda **_kwargs: None)
+    monkeypatch.delenv("AG_SHELL_INVENTORY_FILE", raising=False)
+    assert ag.all_main(["nothing"]) == 0
+    assert "Live shell aliases unavailable; run 'scripts-help integrate --apply'." in capsys.readouterr().err
+
+
+def test_shell_adapters_publish_requested_view_functions():
+    pwsh = shell_integration.render_pwsh_adapter()
+    posix = shell_integration.render_posix_adapter()
+    for name in ("fg", "mg", "xg"):
+        assert f"function global:{name}" in pwsh
+        assert f"{name}() {{ ag --view" in posix
 
 
 def test_ag_search_formatting_shell_inventory_and_silver_searcher_collision(tmp_path: Path, monkeypatch, capsys):

@@ -20,6 +20,7 @@ ag -D [pattern]                     # show and search raw command definitions
 ## Command Registry, `ag`, and Shell Integration
 - **Canonical registry** (`scripts_help/command_registry.py`): Aggregates `scripts_manifest.json`, `scripts_help.registry.REGISTRY`, and `modules/*/pyproject.toml` `[project.scripts]` without duplicating metadata, using `script_logging`'s `program_id` / `invoked_name` contract.
 - **`ag`** (`scripts_help/ag.py`): Case-insensitive regex search over command names and help descriptions (`Name`/`Help` table by default), with `-A/--all` for the broad shell/PATH inventory, `-D/--definitions` for raw targets, `--type`, `--source`, `--executables`, `--shell-inventory`, and JSON output. Interactive tables use kind colors unless `NO_COLOR` is set.
+- **Command views:** `ag` shows explicitly marked abbreviated commands and curated shell aliases; `fg` searches full descriptive commands; `mg` searches module console commands; `xg` searches all repository commands plus curated live shell aliases/functions. Add `-V alias|full|module|all` to choose a view explicitly. The shell integration exports live session aliases/functions to each view. `-A` retains the broad inventory including PATH executables.
 - Console-script help comes from explicit command descriptions when available and falls back to the module's `pyproject.toml` project description. Modules may define per-command summaries in `[tool.scripts_help.descriptions]`.
 - **Installer & Rollback** (`scripts-help integrate`):
   - Dry-run by default: `scripts-help integrate`

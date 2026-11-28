@@ -1,11 +1,11 @@
-<!-- version: 2.0.0 -->
+<!-- version: 2.1.0 -->
 # clipboard_tools
 
 Clipboard command suite with multi-buffer storage, concise and detailed comparisons, terminal capture (`cb2c`/`cb2cf`), and tmux → Windows clipboard bridging.
 
 ## Install and verify
 
-Run `python setup.py -f -v` from the scripts checkout whose commands should change. Version 2.0.0 changes console scripts, so a full reinstall regenerates both the virtual-environment commands and repository `bin/` proxies.
+Run `python setup.py -r -f -v` from the scripts checkout whose commands should change to reinstall repository packages and regenerate local launchers without changing user PATH or shell profiles. Version 2.1.0 includes the compare output changes.
 
 In PowerShell, check `Get-Command cld,cldd,comp,compd -All`. For `comp`, the scripts checkout's `bin\comp.cmd` must appear before `C:\Windows\System32\comp.exe`. Confirm the active Python imports this checkout with `python -c "import clipboard_tools; print(clipboard_tools.__file__)"`.
 
@@ -16,14 +16,16 @@ In PowerShell, check `Get-Command cld,cldd,comp,compd -All`. For `comp`, the scr
 - `rwc` / `rwcp` / `sfcb` – replace file from clipboard (or last cld snapshot); `sfcb` replaces legacy `sfc` alias without shadowing Windows `sfc.exe`
 - `cld <file>` – summarize whether the clipboard matches a file and which side is larger; use `-s/--strict`, `-z/--trim-trailing-newline`, `-E/--encoding`, and `-k/--check`
 - `cldd <file>` – show the previous full clipboard-vs-file diff and retain the `rwc --from-last-cld` snapshot behavior
-- `comp <file> <file> [...]` – print a concise summary for every unordered file pair; use `comp fd <pattern>` to compare `fd` search results
-- `compd <file> <file> [...]` – show the full diff for every pair, followed by the concise summary; also supports `compd fd <pattern>`
+- `comp <file> <file> [...]` – print a numbered, color-coded concise summary for every unordered pair; `-n N` limits visible summary rows (`-n 0` shows all), `-C` disables color; use `comp fd <pattern>` to compare `fd` search results
+- `compd <file> <file> [...]` – show the full diff for every pair, followed by the concise summary; `-n N` limits summary rows only; also supports `compd fd <pattern>`
 - `apc`, `crx`, `cb2c`, `cb2cf`, `otc`, `otcw`, `otca`, `otcwa`
 - `tmuxcp` (legacy alias: `tmux2winclip`) – auto-copy tmux buffer to every detected clipboard target
 
 Buffers persist under `CLIPBOARD_STATE_DIR` (else platform defaults) and track chars/lines/words, timestamps, and read counts.
 
 `cld`, `comp`, and `compd` use the existing decoded text character counts for their size summaries. Comparisons normalize line endings by default; `--strict` compares exact text. `comp` and `compd` do not read or change the clipboard. `fd` results are passed internally as a path list, so filenames containing spaces or commas remain intact.
+
+The standalone `flatten` command converts newline-delimited input into a single CSV record (`fd AGENTS.md | flatten`). Use `flatten -0` for NUL-delimited input, `-d` to choose a one-character delimiter, `-q minimal|all|none` to choose CSV quoting, and `-n` to omit the final newline. `flatten -- <command> [args...]` flattens that command's stdout while preserving its stderr and exit status. CSV output is intended for CSV-aware consumers; use `comp fd <pattern>` or NUL-aware argument tools when you need shell argument expansion.
 
 ## `tmuxcp` behavior
 - Reads the active tmux buffer and emits OSC52 so upstream terminals (Termux, kitty, iTerm) receive the data even across SSH hops.
