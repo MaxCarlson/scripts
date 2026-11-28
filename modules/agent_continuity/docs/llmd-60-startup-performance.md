@@ -36,15 +36,21 @@ Measured via read-only inspection and disposable copies of `C:\Users\mcarls\.age
 - **Immutable-Event Assumption & Full Verification/Recovery**:
   - Spool files under `events/<environment_id>/` are assumed immutable once written by `append_event`.
   - `sync_from_spools(verify_checksums=True)` and `rebuild_from_spools()` provide explicit full-verification and atomic SQLite recovery paths.
+  - **Rebuild / Reader / Pre-Lock Scan Boundary**:
+    - `rebuild_from_spools()` performs `read_spool_events()` *inside* `_writer_lock()` so concurrent `ingest_events()` writes cannot be dropped by a pre-lock scan snapshot.
+    - `sync_from_spools()` keeps its unchanged read-only fast path lock-free, and when entering `_writer_lock()` checks `last_rebuild_at` and recomputes `deleted_keys` from the in-lock `spool_file_fingerprints` table (re-scanning if a rebuild occurred concurrently).
+    - `_writer_lock()` excludes concurrent writers, not lock-free `_connect_ro()` readers: on Windows, an active reader holding `index.sqlite` / `-wal` / `-shm` prevents `os.replace` (`ContinuityError(MATERIALIZER_FAILED)` with staging cleanup and no live DB corruption); on POSIX, active readers retain their unlinked inode snapshot until closed.
 
-## 3. Native Bootstrap Elimination Contract (Agent #1 Integration)
+## 3. Native Bootstrap Elimination Contract ([native_bootstrap.py](../agent_continuity/native_bootstrap.py))
 
-| Provider | Verified Installed Mechanism | Schema / Protocol Evidence | Pre-First-Turn Resumability & Persistence |
-| --- | --- | --- | --- |
-| **Claude** | `claude --session-id <UUID>` | Direct UUIDv4 CLI flag | Already supported without bootstrap model turn |
-| **Codex (`0.172.0`)** | `codex app-server --stdio` (`initialize` -> `thread/start`) | `ThreadStartParams` (`cwd`, `ephemeral: false`) -> `ThreadStartResponse` (`thread.id`, `thread.path`, `cwd`, `model`) | **Allocated != Resumable**: `thread/start` allocates `thread.id`; interactive `codex resume <thread_id>` requires persistence evidence (`thread.path` rollout JSONL `session_meta` or `~/.codex/state_5.sqlite` `threads` row) |
-| **AGY (`1.5.18`)** | `agy acp --stdio` (`initialize` -> `session/new`) | ACP JSON-RPC returns `sessionId` without running a model turn | **Allocated != Resumable**: verify ACP `session/load` or `~/.gemini/antigravity-cli` persistence before assuming `agy --conversation <sessionId>` can resume pre-turn |
+| Provider | Verified Installed Mechanism | Schema / Protocol Evidence | Pre-First-Turn Resumability & Persistence | Safe to Enable Now |
+| --- | --- | --- | --- | --- |
+| **Claude** | `claude --session-id <UUID>` | Direct UUIDv4 CLI flag | Deterministic UUIDv4; no bootstrap model turn needed | **Yes** |
+| **Codex (`0.172.0`)** | `codex app-server --stdio` (`initialize` -> `thread/start`) | `ThreadStartParams` (`cwd`, `ephemeral: false`) -> `ThreadStartResponse` (`thread.id`, `thread.path`, `cwd`, `model`) | **Allocated != Resumable**: `thread/start` allocates `thread.id`; `can_authorize_interactive_resume` remains `False` until disk persistence (`thread.path` / `state_5.sqlite`) AND `live_resume_qualified=True` | **No** (live resume gate pending) |
+| **AGY (`1.5.18`)** | `agy acp --stdio` (`initialize` -> `session/new`) | ACP JSON-RPC returns `sessionId` without running a model turn | **Allocated != Resumable**: `can_authorize_interactive_resume` remains `False` until persistence evidence AND `live_resume_qualified=True` | **No** (live resume gate pending) |
 
-- **Cancellation, Crash Recovery & Remaining Live Qualification Gates**:
-  - Timeout or non-zero exit during `app-server` / `acp` allocation must kill the helper process and abort reservation without falling back to `--last`, `--continue`, or recency guessing.
-  - **Remaining live qualification gates** (blocked here by no-live-model-trials policy): verify on live `codex-cli 0.172.0` and `agy 1.5.18` whether `codex resume <thread_id>` and `agy --conversation <sessionId>` attach cleanly before the first model turn or require `thread/resume` / `--prompt-interactive`.
+- **Agent #1 Integration & LLMD-59 Prompt Delivery Boundary**:
+  - `allocate_native_session(NativeBootstrapRequest(...)) -> NativeSessionAllocation` exposes a narrow typed contract distinguishing `native_session_id` (allocated identity), `persisted` (disk evidence), `interactively_resumable`, `effective_provider_context`, and `can_authorize_interactive_resume`.
+  - `prompt_delivery_contract` sets `requires_bootstrap_model_turn=False`, `initial_prompt_deferred_to_attach=True`, and `workflow_init_mode="additive_without_extra_turn"`, so LLMD-59 prompt delivery and additive workflow initialization do not introduce artificial turns or duplicate user prompts.
+  - Timeout, `cancel_event`, malformed/conflicting JSON-RPC frames, or uncertain exits kill the child process and set `fallback_prohibited=True` without falling back to `--last`, `--continue`, or recency guessing.
+  - **Remaining live qualification gates** (blocked here by no-live-model-trials policy): verify on live `codex-cli 0.172.0` and `agy 1.5.18` whether `codex resume <thread_id>` and `agy --conversation <sessionId>` (or ACP `session/load`) attach cleanly before the first model turn.

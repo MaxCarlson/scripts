@@ -281,6 +281,7 @@ class SQLiteMaterializer:
         known_fingerprints: dict[str, tuple[int, int, int, int, int]] = {}
         can_use_ro_fast_path = False
 
+        prelock_rebuild_at: str | None = None
         if self.db_path.exists() and not verify_checksums:
             ro_conn = self._connect_ro()
             if ro_conn is not None:
@@ -288,9 +289,14 @@ class SQLiteMaterializer:
                     with closing(ro_conn):
                         if get_schema_version(ro_conn) == SCHEMA_VERSION:
                             known_fingerprints = _load_fingerprints(ro_conn)
+                            row = ro_conn.execute(
+                                "SELECT value FROM schema_metadata WHERE key = 'last_rebuild_at'"
+                            ).fetchone()
+                            prelock_rebuild_at = str(row[0]) if row is not None and row[0] is not None else None
                             can_use_ro_fast_path = True
                 except sqlite3.Error:
                     known_fingerprints = {}
+                    prelock_rebuild_at = None
                     can_use_ro_fast_path = False
 
         scan = read_spool_events_incremental(
@@ -323,10 +329,27 @@ class SQLiteMaterializer:
                 rebuilt=False,
             )
 
-        issues = list(scan.issues)
         with self._writer_lock(), closing(self._connect_rw()) as conn:
             try:
                 _ensure_fingerprints_table(conn)
+                inlock_row = conn.execute(
+                    "SELECT value FROM schema_metadata WHERE key = 'last_rebuild_at'"
+                ).fetchone()
+                inlock_rebuild_at = (
+                    str(inlock_row[0]) if inlock_row is not None and inlock_row[0] is not None else None
+                )
+                inlock_fingerprints = _load_fingerprints(conn)
+                if can_use_ro_fast_path and inlock_rebuild_at != prelock_rebuild_at:
+                    # A rebuild occurred after our pre-lock RO snapshot; rescan under writer exclusion.
+                    scan = read_spool_events_incremental(
+                        roots,
+                        known_fingerprints=inlock_fingerprints,
+                        optional_roots=optional_roots,
+                        verify_checksums=verify_checksums,
+                    )
+                    skipped = scan.unchanged_count
+                issues = list(scan.issues)
+                deleted_keys = set(inlock_fingerprints) - scan.current_keys
                 conn.execute("BEGIN IMMEDIATE")
                 for rec in scan.records:
                     try:
@@ -386,16 +409,17 @@ class SQLiteMaterializer:
         """Rebuild index.sqlite atomically from scratch under writer lock by replaying all durable spool events."""
         assert_sqlite_writer_allowed(self.db_path, allow_unsafe_cross_os=self.allow_unsafe_cross_os)
         roots = discover_spool_roots(self.home_dir, extra_roots=extra_roots)
-        scan = read_spool_events(roots, optional_roots={self.home_dir / "events"})
-        issues = list(scan.issues)
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         staging = self.db_path.with_name(f".index.sqlite.rebuild.{os.getpid()}.{secrets.token_hex(4)}.tmp")
         ingested = 0
         skipped = 0
+        issues: list[SpoolIssue] = []
 
         conn: sqlite3.Connection | None = None
         with self._writer_lock():
+            scan = read_spool_events(roots, optional_roots={self.home_dir / "events"})
+            issues = list(scan.issues)
             try:
                 conn = sqlite3.connect(str(staging), timeout=5.0)
                 ensure_schema(conn)
