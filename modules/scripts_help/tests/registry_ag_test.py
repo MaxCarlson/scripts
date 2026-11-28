@@ -79,7 +79,8 @@ def test_clipboard_registered_tools_have_specific_help_descriptions():
     assert c2c.description == "Copy selected file or path contents to the clipboard."
     assert c2c.description != c2c.target
     clipboard_entries = [e for e in entries if e.distribution == "clipboard_tools"]
-    assert len(clipboard_entries) == 21
+    assert len(clipboard_entries) == 24
+    assert {"cld", "cldd", "comp", "compd"} <= {entry.name for entry in clipboard_entries}
     assert all(e.description for e in clipboard_entries)
     assert all(e.description != "Clipboard command suite with multi-buffer support and tmux/Windows bridge." for e in clipboard_entries)
 
