@@ -93,6 +93,21 @@ def test_cli_defaults_to_no_evidence_reuse_and_accepts_external_temp_root(tmp_pa
     assert opted_in.temporary_root == tmp_path / "external-temp"
 
 
+def test_cli_accepts_worker_counts_through_sixteen(tmp_path: Path) -> None:
+    for workers in (12, 16):
+        args = _parse_args([
+            "--repo-root", str(tmp_path), "--target", "consumer", "--file", "tests/test_api.py",
+            "--workers", str(workers),
+        ])
+        assert args.workers == workers
+    for workers in ("-1", "17"):
+        with pytest.raises(SystemExit):
+            _parse_args([
+                "--repo-root", str(tmp_path), "--target", "consumer", "--file", "tests/test_api.py",
+                "--workers", workers,
+            ])
+
+
 def test_rejects_selectors_outside_the_consumer_and_unknown_modules(tmp_path: Path) -> None:
     repo_root, target_spec = make_target(tmp_path)
     target_root = repo_root / target_spec["working_directory"]
@@ -264,6 +279,11 @@ def test_evidence_reuse_requires_identical_inputs_and_invalidates_on_source_chan
         )
 
     first = run("tests/test_api.py::test_api", reuse_evidence=True)
+    first_record = json.loads(Path(first["report_path"]).read_text(encoding="utf-8"))
+    first_record["runtime_imports_by_worker"] = {"main": first_record["runtime_import_identities"]}
+    first_record["runtime_worker_ids"] = ["main"]
+    first_record["runtime_worker_temp_roots"] = {}
+    Path(first["report_path"]).write_text(json.dumps(first_record), encoding="utf-8")
     same = run("tests/test_api.py::test_api", reuse_evidence=True)
     other_selection = run("tests/test_other.py::test_other")
     (target_root / "consumer_pkg" / "__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
@@ -274,6 +294,9 @@ def test_evidence_reuse_requires_identical_inputs_and_invalidates_on_source_chan
     assert first["status"] == "passed"
     assert same["status"] == "reused"
     assert same["reused_from"] == first["execution_id"]
+    assert same["runtime_imports_by_worker"] == first_record["runtime_imports_by_worker"]
+    assert same["runtime_worker_ids"] == ["main"]
+    assert same["runtime_worker_temp_roots"] == {}
     assert other_selection["status"] == "passed"
     assert changed_source["status"] == "passed"
     assert changed_dependency["status"] == "passed"
@@ -491,3 +514,37 @@ def test_real_pytest_subprocess_checks_import_provenance_and_external_temp_root(
     record = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
     assert record["status"] == "passed"
     assert record["runtime_import_identities"]
+
+
+def test_real_parallel_pytest_records_exact_worker_provenance(tmp_path: Path) -> None:
+    pytest.importorskip("xdist")
+    repo_root, target_spec = make_target(tmp_path)
+    target_spec["selective_validation"]["imports"] = [{
+        "module": "consumer_pkg",
+        "expected_root": "consumer_pkg",
+    }]
+    external_temp = tmp_path / "parallel-external-temp"
+
+    result = run_selective_target(
+        repo_root,
+        "consumer",
+        target_spec,
+        node_ids=[],
+        files=["tests/test_api.py", "tests/test_other.py"],
+        modules=[],
+        python_executable=sys.executable,
+        temporary_root=external_temp,
+        reuse_evidence=False,
+        workers=12,
+    )
+
+    expected_workers = [f"gw{index}" for index in range(12)]
+    assert result["status"] == "passed", result.get("failure_evidence") or result.get("error")
+    assert result["workers"] == 12
+    assert result["runtime_worker_ids"] == ["main", *expected_workers]
+    assert set(result["runtime_imports_by_worker"]) == {"main", *expected_workers}
+    worker_temps = list(result["runtime_worker_temp_roots"].values())
+    assert len(worker_temps) == len(expected_workers)
+    assert len(set(worker_temps)) == len(expected_workers)
+    assert all(Path(path).is_relative_to(Path(result["temp_root"]) / "pytest") for path in worker_temps)
+    assert Path(result["temp_root"]).is_relative_to(external_temp)

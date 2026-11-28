@@ -22,3 +22,27 @@ Selective validation is integrated directly into Scripts `main` at `278978a3e439
 ## Next
 
 Agent-Environment adoption can use `Invoke-Tests.ps1 -Selective` independently of Toolkit-native validation. Keep generated run receipts and temp directories outside source commits.
+
+## Parallel worker expansion — 2026-11-27
+
+The isolated successor branch `feat/managed-parallel-validation-20261127` is
+based on Scripts `8e6fb41cff749aa6e3b62b391a9341a5be95d531`. The existing
+selective runner now accepts `-Workers 0..16` (serial remains the default),
+includes worker count in evidence identity, uses local `loadfile` xdist with
+worker restarts disabled, and requires controller plus per-worker import and
+temp-root receipts. Passing parallel receipts survive evidence reuse.
+
+The public wrapper was run in an isolated synthetic consumer at workers 0, 12,
+and 16. Each run passed the same two tests. End-to-end durations were 1.703s,
+5.656s, and 6.187s; worker receipt counts were 1, 13, and 17, with 12 or 16
+unique worker temp roots. The short sample shows process startup cost, not a
+performance benefit. The existing report does not record peak memory.
+
+Focused `scripts_setup/tests/managed_validation_test.py`: 18 passed, including
+a real 12-worker pytest subprocess. Synthetic public wrapper runs at 12 and 16
+also passed. A normal `development-ledger` wrapper invocation was blocked by
+the existing Scripts venv's editable import resolving to the primary checkout;
+provenance correctly rejected it and the environment was left unchanged. Its
+blocked receipt remains local under `docs/test-results/selective/` and is not a
+source commit. A lightweight serial Toolkit invocation and Scripts wrapper were
+also run concurrently; both exited 0 with isolated evidence.
