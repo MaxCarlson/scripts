@@ -2497,12 +2497,23 @@ def _run_pane_locked(
                 "read-only": "readOnly",
                 "danger-full-access": "dangerFullAccess",
             }.get(expected_sandbox, expected_sandbox)
+            provider_adapter = dispatcher.continuity.adapters.get(provider)
+            provider_user_home = Path(getattr(provider_adapter, "_home_dir", Path.home()))
+            if provider == "codex":
+                codex_home = Path(os.environ.get("CODEX_HOME") or provider_user_home / ".codex")
+                agy_home = None
+            else:
+                codex_home = None
+                agy_home = provider_user_home / ".gemini" / "antigravity-cli"
             request = NativeBootstrapRequest(
                 provider=provider,
                 cwd=str(Path(bootstrap_cwd or effective_cwd).resolve()),
                 model=settings.get("model"),
                 expected_approval_policy=settings.get("approval_policy") if provider == "codex" else None,
                 expected_sandbox_type=expected_sandbox,
+                requested_settings=settings,
+                codex_home=codex_home,
+                agy_home=agy_home,
                 live_qualification=native_allocation_qualification,
             )
             dispatcher.begin_native_allocation(

@@ -3,7 +3,7 @@
 ## LLMD-60 native allocation integration and LLMD-62 instructions — 2026-11-27
 
 - [x] Integrate Agent #3 native allocation checkpoints `a095044f` and `91906f3f` without importing unrelated branch changes.
-- [x] Use native UUIDv4 allocation for Claude and persist exact effective cwd plus allocation mechanism; keep provider creation, exact transcript association, and resumability unconfirmed until separately observed.
+- [x] Reserve Claude UUIDv4 before the direct invocation and persist intended launch cwd plus mechanism; keep provider-effective cwd, creation, transcript association, and resumability unconfirmed until separately observed.
 - [x] Keep Codex/AGY inference-free activation disabled; retain their existing guarded initialization path pending live provider qualification.
 - [x] Add repeatable `-I/--instructions-file` while preserving `--instruction-file`; add explicit changed-resource replacement authorization.
 - [x] Resolve relative files from effective cwd and persist ordered canonical path identities and byte digests in snapshot schema v2; read legacy schema-v1 snapshots.
@@ -251,3 +251,13 @@
 - [x] Verify LLMD-62 replacement, exact-session resume, historical portability, restoration ownership, and CLI compatibility with guarded execution-path tests.
 - [x] Run final guarded `agent_continuity`, `terminal_launcher`, and `scripts_help` qualification plus Ruff, version consistency, registry validation, and diff hygiene.
 - [x] Record that guarded provider substitutes do not qualify live Codex/AGY behavior; keep those production mechanisms disabled pending explicit live qualification.
+
+## Native allocation qualification readiness
+
+- [x] Require authoritative Codex/AGY session identity and validate bounded, provider-scoped persistence metadata; keep missing workspace evidence distinct from verified cwd.
+- [x] Compare Codex requested/effective approval policy and sandbox, and reject unmapped Codex/AGY settings before provider helper execution.
+- [x] Keep Claude UUID launch cwd separate from provider-effective cwd evidence.
+- [x] Run final guarded agent_continuity xdist suite and module Ruff; document current 426-event preview/apply timings and synchronization counts.
+- [x] Document exact future Codex disposable-home procedure, expected zero-turn allocation/attach and optional one-turn smoke; keep it unexecuted pending explicit authorization.
+- [ ] Obtain a provider-supported isolated AGY CLI store and a verified pre-turn workspace receipt before live qualification or activation.
+- [ ] Separately authorize and run live provider qualification; keep all production allocation gates closed until evidence is reviewed.

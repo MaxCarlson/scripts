@@ -21,6 +21,8 @@ from agent_continuity.native_bootstrap import (
     NativeAllocationStatus,
     NativeBootstrapRequest,
     VerifiedLiveQualification,
+    _verify_agy_persistence,
+    _verify_codex_persistence,
     allocate_native_session,
     provider_native_bootstrap_readiness,
 )
@@ -39,9 +41,10 @@ def _runtime_kind() -> str:
 
 
 def test_codex_strict_sequence_exact_persistence_and_bound_qualification(tmp_path: Path) -> None:
-    rollout_path = tmp_path / "rollout-2026-11-27-thr_123.jsonl"
     codex_home = tmp_path / ".codex"
     codex_home.mkdir()
+    rollout_path = codex_home / "sessions" / "2026" / "11" / "27" / "rollout-2026-11-27-thr_123.jsonl"
+    rollout_path.parent.mkdir(parents=True)
     server_script = (
         "import json, sys\n"
         f"rollout = {str(rollout_path)!r}\n"
@@ -61,6 +64,9 @@ def test_codex_strict_sequence_exact_persistence_and_bound_qualification(tmp_pat
         "        assert method == 'thread/start' and 'id' in msg\n"
         "        params = msg['params']\n"
         "        assert params['ephemeral'] is False\n"
+        "        if 'approvalPolicy' in params:\n"
+        "            assert params['approvalPolicy'] == 'on-request'\n"
+        "            assert params['sandbox'] == {'type': 'workspaceWrite'}\n"
         "        print(json.dumps({'jsonrpc': '2.0', 'method': 'thread/allocated', 'params': {'pending': True}}), flush=True)\n"
         "        print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': {\n"
         "            'approvalPolicy': 'on-request',\n"
@@ -87,9 +93,15 @@ def test_codex_strict_sequence_exact_persistence_and_bound_qualification(tmp_pat
         NativeBootstrapRequest(
             provider="codex",
             cwd=str(tmp_path),
+            model="gpt-5",
             codex_home=codex_home,
             expected_approval_policy="on-request",
             expected_sandbox_type="workspaceWrite",
+            requested_settings={
+                "approval_policy": "on-request",
+                "sandbox": "workspace-write",
+                "model": "gpt-5",
+            },
             live_qualification=qual,
             command_override=_py_server_cmd(server_script),
         )
@@ -108,9 +120,14 @@ def test_codex_strict_sequence_exact_persistence_and_bound_qualification(tmp_pat
         "requires_bootstrap_model_turn": False,
         "instruction_delivery_performed": False,
         "supports_ordered_instruction_snapshots": True,
-        "workflow_init_mode": "additive_without_extra_turn",
-        "initial_prompt_delivery": "one_time_on_attach",
+        "workflow_init_mode": "deferred_to_guarded_interactive_attach",
+        "initial_prompt_delivery": "one_time_on_guarded_interactive_attach",
     }
+    assert res_noise.effective_provider_context["runtime_status"] == "verified"
+    assert res_noise.effective_provider_context["executable_status"] == "verified"
+    assert res_noise.effective_provider_context["provider_version_status"] == "verified"
+    assert res_noise.effective_provider_context["permission_evidence"]["approval_policy"]["status"] == "verified"
+    assert res_noise.effective_provider_context["permission_evidence"]["sandbox_type"]["status"] == "verified"
 
     # 2. Valid rollout session_meta + state_5.sqlite cwd match, but mismatched version qualification -> blocked
     rollout_path.write_text(
@@ -197,11 +214,14 @@ def test_agy_exact_metadata_and_claude_readiness(tmp_path: Path) -> None:
     assert res_dir_only.persistence_evidence["metadata_id_verified"] is False
     assert res_dir_only.persisted is False
     assert res_dir_only.can_authorize_interactive_resume is False
+    assert res_dir_only.prompt_delivery_contract["supports_ordered_instruction_snapshots"] is False
+    assert res_dir_only.prompt_delivery_contract["workflow_init_mode"] == "unsupported"
+    assert res_dir_only.prompt_delivery_contract["initial_prompt_delivery"] == "unsupported"
 
-    # Matching session.json -> persisted + authorized under bound qualification
-    (agy_home / "brain" / "agy-conv-acp-0001" / "session.json").write_text(
-        json.dumps({"sessionId": "agy-conv-acp-0001"}), encoding="utf-8"
-    )
+    # The documented transcript path establishes persisted identity, but not an effective workspace.
+    transcript = agy_home / "brain" / "agy-conv-acp-0001" / ".system_generated" / "logs" / "transcript.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(json.dumps({"type": "user", "text": "guarded fixture"}) + "\n", encoding="utf-8")
     res_verified = allocate_native_session(
         NativeBootstrapRequest(
             provider="agy",
@@ -212,8 +232,11 @@ def test_agy_exact_metadata_and_claude_readiness(tmp_path: Path) -> None:
         )
     )
     assert res_verified.persisted is True
+    assert res_verified.persistence_evidence["metadata_id_verified"] is True
+    assert res_verified.persistence_evidence["transcript_jsonl_valid"] is True
+    assert res_verified.persistence_evidence["effective_cwd_status"] == "missing"
     assert res_verified.effective_provider_context["provider_version"] == "agy 1.5.18"
-    assert res_verified.can_authorize_interactive_resume is True
+    assert res_verified.can_authorize_interactive_resume is False
 
     # ACP protocolVersion alone without installed/reported provider version -> never authorizes resume
     no_ver_script = (
@@ -242,9 +265,164 @@ def test_agy_exact_metadata_and_claude_readiness(tmp_path: Path) -> None:
     assert res_proto_only.can_authorize_interactive_resume is False
 
     readiness = provider_native_bootstrap_readiness()
-    assert readiness["claude"]["safe_to_enable_now"] is True
+    assert readiness["claude"]["safe_to_enable_now"] is False
     assert readiness["codex"]["safe_to_enable_now"] is False
     assert readiness["agy"]["safe_to_enable_now"] is False
+
+    claude_reservation = allocate_native_session(NativeBootstrapRequest(provider="claude", cwd=str(tmp_path)))
+    assert claude_reservation.persisted is False
+    assert claude_reservation.effective_provider_context["cwd"] is None
+    assert claude_reservation.effective_provider_context["workspace_status"] == "not_observed_provider_not_started"
+    assert claude_reservation.prompt_delivery_contract["supports_ordered_instruction_snapshots"] is False
+    assert claude_reservation.prompt_delivery_contract["initial_prompt_delivery"] == (
+        "one_time_on_interactive_attach_mechanism_unqualified"
+    )
+
+
+def test_agy_invalid_native_session_id_is_uncertain_without_path_access(tmp_path: Path) -> None:
+    agy_home = tmp_path / ".agy"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    server_script = (
+        "import json, sys\n"
+        "for line in sys.stdin:\n"
+        "    msg = json.loads(line)\n"
+        "    result = {'protocolVersion': 1} if msg['method'] == 'initialize' else {'sessionId': '../outside'}\n"
+        "    print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}), flush=True)\n"
+    )
+    result = allocate_native_session(
+        NativeBootstrapRequest(
+            provider="agy",
+            cwd=str(tmp_path),
+            agy_home=agy_home,
+            command_override=_py_server_cmd(server_script),
+        )
+    )
+    assert result.status == NativeAllocationStatus.UNCERTAIN
+    assert result.persistence_evidence["invalid_native_session_id"] is True
+    assert result.native_session_id is None
+    assert list(outside.iterdir()) == []
+
+
+def test_agy_rejects_unmapped_launch_settings_before_starting_provider(tmp_path: Path) -> None:
+    marker = tmp_path / "provider-started"
+    server_script = (
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('started')\n"
+    )
+    result = allocate_native_session(
+        NativeBootstrapRequest(
+            provider="agy",
+            cwd=str(tmp_path),
+            requested_settings={"additional_directories": [str(tmp_path / "extra")]},
+            command_override=_py_server_cmd(server_script),
+        )
+    )
+    assert result.status == NativeAllocationStatus.FAILED
+    assert result.native_session_id is None
+    assert "additional_directories" in result.requested_context["unsupported_settings"]
+    assert marker.exists() is False
+
+
+def test_codex_persistence_requires_exact_scoped_metadata_and_tracks_cwd(tmp_path: Path) -> None:
+    codex_home = tmp_path / ".codex"
+    sessions = codex_home / "sessions" / "2026" / "11" / "27"
+    sessions.mkdir(parents=True)
+    expected_id = "01900000-0000-7000-8000-000000000001"
+    rollout = sessions / "rollout-2026-11-27-test.jsonl"
+
+    rollout.write_text(json.dumps({"type": "other", "payload": {"id": expected_id}}) + "\n", encoding="utf-8")
+    persisted, evidence = _verify_codex_persistence(expected_id, str(rollout), codex_home, str(tmp_path))
+    assert persisted is False
+    assert evidence["rollout_id_verified"] is False
+
+    rollout.write_text(json.dumps({"type": "session_meta", "payload": {"id": expected_id}}) + "\n", encoding="utf-8")
+    persisted, evidence = _verify_codex_persistence(expected_id, str(rollout), codex_home, str(tmp_path))
+    assert persisted is True
+    assert evidence["rollout_id_verified"] is True
+    assert evidence["effective_cwd_status"] == "missing"
+
+    rollout.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": expected_id, "cwd": str(tmp_path)}}) + "\n",
+        encoding="utf-8",
+    )
+    persisted, evidence = _verify_codex_persistence(expected_id, str(rollout), codex_home, str(tmp_path))
+    assert persisted is True
+    assert evidence["effective_cwd_status"] == "verified"
+
+    rollout.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": expected_id, "cwd": str(tmp_path)}})
+        + "\n"
+        + json.dumps({"type": "noise", "padding": "x" * 70_000})
+        + "\n",
+        encoding="utf-8",
+    )
+    persisted, evidence = _verify_codex_persistence(expected_id, str(rollout), codex_home, str(tmp_path))
+    assert persisted is False
+    assert evidence["rollout_metadata_truncated"] is True
+
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+    rollout.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": expected_id, "cwd": str(other_cwd)}}) + "\n",
+        encoding="utf-8",
+    )
+    persisted, evidence = _verify_codex_persistence(expected_id, str(rollout), codex_home, str(tmp_path))
+    assert persisted is False
+    assert evidence["effective_cwd_status"] == "mismatch"
+
+    rollout.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": expected_id, "cwd": "."}}) + "\n",
+        encoding="utf-8",
+    )
+    persisted, evidence = _verify_codex_persistence(expected_id, str(rollout), codex_home, str(tmp_path))
+    assert persisted is False
+    assert evidence["effective_cwd_status"] == "mismatch"
+
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": expected_id, "cwd": str(tmp_path)}}) + "\n",
+        encoding="utf-8",
+    )
+    persisted, evidence = _verify_codex_persistence(expected_id, str(outside), codex_home, str(tmp_path))
+    assert persisted is False
+    assert evidence["rollout_path_valid"] is False
+
+
+def test_agy_persistence_separates_identity_from_workspace_and_rejects_unsafe_ids(tmp_path: Path) -> None:
+    agy_home = tmp_path / ".agy"
+    session_id = "agy-conv-acp-safe-0001"
+    transcript = agy_home / "brain" / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+    session_dir = agy_home / "brain" / session_id
+    session_dir.mkdir(parents=True)
+
+    persisted, evidence = _verify_agy_persistence(session_id, agy_home)
+    assert persisted is False
+    assert evidence["conversation_dir_exists"] is True
+    assert evidence["effective_cwd_status"] == "missing"
+
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(json.dumps({"type": "user", "text": "fixture"}) + "\n", encoding="utf-8")
+    persisted, evidence = _verify_agy_persistence(session_id, agy_home)
+    assert persisted is True
+    assert evidence["metadata_id_verified"] is True
+    assert evidence["effective_cwd_status"] == "missing"
+
+    transcript.write_bytes(b"not-json\n")
+    persisted, evidence = _verify_agy_persistence(session_id, agy_home)
+    assert persisted is False
+    assert evidence["metadata_invalid"] is True
+
+    persisted, evidence = _verify_agy_persistence("../outside", agy_home)
+    assert persisted is False
+    assert evidence["session_id_valid"] is False
+
+    transcript.write_bytes(
+        json.dumps({"type": "user", "padding": "x" * 70_000}).encode("utf-8")
+    )
+    persisted, evidence = _verify_agy_persistence(session_id, agy_home)
+    assert persisted is False
+    assert evidence["metadata_oversized"] is True
 
 
 def test_saturated_stderr_stalled_stdin_descendant_pipes_and_bounds(tmp_path: Path) -> None:

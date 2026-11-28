@@ -1907,15 +1907,44 @@ class DispatcherService:
                 for key in (
                     "mechanism", "source", "rollout_id_verified", "state_db_row",
                     "state_db_cwd_verified", "conversation_dir_exists", "metadata_id_verified",
+                    "rollout_path_valid", "identity_verified", "effective_cwd_status",
+                    "effective_workspace_verified", "identity_evidence_source",
+                    "effective_workspace_source", "metadata_path_valid", "transcript_jsonl_valid",
+                    "metadata_oversized",
                     "helper_shutdown_clean", "shutdown_mode", "helper_exit_code", "dropped_notifications",
                 )
                 if key in persistence and isinstance(persistence[key], (str, bool, int, float))
             }
             safe_requested = {
                 key: requested[key]
-                for key in ("cwd", "model", "expected_approval_policy", "expected_sandbox_type", "mcp_server_count")
+                for key in (
+                    "cwd", "model", "runtime_kind", "executable", "provider_version",
+                    "expected_approval_policy", "expected_sandbox_type", "mcp_server_count",
+                )
                 if key in requested and isinstance(requested[key], (str, bool, int, float))
             }
+            safe_effective = {
+                key: effective[key]
+                for key in (
+                    "cwd", "workspace_status", "workspace_evidence_source", "runtime_kind", "runtime_status",
+                    "executable", "requested_executable", "executable_status", "provider_version",
+                    "requested_provider_version", "provider_version_status", "approval_policy",
+                    "model", "model_status", "model_provider", "protocol_version",
+                )
+                if key in effective and isinstance(effective[key], (str, bool, int, float))
+            }
+            permission_evidence = effective.get("permission_evidence")
+            if isinstance(permission_evidence, dict):
+                safe_effective["permission_evidence"] = {
+                    name: {
+                        key: value
+                        for key, value in evidence.items()
+                        if key in {"requested", "effective", "status"}
+                        and isinstance(value, (str, bool, int, float))
+                    }
+                    for name, evidence in permission_evidence.items()
+                    if isinstance(name, str) and isinstance(evidence, dict)
+                }
             payload = {
                 "slot_id": slot_id, "launch_id": launch_id, "return_code": 0,
                 "outcome": "native_allocation_completed", "status": allocation.status,
@@ -1926,6 +1955,7 @@ class DispatcherService:
                 "provider_version": effective.get("provider_version") or effective.get("user_agent"),
                 "allocation_mechanism": persistence.get("mechanism") or persistence.get("source"),
                 "requested_context": safe_requested,
+                "effective_provider_context": safe_effective,
                 "persistence_evidence": safe_persistence,
                 "error_code": allocation.error_code,
                 "detail": "Provider session allocation evidence recorded; allocation does not imply provider startup or slot association.",
@@ -1984,7 +2014,9 @@ class DispatcherService:
                          "outcome": "claude_session_id_reserved",
                          "detail": "Native UUID allocation persisted by LLMD; provider creation, association, and resumability are unconfirmed.",
                          "native_session_id": session_id,
-                         "effective_cwd": allocation.effective_provider_context.get("cwd"),
+                         "effective_cwd": effective_cwd,
+                         "provider_effective_cwd": allocation.effective_provider_context.get("cwd"),
+                         "workspace_evidence_source": "dispatcher_launch_request_not_provider_evidence",
                          "allocation_mechanism": allocation.persistence_evidence.get("mechanism"),
                          "provider_persistence_confirmed": allocation.persisted,
                          "provider_resumability_confirmed": allocation.interactively_resumable},

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from io import StringIO
@@ -1032,6 +1033,13 @@ def test_gated_native_allocation_attaches_only_after_guarded_exact_process_obser
     assert result == 0
     assert len(allocation_calls) == len(runner_calls) == 1
     assert allocation_calls[0].provider == provider
+    provider_user_home = Path(getattr(dispatcher.continuity.adapters[provider], "_home_dir", Path.home()))
+    if provider == "codex":
+        assert allocation_calls[0].codex_home == Path(os.environ.get("CODEX_HOME") or provider_user_home / ".codex")
+        assert allocation_calls[0].agy_home is None
+    else:
+        assert allocation_calls[0].codex_home is None
+        assert allocation_calls[0].agy_home == provider_user_home / ".gemini" / "antigravity-cli"
     assert runner_calls[0][0] == guarded_argv
     assert prompt_seen == (["guarded one-time prompt"] if provider == "codex" else [None])
     current = dispatcher.get_slot(gui="Native", name="Agent")["current"]
@@ -1085,10 +1093,51 @@ def test_persisted_native_allocation_can_be_recovered_by_exact_identity_without_
     allocation = NativeSessionAllocation(
         provider="codex", status=NativeAllocationStatus.ALLOCATED,
         native_session_id="codex-persisted-exact", persisted=True, interactively_resumable=True,
-        effective_provider_context={"cwd": cwd, "provider_version": "guarded-test"},
-        persistence_evidence={"mechanism": "guarded fake provider"},
+        requested_context={
+            "cwd": cwd,
+            "runtime_kind": "windows",
+            "executable": "C:/codex/codex.exe",
+            "provider_version": "codex-app-server/guarded",
+            "expected_approval_policy": "on-request",
+            "expected_sandbox_type": "workspaceWrite",
+        },
+        effective_provider_context={
+            "cwd": cwd,
+            "workspace_status": "verified",
+            "runtime_kind": "windows",
+            "runtime_status": "verified",
+            "executable": "C:/codex/codex.exe",
+            "requested_executable": "C:/codex/codex.exe",
+            "executable_status": "verified",
+            "provider_version": "codex-app-server/guarded",
+            "requested_provider_version": "codex-app-server/guarded",
+            "provider_version_status": "verified",
+            "permission_evidence": {
+                "approval_policy": {"requested": "on-request", "effective": "on-request", "status": "verified"},
+                "sandbox_type": {"requested": "workspaceWrite", "effective": "workspaceWrite", "status": "verified"},
+            },
+        },
+        persistence_evidence={
+            "mechanism": "guarded fake provider",
+            "identity_verified": True,
+            "effective_cwd_status": "verified",
+            "effective_workspace_verified": True,
+        },
     )
     dispatcher.record_native_allocation(launch_id=launch_id, slot_id=slot_id, allocation=allocation)
+    allocation_rows = dispatcher._rows(
+        """SELECT payload_json FROM activity_events
+           WHERE event_type = ? AND json_extract(payload_json, '$.launch_id') = ?
+             AND json_extract(payload_json, '$.outcome') = 'native_allocation_completed'""",
+        (EventType.DISPATCHER_PROCESS_OBSERVED.value, launch_id),
+    )
+    assert len(allocation_rows) == 1
+    recorded = json.loads(allocation_rows[0]["payload_json"])
+    assert recorded["requested_context"]["runtime_kind"] == "windows"
+    assert recorded["effective_provider_context"]["executable_status"] == "verified"
+    assert recorded["effective_provider_context"]["permission_evidence"]["sandbox_type"]["status"] == "verified"
+    assert recorded["persistence_evidence"]["identity_verified"] is True
+    assert recorded["persistence_evidence"]["effective_cwd_status"] == "verified"
 
     preview = dispatcher.recover_captured_launch(gui="Native", name="Agent", apply=False)
     result = dispatcher.recover_captured_launch(gui="Native", name="Agent", apply=True)

@@ -63,7 +63,7 @@ llmd start Project Agent -p codex -N -I .\AGENTS.md --instructions-file .\review
 llmd start Project Agent -p codex -N -Y -I .\AGENTS.md -a
 ```
 
-Instruction delivery remains limited to the guarded Codex/AGY additive initialization paths; unsupported providers, including Claude, refuse instruction-only launches. Claude UUID allocation uses the inference-free native allocator and is durably separated from provider creation, association, and resumability. Codex and AGY inference-free activation remain disabled pending live provider qualification; their current guarded candidate path retains the fixed initialization turn. No live provider was exercised for this candidate.
+Workflow instructions may be submitted by the legacy fixed-bootstrap path where supported; that path consumes an initialization model turn, and provider-effective loading or persistence through resume is unverified. The guarded Codex native-allocation path defers ordered instructions and the LLMD-59 one-time prompt to the exact interactive attach; neither is submitted during allocation. The native AGY path refuses instruction and prompt delivery before allocation. Claude's UUID allocator reserves an ID only; it does not start Claude, persist a provider transcript, or prove effective cwd or resumability. Claude workflow instruction initialization remains unsupported. Codex/AGY native-allocation activation and live prompt delivery remain unqualified and disabled.
 
 ## Named Agent Dispatcher
 
@@ -208,7 +208,7 @@ Other provider flags require explicit authorization before the separator: `llmd 
 
 `start`, `switch`, `continue`, `review`, `return`, and exact terminal-session `last -r` accept one of `-Q/--clipboard-prompt`, `-F/--prompt-file`, or `-M/--prompt`. These options are mutually exclusive; `-P` remains the profile selector. Prompt files use UTF-8 and preserve line breaks. Dry-run does not read or display prompt content. LLMD does not persist the text, include it in launch history or exit summaries, or replay it after an uncertain launch. Addressed `Agent:` and `To-Agent:` handoffs must match the exact registered target slot.
 
-Codex and Claude receive the text through their documented interactive initial/follow-up prompt arguments. AGY prompt delivery is rejected because LLMD's managed AGY path needs a bootstrap session before the interactive launch, and no documented, qualified exact-session submission interface avoids a second turn. Clipboard input uses the host clipboard reader (PowerShell on Windows, `pbpaste` on macOS, or `wl-paste`/`xclip` on Linux). Clipboard and prompt-file contents are limited to 1 MiB.
+Codex and Claude command construction passes a one-time prompt through their interactive initial/follow-up argument; live delivery is not qualified here, and uncertain launches never replay it. AGY prompt delivery is rejected because LLMD has no qualified exact-session submission interface for its managed AGY path. Clipboard input uses the host clipboard reader (PowerShell on Windows, `pbpaste` on macOS, or `wl-paste`/`xclip` on Linux). Clipboard and prompt-file contents are limited to 1 MiB.
 
 ### Worktree location convention (LLMD-61)
 

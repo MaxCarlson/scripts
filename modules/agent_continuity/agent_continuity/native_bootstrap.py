@@ -30,6 +30,10 @@ MAX_INTERNAL_QUEUE_ITEMS = 256
 MAX_STDERR_LINES = 32
 MAX_STDERR_LINE_CHARS = 256
 GRACEFUL_SHUTDOWN_WAIT_SECONDS = 0.4
+MAX_PERSISTENCE_METADATA_BYTES = 65_536
+MAX_CODEX_ROLLOUT_RECORDS = 32
+MAX_CODEX_ROLLOUT_RECORD_BYTES = 65_536
+_AGY_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 _ANSI_AND_CTRL_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f]")
 
@@ -70,6 +74,7 @@ class NativeBootstrapRequest:
     agy_home: Path | None = None
     expected_approval_policy: str | None = None
     expected_sandbox_type: str | None = None
+    requested_settings: dict[str, Any] = field(default_factory=dict)
     live_qualification: VerifiedLiveQualification | None = None
     command_override: Sequence[str] | None = None
 
@@ -95,11 +100,38 @@ class NativeSessionAllocation:
         default_factory=lambda: {
             "requires_bootstrap_model_turn": False,
             "instruction_delivery_performed": False,
-            "supports_ordered_instruction_snapshots": True,
-            "workflow_init_mode": "additive_without_extra_turn",
-            "initial_prompt_delivery": "one_time_on_attach",
+            "supports_ordered_instruction_snapshots": False,
+            "workflow_init_mode": "unsupported",
+            "initial_prompt_delivery": "unsupported",
         }
     )
+
+    def __post_init__(self) -> None:
+        if self.provider == Provider.CODEX.value:
+            contract = {
+                "requires_bootstrap_model_turn": False,
+                "instruction_delivery_performed": False,
+                "supports_ordered_instruction_snapshots": True,
+                "workflow_init_mode": "deferred_to_guarded_interactive_attach",
+                "initial_prompt_delivery": "one_time_on_guarded_interactive_attach",
+            }
+        elif self.provider == Provider.CLAUDE.value:
+            contract = {
+                "requires_bootstrap_model_turn": False,
+                "instruction_delivery_performed": False,
+                "supports_ordered_instruction_snapshots": False,
+                "workflow_init_mode": "unsupported",
+                "initial_prompt_delivery": "one_time_on_interactive_attach_mechanism_unqualified",
+            }
+        else:
+            contract = {
+                "requires_bootstrap_model_turn": False,
+                "instruction_delivery_performed": False,
+                "supports_ordered_instruction_snapshots": False,
+                "workflow_init_mode": "unsupported",
+                "initial_prompt_delivery": "unsupported",
+            }
+        object.__setattr__(self, "prompt_delivery_contract", contract)
 
     @property
     def can_authorize_interactive_resume(self) -> bool:
@@ -156,6 +188,16 @@ def _normalize_resolved_path(raw: str) -> str:
     p = Path(raw).resolve()
     text = str(p)
     return os.path.normcase(text) if os.name == "nt" else text
+
+
+def _normalize_observed_cwd(raw: str) -> str | None:
+    path = Path(raw)
+    if not path.is_absolute():
+        return None
+    try:
+        return _normalize_resolved_path(raw)
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
 def _validate_cwd(raw_cwd: str) -> str:
@@ -550,6 +592,40 @@ def _resolve_executable(
     return found
 
 
+def _effective_executable(argv: Sequence[str], which_fn: Callable[[str], str | None]) -> str | None:
+    if not argv or not argv[0]:
+        return None
+    path = which_fn(argv[0]) or argv[0]
+    try:
+        return str(Path(path).resolve())
+    except (OSError, RuntimeError, ValueError):
+        return path
+
+
+def _expected_executable(
+    request: NativeBootstrapRequest,
+    provider: str,
+    which_fn: Callable[[str], str | None],
+) -> str:
+    expected = request.executable
+    if not expected and request.command_override:
+        expected = request.command_override[0]
+    if not expected:
+        expected = provider
+    try:
+        return str(Path(expected_path).resolve()) if (expected_path := which_fn(expected)) else expected
+    except (OSError, RuntimeError, ValueError):
+        return expected
+
+
+def _evidence_status(expected: Any, effective: Any) -> str:
+    if expected is None:
+        return "not_requested" if effective is not None else "unavailable"
+    if effective is None:
+        return "missing"
+    return "verified" if expected == effective else "mismatch"
+
+
 def _verify_codex_persistence(
     thread_id: str,
     thread_path: str | None,
@@ -558,31 +634,83 @@ def _verify_codex_persistence(
 ) -> tuple[bool, dict[str, Any]]:
     evidence: dict[str, Any] = {
         "thread_path": thread_path,
+        "rollout_path_valid": False,
         "rollout_exists": False,
         "rollout_id_verified": False,
+        "rollout_cwd_status": "missing",
         "state_db_row": False,
         "state_db_cwd_verified": False,
+        "state_db_cwd_status": "missing",
+        "effective_cwd_status": "missing",
     }
-    if thread_path:
-        p = Path(thread_path)
-        if p.is_file() and p.stat().st_size > 0:
-            evidence["rollout_exists"] = True
-            with suppress(OSError, UnicodeDecodeError), p.open("r", encoding="utf-8", errors="replace") as fh:
-                    for _ in range(16):
-                        line = fh.readline(65_536)
+    if thread_path and codex_home is not None:
+        try:
+            sessions_root = (codex_home / "sessions").resolve(strict=True)
+            untrusted_path = Path(thread_path)
+            p = untrusted_path.resolve(strict=True) if untrusted_path.is_absolute() else None
+            if (
+                p is not None
+                and p.is_file()
+                and p.suffix.lower() == ".jsonl"
+                and p.name.startswith("rollout-")
+                and p.is_relative_to(sessions_root)
+                and p.stat().st_size > 0
+            ):
+                evidence["rollout_path_valid"] = True
+                evidence["rollout_exists"] = True
+                session_meta_ids: set[str] = set()
+                rollout_cwds: set[str] = set()
+                invalid_cwd = False
+                with p.open("rb") as fh:
+                    for _record_number in range(MAX_CODEX_ROLLOUT_RECORDS):
+                        line = fh.readline(MAX_CODEX_ROLLOUT_RECORD_BYTES + 1)
                         if not line:
                             break
-                        with suppress(json.JSONDecodeError):
-                            rec = json.loads(line)
-                            if isinstance(rec, dict):
-                                rec_id = rec.get("id") or (
-                                    rec.get("payload", {}).get("id")
-                                    if isinstance(rec.get("payload"), dict)
-                                    else None
-                                )
-                                if rec_id == thread_id:
-                                    evidence["rollout_id_verified"] = True
-                                    break
+                        if len(line) > MAX_CODEX_ROLLOUT_RECORD_BYTES:
+                            evidence["rollout_metadata_truncated"] = True
+                            break
+                        try:
+                            rec = json.loads(line.decode("utf-8", errors="strict"))
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            evidence["rollout_metadata_invalid"] = True
+                            break
+                        if not isinstance(rec, dict) or rec.get("type") != "session_meta":
+                            continue
+                        payload = rec.get("payload")
+                        if not isinstance(payload, dict):
+                            evidence["rollout_metadata_invalid"] = True
+                            break
+                        rec_id = payload.get("id")
+                        if isinstance(rec_id, str) and rec_id:
+                            session_meta_ids.add(rec_id)
+                        else:
+                            evidence["rollout_metadata_invalid"] = True
+                        if "cwd" in payload:
+                            cwd = payload.get("cwd")
+                            if isinstance(cwd, str) and cwd.strip():
+                                normalized_cwd = _normalize_observed_cwd(cwd)
+                                if normalized_cwd is None:
+                                    invalid_cwd = True
+                                else:
+                                    rollout_cwds.add(normalized_cwd)
+                            else:
+                                invalid_cwd = True
+                    else:
+                        if fh.read(1):
+                            evidence["rollout_metadata_truncated"] = True
+                evidence["rollout_id_verified"] = (
+                    session_meta_ids == {thread_id} and not evidence.get("rollout_metadata_invalid")
+                )
+                if len(session_meta_ids) > 1 or (session_meta_ids and thread_id not in session_meta_ids):
+                    evidence["rollout_identity_conflict"] = True
+                if invalid_cwd or len(rollout_cwds) > 1:
+                    evidence["rollout_cwd_status"] = "mismatch"
+                elif rollout_cwds:
+                    evidence["rollout_cwd_status"] = (
+                        "verified" if rollout_cwds == {_normalize_resolved_path(expected_cwd)} else "mismatch"
+                    )
+        except (OSError, RuntimeError, ValueError):
+            evidence["rollout_path_valid"] = False
     if codex_home is not None:
         state_db = codex_home / "state_5.sqlite"
         if state_db.is_file():
@@ -596,41 +724,104 @@ def _verify_codex_persistence(
                         if row is not None:
                             evidence["state_db_row"] = True
                             db_cwd = str(row[1] or "").strip()
-                            if not db_cwd or _normalize_resolved_path(db_cwd) == _normalize_resolved_path(expected_cwd):
-                                evidence["state_db_cwd_verified"] = True
+                            if db_cwd:
+                                normalized_db_cwd = _normalize_observed_cwd(db_cwd)
+                                evidence["state_db_cwd_status"] = (
+                                    "verified"
+                                    if normalized_db_cwd == _normalize_observed_cwd(expected_cwd)
+                                    and normalized_db_cwd is not None
+                                    else "mismatch"
+                                )
+                                evidence["state_db_cwd_verified"] = evidence["state_db_cwd_status"] == "verified"
                     else:
                         row = conn.execute("SELECT id FROM threads WHERE id = ?", (thread_id,)).fetchone()
                         if row is not None:
                             evidence["state_db_row"] = True
-                            evidence["state_db_cwd_verified"] = True
+    cwd_statuses = [evidence["rollout_cwd_status"], evidence["state_db_cwd_status"]]
+    if "mismatch" in cwd_statuses:
+        evidence["effective_cwd_status"] = "mismatch"
+    elif "verified" in cwd_statuses:
+        evidence["effective_cwd_status"] = "verified"
+    identity_verified = evidence["rollout_id_verified"] or evidence["state_db_row"]
+    evidence["identity_verified"] = bool(identity_verified)
     persisted = bool(
-        evidence["rollout_id_verified"]
-        or (evidence["state_db_row"] and evidence["state_db_cwd_verified"])
+        identity_verified
+        and evidence["effective_cwd_status"] != "mismatch"
+        and not (evidence["rollout_path_valid"] and evidence.get("rollout_metadata_invalid"))
+        and not evidence.get("rollout_metadata_truncated")
     )
     return persisted, evidence
 
 
-def _verify_agy_persistence(session_id: str, agy_home: Path | None) -> tuple[bool, dict[str, Any]]:
+def _verify_agy_persistence(
+    session_id: str,
+    agy_home: Path | None,
+) -> tuple[bool, dict[str, Any]]:
     evidence: dict[str, Any] = {
         "agy_home": str(agy_home) if agy_home else None,
+        "session_id_valid": bool(_AGY_SESSION_ID_RE.fullmatch(session_id)) and session_id not in {".", ".."},
         "conversation_dir_exists": False,
         "metadata_id_verified": False,
+        "metadata_path_valid": False,
+        "transcript_jsonl_valid": False,
+        "effective_workspace_source": "unavailable_in_verified_transcript_contract",
+        "effective_cwd_status": "missing",
     }
-    if agy_home is not None:
-        conv_dir = agy_home / "brain" / session_id
-        if conv_dir.is_dir():
-            evidence["conversation_dir_exists"] = True
-            for candidate_name in ("session.json", "metadata.json", "conversation.json"):
-                candidate = conv_dir / candidate_name
-                if candidate.is_file():
-                    with suppress(OSError, json.JSONDecodeError):
-                        data = json.loads(candidate.read_text(encoding="utf-8"))
-                        if isinstance(data, dict) and (
-                            data.get("sessionId") == session_id or data.get("id") == session_id
-                        ):
-                            evidence["metadata_id_verified"] = True
-                            break
-    return bool(evidence["metadata_id_verified"]), evidence
+    if agy_home is None or not evidence["session_id_valid"]:
+        return False, evidence
+    try:
+        home = agy_home.resolve(strict=True)
+        brain_dir = (home / "brain").resolve(strict=True)
+        conv_dir = (brain_dir / session_id).resolve(strict=True)
+        if not brain_dir.is_relative_to(home) or not conv_dir.is_relative_to(brain_dir) or conv_dir.name != session_id:
+            evidence["metadata_path_valid"] = False
+            return False, evidence
+        if not conv_dir.is_dir():
+            return False, evidence
+        evidence["conversation_dir_exists"] = True
+        # Antigravity documents this exact CLI transcript location; the transcript body has no
+        # documented workspace metadata schema, so it is identity/path evidence only.
+        transcript = conv_dir / ".system_generated" / "logs" / "transcript.jsonl"
+        resolved_transcript = transcript.resolve(strict=True)
+        if not resolved_transcript.is_file() or not resolved_transcript.is_relative_to(conv_dir):
+            evidence["metadata_path_valid"] = False
+            return False, evidence
+        evidence["metadata_path_valid"] = True
+        evidence["metadata_path"] = str(resolved_transcript)
+        if resolved_transcript.stat().st_size > MAX_PERSISTENCE_METADATA_BYTES:
+            evidence["metadata_oversized"] = True
+            return False, evidence
+        with resolved_transcript.open("rb") as fh:
+            raw = fh.read(MAX_PERSISTENCE_METADATA_BYTES + 1)
+        if len(raw) > MAX_PERSISTENCE_METADATA_BYTES:
+            evidence["metadata_oversized"] = True
+            return False, evidence
+        lines = [line for line in raw.splitlines() if line.strip()]
+        if not lines:
+            evidence["metadata_invalid"] = True
+            return False, evidence
+        try:
+            for line in lines:
+                record = json.loads(line.decode("utf-8", errors="strict"))
+                if not isinstance(record, dict):
+                    raise ValueError("transcript record is not an object")
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            evidence["metadata_invalid"] = True
+            return False, evidence
+        evidence["transcript_jsonl_valid"] = True
+        # ACP sessionId and exact provider-store path establish identity; the official transcript
+        # contract does not define a persisted workspace field, so cwd remains unknown.
+        evidence["metadata_id_verified"] = True
+        evidence["identity_evidence_source"] = "acp_session_id_at_exact_provider_transcript_path"
+    except (OSError, RuntimeError, ValueError):
+        evidence["metadata_path_valid"] = False
+        return False, evidence
+    persisted = bool(
+        evidence["metadata_id_verified"]
+        and evidence.get("metadata_path_valid") is True
+        and evidence["transcript_jsonl_valid"]
+    )
+    return persisted, evidence
 
 
 def _is_live_resume_authorized(
@@ -700,12 +891,34 @@ def _validate_codex_context(
             ErrorCode.ASSOCIATION_CONFLICT,
             f"Codex sandbox {sandbox_type!r} does not match expected {request.expected_sandbox_type!r}.",
         )
+    effective_cwd = str(reported_cwd) if isinstance(reported_cwd, str) and reported_cwd.strip() else None
+    model = start_result.get("model")
+    if request.model is not None and model != request.model:
+        raise _ProtocolFailure(
+            NativeAllocationStatus.FAILED,
+            ErrorCode.ASSOCIATION_CONFLICT,
+            f"Codex effective model {model!r} does not match requested model {request.model!r}.",
+        )
     return {
-        "cwd": str(reported_cwd) if isinstance(reported_cwd, str) and reported_cwd.strip() else None,
+        "cwd": effective_cwd,
+        "workspace_status": _evidence_status(resolved_cwd, effective_cwd),
         "model": start_result.get("model"),
+        "model_status": _evidence_status(request.model, model),
         "model_provider": start_result.get("modelProvider"),
         "approval_policy": approval_policy,
         "sandbox": sandbox,
+        "permission_evidence": {
+            "approval_policy": {
+                "requested": request.expected_approval_policy,
+                "effective": approval_policy,
+                "status": _evidence_status(request.expected_approval_policy, approval_policy),
+            },
+            "sandbox_type": {
+                "requested": request.expected_sandbox_type,
+                "effective": sandbox_type,
+                "status": _evidence_status(request.expected_sandbox_type, sandbox_type),
+            },
+        },
     }
 
 
@@ -719,6 +932,8 @@ def _allocate_codex(
         if request.command_override
         else [_resolve_executable("codex", request.executable, which_fn), "app-server", "--stdio"]
     )
+    effective_executable = _effective_executable(argv, which_fn)
+    expected_executable = _expected_executable(request, Provider.CODEX.value, which_fn)
     with _JsonRpcStdioTransport(
         argv,
         cwd=resolved_cwd,
@@ -733,6 +948,10 @@ def _allocate_codex(
         start_params: dict[str, Any] = {"cwd": resolved_cwd, "ephemeral": False}
         if request.model:
             start_params["model"] = request.model
+        if request.expected_approval_policy is not None:
+            start_params["approvalPolicy"] = request.expected_approval_policy
+        if request.expected_sandbox_type is not None:
+            start_params["sandbox"] = {"type": request.expected_sandbox_type}
         start_result = rpc.call("thread/start", start_params)
         rpc.close_gracefully()
         notifications = list(rpc.notifications)
@@ -793,10 +1012,26 @@ def _allocate_codex(
     thread_path = thread.get("path") if isinstance(thread.get("path"), str) else None
     context["user_agent"] = user_agent
     context["thread_path"] = thread_path
+    expected_version = request.live_qualification.provider_version if request.live_qualification else None
+    context.update(
+        {
+            "runtime_kind": _current_runtime_kind(),
+            "runtime_status": "verified",
+            "executable": effective_executable,
+            "requested_executable": expected_executable,
+            "executable_status": _evidence_status(expected_executable, effective_executable),
+            "provider_version": user_agent,
+            "requested_provider_version": expected_version,
+            "provider_version_status": _evidence_status(expected_version, user_agent),
+        }
+    )
 
     requested_context = {
         "cwd": resolved_cwd,
         "model": request.model,
+        "runtime_kind": _current_runtime_kind(),
+        "executable": expected_executable,
+        "provider_version": expected_version,
         "expected_approval_policy": request.expected_approval_policy,
         "expected_sandbox_type": request.expected_sandbox_type,
     }
@@ -821,13 +1056,24 @@ def _allocate_codex(
 
     persisted, evidence = _verify_codex_persistence(thread_id, thread_path, request.codex_home, resolved_cwd)
     evidence.update(shutdown_info)
+    if context["workspace_status"] == "missing" and evidence["effective_cwd_status"] == "verified":
+        context["cwd"] = resolved_cwd
+        context["workspace_status"] = "verified"
+        context["workspace_evidence_source"] = (
+            "codex_rollout_session_meta"
+            if evidence["rollout_cwd_status"] == "verified"
+            else "codex_state_db"
+        )
+    elif context["workspace_status"] == "missing":
+        context["workspace_evidence_source"] = "unavailable"
+    evidence["effective_workspace_verified"] = context["workspace_status"] == "verified"
     resumable = _is_live_resume_authorized(
         provider=Provider.CODEX.value,
         provider_version=user_agent,
         mechanism="codex app-server --stdio",
         persisted=persisted,
         qualification=request.live_qualification,
-    )
+    ) and context["workspace_status"] == "verified" and context["executable_status"] == "verified"
     return NativeSessionAllocation(
         provider=Provider.CODEX.value,
         status=NativeAllocationStatus.ALLOCATED,
@@ -854,6 +1100,8 @@ def _allocate_agy(
         exe = _resolve_executable("agy", request.executable, which_fn)
         detected_version = _detect_installed_version(exe)
         argv = [exe, "acp", "--stdio"]
+    effective_executable = _effective_executable(argv, which_fn)
+    expected_executable = _expected_executable(request, Provider.AGY.value, which_fn)
     with _JsonRpcStdioTransport(
         argv,
         cwd=resolved_cwd,
@@ -903,11 +1151,42 @@ def _allocate_agy(
             error_message="AGY ACP session/new response missing non-empty 'sessionId'.",
         )
 
-    requested_context = {"cwd": resolved_cwd, "mcp_server_count": len(request.mcp_servers)}
-    context = {
+    if not _AGY_SESSION_ID_RE.fullmatch(session_id) or session_id in {".", ".."}:
+        return NativeSessionAllocation(
+            provider=Provider.AGY.value,
+            status=NativeAllocationStatus.UNCERTAIN,
+            native_session_id=None,
+            persisted=False,
+            interactively_resumable=False,
+            persistence_evidence={**shutdown_info, "invalid_native_session_id": True},
+            notifications=notifications,
+            raw_result={},
+            error_code=ErrorCode.HOOK_SCHEMA_MISMATCH,
+            error_message="AGY ACP session/new returned an invalid native session identifier; recovery is required.",
+        )
+
+    expected_version = request.live_qualification.provider_version if request.live_qualification else None
+    requested_context = {
         "cwd": resolved_cwd,
+        "runtime_kind": _current_runtime_kind(),
+        "executable": expected_executable,
+        "provider_version": expected_version,
+        "mcp_server_count": len(request.mcp_servers),
+    }
+    context = {
+        "cwd": None,
+        "requested_cwd": resolved_cwd,
+        "workspace_status": "missing",
         "protocol_version": proto_ver if proto_ver is not None else 1,
         "provider_version": detected_version,
+        "requested_provider_version": expected_version,
+        "provider_version_status": _evidence_status(expected_version, detected_version),
+        "runtime_kind": _current_runtime_kind(),
+        "runtime_status": "verified",
+        "executable": effective_executable,
+        "requested_executable": expected_executable,
+        "executable_status": _evidence_status(expected_executable, effective_executable),
+        "permission_evidence": {"status": "unavailable_from_acp_session_new"},
     }
     if not rpc.helper_shutdown_clean:
         return NativeSessionAllocation(
@@ -930,13 +1209,20 @@ def _allocate_agy(
 
     persisted, evidence = _verify_agy_persistence(session_id, request.agy_home)
     evidence.update(shutdown_info)
+    if evidence["effective_cwd_status"] == "verified":
+        context["cwd"] = resolved_cwd
+        context["workspace_status"] = "verified"
+        context["workspace_evidence_source"] = "agy_session_metadata"
+    else:
+        context["workspace_evidence_source"] = "not_available_from_verified_provider_metadata"
+    evidence["effective_workspace_verified"] = context["workspace_status"] == "verified"
     resumable = _is_live_resume_authorized(
         provider=Provider.AGY.value,
         provider_version=detected_version,
         mechanism="agy acp --stdio",
         persisted=persisted,
         qualification=request.live_qualification,
-    )
+    ) and context["workspace_status"] == "verified" and context["executable_status"] == "verified"
     return NativeSessionAllocation(
         provider=Provider.AGY.value,
         status=NativeAllocationStatus.ALLOCATED,
@@ -969,13 +1255,27 @@ def _allocate_claude(request: NativeBootstrapRequest, resolved_cwd: str) -> Nati
         native_session_id=session_id,
         persisted=False,
         interactively_resumable=False,
-        requested_context={"cwd": resolved_cwd, "model": request.model},
-        effective_provider_context={
+        requested_context={
             "cwd": resolved_cwd,
+            "runtime_kind": _current_runtime_kind(),
+            "model": request.model,
+        },
+        effective_provider_context={
+            "cwd": None,
+            "workspace_status": "not_observed_provider_not_started",
+            "runtime_kind": None,
+            "runtime_status": "not_observed_provider_not_started",
+            "executable": None,
+            "provider_version": None,
             "launch_flag": "--session-id",
             "model": request.model,
         },
-        persistence_evidence={"mechanism": "deterministic_uuidv4_cli_flag"},
+        persistence_evidence={
+            "mechanism": "deterministic_uuidv4_cli_flag",
+            "identity_verified": False,
+            "effective_workspace_verified": False,
+            "provider_process_started": False,
+        },
     )
 
 
@@ -988,6 +1288,86 @@ def allocate_native_session(
     provider = request.provider.strip().lower()
     try:
         resolved_cwd = _validate_cwd(request.cwd)
+        if provider == Provider.CODEX.value:
+            unsupported = set(request.requested_settings) - {"model", "approval_policy", "sandbox"}
+            if unsupported:
+                return NativeSessionAllocation(
+                    provider=provider,
+                    status=NativeAllocationStatus.FAILED,
+                    native_session_id=None,
+                    persisted=False,
+                    interactively_resumable=False,
+                    requested_context={"unsupported_settings": sorted(unsupported)},
+                    error_code=ErrorCode.RESUME_UNSUPPORTED,
+                    error_message=(
+                        "Native Codex allocation cannot verify requested settings: "
+                        + ", ".join(sorted(unsupported))
+                        + ". No provider process was started."
+                    ),
+                )
+            if "model" in request.requested_settings and request.requested_settings["model"] != request.model:
+                return NativeSessionAllocation(
+                    provider=provider,
+                    status=NativeAllocationStatus.FAILED,
+                    native_session_id=None,
+                    persisted=False,
+                    interactively_resumable=False,
+                    error_code=ErrorCode.INVALID_INPUT,
+                    error_message=(
+                        "Native Codex model request disagrees with requested settings; "
+                        "no provider process was started."
+                    ),
+                )
+            if request.requested_settings.get("approval_policy", request.expected_approval_policy) != request.expected_approval_policy:
+                return NativeSessionAllocation(
+                    provider=provider,
+                    status=NativeAllocationStatus.FAILED,
+                    native_session_id=None,
+                    persisted=False,
+                    interactively_resumable=False,
+                    error_code=ErrorCode.INVALID_INPUT,
+                    error_message=(
+                        "Native Codex approval policy disagrees with requested settings; "
+                        "no provider process was started."
+                    ),
+                )
+            requested_sandbox = request.requested_settings.get("sandbox")
+            if (
+                requested_sandbox is not None
+                and requested_sandbox not in {
+                    "workspace-write", "read-only", "danger-full-access", "workspaceWrite", "readOnly", "dangerFullAccess",
+                }
+            ) or (
+                request.expected_sandbox_type is not None
+                and request.expected_sandbox_type not in {"workspaceWrite", "readOnly", "dangerFullAccess"}
+            ):
+                return NativeSessionAllocation(
+                    provider=provider,
+                    status=NativeAllocationStatus.FAILED,
+                    native_session_id=None,
+                    persisted=False,
+                    interactively_resumable=False,
+                    error_code=ErrorCode.INVALID_INPUT,
+                    error_message=(
+                        "Native Codex sandbox request is not a verified sandbox mapping; "
+                        "no provider process was started."
+                    ),
+                )
+        elif provider == Provider.AGY.value and request.requested_settings:
+            return NativeSessionAllocation(
+                provider=provider,
+                status=NativeAllocationStatus.FAILED,
+                native_session_id=None,
+                persisted=False,
+                interactively_resumable=False,
+                requested_context={"unsupported_settings": sorted(request.requested_settings)},
+                error_code=ErrorCode.RESUME_UNSUPPORTED,
+                error_message=(
+                    "AGY ACP session/new has no qualified mapping for requested launch settings: "
+                    + ", ".join(sorted(request.requested_settings))
+                    + ". No provider process was started."
+                ),
+            )
         if provider == Provider.CODEX.value:
             return _allocate_codex(request, resolved_cwd, which_fn)
         if provider == Provider.AGY.value:
@@ -1028,8 +1408,11 @@ def provider_native_bootstrap_readiness() -> dict[str, dict[str, Any]]:
             "verified_version": "claude 2.1.332",
             "runtime_kind": runtime,
             "mechanism": "claude --session-id <UUID>",
-            "safe_to_enable_now": True,
-            "reason": "Direct UUIDv4 CLI flag; does not require pre-launch server allocation or bootstrap turn.",
+            "safe_to_enable_now": False,
+            "reason": (
+                "UUIDv4 reservation is deterministic and inference-free, but native allocation does not start the "
+                "provider or prove persisted transcript identity, effective cwd, prompt delivery, or exact resume."
+            ),
         },
         Provider.CODEX.value: {
             "verified_version": "codex-cli 0.172.0",
@@ -1037,8 +1420,9 @@ def provider_native_bootstrap_readiness() -> dict[str, dict[str, Any]]:
             "mechanism": "codex app-server --stdio (initialize -> initialized -> thread/start)",
             "safe_to_enable_now": False,
             "reason": (
-                "Offline protocol implemented and qualified; live gate remaining: verify on codex-cli 0.172.0 "
-                "whether `codex resume <thread_id>` attaches cleanly pre-first-turn or requires thread/resume."
+                "Offline protocol is guarded-tested, not live-qualified; require exact in-store session_meta/state "
+                "identity and matching persisted cwd, then verify executable/version, runtime, requested permissions, "
+                "and exact pre-first-turn `codex resume <thread_id>`."
             ),
         },
         Provider.AGY.value: {
@@ -1047,8 +1431,10 @@ def provider_native_bootstrap_readiness() -> dict[str, dict[str, Any]]:
             "mechanism": "agy acp --stdio (initialize -> session/new)",
             "safe_to_enable_now": False,
             "reason": (
-                "Offline protocol implemented and qualified; live gate remaining: verify on agy 1.5.18 "
-                "whether `agy --conversation <sessionId>` or ACP `session/load` attaches cleanly pre-first-turn."
+                "Offline ACP protocol is guarded-tested, not live-qualified; exact transcript identity can be "
+                "checked under the CLI store, but the documented transcript contract does not expose a verified "
+                "workspace field. Keep attach disabled until an isolated authenticated store and effective cwd, "
+                "permissions, executable/version, runtime, and exact resume can be proven."
             ),
         },
     }
