@@ -208,4 +208,4 @@
 - [x] Qualify all six guarded provider directions on actual CLI invocation paths, historical reuse/round trips, nested worktrees, explicit directory overrides, multiple repositories, incompatible args, permissions, and Windows/WSL boundaries.
 - [x] Run final full-module xdist qualification (506 passed), scripts_help (66 passed, 1 skipped), terminal_launcher (78 passed), Ruff, version consistency, targeted help-registry validation, and diff hygiene.
 - [x] Review the task-only diff and record unsupported provider/runtime capabilities and unrelated registry validation failures.
-- [ ] Commit and push LLMD-57 feature branch.
+- [x] Commit and push LLMD-57 feature branch at `793046e0`; no main merge or deployment.
