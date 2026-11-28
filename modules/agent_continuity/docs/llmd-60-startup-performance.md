@@ -59,3 +59,11 @@ Measured via read-only inspection and disposable copies of `C:\Users\mcarls\.age
 ## Remaining guarded-start synchronization work
 
 The guarded new-session CLI path now performs **21** registry syncs, down from the previous **27**-sync apply path. `tests/dispatcher_cli_test.py::test_guarded_new_start_keeps_registry_syncs_below_previous_27_call_path` traverses CLI start, bootstrap ID capture, durable association, and exact-session handoff with guarded provider adapter outputs. This measures synchronization calls, not provider startup latency or live provider behavior. Preserve the event-spool sync under the registry mutation lock before launch reservation and the execution-time refresh before provider handoff. Do not count `--dist=load` scheduling as proof of synchronization correctness.
+
+## 4. Real-Provider Qualification Matrix & Procedure (Operator Approval)
+
+| Provider & Version | Allocation Mechanism | Pre-Turn Persistence Check | Attach / Resume Check | LLMD-62 & LLMD-59 Boundary | Activation Gate |
+| --- | --- | --- | --- | --- | --- |
+| `claude 2.1.332` | `claude --session-id <UUID>` | Deterministic UUIDv4 CLI flag | Direct attach with `--session-id` | Ordered Markdown instruction snapshot + one-time initial prompt delivered at interactive attach (0 extra turns) | **Enabled** |
+| `codex-cli 0.172.0` | `codex app-server --stdio` (`initialize` -> `initialized` -> `thread/start`) | Verify `thread.path` JSONL `session_meta.id` or `state_5.sqlite` `threads(id, cwd)` | Run `codex resume <thread_id>` in disposable `cwd` before first turn | Allocation sets `instruction_delivery_performed=False`; LLMD-62 snapshots + LLMD-59 prompt delivered once on attach | **Gated** (`VerifiedLiveQualification`) |
+| `agy 1.5.18` | `agy acp --stdio` (`initialize` -> `session/new`) | Verify `session.json`/`metadata.json` ID match + installed `agy --version` | Run `agy --conversation <sessionId>` or ACP `session/load` before first turn | Allocation sets `instruction_delivery_performed=False`; LLMD-62 snapshots + LLMD-59 prompt delivered once on attach | **Gated** (`VerifiedLiveQualification`) |
