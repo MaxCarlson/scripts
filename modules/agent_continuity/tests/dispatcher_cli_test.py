@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import builtins
 import json
+import subprocess
 import sys
+import time
 import tomllib
 import types
 from argparse import Namespace
@@ -13,11 +15,206 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+
 from agent_continuity.dispatcher import DispatcherService
-from agent_continuity.dispatcher_cli import _open, build_parser, dispatch
+from agent_continuity.dispatcher_cli import (
+    _exact_launched_provider_pid,
+    _open,
+    _run_reserved_provider_process,
+    build_parser,
+    dispatch,
+)
 from agent_continuity.errors import ContinuityError
 from agent_continuity.interactive import filter_items, format_timestamp, select_item
 from agent_continuity.service import ContinuityService
+
+
+def test_restore_startup_evidence_uses_exact_provider_pid_and_launch_ancestry():
+    from types import SimpleNamespace
+
+    from agent_continuity.runtime_discovery import (
+        MatchStatus,
+        ProcessAncestry,
+        ProcessIdentity,
+        ProcessLiveness,
+        SessionIdentityState,
+    )
+
+    launched_wrapper = ProcessIdentity(100, 1_000_000_000)
+    actual_provider = ProcessIdentity(200, 2_000_000_000)
+    observation = SimpleNamespace(
+        process_liveness=ProcessLiveness.RUNNING,
+        process_session_match=MatchStatus.EXACT,
+        session_identity_state=SessionIdentityState.EXACT,
+        identity_conflict=False,
+        evidence_conflict=False,
+        processes=(SimpleNamespace(identity=actual_provider),),
+        ancestry=(ProcessAncestry((launched_wrapper,), ("llmd.exe",), True, False),),
+    )
+
+    assert _exact_launched_provider_pid(observation, launched_wrapper_pid=100) == 200
+    assert _exact_launched_provider_pid(observation, launched_wrapper_pid=999) is None
+    conflicting = SimpleNamespace(
+        process_liveness=observation.process_liveness,
+        process_session_match=observation.process_session_match,
+        session_identity_state=observation.session_identity_state,
+        identity_conflict=False,
+        evidence_conflict=True,
+        processes=observation.processes,
+        ancestry=observation.ancestry,
+    )
+    assert _exact_launched_provider_pid(conflicting, launched_wrapper_pid=100) is None
+
+
+@pytest.mark.parametrize("exit_code", [0, 17])
+def test_reserved_provider_runner_streams_harmless_child_and_reports_its_pid(monkeypatch, capfd, exit_code):
+    from types import SimpleNamespace
+
+    from agent_continuity.runtime_discovery import (
+        MatchStatus,
+        ProcessAncestry,
+        ProcessIdentity,
+        ProcessLiveness,
+        SessionIdentityState,
+    )
+
+    real_popen = subprocess.Popen
+    child = None
+    observations = 0
+
+    class Dispatcher:
+        def observe_runtime_session(self, provider, environment_id, session_id):
+            nonlocal observations
+            observations += 1
+            if observations < 3:
+                return None
+            if child is None or child.poll() is not None:
+                return None
+            identity = ProcessIdentity(child.pid, 2_000_000_000)
+            return SimpleNamespace(
+                process_liveness=ProcessLiveness.RUNNING,
+                process_session_match=MatchStatus.EXACT,
+                session_identity_state=SessionIdentityState.EXACT,
+                identity_conflict=False,
+                evidence_conflict=False,
+                processes=(SimpleNamespace(identity=identity),),
+                ancestry=(ProcessAncestry((), (), False, False),),
+            )
+
+    def spawn(*args, **kwargs):
+        nonlocal child
+        child = real_popen(*args, **kwargs)
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    acknowledged = []
+    result = _run_reserved_provider_process(
+        Dispatcher(),
+        [
+            sys.executable,
+            "-c",
+            f"import sys,time; print('guarded-stream-out',flush=True); "
+            f"print('guarded-stream-err',file=sys.stderr,flush=True); "
+            f"time.sleep(0.45); sys.exit({exit_code})",
+        ],
+        cwd=None,
+        provider="codex",
+        environment_id="local",
+        session_id="guarded-session",
+        on_provider_startup=acknowledged.append,
+    )
+
+    assert result.returncode == exit_code
+    assert acknowledged == [child.pid]
+    captured = capfd.readouterr()
+    assert "guarded-stream-out" in captured.out
+    assert "guarded-stream-err" in captured.err
+
+
+def test_pane_run_consumes_and_acknowledges_exact_harmless_provider_child(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from agent_continuity.dispatcher_cli import _run_pane
+    from agent_continuity.runtime_discovery import (
+        MatchStatus,
+        ProcessAncestry,
+        ProcessIdentity,
+        ProcessLiveness,
+        SessionIdentityState,
+    )
+    from agent_continuity.workspace_ownership import RestorationReservationStore
+
+    home = tmp_path / "registry"
+    dispatcher = DispatcherService(home_dir=home)
+    dispatcher.register("G", "A", provider="codex", session_id="native-session")
+    slot = dispatcher.get_slot(gui="G", name="A")
+    environment_id = slot["current"]["environment_id"]
+    store = RestorationReservationStore(home)
+    reservation = store.create_reservation(
+        checkpoint_id="checkpoint-dispatcher",
+        queue_entry_id="queue-dispatcher",
+        attempt=3,
+        slot_id=slot["slot_id"],
+        provider="codex",
+        native_session_id="native-session",
+        environment_id=environment_id,
+        operator_id="test",
+    )
+    launch_id, pane_id = "launch-dispatcher", "pane-dispatcher"
+    reservation = store.bind_launch(reservation.reservation_id, launch_id=launch_id, pane_id=pane_id)
+
+    monkeypatch.setattr(
+        "agent_continuity.dispatcher_cli._native_argv",
+        lambda *args, **kwargs: [sys.executable, "-c", "import time; time.sleep(0.35)"],
+    )
+    real_popen = subprocess.Popen
+    child = None
+
+    def spawn(*args, **kwargs):
+        nonlocal child
+        child = real_popen(*args, **kwargs)
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+
+    def observe_runtime_session(provider, observed_environment, session_id):
+        if child is None or child.poll() is not None:
+            return None
+        identity = ProcessIdentity(child.pid, max(1, time.time_ns()))
+        return SimpleNamespace(
+            process_liveness=ProcessLiveness.RUNNING,
+            process_session_match=MatchStatus.EXACT,
+            session_identity_state=SessionIdentityState.EXACT,
+            identity_conflict=False,
+            evidence_conflict=False,
+            processes=(SimpleNamespace(identity=identity),),
+            ancestry=(ProcessAncestry((), (), False, False),),
+        )
+
+    monkeypatch.setattr(dispatcher, "observe_runtime_session", observe_runtime_session)
+    assert _run_pane(
+        dispatcher,
+        slot_id=slot["slot_id"],
+        launch_id=None,
+        input_stream=StringIO("1\n"),
+        output_stream=StringIO(),
+        expected_session_identity=("codex", environment_id, "native-session"),
+        reservation_id=reservation.reservation_id,
+        reservation_token=reservation.reservation_token,
+        checkpoint_id=reservation.checkpoint_id,
+        queue_entry_id=reservation.queue_entry_id,
+        attempt=reservation.attempt,
+        reservation_launch_id=launch_id,
+        pane_id=pane_id,
+    ) == 0
+
+    acknowledged = store.get_reservation(reservation.reservation_id)
+    assert acknowledged.dispatcher_ownership_acknowledged is True
+    assert acknowledged.provider_startup_confirmed is True
+    assert acknowledged.exact_association_confirmed is True
+    assert acknowledged.provider_pid == child.pid
+    assert acknowledged.launch_id == launch_id
+    assert acknowledged.pane_id == pane_id
 
 
 class TTYInput(StringIO):
@@ -199,7 +396,7 @@ def test_post_consumption_provider_spawn_failure_preserves_reservation_uncertain
     )
     launch_id, pane_id = "launch-test", "pane-test"
     reservation = store.bind_launch(reservation.reservation_id, launch_id=launch_id, pane_id=pane_id)
-    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process",
+    monkeypatch.setattr("agent_continuity.dispatcher_cli._run_reserved_provider_process",
                         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("guarded spawn failure")))
     with pytest.raises(ContinuityError, match="Failed to launch codex"):
         _run_pane(

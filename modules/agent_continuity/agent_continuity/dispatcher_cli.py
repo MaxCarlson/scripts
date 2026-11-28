@@ -72,6 +72,81 @@ def _run_provider_process(argv: Sequence[str], **kwargs: Any) -> subprocess.Comp
     return subprocess.run(argv, **kwargs)
 
 
+def _exact_launched_provider_pid(observation: Any, *, launched_wrapper_pid: int) -> int | None:
+    """Return the provider PID only when exact live session evidence descends from this launch."""
+    from .runtime_discovery import MatchStatus, ProcessLiveness, SessionIdentityState
+
+    if observation is None or getattr(observation, "identity_conflict", True) or getattr(
+        observation, "evidence_conflict", True
+    ):
+        return None
+    if (
+        getattr(observation, "process_liveness", None) is not ProcessLiveness.RUNNING
+        or getattr(observation, "process_session_match", None) is not MatchStatus.EXACT
+        or getattr(observation, "session_identity_state", None)
+        not in {SessionIdentityState.EXACT, SessionIdentityState.RESERVED}
+    ):
+        return None
+    processes = getattr(observation, "processes", ()) or ()
+    ancestry = getattr(observation, "ancestry", ()) or ()
+    if len(processes) != 1 or len(ancestry) != 1:
+        return None
+    process_identity = getattr(processes[0], "identity", None)
+    if process_identity is None or process_identity.pid <= 0:
+        return None
+    ancestry_identities = getattr(ancestry[0], "identities", ()) or ()
+    launch_correlated = process_identity.pid == launched_wrapper_pid or any(
+        identity.pid == launched_wrapper_pid for identity in ancestry_identities
+    )
+    if not launch_correlated:
+        return None
+    if process_identity.pid != launched_wrapper_pid and (
+        not getattr(ancestry[0], "complete", False) or getattr(ancestry[0], "ambiguous", True)
+    ):
+        return None
+    return int(process_identity.pid)
+
+
+def _run_reserved_provider_process(
+    dispatcher: DispatcherService,
+    argv: Sequence[str],
+    *,
+    cwd: str | None,
+    provider: str,
+    environment_id: str,
+    session_id: str,
+    on_provider_startup: Any,
+) -> subprocess.CompletedProcess:
+    """Stream an exact restore launch and acknowledge only an observed provider descendant."""
+    process = subprocess.Popen(argv, cwd=cwd)
+    acknowledged = False
+    try:
+        while True:
+            return_code = process.poll()
+            if return_code is not None:
+                return subprocess.CompletedProcess(argv, return_code)
+            if not acknowledged:
+                observation = dispatcher.observe_runtime_session(provider, environment_id, session_id)
+                provider_pid = _exact_launched_provider_pid(observation, launched_wrapper_pid=process.pid)
+                if provider_pid is not None:
+                    on_provider_startup(provider_pid)
+                    acknowledged = True
+            time.sleep(0.1)
+    except BaseException:
+        # The parent owns the slot/session locks. Stop a child that survived the
+        # console interrupt before those locks are released; its outcome remains
+        # ambiguous and is never retried automatically.
+        with contextlib.suppress(OSError):
+            process.terminate()
+        try:
+            process.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(OSError):
+                process.kill()
+            process.wait()
+        raise
+
+
 def _run_provider_with_progress(
     argv: Sequence[str], *, label: str, progress_interval: float = 4.0, **kwargs: Any
 ) -> subprocess.CompletedProcess:
@@ -1681,6 +1756,11 @@ def _run_pane_locked(
                 pane_id=pane_id,
             )
             reservation_consumed = bool(reservation_id and consumed is not None)
+            if reservation_id and not reservation_consumed:
+                raise ContinuityError(
+                    ErrorCode.ASSOCIATION_CONFLICT,
+                    "Restoration reservation was not consumed; provider execution was refused.",
+                )
             if launch_id and provider == "claude":
                 dispatcher.claim_claude_launch(launch_id=launch_id, slot_id=slot_id, session_id=session_id)
             if terminal_record and not terminal_record_written:
@@ -1688,7 +1768,52 @@ def _run_pane_locked(
                 terminal_record_written = True
             _startup_progress("interactive provider handoff")
             _STARTUP_PROGRESS.set(False)
-            result = _run_provider_process(argv, cwd=process_cwd, check=False)
+            if reservation_consumed:
+                from .workspace_ownership import RestorationReservationStore
+
+                reservation_store = RestorationReservationStore(dispatcher.home_dir)
+
+                def acknowledge_provider_startup(provider_pid: int) -> None:
+                    if (
+                        consumed is None
+                        or consumed.state != "consumed"
+                        or not consumed.dispatcher_ownership_acknowledged
+                        or consumed.provider_startup_confirmed
+                        or consumed.checkpoint_id != checkpoint_id
+                        or consumed.queue_entry_id != queue_entry_id
+                        or consumed.attempt != attempt
+                        or consumed.slot_id != slot_id
+                        or consumed.provider != provider
+                        or consumed.environment_id != environment_id
+                        or consumed.native_session_id != session_id
+                        or consumed.launch_id != reservation_launch_id
+                        or consumed.pane_id != pane_id
+                    ):
+                        raise ContinuityError(
+                            ErrorCode.ASSOCIATION_CONFLICT,
+                            "Consumed restoration attempt no longer matches the exact provider startup evidence.",
+                        )
+                    reservation_store.acknowledge_provider_association_locked(
+                        reservation_id,
+                        reservation_token=reservation_token,
+                        provider_pid=provider_pid,
+                        provider_startup_confirmed=True,
+                        exact_association_confirmed=True,
+                        launch_id=reservation_launch_id,
+                        pane_id=pane_id,
+                    )
+
+                result = _run_reserved_provider_process(
+                    dispatcher,
+                    argv,
+                    cwd=process_cwd,
+                    provider=provider,
+                    environment_id=environment_id,
+                    session_id=session_id,
+                    on_provider_startup=acknowledge_provider_startup,
+                )
+            else:
+                result = _run_provider_process(argv, cwd=process_cwd, check=False)
     except KeyboardInterrupt:
         if reservation_consumed:
             _mark_restoration_execution_uncertain(

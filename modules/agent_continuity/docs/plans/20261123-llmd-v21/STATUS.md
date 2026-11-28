@@ -1,5 +1,13 @@
 # LLMD Implementation Status
 
+## Final managed-restoration acknowledgment checkpoint — 2026-11-27
+
+- Integrated Agent #3's immutable restoration correction `63dbd7413881dcf593596e761a477057912ed303` into the v2.3.0 feature branch, then reconciled committed `main` at `fd37f654ecc5cf119ac384bbfb4cc69a3f223653` through merge `90304de615c78f7dc2dacf59d71d1ce585b2052b`. The main worktree's unrelated dirty files were not included.
+- `pane-run` now acknowledges dispatcher ownership only at reservation consumption, then observes the exact provider/session process while it retains the slot and session locks. Startup acknowledgment records the provider PID only when process evidence is exact, unconflicted, and linked to the launched process or its complete ancestry. Wrapper/relay PIDs are not reported as provider PIDs.
+- Managed provider streams remain inherited. A reservation-backed child is stopped before lock release on interruption or acknowledgment failure; post-consumption failures remain uncertain. Startup confirmation and execution exit status remain separate.
+- Qualification on the integrated candidate: **492 tests across 31 agent_continuity test files passed with pytest-xdist `-n 8`**; dispatcher execution regressions **36 passed** using harmless Python subprocesses and guarded exact-session observations; `scripts_help` **67 passed, 1 skipped** (adjacent `W11-powershell` checkout absent). Scoped Ruff and `git diff --check` passed. Version consistency remains `2.3.0`.
+- These execution checks qualify the real LLMD dispatcher/reservation transition with guarded runtime evidence. No live Codex, AGY, Claude, remote WSL process observation, production install/registry, or shutdown was exercised. GUI review remains separate; no merge to main or deployment occurred.
+
 ## Final v2.3.0 integration correction pass — 2026-11-27
 
 - Closed the remaining managed restoration gaps: checkpoint cwd and validated provider settings reach canonical `pane-run`; manual and managed restoration share provider-setting encoding; AGY additional directories map to `additional_directories`.
