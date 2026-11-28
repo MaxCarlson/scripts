@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ class PortableLaunchContext:
     workflow_type: str | None = None
     workflow_resource_snapshot: Mapping[str, Any] | None = None
     workflow_custom_instruction_path: str | None = None
+    workflow_custom_instruction_paths: tuple[str, ...] = ()
     logical_agent_identity: str | None = None
     terminal_settings: Mapping[str, Any] = field(default_factory=dict)
     instructions: str | None = None
@@ -125,6 +127,15 @@ def resolve_portable_launch_context(
         workflow_resource_snapshot=(dict(source["workflow_resource_snapshot"])
                                     if isinstance(source.get("workflow_resource_snapshot"), Mapping) else None),
         workflow_custom_instruction_path=source.get("workflow_custom_instruction_path"),
+        workflow_custom_instruction_paths=tuple(
+            str(path) for path in source.get("workflow_custom_instruction_paths", ())
+            if isinstance(path, str) and path
+        ) or tuple(
+            str(resource["path"]) for resource in (source.get("workflow_resource_snapshot") or {}).get("resources", ())
+            if isinstance(resource, Mapping) and resource.get("path")
+            and (str(resource.get("id", "")).startswith("custom:")
+                 or resource.get("kind") == "custom_file")
+        ),
         logical_agent_identity=source.get("logical_agent_identity"),
         terminal_settings=dict(source.get("terminal_settings", {})),
         instructions=source.get("instructions"),
@@ -176,10 +187,33 @@ def resolve_portable_launch_context(
             "workflow_resource_snapshot", dict(context.workflow_resource_snapshot), "restored",
             "Resource identities and digests are retained; provider-loaded context and resume persistence are unverified.",
         ))
-    if context.workflow_custom_instruction_path:
-        path = context.workflow_custom_instruction_path
-        status = "preserved" if Path(path).is_file() else "conflicting"
-        reason = None if status == "preserved" else "Custom instruction source is missing; no replacement will be used."
+    instruction_paths = context.workflow_custom_instruction_paths or (
+        (context.workflow_custom_instruction_path,) if context.workflow_custom_instruction_path else ()
+    )
+    snapshot_custom_resources = [
+        resource for resource in (context.workflow_resource_snapshot or {}).get("resources", ())
+        if isinstance(resource, Mapping)
+        and (resource.get("kind") == "custom_file" or str(resource.get("id", "")).startswith("custom:"))
+    ]
+    for path in instruction_paths:
+        try:
+            raw = Path(path).read_bytes()
+        except OSError:
+            raw = None
+        matching = next((resource for resource in snapshot_custom_resources
+                         if resource.get("path") and str(resource["path"]) == path), None)
+        if matching is None and len(instruction_paths) == len(snapshot_custom_resources) == 1:
+            # Schema-v1 metadata stored one legacy path outside the resource descriptor.
+            matching = snapshot_custom_resources[0]
+        if raw is None:
+            status = "conflicting"
+            reason = "Custom instruction source is missing or unreadable; no replacement will be used."
+        elif matching and matching.get("sha256") != hashlib.sha256(raw).hexdigest():
+            status = "conflicting"
+            reason = "Custom instruction bytes changed since the session snapshot; explicit replacement is required."
+        else:
+            status = "preserved"
+            reason = None
         items.append(ContextItem("workflow_custom_instruction_path", path, status, reason))
     if destination_runtime and context.runtime_identity:
         for key in ("runtime_kind", "distro", "environment_id"):

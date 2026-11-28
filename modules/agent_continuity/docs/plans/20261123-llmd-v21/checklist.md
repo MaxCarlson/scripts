@@ -1,5 +1,18 @@
 # LLMD v2.1 Implementation Checklist
 
+## LLMD-60 native allocation integration and LLMD-62 instructions — 2026-11-27
+
+- [x] Integrate Agent #3 native allocation checkpoints `a095044f` and `91906f3f` without importing unrelated branch changes.
+- [x] Use native UUIDv4 allocation for Claude and persist exact effective cwd plus allocation mechanism; keep provider creation, exact transcript association, and resumability unconfirmed until separately observed.
+- [x] Keep Codex/AGY inference-free activation disabled; retain their existing guarded initialization path pending live provider qualification.
+- [x] Add repeatable `-I/--instructions-file` while preserving `--instruction-file`; add explicit changed-resource replacement authorization.
+- [x] Resolve relative files from effective cwd and persist ordered canonical path identities and byte digests in snapshot schema v2; read legacy schema-v1 snapshots.
+- [x] Preserve independent custom instructions when workflow selection changes; reject exact-session replay and unsupported providers; fail before provider invocation on missing, changed, conflicting, or unavailable resources.
+- [x] Add redacted instruction previews and verify instruction text is absent from persisted event payloads.
+- [x] Optimize guarded-start synchronization without weakening mutation-lock freshness or session ownership evidence; measured 21 syncs versus the previous 27.
+- [x] Complete final xdist qualification (553 passed), `scripts_help` registry checks (54 passed), Ruff, CLI help aliases, version agreement, and diff hygiene.
+- [ ] Rerun xdist including the new synchronization-count regression, review final diff, commit and push.
+
 ## v2.3.0 final integration correction pass (2026-11-27)
 
 - [x] Propagate checkpoint cwd and validated provider settings through canonical managed restoration, sharing argument encoding with manual restoration.

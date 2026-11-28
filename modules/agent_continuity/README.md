@@ -54,6 +54,17 @@ Provider switches and workspace restoration resolve exact repository/worktree ob
 
 The qualified six-direction matrix uses guarded Codex, AGY, and Claude substitutes. Resource snapshots retain exact resource IDs, revisions, and byte digests, while workflow content is delivered through session-specific additive initialization where supported. Provider-loaded context, context surviving compaction/resume, and Claude workflow initialization remain unverified or unsupported; inherited Claude workflow initialization is rejected before provider invocation.
 
+## Session-specific instructions and native allocation (LLMD v2.5.0 candidate)
+
+`start`, `switch` to a new session, and `review` of a new reviewer accept repeatable `-I/--instructions-file` (the older `--instruction-file` remains valid). Paths resolve from the effective launch workspace. LLMD records ordered canonical paths, stable path identities, and exact content digests; it does not store instruction text. Exact-session resume never replays initialization. If a saved source changed or disappeared, LLMD refuses to submit a partial payload; `-Y/--replace-instructions` explicitly authorizes changed bytes or a replacement set. Changing workflow selection preserves independently selected custom files.
+
+```powershell
+llmd start Project Agent -p codex -N -I .\AGENTS.md --instructions-file .\review\rules.md -d
+llmd start Project Agent -p codex -N -Y -I .\AGENTS.md -a
+```
+
+Instruction delivery remains limited to the guarded Codex/AGY additive initialization paths; unsupported providers, including Claude, refuse instruction-only launches. Claude UUID allocation uses the inference-free native allocator and is durably separated from provider creation, association, and resumability. Codex and AGY inference-free activation remain disabled pending live provider qualification; their current guarded candidate path retains the fixed initialization turn. No live provider was exercised for this candidate.
+
 ## Named Agent Dispatcher
 
 `llmd` stores local GUI aliases, named agent slots, lifecycle state, pending launches, and ordered session activations in the same durable event spool and rebuildable SQLite index used by `agents`. A local GUI alias does not create a conversation in ChatGPT.

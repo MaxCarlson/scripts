@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -197,7 +198,10 @@ def prepare_additive_workflow_init(
     resources: Sequence[ResourceStatus],
     selection: str | None = "standard",
     custom_instruction_path: str | None = None,
+    custom_instruction_paths: Sequence[str] = (),
+    effective_cwd: str | None = None,
     expected_digests: Mapping[str, str] | None = None,
+    allow_replacement: bool = False,
     supported_providers: frozenset[str] = frozenset({"codex", "agy"}),
 ) -> dict[str, Any]:
     """LLMD-51: Prepare one-time additive workflow provenance and prompt for new native sessions only."""
@@ -215,7 +219,10 @@ def prepare_additive_workflow_init(
             "resource_snapshot": None,
             "delivery_prompt": None,
         }
-    if selection is None and not custom_instruction_path:
+    requested_custom_paths = list(custom_instruction_paths)
+    if custom_instruction_path and custom_instruction_path not in requested_custom_paths:
+        requested_custom_paths.append(custom_instruction_path)
+    if selection is None and not requested_custom_paths:
         return {
             "applied": False,
             "status": "untyped_legacy",
@@ -289,48 +296,78 @@ def prepare_additive_workflow_init(
             entry["path"] = r.path
         provenance.append(entry)
         prompt_parts.append(f"[{r.resource_id}@{r.revision}]\n{r.content}")
-    if custom_instruction_path:
-        custom_file = Path(custom_instruction_path)
-        if custom_file.is_file():
+    custom_snapshot_paths: set[str] = set()
+    base_dir = Path(effective_cwd).resolve() if effective_cwd else Path.cwd()
+    for requested_path in requested_custom_paths:
+        raw_path = Path(requested_path)
+        custom_file = (raw_path if raw_path.is_absolute() else base_dir / raw_path).resolve()
+        canonical_path = (
+            str(custom_file) if runtime in {"wsl", "linux", "macos"} else os.path.normcase(str(custom_file))
+        )
+        custom_resource_id = "custom:" + hashlib.sha256(canonical_path.encode("utf-8")).hexdigest()
+        if canonical_path in custom_snapshot_paths:
+            continue
+        custom_snapshot_paths.add(canonical_path)
+        try:
+            if not custom_file.is_file():
+                raise FileNotFoundError(str(custom_file))
             raw = custom_file.read_bytes()
-            custom_digest = hashlib.sha256(raw).hexdigest()
-            custom_resource_id = f"custom:{custom_file.name}"
-            expected_digest = (expected_digests or {}).get(custom_resource_id)
-            if expected_digest is not None and expected_digest != custom_digest:
-                blocked.append({
-                    "resource_id": custom_resource_id,
-                    "status": "changed",
-                    "detail": "custom instruction file bytes differ from the selected session snapshot",
-                })
-                raw = None
-            if raw is not None:
-                provenance.append(
-                    {
-                        "resource_id": custom_resource_id,
-                        "revision": custom_digest[:12],
-                        "digest": custom_digest,
-                        "status": "available",
-                        "selection": effective_selection,
-                        "integrity_verified": True,
-                        "installed": True,
-                        "callable": True,
-                    }
-                )
-                prompt_parts.append(f"[{custom_resource_id}@{custom_digest[:12]}]\n{raw.decode('utf-8')}")
-        else:
-            blocked.append(
-                {
-                    "resource_id": f"custom:{custom_instruction_path}",
-                    "status": "missing",
-                    "detail": "custom instruction file does not exist",
-                }
-            )
-    delivery_prompt = "\n\n".join(prompt_parts) if prompt_parts else None
+            content = raw.decode("utf-8")
+        except FileNotFoundError:
+            blocked.append({
+                "resource_id": custom_resource_id,
+                "path": str(custom_file),
+                "status": "missing",
+                "detail": "custom instruction file does not exist",
+            })
+            continue
+        except (OSError, UnicodeError) as exc:
+            blocked.append({
+                "resource_id": custom_resource_id,
+                "path": str(custom_file),
+                "status": "unavailable",
+                "detail": f"custom instruction file cannot be read as UTF-8 ({type(exc).__name__})",
+            })
+            continue
+        custom_digest = hashlib.sha256(raw).hexdigest()
+        legacy_resource_id = f"custom:{custom_file.name}"
+        expected_digest = (expected_digests or {}).get(custom_resource_id)
+        if expected_digest is None:
+            expected_digest = (expected_digests or {}).get(legacy_resource_id)
+        if expected_digest is not None and expected_digest != custom_digest and not allow_replacement:
+            blocked.append({
+                "resource_id": custom_resource_id,
+                "path": str(custom_file),
+                "status": "changed",
+                "detail": "custom instruction file bytes differ from the selected session snapshot",
+            })
+            continue
+        provenance.append(
+            {
+                "resource_id": custom_resource_id,
+                "revision": custom_digest[:12],
+                "digest": custom_digest,
+                "status": "available",
+                "selection": effective_selection,
+                "integrity_verified": True,
+                "installed": True,
+                "callable": True,
+                "path": str(custom_file),
+            }
+        )
+        prompt_parts.append(f"[{custom_resource_id}@{custom_digest[:12]}]\n{content}")
+    # A requested resource that is missing, changed, or unreadable blocks the full
+    # additive payload; silently submitting only a subset would change instructions.
+    delivery_prompt = "\n\n".join(prompt_parts) if prompt_parts and not blocked else None
     resource_snapshot = {
-        "schema_version": 1,
+        "schema_version": 2,
         "selection": effective_selection,
         "resources": [
-            {"id": entry["resource_id"], "revision": entry["revision"], "sha256": entry["digest"]}
+            {
+                **{"id": entry["resource_id"], "revision": entry["revision"], "sha256": entry["digest"]},
+                **({"kind": "custom_file"} if entry.get("path") else {}),
+                **({"path": entry["path"]} if entry.get("path") else {}),
+            }
             for entry in provenance
         ],
     }
@@ -346,12 +383,47 @@ def prepare_additive_workflow_init(
         "provider_snapshot_status": "prompt_submitted; effective-loaded-context-unverified",
         "prompt_submitted": False,
         "delivery_confirmed": False,
-        "custom_instruction_path": custom_instruction_path,
+        "custom_instruction_path": requested_custom_paths[0] if len(requested_custom_paths) == 1 else None,
+        "custom_instruction_paths": [str(Path(path).resolve() if Path(path).is_absolute()
+                                          else (base_dir / path).resolve()) for path in requested_custom_paths],
         "provenance": provenance,
         "resource_snapshot": resource_snapshot,
         "limitations": blocked,
         "delivery_prompt": delivery_prompt,
     }
+
+
+def preview_custom_instruction_paths(
+    paths: Sequence[str], *, effective_cwd: str | None, runtime: str,
+) -> list[dict[str, Any]]:
+    """Inspect custom instruction sources without returning or persisting their contents."""
+    base_dir = Path(effective_cwd).resolve() if effective_cwd else Path.cwd()
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for requested_path in paths:
+        raw_path = Path(requested_path)
+        path = (raw_path if raw_path.is_absolute() else base_dir / raw_path).resolve()
+        canonical_path = (
+            str(path) if runtime in {"wsl", "linux", "macos"} else os.path.normcase(str(path))
+        )
+        resource_id = "custom:" + hashlib.sha256(canonical_path.encode("utf-8")).hexdigest()
+        if canonical_path in seen:
+            continue
+        seen.add(canonical_path)
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            results.append({"id": resource_id, "path": str(path), "status": "missing"})
+        except OSError:
+            results.append({"id": resource_id, "path": str(path), "status": "unavailable"})
+        else:
+            results.append({
+                "id": resource_id,
+                "path": str(path),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "status": "available",
+            })
+    return results
 
 
 def resolve_authoritative_runtime_identity(

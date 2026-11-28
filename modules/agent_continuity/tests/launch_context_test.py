@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 
@@ -67,6 +68,40 @@ def test_workflow_resource_snapshot_survives_portable_context_resolution():
 
     assert context.workflow_type == "hybrid"
     assert context.workflow_resource_snapshot == snapshot
+
+
+def test_custom_instruction_preview_distinguishes_loaded_changed_and_missing_sources(tmp_path: Path):
+    instructions = tmp_path / "AGENTS.md"
+    instructions.write_bytes(b"loaded bytes\r\n")
+    digest = hashlib.sha256(instructions.read_bytes()).hexdigest()
+    source = {
+        "provider": "codex",
+        "workflow_resource_snapshot": {
+            "schema_version": 2,
+            "selection": "standard",
+            "resources": [{
+                "id": "custom:stable-id", "kind": "custom_file", "path": str(instructions.resolve()),
+                "revision": digest[:12], "sha256": digest,
+            }],
+        },
+        "workflow_custom_instruction_paths": [str(instructions.resolve())],
+    }
+
+    _, loaded_preview = resolve_portable_launch_context(source, "agy")
+    loaded = next(item for item in loaded_preview if item.key == "workflow_custom_instruction_path")
+    assert loaded.status == "preserved"
+
+    instructions.write_bytes(b"replacement bytes\n")
+    _, changed_preview = resolve_portable_launch_context(source, "agy")
+    changed = next(item for item in changed_preview if item.key == "workflow_custom_instruction_path")
+    assert changed.status == "conflicting"
+    assert "changed" in changed.reason
+
+    instructions.unlink()
+    _, missing_preview = resolve_portable_launch_context(source, "agy")
+    missing = next(item for item in missing_preview if item.key == "workflow_custom_instruction_path")
+    assert missing.status == "conflicting"
+    assert "missing" in missing.reason
 
 
 def test_destination_preview_reports_terminal_and_workflow_context_without_wsl_host_path_probe():

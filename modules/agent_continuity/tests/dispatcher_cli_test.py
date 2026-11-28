@@ -1029,6 +1029,49 @@ def test_start_reuses_cli_sync_for_prepare_preview(tmp_path, monkeypatch):
     assert calls == 1
 
 
+def test_guarded_new_start_keeps_registry_syncs_below_previous_27_call_path(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    home = tmp_path / "registry"
+    seed = DispatcherService(home_dir=home)
+    seed.create_gui("GUI", apply=True)
+    seed.create_slot(gui="GUI", name="Agent", apply=True)
+    parser = build_parser()
+    outputs = iter((
+        SimpleNamespace(
+            returncode=0,
+            stdout='{"type":"thread.started","thread_id":"guarded-codex-session"}\n'
+                   '{"type":"turn.completed","turn_id":"guarded-turn"}',
+            stderr="",
+        ),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ))
+    monkeypatch.setattr(dispatcher_cli, "_bootstrap_native_argv", lambda *args, **kwargs: ["guarded-bootstrap"])
+    monkeypatch.setattr(dispatcher_cli, "_native_argv", lambda *args, **kwargs: ["guarded-resume"])
+    monkeypatch.setattr(dispatcher_cli, "_run_provider_process", lambda *args, **kwargs: next(outputs))
+
+    sync_calls = 0
+    original_sync = DispatcherService._sync
+
+    def counted_sync(self):
+        nonlocal sync_calls
+        sync_calls += 1
+        return original_sync(self)
+
+    monkeypatch.setattr(DispatcherService, "_sync", counted_sync)
+    result = dispatch(
+        parser.parse_args(["-H", str(home), "start", "GUI", "Agent", "-p", "codex"]),
+        parser,
+        input_stream=StringIO("\n"),
+        output_stream=StringIO(),
+    )
+
+    assert result == 0
+    assert sync_calls == 21
+    current = DispatcherService(home_dir=home).get_slot(gui="GUI", name="Agent")["current"]
+    assert current["native_session_id"] == "guarded-codex-session"
+
+
 def test_workflow_type_cli_is_default_apply_and_json_lists_identity_metadata(tmp_path):
     home = tmp_path / "registry"
     parser = build_parser()

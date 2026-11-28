@@ -452,7 +452,11 @@ def build_parser() -> argparse.ArgumentParser:
                              help="Authorize validated generic provider options after `--`.")
         command.add_argument("-W", "--workflow", choices=("standard", "handoff", "goal", "hybrid"),
                              help="One-shot workflow instruction selection for a new session.")
-        command.add_argument("--instruction-file", help="Optional custom instruction file for a new session.")
+        command.add_argument("-I", "--instructions-file", "--instruction-file", dest="instruction_files",
+                             action="append", default=[], metavar="PATH",
+                             help="Add a custom instruction file for a new session; may be repeated.")
+        command.add_argument("-Y", "--replace-instructions", action="store_true",
+                             help="Authorize changed instruction contents to replace the saved snapshot.")
         _add_launch_prompt_options(command)
         _add_execution_options(command)
         if command_name == "start":
@@ -502,6 +506,11 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("-B", "--no-profile", action="store_true", help="Ignore the slot profile for this invocation.")
     review.add_argument("-U", "--allow-native-unknown", action="store_true",
                         help="Authorize validated generic provider options after `--`.")
+    review.add_argument("-I", "--instructions-file", "--instruction-file", dest="instruction_files",
+                        action="append", default=[], metavar="PATH",
+                        help="Add a custom instruction file for a new reviewer session; may be repeated.")
+    review.add_argument("-Y", "--replace-instructions", action="store_true",
+                        help="Authorize changed instruction contents to replace the saved snapshot.")
     review.add_argument("-N", "--new", action="store_true", help="Start a new reviewer conversation instead of resuming its selected session.")
     _add_launch_prompt_options(review)
     _add_execution_options(review)
@@ -1605,6 +1614,30 @@ def _new_launch_preview(dispatcher: DispatcherService, provider: str, environmen
     }
 
 
+def _add_instruction_preview(
+    preview: dict[str, Any], *, provider: str, workflow_selection: str | None,
+    instruction_paths: Sequence[str], replacement_authorized: bool,
+) -> None:
+    if not workflow_selection and not instruction_paths:
+        return
+    from .workflows import preview_custom_instruction_paths
+
+    runtime = str((preview.get("environment") or {}).get("runtime_kind", "unknown"))
+    files = preview_custom_instruction_paths(
+        instruction_paths, effective_cwd=preview.get("cwd"), runtime=runtime,
+    )
+    supported = provider in {"codex", "agy"}
+    blocked = any(item["status"] != "available" for item in files)
+    preview["session_instructions"] = {
+        "workflow_selection": workflow_selection,
+        "custom_files": files,
+        "destination_supported": supported,
+        "status": "unsupported" if not supported else ("conflicting" if blocked else "ready"),
+        "delivery": "new-session-only; not submitted by preview",
+        "replacement_authorized": replacement_authorized,
+    }
+
+
 def _portable_source_slot(
     dispatcher: DispatcherService,
     slot: dict[str, Any],
@@ -2043,6 +2076,8 @@ def _run_pane(
     launcher_terminal_context: str | None = None,
     workflow_selection: str | None = None,
     custom_instruction_path: str | None = None,
+    custom_instruction_paths: Sequence[str] = (),
+    allow_instruction_replacement: bool = False,
     reservation_id: str | None = None,
     reservation_token: str | None = None,
     checkpoint_id: str | None = None,
@@ -2073,6 +2108,8 @@ def _run_pane(
                 launcher_terminal_context=launcher_terminal_context,
                 workflow_selection=workflow_selection,
                 custom_instruction_path=custom_instruction_path,
+                custom_instruction_paths=custom_instruction_paths,
+                allow_instruction_replacement=allow_instruction_replacement,
                 reservation_id=reservation_id,
                 reservation_token=reservation_token,
                 checkpoint_id=checkpoint_id,
@@ -2115,6 +2152,8 @@ def _run_pane_locked(
     launcher_terminal_context: str | None = None,
     workflow_selection: str | None = None,
     custom_instruction_path: str | None = None,
+    custom_instruction_paths: Sequence[str] = (),
+    allow_instruction_replacement: bool = False,
     reservation_id: str | None = None,
     reservation_token: str | None = None,
     checkpoint_id: str | None = None,
@@ -2124,14 +2163,20 @@ def _run_pane_locked(
     pane_id: str | None = None,
 ) -> int | dict[str, Any]:
     dispatcher._sync()
-    slot = dispatcher.get_slot_by_id(slot_id)
+    slot = dispatcher.get_slot_by_id(slot_id, state_already_synced=True)
+    if not launch_id and (custom_instruction_path or custom_instruction_paths or workflow_selection is not None
+                          or allow_instruction_replacement):
+        raise ContinuityError(
+            ErrorCode.INVALID_INPUT,
+            "Workflow and custom instructions are new-session initialization only; exact-session resume never replays them.",
+        )
     if not launch_id and dispatcher._row(
         "SELECT 1 FROM dispatcher_pending_launches WHERE slot_id = ? AND status = 'pending' LIMIT 1", (slot_id,)
     ):
         raise ContinuityError(ErrorCode.INVALID_INPUT,
             "This agent has an unresolved destination launch; recover or resolve it before resuming another session.")
     if launch_id:
-        pending = dispatcher.get_pending_launch(launch_id)
+        pending = dispatcher.get_pending_launch(launch_id, state_already_synced=True)
         if pending["slot_id"] != slot_id:
             raise ContinuityError(ErrorCode.INVALID_INPUT, "Pending launch belongs to a different agent slot.")
         if pending.get("provider") == "claude" and pending.get("claude_launch_attempted"):
@@ -2153,7 +2198,7 @@ def _run_pane_locked(
         cross_wsl = target_environment and target_environment.runtime_kind == "wsl" and detect_runtime_kind() == "windows"
         cwd = pending.get("cwd") or (None if cross_wsl else dispatcher.current_working_directory(slot))
         launch_identity = _session_identity(slot)
-        session_id = dispatcher.reserve_claude_session_id(launch_id=launch_id, slot_id=slot_id) if provider == "claude" else None
+        session_id = None
     else:
         current = slot["current"]
         if current is None:
@@ -2220,6 +2265,11 @@ def _run_pane_locked(
     if launch_id:
         process_cwd = None if cross_wsl else cwd
     effective_cwd = cwd if target_environment and target_environment.runtime_kind == "wsl" else (process_cwd or os.getcwd())
+    if launch_id and provider == "claude":
+        allocation_cwd = cwd or process_cwd or os.getcwd()
+        session_id = dispatcher.reserve_claude_session_id(
+            launch_id=launch_id, slot_id=slot_id, cwd=allocation_cwd,
+        )
     native_record = dispatcher.materializer.get_session(provider, environment_id, session_id) if session_id else None
     terminal_record = _terminal_launch_record(
         dispatcher, slot, provider=provider, environment_id=environment_id, session_id=session_id,
@@ -2252,7 +2302,7 @@ def _run_pane_locked(
         )
 
     inherited_workflow_snapshot: dict[str, Any] | None = None
-    inherited_instruction_path: str | None = None
+    inherited_instruction_paths: list[str] = []
     inherited_digests: dict[str, str] = {}
     inherited_workflow_selection: str | None = None
     if launch_id:
@@ -2274,31 +2324,75 @@ def _run_pane_locked(
             )
             if source_context:
                 snapshot = source_context.get("workflow_resource_snapshot")
-                if isinstance(snapshot, dict) and snapshot.get("schema_version") == 1:
+                if isinstance(snapshot, dict) and snapshot.get("schema_version") in {1, 2}:
                     inherited_workflow_snapshot = snapshot
                     inherited_workflow_selection = snapshot.get("selection")
-                    inherited_instruction_path = source_context.get("workflow_custom_instruction_path")
+                    inherited_instruction_paths = [
+                        str(resource["path"])
+                        for resource in snapshot.get("resources", ())
+                        if isinstance(resource, dict) and resource.get("path")
+                        and (resource.get("kind") == "custom_file"
+                             or str(resource.get("id", "")).startswith("custom:"))
+                    ]
+                    if not inherited_instruction_paths:
+                        inherited_paths = source_context.get("workflow_custom_instruction_paths", ())
+                        if isinstance(inherited_paths, str):
+                            inherited_instruction_paths = [inherited_paths]
+                        elif isinstance(inherited_paths, Sequence):
+                            inherited_instruction_paths = [str(path) for path in inherited_paths if path]
+                    if not inherited_instruction_paths and source_context.get("workflow_custom_instruction_path"):
+                        inherited_instruction_paths = [str(source_context["workflow_custom_instruction_path"])]
                     inherited_digests = {
                         str(resource["id"]): str(resource["sha256"])
                         for resource in snapshot.get("resources", ())
                         if isinstance(resource, dict) and resource.get("id") and resource.get("sha256")
                     }
+                    if snapshot.get("schema_version") == 1 and inherited_instruction_paths:
+                        legacy_custom = [
+                            resource for resource in snapshot.get("resources", ())
+                            if isinstance(resource, dict) and str(resource.get("id", "")).startswith("custom:")
+                            and resource.get("sha256")
+                        ]
+                        if len(legacy_custom) == len(inherited_instruction_paths) == 1:
+                            canonical_path = str(Path(inherited_instruction_paths[0]).resolve())
+                            runtime_kind = str((source_context.get("runtime_identity") or {}).get("runtime_kind", "windows"))
+                            identity_path = (canonical_path if runtime_kind in {"wsl", "linux", "macos"}
+                                             else os.path.normcase(canonical_path))
+                            migrated_id = "custom:" + hashlib.sha256(identity_path.encode("utf-8")).hexdigest()
+                            inherited_digests.pop(str(legacy_custom[0]["id"]), None)
+                            inherited_digests[migrated_id] = str(legacy_custom[0]["sha256"])
         if inherited_workflow_selection is None:
             inherited_workflow_selection = source_slot.get("workflow_type")
     selected_workflow = workflow_selection if workflow_selection is not None else (
         slot.get("workflow_type") or inherited_workflow_selection
     )
-    if (launch_id and workflow_selection is None and selected_workflow == inherited_workflow_selection
-            and custom_instruction_path is None):
-        custom_instruction_path = inherited_instruction_path
-    expected_workflow_digests = (
-        inherited_digests
-        if launch_id and workflow_selection is None and inherited_workflow_snapshot
-        and selected_workflow == inherited_workflow_snapshot.get("selection")
-        else None
-    )
+    requested_instruction_paths = list(custom_instruction_paths)
+    if custom_instruction_path:
+        requested_instruction_paths.append(custom_instruction_path)
+    if launch_id and inherited_instruction_paths and not allow_instruction_replacement:
+        requested_instruction_paths = [*inherited_instruction_paths, *requested_instruction_paths]
+    if allow_instruction_replacement and not requested_instruction_paths:
+        raise ContinuityError(
+            ErrorCode.INVALID_INPUT,
+            "--replace-instructions requires at least one --instructions-file path.",
+        )
+    expected_workflow_digests: dict[str, str] | None = None
+    if launch_id and inherited_workflow_snapshot:
+        same_workflow = selected_workflow == inherited_workflow_snapshot.get("selection")
+        expected_workflow_digests = {}
+        for resource_id, digest in inherited_digests.items():
+            is_custom = resource_id.startswith("custom:")
+            is_shared_common = resource_id.endswith(".common") or ".common." in resource_id
+            if (same_workflow and not (allow_instruction_replacement and is_custom)
+                    or (is_custom and not allow_instruction_replacement) or is_shared_common):
+                expected_workflow_digests[resource_id] = digest
     if launch_id and (getattr(dispatcher, "workflow_bridge", None) is not None
-                      or selected_workflow is not None or custom_instruction_path is not None):
+                      or selected_workflow is not None or requested_instruction_paths):
+        def reject_unavailable_instructions(message: str, detail: dict[str, Any] | None = None) -> None:
+            if launch_id:
+                dispatcher.mark_launch_failed(launch_id=launch_id, detail=message, apply=True)
+            raise ContinuityError(ErrorCode.INVALID_INPUT, message, detail)
+
         workflow_prep = dispatcher.prepare_new_session_workflow(
             slot_id=slot_id,
             launch_id=launch_id,
@@ -2307,11 +2401,12 @@ def _run_pane_locked(
             bridge=dispatcher.workflow_bridge,
             workflow_selection=selected_workflow,
             expected_digests=expected_workflow_digests,
-            custom_instruction_path=custom_instruction_path,
+            custom_instruction_paths=requested_instruction_paths,
+            effective_cwd=cwd,
+            allow_replacement=allow_instruction_replacement,
         )
         if selected_workflow is not None and workflow_prep.get("status") in {"unsupported", "unavailable"}:
-            raise ContinuityError(
-                ErrorCode.INVALID_INPUT,
+            reject_unavailable_instructions(
                 f"Workflow selection {selected_workflow!r} cannot be delivered to {provider}; resolve the workflow preview before launching.",
             )
         if expected_workflow_digests:
@@ -2323,13 +2418,22 @@ def _run_pane_locked(
             changed_resources = [resource_id for resource_id, digest in expected_workflow_digests.items()
                                  if delivered_digests.get(resource_id) != digest]
             if changed_resources:
-                raise ContinuityError(
-                    ErrorCode.INVALID_INPUT,
+                reject_unavailable_instructions(
                     "Saved workflow resources changed or are unavailable; no replacement instructions were submitted.",
                     {"resource_ids": sorted(changed_resources),
                      "expected_digests": {key: inherited_digests[key] for key in sorted(changed_resources)},
                      "observed_digests": {key: delivered_digests.get(key) for key in sorted(changed_resources)}},
                 )
+        if workflow_prep.get("limitations"):
+            limitation_ids = sorted({
+                str(item.get("resource_id", "unknown"))
+                for item in workflow_prep["limitations"] if isinstance(item, dict)
+            })
+            reject_unavailable_instructions(
+                "One or more requested instruction resources are missing, changed, conflicting, or unsupported; "
+                "no partial instruction payload was submitted.",
+                {"resource_ids": limitation_ids},
+            )
     _startup_progress("environment, executable and Git worktree context resolved")
     try:
         if launch_id and provider == "claude":
@@ -2702,6 +2806,8 @@ def _run_pane_locked(
             portable_context_snapshot["workflow_resource_snapshot"] = workflow_prep["resource_snapshot"]
             if workflow_prep.get("custom_instruction_path"):
                 portable_context_snapshot["workflow_custom_instruction_path"] = workflow_prep["custom_instruction_path"]
+            if workflow_prep.get("custom_instruction_paths"):
+                portable_context_snapshot["workflow_custom_instruction_paths"] = workflow_prep["custom_instruction_paths"]
         # Claude's UUID is only a reservation until exact transcript evidence
         # associates it with the slot. Persist snapshots only after that evidence.
         if provider != "claude" or launch_id is None:
@@ -3277,10 +3383,21 @@ def _review(dispatcher: DispatcherService, args: argparse.Namespace,
                                reviewer_identity[1] if reviewer_identity and not args.new else (args.environment or "local"),
                                args.cwd)
     create_reviewer = bool(args.new or reviewer_identity is None)
+    if not create_reviewer and (getattr(args, "instruction_files", ())
+                                or getattr(args, "replace_instructions", False)):
+        raise ContinuityError(
+            ErrorCode.INVALID_INPUT,
+            "Instruction files apply only to a new reviewer session; exact-session resume never replays initialization.",
+        )
     if create_reviewer:
         preview = _new_launch_preview(dispatcher, args.provider, args.environment or "local", args.cwd, native_args,
                                       allow_native_unknown=allow_native_unknown,
                                       source_slot_id=original["slot_id"])
+        _add_instruction_preview(
+            preview, provider=args.provider, workflow_selection=original.get("workflow_type"),
+            instruction_paths=getattr(args, "instruction_files", ()),
+            replacement_authorized=getattr(args, "replace_instructions", False),
+        )
         if not args.apply:
             if getattr(args, "json_output", False):
                 print(json.dumps({"action": "review", "applied": False, "launch_preview": preview}, indent=2), file=output_stream)
@@ -3306,7 +3423,7 @@ def _review(dispatcher: DispatcherService, args: argparse.Namespace,
                 _render_launch_preview(preview, output_stream)
             return 0
     if create_reviewer:
-        if native_args:
+        if native_args or "session_instructions" in preview:
             _render_launch_preview(preview, output_stream)
         _startup_progress("reserving reviewer bootstrap and review-cycle intent")
         prepared = dispatcher.prepare_start(
@@ -3325,6 +3442,8 @@ def _review(dispatcher: DispatcherService, args: argparse.Namespace,
             input_stream=input_stream, output_stream=output_stream,
             native_args=native_args,
             allow_native_unknown=allow_native_unknown,
+            custom_instruction_paths=getattr(args, "instruction_files", ()),
+            allow_instruction_replacement=getattr(args, "replace_instructions", False),
             transition_source={"slot_id": original["slot_id"], "expected_source": original_identity,
                               "review_cycle": {**cycle, "status": "active"},
                               "allow_inactive_source": original["state"] == "inactive",
@@ -4844,6 +4963,12 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
                        allow_native_unknown=allow_native_unknown)
     elif args.command == "switch":
         reuse = args.command == "switch" and args.reuse_previous
+        if (reuse and (getattr(args, "instruction_files", ()) or getattr(args, "replace_instructions", False)
+                      or getattr(args, "workflow", None) is not None)):
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "Instruction files apply only to a new session; historical-session reuse never replays initialization.",
+            )
         if reuse:
             current_slot = dispatcher.get_slot(gui=args.gui, name=args.agent_name)
             expected_current = _session_identity(current_slot)
@@ -4912,7 +5037,13 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
                     allow_native_unknown=allow_native_unknown,
                     source_slot_id=current_slot["slot_id"],
                 )
-                if native_args:
+                _add_instruction_preview(
+                    new_preview, provider=args.provider,
+                    workflow_selection=getattr(args, "workflow", None) or current_slot.get("workflow_type"),
+                    instruction_paths=getattr(args, "instruction_files", ()),
+                    replacement_authorized=getattr(args, "replace_instructions", False),
+                )
+                if native_args or "session_instructions" in new_preview:
                     _render_launch_preview(new_preview, output_stream)
                 _startup_progress("reserving new-provider launch under the registry lock")
             result = dispatcher.begin_launch(gui=args.gui, name=args.agent_name, provider=args.provider,
@@ -4926,7 +5057,8 @@ def _dispatch_impl(args: argparse.Namespace, parser: argparse.ArgumentParser, *,
                                  input_stream=input_stream, output_stream=output_stream,
                                  native_args=native_args, allow_native_unknown=allow_native_unknown,
                                  workflow_selection=getattr(args, "workflow", None),
-                                 custom_instruction_path=getattr(args, "instruction_file", None))
+                                 custom_instruction_paths=getattr(args, "instruction_files", ()),
+                                 allow_instruction_replacement=getattr(args, "replace_instructions", False))
             else:
                 result["launch_preview"] = _new_launch_preview(
                     dispatcher, args.provider, environment_selector,
@@ -5141,6 +5273,12 @@ def _start(
                         if current else None)
 
     if current and not args.new:
+        if (getattr(args, "instruction_files", ()) or getattr(args, "replace_instructions", False)
+                or getattr(args, "workflow", None) is not None):
+            raise ContinuityError(
+                ErrorCode.INVALID_INPUT,
+                "Instruction files apply only to a new session; exact-session resume never replays initialization.",
+            )
         if args.provider != current["provider"]:
             raise ContinuityError(ErrorCode.INVALID_INPUT,
                                   f"Requested provider differs from the selected {current['provider']} session; use `llmd switch` explicitly.")
@@ -5211,8 +5349,14 @@ def _start(
                                       getattr(args, "native_args", []),
                                       allow_native_unknown=getattr(args, "allow_native_unknown", False),
                                       source_slot_id=slot["slot_id"] if slot and args.new else None)
+    _add_instruction_preview(
+        new_preview, provider=args.provider,
+        workflow_selection=getattr(args, "workflow", None) or (slot.get("workflow_type") if slot else None),
+        instruction_paths=getattr(args, "instruction_files", ()),
+        replacement_authorized=getattr(args, "replace_instructions", False),
+    )
     _startup_progress("environment and provider executable discovery completed")
-    if args.apply and getattr(args, "native_args", []):
+    if args.apply and (getattr(args, "native_args", []) or "session_instructions" in new_preview):
         _render_launch_preview(new_preview, output_stream)
 
     _startup_progress("reserving the pending launch under the registry lock")
@@ -5235,7 +5379,8 @@ def _start(
                          native_args=getattr(args, "native_args", []),
                          allow_native_unknown=getattr(args, "allow_native_unknown", False),
                          workflow_selection=getattr(args, "workflow", None),
-                         custom_instruction_path=getattr(args, "instruction_file", None))
+                         custom_instruction_paths=getattr(args, "instruction_files", ()),
+                         allow_instruction_replacement=getattr(args, "replace_instructions", False))
     result["launch_preview"] = new_preview
     if not args.apply:
         preview_environment_id = new_preview["environment"]["id"]

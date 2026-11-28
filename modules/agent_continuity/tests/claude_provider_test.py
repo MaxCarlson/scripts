@@ -424,6 +424,37 @@ def test_claude_pending_launch_recovers_only_after_exact_transcript_evidence(tmp
     assert current["native_session_id"] == session_id
 
 
+def test_claude_native_allocation_is_durable_and_bound_to_effective_cwd(tmp_path: Path) -> None:
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    launch = dispatcher.prepare_start(gui="GUI", name="Agent", provider="claude", cwd=str(tmp_path), apply=True)
+    launch_id = launch["details"]["launch_id"]
+    slot_id = launch["details"]["slot_id"]
+
+    session_id = dispatcher.reserve_claude_session_id(launch_id=launch_id, slot_id=slot_id, cwd=str(tmp_path))
+    assert dispatcher.reserve_claude_session_id(
+        launch_id=launch_id, slot_id=slot_id, cwd=str(tmp_path.resolve()),
+    ) == session_id
+    pending = dispatcher.get_pending_launch(launch_id)
+    assert pending["reserved_session_id"] == session_id
+    assert pending["reserved_effective_cwds"] == [str(tmp_path.resolve())]
+    event = dispatcher._row(
+        """SELECT payload_json FROM activity_events WHERE event_type = ?
+           AND json_extract(payload_json, '$.launch_id') = ?
+           AND json_extract(payload_json, '$.outcome') = 'claude_session_id_reserved'""",
+        (EventType.DISPATCHER_PROCESS_OBSERVED.value, launch_id),
+    )
+    payload = json.loads(event["payload_json"])
+    assert payload["allocation_mechanism"] == "deterministic_uuidv4_cli_flag"
+    assert payload["provider_persistence_confirmed"] is False
+    assert payload["provider_resumability_confirmed"] is False
+    assert payload["effective_cwd"] == str(tmp_path.resolve())
+
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+    with pytest.raises(ContinuityError, match="effective-cwd evidence"):
+        dispatcher.reserve_claude_session_id(launch_id=launch_id, slot_id=slot_id, cwd=str(other_cwd))
+
+
 def test_interrupted_claude_initialization_keeps_uuid_recoverable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_provider_bin: Path,
 ):
@@ -447,6 +478,7 @@ def test_interrupted_claude_initialization_keeps_uuid_recoverable(
     session_id = candidate["reserved_session_id"]
     assert candidate["status"] == "pending"
     assert str(uuid.UUID(session_id)) == session_id
+    assert candidate["reserved_effective_cwds"] == [str(Path.cwd().resolve())]
 
     # A pending launch is one-shot. Recovery may inspect the same ID, but must
     # never spawn another interactive process for the same launch token.

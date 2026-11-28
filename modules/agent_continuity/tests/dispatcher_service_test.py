@@ -7,6 +7,27 @@ from agent_continuity.models import EventEnvelope, EventType
 from agent_continuity.service import ContinuityService
 
 
+def test_slot_lookup_uses_one_sync_and_honors_locked_freshness_hint(tmp_path, monkeypatch):
+    dispatcher = DispatcherService(home_dir=tmp_path / "registry")
+    dispatcher.create_gui("GUI", apply=True)
+    slot = dispatcher.create_slot(gui="GUI", name="Agent", apply=True)
+    slot_id = slot["details"]["slot_id"]
+    sync_calls = 0
+    original_sync = dispatcher._sync
+
+    def count_sync():
+        nonlocal sync_calls
+        sync_calls += 1
+        original_sync()
+
+    monkeypatch.setattr(dispatcher, "_sync", count_sync)
+    assert dispatcher.get_slot_by_id(slot_id)["slot_id"] == slot_id
+    assert sync_calls == 1
+    sync_calls = 0
+    assert dispatcher.get_slot_by_id(slot_id, state_already_synced=True)["slot_id"] == slot_id
+    assert sync_calls == 0
+
+
 def test_activation_history_preserves_repeated_native_session_and_rebuild(tmp_path):
     continuity = ContinuityService(tmp_path / "registry")
     dispatcher = DispatcherService(continuity)

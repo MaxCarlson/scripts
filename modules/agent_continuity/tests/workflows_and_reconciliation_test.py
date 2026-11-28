@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from io import StringIO
 from pathlib import Path
@@ -49,10 +50,81 @@ def test_workflow_resource_snapshot_deduplicates_common_and_preserves_exact_text
     assert [item["resource_id"] for item in prepared["provenance"]] == [
         "workflow.common", "workflow.handoff",
     ]
-    assert prepared["resource_snapshot"]["schema_version"] == 1
+    assert prepared["resource_snapshot"]["schema_version"] == 2
     assert [item["id"] for item in prepared["resource_snapshot"]["resources"]] == [
         "workflow.common", "workflow.handoff",
     ]
+
+
+def test_custom_instruction_files_keep_order_and_distinguish_same_basename_paths(tmp_path: Path) -> None:
+    from agent_continuity.workflows import prepare_additive_workflow_init
+
+    first_dir = tmp_path / "one"
+    second_dir = tmp_path / "two"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first = first_dir / "AGENTS.md"
+    second = second_dir / "AGENTS.md"
+    first.write_text("first instructions\n", encoding="utf-8")
+    second.write_text("second instructions\n", encoding="utf-8")
+
+    prepared = prepare_additive_workflow_init(
+        provider="codex", runtime="windows", is_new_session=True, selection="hybrid",
+        resources=(), custom_instruction_paths=(str(first), str(second)), effective_cwd=str(tmp_path),
+    )
+
+    snapshot = prepared["resource_snapshot"]
+    assert snapshot["schema_version"] == 2
+    assert [item["path"] for item in snapshot["resources"]] == [str(first.resolve()), str(second.resolve())]
+    assert snapshot["resources"][0]["id"] != snapshot["resources"][1]["id"]
+    assert prepared["delivery_prompt"].index("first instructions") < prepared["delivery_prompt"].index("second instructions")
+
+
+def test_custom_instruction_paths_resolve_from_effective_cwd_and_fail_on_digest_change(tmp_path: Path) -> None:
+    from agent_continuity.workflows import prepare_additive_workflow_init
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    instructions = workspace / "instructions.md"
+    instructions.write_text("before\n", encoding="utf-8")
+    unsupported = prepare_additive_workflow_init(
+        provider="claude", runtime="windows", is_new_session=True, selection=None,
+        resources=(), custom_instruction_paths=(str(instructions),), effective_cwd=str(workspace),
+    )
+    assert unsupported["status"] == "unsupported"
+    assert unsupported["delivery_prompt"] is None
+    prepared = prepare_additive_workflow_init(
+        provider="codex", runtime="windows", is_new_session=True, selection=None,
+        resources=(), custom_instruction_paths=("instructions.md",), effective_cwd=str(workspace),
+    )
+    entry = prepared["resource_snapshot"]["resources"][0]
+    assert entry["path"] == str(instructions.resolve())
+
+    instructions.write_text("after\n", encoding="utf-8")
+    changed = prepare_additive_workflow_init(
+        provider="codex", runtime="windows", is_new_session=True, selection=None,
+        resources=(), custom_instruction_paths=("instructions.md",), effective_cwd=str(workspace),
+        expected_digests={entry["id"]: entry["sha256"]},
+    )
+    assert changed["status"] == "degraded"
+    assert changed["delivery_prompt"] is None
+    assert [item["status"] for item in changed["limitations"]] == ["changed"]
+    replaced = prepare_additive_workflow_init(
+        provider="codex", runtime="windows", is_new_session=True, selection=None,
+        resources=(), custom_instruction_paths=("instructions.md",), effective_cwd=str(workspace),
+        expected_digests={entry["id"]: entry["sha256"]}, allow_replacement=True,
+    )
+    assert replaced["status"] == "ready"
+    assert instructions.read_bytes().decode("utf-8") in replaced["delivery_prompt"]
+
+
+@pytest.mark.parametrize("flag", ["-I", "--instructions-file", "--instruction-file"])
+def test_instruction_file_cli_aliases_are_repeatable(flag: str) -> None:
+    parser = build_parser()
+    args = parser.parse_args([
+        "start", "GUI", "Agent", "-p", "codex", flag, "first.md", flag, "second.md",
+    ])
+    assert args.instruction_files == ["first.md", "second.md"]
 
 
 def test_conflicting_duplicate_resource_digests_are_excluded_but_other_resources_survive() -> None:
@@ -72,9 +144,7 @@ def test_conflicting_duplicate_resource_digests_are_excluded_but_other_resources
     )
 
     assert prepared["status"] == "degraded"
-    assert "first common" not in prepared["delivery_prompt"]
-    assert "conflicting common" not in prepared["delivery_prompt"]
-    assert "handoff survives" in prepared["delivery_prompt"]
+    assert prepared["delivery_prompt"] is None
     assert prepared["limitations"] == [{
         "resource_id": "workflow.common",
         "status": "conflicting",
@@ -179,7 +249,8 @@ def test_llmd_50_to_54_workflow_identity_handoff_and_reconciliation() -> None:
     assert [r.status for r in resources] == ["available", "missing"]
 
     init_new = prepare_additive_workflow_init(provider="codex", runtime="windows", is_new_session=True, resources=resources)
-    assert init_new["applied"] is True and init_new["status"] == "degraded"
+    assert init_new["applied"] is False and init_new["status"] == "degraded"
+    assert init_new["delivery_prompt"] is None
     assert init_new["provenance"] == [
         {
             "resource_id": "wf.review",
@@ -341,13 +412,15 @@ def test_end_to_end_workflow_delivery_transfer_handoff_and_reconcile_cli(tmp_pat
         lambda _dispatcher, provider, *_args, **_kwargs: [provider],
     )
     captured_argvs: list[list[str]] = []
+    codex_allocations = iter(("codex-new-1", "codex-new-3", "codex-new-4"))
 
     def fake_bootstrap(argv, **_kw):
         captured_argvs.append(list(argv))
         if argv[0] == "agy":
             stdout = '{"conversation_id":"agy-new-2","status":"SUCCESS"}\n'
         else:
-            stdout = '{"type":"thread.started","thread_id":"codex-new-1"}\n{"type":"turn.completed"}\n'
+            stdout = ('{"type":"thread.started","thread_id":"' + next(codex_allocations)
+                      + '"}\n{"type":"turn.completed"}\n')
         return subprocess.CompletedProcess(
             argv, 0, stdout=stdout, stderr=""
         )
@@ -355,17 +428,36 @@ def test_end_to_end_workflow_delivery_transfer_handoff_and_reconcile_cli(tmp_pat
     monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_with_progress", fake_bootstrap)
     monkeypatch.setattr("agent_continuity.dispatcher_cli._run_provider_process", lambda argv, **_kw: captured_argvs.append(list(argv)) or subprocess.CompletedProcess(argv, 0))
     parser = build_parser()
-    custom_file = tmp_path / "instructions.txt"
-    custom_file.write_bytes(b"\nCustom instructions with exact edge whitespace. \n")
-    custom_content = custom_file.read_bytes().decode("utf-8")
+    first_instruction = tmp_path / "one" / "instructions.txt"
+    second_instruction = tmp_path / "two" / "instructions.txt"
+    first_instruction.parent.mkdir()
+    second_instruction.parent.mkdir()
+    first_instruction.write_bytes(b"\nFirst custom instructions with exact edge whitespace. \n")
+    second_instruction.write_bytes(b"Second custom instructions.\n")
+    first_content = first_instruction.read_bytes().decode("utf-8")
+    second_content = second_instruction.read_bytes().decode("utf-8")
+    dry_preview = StringIO()
+    assert dispatch(parser.parse_args([
+        "-H", str(home), "start", "SrcGUI", "Worker One", "-p", "codex", "-W", "hybrid",
+        "-I", str(first_instruction), "--instructions-file", str(second_instruction), "-d", "-j",
+    ]), parser, input_stream=StringIO(), output_stream=dry_preview) == 0
+    dry_json = json.loads(dry_preview.getvalue())
+    instruction_preview = dry_json["launch_preview"]["session_instructions"]
+    assert instruction_preview["status"] == "ready"
+    assert [item["path"] for item in instruction_preview["custom_files"]] == [
+        str(first_instruction.resolve()), str(second_instruction.resolve()),
+    ]
+    assert first_content not in dry_preview.getvalue() and second_content not in dry_preview.getvalue()
     assert dispatch(parser.parse_args([
         "-H", str(home), "start", "SrcGUI", "Worker One", "-p", "codex", "-N", "-a",
-        "-W", "hybrid", "--instruction-file", str(custom_file),
+        "-W", "hybrid", "--instruction-file", str(first_instruction), "--instructions-file", str(second_instruction),
     ]), parser, input_stream=StringIO(), output_stream=StringIO()) == 0
     assert len(captured_argvs) == 2
     assert selections == ["hybrid"]
     assert resource_content in captured_argvs[0][-1]
-    assert custom_content in captured_argvs[0][-1]
+    assert first_content in captured_argvs[0][-1]
+    assert second_content in captured_argvs[0][-1]
+    assert captured_argvs[0][-1].index(first_content) < captured_argvs[0][-1].index(second_content)
     assert "workflow." not in " ".join(captured_argvs[1])
     states = [
         json.loads(r["payload_json"]).get("delivery_state")
@@ -373,6 +465,11 @@ def test_end_to_end_workflow_delivery_transfer_handoff_and_reconcile_cli(tmp_pat
         if json.loads(r["payload_json"]).get("delivery_state")
     ]
     assert states == ["prepared", "delivered"]
+    persisted_payloads = "\n".join(
+        row["payload_json"] for row in d._rows("SELECT payload_json FROM activity_events")
+    )
+    assert first_content not in persisted_payloads
+    assert second_content not in persisted_payloads
     delivered = [
         json.loads(r["payload_json"])
         for r in d._rows("SELECT payload_json FROM activity_events WHERE event_type = 'dispatcher.process_observed'")
@@ -380,13 +477,18 @@ def test_end_to_end_workflow_delivery_transfer_handoff_and_reconcile_cli(tmp_pat
     ][0]
     assert delivered["native_session_id"] == "codex-new-1"
     assert delivered["resource_snapshot"] == {
-        "schema_version": 1,
+        "schema_version": 2,
         "selection": "hybrid",
         "resources": [
             {"id": "workflow.handoff", "revision": resource_digest[:12], "sha256": resource_digest},
-            {"id": f"custom:{custom_file.name}",
-             "revision": hashlib.sha256(custom_content.encode("utf-8")).hexdigest()[:12],
-             "sha256": hashlib.sha256(custom_content.encode("utf-8")).hexdigest()},
+            {"id": "custom:" + hashlib.sha256(os.path.normcase(str(first_instruction.resolve())).encode("utf-8")).hexdigest(),
+             "revision": hashlib.sha256(first_content.encode("utf-8")).hexdigest()[:12],
+             "sha256": hashlib.sha256(first_content.encode("utf-8")).hexdigest(),
+             "kind": "custom_file", "path": str(first_instruction.resolve())},
+            {"id": "custom:" + hashlib.sha256(os.path.normcase(str(second_instruction.resolve())).encode("utf-8")).hexdigest(),
+             "revision": hashlib.sha256(second_content.encode("utf-8")).hexdigest()[:12],
+             "sha256": hashlib.sha256(second_content.encode("utf-8")).hexdigest(),
+             "kind": "custom_file", "path": str(second_instruction.resolve())},
         ],
     }
     source_slot = d.get_slot(gui="SrcGUI", name="Worker One")
@@ -395,14 +497,26 @@ def test_end_to_end_workflow_delivery_transfer_handoff_and_reconcile_cli(tmp_pat
         environment_id=source_slot["current"]["environment_id"], session_id="codex-new-1",
     )
     assert portable_snapshot["workflow_resource_snapshot"] == delivered["resource_snapshot"]
-    assert portable_snapshot["workflow_custom_instruction_path"] == str(custom_file)
+    assert "workflow_custom_instruction_path" not in portable_snapshot
+    assert portable_snapshot["workflow_custom_instruction_paths"] == [
+        str(first_instruction.resolve()), str(second_instruction.resolve()),
+    ]
+    guarded_count = len(captured_argvs)
+    with pytest.raises(ContinuityError, match="exact-session resume never replays"):
+        dispatch(parser.parse_args([
+            "-H", str(home), "start", "SrcGUI", "Worker One", "-p", "codex", "-I", str(first_instruction), "-a",
+        ]), parser, input_stream=StringIO(), output_stream=StringIO())
+    assert len(captured_argvs) == guarded_count
     d.materializer.rebuild_from_spools()
     rebuilt_snapshot = d.get_portable_launch_context(
         slot_id=source_slot["slot_id"], provider="codex",
         environment_id=source_slot["current"]["environment_id"], session_id="codex-new-1",
     )
     assert rebuilt_snapshot["workflow_resource_snapshot"] == delivered["resource_snapshot"]
-    assert rebuilt_snapshot["workflow_custom_instruction_path"] == str(custom_file)
+    assert "workflow_custom_instruction_path" not in rebuilt_snapshot
+    assert rebuilt_snapshot["workflow_custom_instruction_paths"] == [
+        str(first_instruction.resolve()), str(second_instruction.resolve()),
+    ]
 
     # A new cross-provider slot inherits the exact workflow selection and verifies the saved resource digest.
     second_launch = d.prepare_start(gui="SrcGUI", name="Worker Two", provider="agy", cwd=str(tmp_path), apply=True)
@@ -421,13 +535,39 @@ def test_end_to_end_workflow_delivery_transfer_handoff_and_reconcile_cli(tmp_pat
     assert run_result == 0
     assert selections == ["hybrid", "hybrid"]
     assert resource_content in " ".join(captured_argvs[-2])
-    assert custom_content in " ".join(captured_argvs[-2])
+    assert first_content in " ".join(captured_argvs[-2])
+    assert second_content in " ".join(captured_argvs[-2])
     agy_slot = d.get_slot(gui="SrcGUI", name="Worker Two")
     agy_snapshot = d.get_portable_launch_context(
         slot_id=agy_slot["slot_id"], provider="agy", environment_id=agy_slot["current"]["environment_id"],
         session_id="agy-new-2",
     )
     assert agy_snapshot["workflow_resource_snapshot"] == delivered["resource_snapshot"]
+
+    # Changing the workflow selection does not discard independently selected custom files.
+    third_launch = d.prepare_start(gui="SrcGUI", name="Worker Three", provider="codex", cwd=str(tmp_path), apply=True)
+    assert _run_pane(
+        d, slot_id=third_launch["details"]["slot_id"], launch_id=third_launch["details"]["launch_id"],
+        input_stream=StringIO(), output_stream=StringIO(), show_summary=False,
+        transition_source={
+            "slot_id": agy_slot["slot_id"],
+            "expected_source": ("agy", agy_slot["current"]["environment_id"], "agy-new-2"),
+            "allow_inactive_source": True,
+        },
+        workflow_selection="goal",
+    ) == 0
+    assert selections[-1] == "goal"
+    goal_payload = next(argv[-1] for argv in reversed(captured_argvs) if argv[0] == "codex" and "exec" in argv)
+    assert first_content in goal_payload and second_content in goal_payload
+    goal_slot = d.get_slot(gui="SrcGUI", name="Worker Three")
+    goal_snapshot = d.get_portable_launch_context(
+        slot_id=goal_slot["slot_id"], provider="codex", environment_id=goal_slot["current"]["environment_id"],
+        session_id="codex-new-3",
+    )
+    assert goal_snapshot["workflow_resource_snapshot"]["selection"] == "goal"
+    assert goal_snapshot["workflow_custom_instruction_paths"] == [
+        str(first_instruction.resolve()), str(second_instruction.resolve()),
+    ]
 
     # Claude has no qualified additive workflow bootstrap; refuse without spawning it.
     d.create_gui("ClaudeGUI", apply=True)
@@ -443,22 +583,45 @@ def test_end_to_end_workflow_delivery_transfer_handoff_and_reconcile_cli(tmp_pat
             },
         )
     assert len(captured_argvs) == guarded_invocations
+    assert d._row(
+        "SELECT status FROM dispatcher_pending_launches WHERE launch_id = ?",
+        (claude_launch["details"]["launch_id"],),
+    )["status"] == "failed"
 
-    # Changed explicit instruction bytes block replacement before bootstrap or provider execution.
-    custom_file.write_text("changed after the exact session snapshot\n", encoding="utf-8")
-    third_launch = d.prepare_start(gui="SrcGUI", name="Worker Three", provider="codex", cwd=str(tmp_path), apply=True)
+    # Changed instruction bytes block replacement before bootstrap or provider execution.
+    first_instruction.write_text("changed after the exact session snapshot\n", encoding="utf-8")
+    fourth_launch = d.prepare_start(gui="SrcGUI", name="Worker Four", provider="codex", cwd=str(tmp_path), apply=True)
     guarded_invocations = len(captured_argvs)
     with pytest.raises(ContinuityError, match="Saved workflow resources changed"):
         _run_pane(
-            d, slot_id=third_launch["details"]["slot_id"], launch_id=third_launch["details"]["launch_id"],
+            d, slot_id=fourth_launch["details"]["slot_id"], launch_id=fourth_launch["details"]["launch_id"],
             input_stream=StringIO(), output_stream=StringIO(), show_summary=False,
             transition_source={
-                "slot_id": agy_slot["slot_id"],
-                "expected_source": ("agy", agy_slot["current"]["environment_id"], "agy-new-2"),
+                "slot_id": goal_slot["slot_id"],
+                "expected_source": ("codex", goal_slot["current"]["environment_id"], "codex-new-3"),
                 "source_state": "inactive", "destination_state": "active", "provenance": "post_exit_new_agent",
             },
         )
     assert len(captured_argvs) == guarded_invocations
+
+    # The explicit replacement switch accepts changed bytes while retaining other selected resources.
+    fifth_launch = d.prepare_start(gui="SrcGUI", name="Worker Five", provider="codex", cwd=str(tmp_path), apply=True)
+    assert _run_pane(
+        d, slot_id=fifth_launch["details"]["slot_id"], launch_id=fifth_launch["details"]["launch_id"],
+        input_stream=StringIO(), output_stream=StringIO(), show_summary=False,
+        transition_source={
+            "slot_id": goal_slot["slot_id"],
+            "expected_source": ("codex", goal_slot["current"]["environment_id"], "codex-new-3"),
+        },
+        workflow_selection="goal",
+        custom_instruction_paths=(str(first_instruction), str(second_instruction)),
+        allow_instruction_replacement=True,
+    ) == 0
+    replacement_payload = next(
+        argv[-1] for argv in reversed(captured_argvs) if argv[0] == "codex" and "exec" in argv
+    )
+    assert "changed after the exact session snapshot" in replacement_payload
+    assert second_content in replacement_payload
 
     # 2) CLI transfer preview, apply, collision, and transfer-back without number reuse.
     out = StringIO()
@@ -472,7 +635,7 @@ def test_end_to_end_workflow_delivery_transfer_handoff_and_reconcile_cli(tmp_pat
     assert d.get_slot(gui="DstGUI", name="Worker One")["agent_number"] == 1
 
     assert dispatch(parser.parse_args(["-H", str(home), "transfer", "-g", "DstGUI", "-n", "Worker One", "-t", "SrcGUI", "-a"]), parser, input_stream=StringIO(), output_stream=StringIO()) == 0
-    assert d.get_slot(gui="SrcGUI", name="Worker One")["agent_number"] == 4
+    assert d.get_slot(gui="SrcGUI", name="Worker One")["agent_number"] == 6
     d.create_slot(gui="DstGUI", name="Worker One", apply=True)
     with pytest.raises(ContinuityError, match="already has an agent"):
         dispatch(parser.parse_args(["-H", str(home), "transfer", "-g", "SrcGUI", "-n", "Worker One", "-t", "DstGUI", "-a"]), parser, input_stream=StringIO(), output_stream=StringIO())
@@ -481,7 +644,7 @@ def test_end_to_end_workflow_delivery_transfer_handoff_and_reconcile_cli(tmp_pat
     locks_dir = home / "locks"
     before_locks = set(locks_dir.iterdir()) if locks_dir.exists() else set()
     out = StringIO()
-    rc = dispatch(parser.parse_args(["-H", str(home), "handoff-validate", "-g", "SrcGUI", "-n", "Worker One", "--text", "Agent: #4 — Worker One", "-j"]), parser, input_stream=StringIO(), output_stream=out)
+    rc = dispatch(parser.parse_args(["-H", str(home), "handoff-validate", "-g", "SrcGUI", "-n", "Worker One", "--text", "Agent: #6 — Worker One", "-j"]), parser, input_stream=StringIO(), output_stream=out)
     assert rc == 2
     assert json.loads(out.getvalue())["identity"]["authority"] == "unavailable"
     monkeypatch.setattr(
@@ -495,7 +658,7 @@ def test_end_to_end_workflow_delivery_transfer_handoff_and_reconcile_cli(tmp_pat
         ),
     )
     out = StringIO()
-    rc = dispatch(parser.parse_args(["-H", str(home), "handoff-validate", "-g", "SrcGUI", "-n", "Worker One", "--text", "Agent: #4 — Worker One", "-j"]), parser, input_stream=StringIO(), output_stream=out)
+    rc = dispatch(parser.parse_args(["-H", str(home), "handoff-validate", "-g", "SrcGUI", "-n", "Worker One", "--text", "Agent: #6 — Worker One", "-j"]), parser, input_stream=StringIO(), output_stream=out)
     assert rc == 0
     assert json.loads(out.getvalue())["identity"]["authority"] == "managed"
     after_locks = set(locks_dir.iterdir()) if locks_dir.exists() else set()

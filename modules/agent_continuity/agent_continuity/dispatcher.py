@@ -441,8 +441,9 @@ class DispatcherService:
             row["settings"] = json.loads(row.pop("settings_json") or "{}")
         return rows
 
-    def _gui(self, identifier: str) -> dict[str, Any]:
-        self._sync()
+    def _gui(self, identifier: str, *, state_already_synced: bool = False) -> dict[str, Any]:
+        if not state_already_synced:
+            self._sync()
         raw = identifier.strip()
         gui = self._row(
             "SELECT * FROM dispatcher_gui_conversations WHERE gui_id = ? OR alias_key = ?",
@@ -1121,6 +1122,9 @@ class DispatcherService:
         workflow_selection: str | None = None,
         expected_digests: Mapping[str, str] | None = None,
         custom_instruction_path: str | None = None,
+        custom_instruction_paths: Sequence[str] = (),
+        effective_cwd: str | None = None,
+        allow_replacement: bool = False,
     ) -> dict[str, Any]:
         """LLMD-50/51: Discover resources and record prepared workflow provenance once for a new launch."""
         from .workflows import discover_workflow_resources, prepare_additive_workflow_init
@@ -1130,7 +1134,7 @@ class DispatcherService:
         selection = workflow_selection if workflow_selection is not None else slot.get("workflow_type")
         env = next((e for e in self.materializer.list_environments() if e.environment_id == environment_id), None)
         runtime_kind = env.runtime_kind if env else "unknown"
-        if selection is None and not custom_instruction_path:
+        if selection is None and not custom_instruction_path and not custom_instruction_paths:
             return prepare_additive_workflow_init(
                 provider=provider,
                 runtime=runtime_kind,
@@ -1154,7 +1158,10 @@ class DispatcherService:
             resources=resources,
             selection=selection,
             custom_instruction_path=custom_instruction_path,
+            custom_instruction_paths=custom_instruction_paths,
+            effective_cwd=effective_cwd,
             expected_digests=expected_digests,
+            allow_replacement=allow_replacement,
         )
         with _mutation_lock(self.home_dir):
             self._sync()
@@ -1743,25 +1750,27 @@ class DispatcherService:
             (provider, environment_id, session_id)
         )
 
-    def get_slot(self, *, gui: str, name: str) -> dict[str, Any]:
-        conversation = self._gui(gui)
+    def get_slot(self, *, gui: str, name: str, state_already_synced: bool = False) -> dict[str, Any]:
+        conversation = self._gui(gui, state_already_synced=state_already_synced)
         slot = self._slot(conversation["gui_id"], name)
         history = self._history(slot["slot_id"])
         return {**slot, "gui_alias": conversation["alias"], "history": history,
                 "current": history[-1] if history else None}
 
-    def get_slot_by_id(self, slot_id: str) -> dict[str, Any]:
-        self._sync()
+    def get_slot_by_id(self, slot_id: str, *, state_already_synced: bool = False) -> dict[str, Any]:
+        if not state_already_synced:
+            self._sync()
         row = self._row(
             "SELECT g.alias FROM agent_slots s JOIN dispatcher_gui_conversations g USING(gui_id) WHERE s.slot_id = ?",
             (slot_id,),
         )
         if row is None:
             raise ContinuityError(ErrorCode.INVALID_INPUT, f"Agent slot not found: {slot_id!r}.")
-        return self.get_slot(gui=row["alias"], name=slot_id)
+        return self.get_slot(gui=row["alias"], name=slot_id, state_already_synced=True)
 
-    def get_pending_launch(self, launch_id: str) -> dict[str, Any]:
-        self._sync()
+    def get_pending_launch(self, launch_id: str, *, state_already_synced: bool = False) -> dict[str, Any]:
+        if not state_already_synced:
+            self._sync()
         launch = self._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?", (launch_id,))
         if launch is None or launch["status"] != "pending":
             raise ContinuityError(ErrorCode.INVALID_INPUT, f"Pending launch not found: {launch_id!r}.")
@@ -1787,6 +1796,12 @@ class DispatcherService:
                  AND json_extract(payload_json, '$.outcome') = 'claude_session_id_reserved'""",
             (EventType.DISPATCHER_PROCESS_OBSERVED.value, launch["launch_id"]),
         )
+        reserved_contexts = self._rows(
+            """SELECT json_extract(payload_json, '$.effective_cwd') AS effective_cwd FROM activity_events
+               WHERE event_type = ? AND json_extract(payload_json, '$.launch_id') = ?
+                 AND json_extract(payload_json, '$.outcome') = 'claude_session_id_reserved'""",
+            (EventType.DISPATCHER_PROCESS_OBSERVED.value, launch["launch_id"]),
+        )
         claude_claims = self._rows(
             """SELECT native_session_id FROM activity_events
                WHERE event_type = ? AND json_extract(payload_json, '$.launch_id') = ?
@@ -1802,11 +1817,15 @@ class DispatcherService:
                 "captured_session_conflict": len(captured) > 1,
                 "reserved_session_id": next(iter(reserved_ids)) if len(reserved_ids) == 1 else None,
                 "reserved_session_conflict": reserved_conflict,
+                "reserved_effective_cwds": [item.get("effective_cwd") for item in reserved_contexts],
                 "claude_launch_attempted": bool(claude_claims),
                 "claude_launch_claim_conflict": claim_conflict}
 
-    def reserve_claude_session_id(self, *, launch_id: str, slot_id: str) -> str:
+    def reserve_claude_session_id(self, *, launch_id: str, slot_id: str, cwd: str) -> str:
         """Durably allocate exactly one UUID for a pending Claude launch."""
+        from .native_bootstrap import NativeAllocationStatus, NativeBootstrapRequest, allocate_native_session
+
+        effective_cwd = str(Path(cwd).resolve())
         with _mutation_lock(self.home_dir):
             self._sync()
             launch = self._row("SELECT * FROM dispatcher_pending_launches WHERE launch_id = ?", (launch_id,))
@@ -1821,16 +1840,31 @@ class DispatcherService:
                 raise ContinuityError(ErrorCode.ASSOCIATION_CONFLICT,
                                       "Claude launch UUID reservation or launch claim is ambiguous; inspect `llmd doctor`.")
             if evidence["reserved_session_id"]:
+                if evidence["reserved_effective_cwds"] != [effective_cwd]:
+                    raise ContinuityError(
+                        ErrorCode.ASSOCIATION_CONFLICT,
+                        "Claude launch reservation has no matching effective-cwd evidence; inspect `llmd doctor`.",
+                    )
                 return evidence["reserved_session_id"]
 
-            session_id = str(uuid.uuid4())
+            allocation = allocate_native_session(NativeBootstrapRequest(provider="claude", cwd=effective_cwd))
+            if allocation.status != NativeAllocationStatus.ALLOCATED or not allocation.native_session_id:
+                raise ContinuityError(
+                    allocation.error_code or ErrorCode.PROVIDER_UNAVAILABLE,
+                    allocation.error_message or "Claude native session identity could not be allocated safely.",
+                )
+            session_id = allocation.native_session_id
             event = self._event(
                 EventType.DISPATCHER_PROCESS_OBSERVED,
                 environment_id=launch["environment_id"], provider="claude", session_id=session_id,
                 payload={"slot_id": slot_id, "launch_id": launch_id, "return_code": 0,
                          "outcome": "claude_session_id_reserved",
-                         "detail": "UUID reserved; native creation and resumability are unconfirmed.",
-                         "native_session_id": session_id},
+                         "detail": "Native UUID allocation persisted by LLMD; provider creation, association, and resumability are unconfirmed.",
+                         "native_session_id": session_id,
+                         "effective_cwd": allocation.effective_provider_context.get("cwd"),
+                         "allocation_mechanism": allocation.persistence_evidence.get("mechanism"),
+                         "provider_persistence_confirmed": allocation.persisted,
+                         "provider_resumability_confirmed": allocation.interactively_resumable},
             )
             self.continuity._emit_and_materialize([event])
             return session_id
